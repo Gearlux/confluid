@@ -1,36 +1,60 @@
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 import yaml
 
+from confluid.merger import deep_merge
 
-def load_config(path: Union[str, Path]) -> Dict[str, Any]:
+
+def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
     """
-    Load configuration from a YAML file.
-
-    Args:
-        path: Path to the configuration file.
-
-    Returns:
-        The configuration dictionary.
+    Load configuration from a YAML file, recursively processing 'include:' directives.
     """
-    path = Path(path)
+    path = Path(path).resolve()
+
+    if _included is None:
+        _included = set()
+
+    if path in _included:
+        raise ValueError(f"Circular include detected: {path}")
+
+    _included.add(path)
+
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
     with open(path, "r") as f:
-        data = yaml.safe_load(f)
-        return data or {}
+        data = yaml.safe_load(f) or {}
+
+    # Process inclusions
+    if "include" in data:
+        includes = data.pop("include")
+        if isinstance(includes, str):
+            includes = [includes]
+
+        merged_base: Dict[str, Any] = {}
+        for inc_path in includes:
+            # Resolve relative to current file
+            full_inc_path = path.parent / inc_path
+            inc_data = load_config(full_inc_path, _included=_included)
+            deep_merge(merged_base, inc_data)
+
+        # Overlay current file data on top of merged inclusions
+        data = deep_merge(merged_base, data)
+
+    return data
 
 
-def load(data: Any) -> Any:
+def load(data: Any, scopes: Optional[List[str]] = None) -> Any:
     """
     Reconstruct an object hierarchy from configuration data.
 
     Args:
         data: Dict, YAML string, or path to a config file.
+        scopes: Optional list of scopes to activate.
     """
     from confluid.resolver import Resolver
+    from confluid.scopes import resolve_scopes
 
     # 1. Resolve raw data if it's a file path
     if isinstance(data, (str, Path)) and Path(str(data)).exists():
@@ -39,11 +63,16 @@ def load(data: Any) -> Any:
         # YAML string
         data = yaml.safe_load(data)
 
-    # 2. Use resolver to turn strings into objects/Fluid
-    resolver = Resolver()
+    # 2. Resolve scopes if requested or declared in data
+    active_scopes = scopes or data.get("scopes", []) if isinstance(data, dict) else []
+    if active_scopes and isinstance(data, dict):
+        data = resolve_scopes(data, active_scopes)
+
+    # 3. Use resolver to turn strings into objects/Fluid
+    resolver = Resolver(context=data if isinstance(data, dict) else None)
     resolved = resolver.resolve(data)
 
-    # 3. Recursively flow the resolved data
+    # 4. Recursively flow the resolved data
     return _flow_recursive(resolved)
 
 
