@@ -1,0 +1,90 @@
+import pytest
+
+from confluid import configurable, configure, get_registry
+
+
+@pytest.fixture(autouse=True)
+def setup_registry() -> None:
+    get_registry().clear()
+
+
+def test_post_construction_configure() -> None:
+    @configurable
+    class Model:
+        def __init__(self, layers: int = 3, lr: float = 0.01):
+            self.layers = layers
+            self.lr = lr
+
+    model = Model()
+    assert model.layers == 3
+
+    # Configure existing instance
+    configure(model, {"Model": {"layers": 50, "lr": 0.001}})
+
+    assert model.layers == 50
+    assert model.lr == 0.001
+
+
+def test_type_coercion_via_pydantic() -> None:
+    @configurable
+    class Model:
+        def __init__(self, layers: int = 3):
+            self.layers = layers
+
+    model = Model()
+
+    # Pass string "100", Pydantic should coerce to int 100
+    configure(model, {"Model": {"layers": "100"}})
+
+    assert model.layers == 100
+    assert isinstance(model.layers, int)
+
+
+def test_scoped_configuration() -> None:
+    @configurable
+    class Model:
+        def __init__(self, val: int = 1):
+            self.val = val
+
+    model = Model()
+
+    # Nested data
+    data = {"Model": {"val": 42}, "Other": {"val": 99}}
+    configure(model, data)
+    assert model.val == 42
+
+
+def test_unscoped_configuration() -> None:
+    @configurable
+    class Model:
+        def __init__(self, val: int = 1):
+            self.val = val
+
+    model = Model()
+
+    # Direct dict
+    configure(model, {"val": 7})
+    assert model.val == 7
+
+
+def test_configure_none() -> None:
+    @configurable
+    class Model:
+        def __init__(self, val: int = 1):
+            self.val = val
+
+    model = Model()
+    configure(model, None)
+    assert model.val == 1
+
+
+def test_configure_non_dict() -> None:
+    @configurable
+    class Model:
+        def __init__(self, val: int = 1):
+            self.val = val
+
+    model = Model()
+    # Passing a reference that resolves to a class, not a dict
+    configure(model, "@Model")
+    assert model.val == 1
