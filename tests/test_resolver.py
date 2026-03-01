@@ -96,7 +96,7 @@ def test_resolve_literal_fallback() -> None:
     # Should fall back to strip_quotes
     obj = resolver.resolve("@Model(layers='10')")
     assert obj.layers == "10"
-    
+
     # Complex string
     obj = resolver.resolve("@Model(layers=some_string)")
     assert obj.layers == "some_string"
