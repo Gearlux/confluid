@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  quality-checks:
-    name: Linting & Type Checking
+  formatting:
+    name: Formatting (Isort & Black)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -21,20 +21,48 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
-    - name: Formatting (Isort & Black)
+    - name: Isort
+      run: isort --check-only .
+    - name: Black
+      run: black --check .
+
+  linting:
+    name: Linting (Flake8)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+    - name: Install dependencies
       run: |
-        isort --check-only .
-        black --check .
-    - name: Linting (Flake8)
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    - name: Flake8
+      run: flake8 .
+
+  type-check:
+    name: Type Checking (Mypy)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+    - name: Install dependencies
       run: |
-        flake8 .
-    - name: Type Checking (Mypy)
-      run: |
-        mypy .
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    - name: Mypy
+      run: mypy .
 
   unit-tests:
     name: Unit Tests & Coverage
-    needs: quality-checks
+    needs: [formatting, linting, type-check]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -59,7 +87,7 @@ jobs:
 
   verify-examples:
     name: Verify Examples
-    needs: quality-checks
+    needs: [unit-tests]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -74,4 +102,4 @@ jobs:
         pip install -e ".[dev]"
     - name: Run Examples
       run: |
-        for f in examples/*.py; do echo "Running $f..."; python "$f"; done
+        for f in examples/*.py; do echo "Verifying $f..."; python "$f"; done
