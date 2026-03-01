@@ -78,6 +78,21 @@ def test_configure_none() -> None:
     assert model.val == 1
 
 
+def test_configure_dotted_keys() -> None:
+    @configurable
+    class Model:
+        def __init__(self, layers: int = 3, dropout: float = 0.1):
+            self.layers = layers
+            self.dropout = dropout
+
+    model = Model()
+    # Helios style flat-dotted keys
+    data = {"Model.layers": 10, "Model.dropout": 0.5}
+    configure(model, data)
+    assert model.layers == 10
+    assert model.dropout == 0.5
+
+
 def test_configure_non_dict() -> None:
     @configurable
     class Model:
