@@ -1,0 +1,67 @@
+# Confluid: Example Configuration File
+# This file illustrates all available hierarchical configuration options.
+
+# --- 1. File Inclusions ---
+# Include other configuration files. Paths are relative to this file.
+# included values are overlaid by the current file.
+include: 
+  - "common_defaults.yaml"
+
+# --- 2. Scope Aliases ---
+# Map a single name to multiple scopes for easier activation.
+scope_aliases:
+  dev: ["debug", "local"]
+  hpc: ["production", "gpu", "slurm"]
+
+# --- 3. Scope Activation ---
+# Declare which scopes are active for this run.
+# Can also be passed programmatically to load(data, scopes=["..."])
+scopes: ["dev"]
+
+# --- 4. Base Configuration ---
+# Standard top-level settings and object configurations.
+base_lr: 0.001
+
+Model:
+  layers: 3
+  dropout: 0.1
+
+# --- 5. Scoped Overlays ---
+# Sections that only apply when the specific scope is active.
+
+debug:
+  base_lr: 0.1
+  Model:
+    dropout: 0.0  # Disable dropout for debugging
+
+production:
+  base_lr: 0.0001
+  Model:
+    layers: 50
+
+# --- 6. Negative Scopes ---
+# Sections that apply when a scope is NOT active.
+# Use 'not ' prefix.
+
+not debug:
+  # Enable heavy logging or persistence when not in debug mode
+  save_checkpoints: true
+
+# --- 7. Hierarchical Scopes ---
+# Scopes can use dot-notation for inheritance.
+# 'production.gpu' inherits from 'production'.
+
+production.gpu:
+  batch_size: 128
+  use_cuda: true
+
+# --- 8. Reference Syntax ---
+# @key -> Lookup in config
+# @Class -> Lookup in registry
+# @Class(args) -> Instantiate
+
+Trainer:
+  lr: "@base_lr"
+  model: "@Model(layers=10)"
+  # Environment variable resolution
+  log_dir: "${HOME}/logs/my_app"
