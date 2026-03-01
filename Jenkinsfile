@@ -69,6 +69,13 @@ pipeline {
                 }
             }
         }
+
+        stage('Verify Examples') {
+            steps {
+                echo 'Running project examples...'
+                sh "for f in examples/*.py; do echo \"Running $f...\"; ${VENV_BIN}/python3 \"$f\"; done"
+            }
+        }
     }
 
     post {
