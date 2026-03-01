@@ -72,8 +72,8 @@ def main() -> None:
 
     # 3. Apply the hierarchical config
     config_data = yaml.safe_load(experiment_yaml)
-    configure(trainer, config_data)
-    configure(model, config_data)
+    configure(trainer, config_data, context=config_data)
+    configure(model, config_data, context=config_data)
 
     # Resolve the dependency graph
     trainer.setup()

@@ -28,7 +28,18 @@ class Resolver:
             # 1. Resolve Environment Variables first
             data = self._resolve_env_vars(data)
             # 2. Resolve @References
-            return self._resolve_reference(data)
+            resolved = self._resolve_reference(data)
+            
+            # 3. If resolved is still a string, try to parse as literal
+            if isinstance(resolved, str):
+                import ast
+                try:
+                    # Only attempt literal_eval if it doesn't look like a raw string
+                    # or starts with quotes
+                    return ast.literal_eval(resolved)
+                except (ValueError, SyntaxError):
+                    return self._strip_quotes(resolved)
+            return resolved
         return data
 
     def _resolve_env_vars(self, value: str) -> str:
@@ -91,16 +102,12 @@ class Resolver:
                 k = k.strip()
                 v = v.strip()
 
-                # If it's a nested reference, resolve it first
-                if v.startswith("@") or "${" in v:
-                    val = self.resolve(v)
-                else:
-                    # Otherwise, try to parse as a Python literal (int, float, bool, etc)
-                    try:
-                        val = ast.literal_eval(v)
-                    except (ValueError, SyntaxError):
-                        # Fallback to stripped string
-                        val = self._strip_quotes(v)
+                # Resolve v if it contains references or env vars
+                val = self.resolve(v)
+                
+                # If it's a string from literal_eval, strip quotes if needed
+                if isinstance(val, str):
+                    val = self._strip_quotes(val)
 
                 kwargs[k] = val
 

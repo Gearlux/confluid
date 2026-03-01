@@ -30,24 +30,42 @@ def load(data: Any) -> Any:
     Args:
         data: Dict, YAML string, or path to a config file.
     """
+    from confluid.fluid import flow
     from confluid.resolver import Resolver
 
     # 1. Resolve raw data if it's a file path
     if isinstance(data, (str, Path)) and Path(str(data)).exists():
         data = load_config(data)
+    elif isinstance(data, str) and ("\n" in data or ":" in data):
+        # YAML string
+        data = yaml.safe_load(data)
 
     # 2. Use resolver to turn strings into objects/Fluid
     resolver = Resolver()
     resolved = resolver.resolve(data)
 
-    # 3. If the top-level is a dict representing a single class (e.g. {"Model": {...}})
-    # we can optionally 'flow' it if we can find the class in registry.
-    if isinstance(resolved, dict) and len(resolved) == 1:
-        cls_name = list(resolved.keys())[0]
-        from confluid.registry import get_registry
+    # 3. Recursively flow the resolved data
+    return _flow_recursive(resolved)
 
-        cls = get_registry().get_class(cls_name)
-        if cls:
-            return cls(**resolved[cls_name])
 
-    return resolved
+def _flow_recursive(data: Any) -> Any:
+    """Recursively flow objects in dicts and lists."""
+    from confluid.fluid import flow
+    from confluid.registry import get_registry
+
+    if isinstance(data, dict):
+        # Check if this dict represents a single configurable class: {"Class": {...}}
+        if len(data) == 1:
+            cls_name = list(data.keys())[0]
+            cls = get_registry().get_class(cls_name)
+            if cls:
+                # Recurse into arguments first
+                kwargs = _flow_recursive(data[cls_name])
+                return cls(**kwargs)
+
+        return {k: _flow_recursive(v) for k, v in data.items()}
+
+    if isinstance(data, list):
+        return [_flow_recursive(item) for item in data]
+
+    return data

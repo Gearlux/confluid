@@ -1,7 +1,7 @@
 import inspect
 from typing import Any, Dict, Optional, Type
 
-from pydantic import create_model
+from pydantic import ConfigDict, create_model
 
 from confluid.resolver import Resolver
 
@@ -12,19 +12,21 @@ class Configurator:
     def __init__(self, resolver: Optional[Resolver] = None) -> None:
         self.resolver = resolver or Resolver()
 
-    def configure(self, instance: Any, data: Any) -> None:
+    def configure(self, instance: Any, data: Any, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Apply configuration data to an existing object instance.
 
         Args:
             instance: The object to configure.
             data: Raw configuration data (dict, YAML string, etc.)
+            context: Optional shared context for reference resolution.
         """
         if data is None:
             return
 
         # 1. Resolve references and environment variables in the data
-        resolved_data = self.resolver.resolve(data)
+        resolver = Resolver(context=context) if context else self.resolver
+        resolved_data = resolver.resolve(data)
 
         if not isinstance(resolved_data, dict):
             # If data is a direct reference (e.g. @Model()), it might return an instance
@@ -57,19 +59,22 @@ class Configurator:
             if name in ("self", "cls"):
                 continue
 
-            # Extract type hint and default value
+            # Extract type hint. In post-construction, every field is optional 
+            # because the instance already exists.
             annotation = param.annotation if param.annotation is not inspect.Parameter.empty else Any
-            default = param.default if param.default is not inspect.Parameter.empty else ...
+            
+            # Default to None to make it optional in Pydantic
+            fields[name] = (Optional[annotation], None)
 
-            fields[name] = (annotation, default)
-
-        return create_model(f"{cls.__name__}Config", **fields)
+        # Enable arbitrary_types_allowed to support custom class types in __init__
+        config = ConfigDict(arbitrary_types_allowed=True)
+        return create_model(f"{cls.__name__}Config", __config__=config, **fields)
 
 
 # Global convenience instance
 _default_configurator = Configurator()
 
 
-def configure(instance: Any, data: Any) -> None:
+def configure(instance: Any, data: Any, context: Optional[Dict[str, Any]] = None) -> None:
     """Global convenience function to configure an object."""
-    _default_configurator.configure(instance, data)
+    _default_configurator.configure(instance, data, context=context)
