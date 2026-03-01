@@ -33,6 +33,8 @@ pipeline {
                 }
                 stage('Flake8') {
                     steps {
+                        // Clean up previous reports
+                        sh "rm -f flake8.txt flake8-report.xml"
                         // Generate flake8 output in a format that can be converted to JUnit XML
                         sh "${VENV_BIN}/flake8 confluid tests examples --tee --output-file=flake8.txt || true"
                         // Convert report to JUnit XML
