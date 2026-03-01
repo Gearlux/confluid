@@ -52,8 +52,7 @@ pipeline {
         }
 
         stage('Unit Tests') {
-        ...
-
+            steps {
                 sh "${VENV_BIN}/pytest tests --junitxml=test-report.xml --cov=confluid --cov-report=xml:coverage.xml --cov-report=term"
             }
             post {
