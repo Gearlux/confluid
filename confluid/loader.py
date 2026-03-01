@@ -1,9 +1,29 @@
+import importlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 
 import yaml
 
 from confluid.merger import deep_merge
+
+
+def _register_constructors() -> None:
+    """Register custom YAML constructors for !ref and !class."""
+
+    def ref_constructor(loader: yaml.SafeLoader, node: yaml.nodes.Node) -> str:
+        if not isinstance(node, (yaml.nodes.ScalarNode, yaml.nodes.MappingNode)):
+            raise ValueError(f"Expected ScalarNode or MappingNode, got {type(node)}")
+        value = loader.construct_scalar(node)
+        return f"@{value}"
+
+    def class_constructor(loader: yaml.SafeLoader, node: yaml.nodes.Node) -> str:
+        if not isinstance(node, (yaml.nodes.ScalarNode, yaml.nodes.MappingNode)):
+            raise ValueError(f"Expected ScalarNode or MappingNode, got {type(node)}")
+        value = loader.construct_scalar(node)
+        return f"@{value}"
+
+    yaml.SafeLoader.add_constructor("!ref", ref_constructor)
+    yaml.SafeLoader.add_constructor("!class", class_constructor)
 
 
 def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
@@ -23,10 +43,34 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
+    _register_constructors()
+
     with open(path, "r") as f:
         data = yaml.safe_load(f) or {}
 
-    # Process inclusions
+    # Process imports and inclusions
+    data = _process_imports(data)
+    data = _process_includes(data, path, _included)
+
+    return data
+
+
+def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle 'import:' directive to populate registry."""
+    if "import" in data:
+        imports = data.pop("import")
+        if isinstance(imports, str):
+            imports = [imports]
+        for module_name in imports:
+            try:
+                importlib.import_module(module_name)
+            except ImportError as e:
+                print(f"Warning: Failed to import module '{module_name}': {e}")
+    return data
+
+
+def _process_includes(data: Dict[str, Any], current_path: Path, _included: Set[Path]) -> Dict[str, Any]:
+    """Handle 'include:' directive recursively."""
     if "include" in data:
         includes = data.pop("include")
         if isinstance(includes, str):
@@ -34,14 +78,11 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
 
         merged_base: Dict[str, Any] = {}
         for inc_path in includes:
-            # Resolve relative to current file
-            full_inc_path = path.parent / inc_path
+            full_inc_path = current_path.parent / inc_path
             inc_data = load_config(full_inc_path, _included=_included)
             deep_merge(merged_base, inc_data)
 
-        # Overlay current file data on top of merged inclusions
         data = deep_merge(merged_base, data)
-
     return data
 
 

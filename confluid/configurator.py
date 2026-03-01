@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Type
 
 from pydantic import ConfigDict, create_model
 
+from confluid.merger import expand_dotted_keys
 from confluid.resolver import Resolver
 
 
@@ -29,18 +30,19 @@ class Configurator:
         resolved_data = resolver.resolve(data)
 
         if not isinstance(resolved_data, dict):
-            # If data is a direct reference (e.g. @Model()), it might return an instance
-            # In post-construction, we usually expect a dict of attributes.
             return
 
-        # 2. Extract configuration for this specific class
+        # 2. Expand dotted keys (Helios support) - do this before scoping
+        expanded_data = expand_dotted_keys(resolved_data)
+
+        # 3. Extract configuration for this specific class
         cls = instance.__class__
         cls_name = getattr(cls, "__confluid_name__", cls.__name__)
 
-        # Check if the data is scoped by class name (e.g. { "Model": { ... } })
-        config_dict = resolved_data.get(cls_name, resolved_data) if isinstance(resolved_data, dict) else {}
+        # Look for class-specific settings in the expanded data
+        config_dict = expanded_data.get(cls_name, expanded_data) if isinstance(expanded_data, dict) else {}
 
-        # 3. Create a transient Pydantic model for validation
+        # 4. Create a transient Pydantic model for validation
         pydantic_model = self._create_pydantic_model(cls)
 
         # 4. Validate and coerce data
