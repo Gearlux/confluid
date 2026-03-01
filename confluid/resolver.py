@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 from typing import Any, Dict, Optional
@@ -29,11 +30,11 @@ class Resolver:
             data = self._resolve_env_vars(data)
             # 2. Resolve @References
             resolved = self._resolve_reference(data)
-            
+
             # 3. If resolved is still a string, try to parse as literal
             if isinstance(resolved, str):
-                import ast
                 try:
+
                     # Only attempt literal_eval if it doesn't look like a raw string
                     # or starts with quotes
                     return ast.literal_eval(resolved)
@@ -87,7 +88,6 @@ class Resolver:
 
     def _instantiate(self, cls: type, args_str: str) -> Any:
         """Safely evaluate arguments and instantiate the class."""
-        import ast
 
         # Strip parentheses
         content = args_str[1:-1].strip()
@@ -104,7 +104,7 @@ class Resolver:
 
                 # Resolve v if it contains references or env vars
                 val = self.resolve(v)
-                
+
                 # If it's a string from literal_eval, strip quotes if needed
                 if isinstance(val, str):
                     val = self._strip_quotes(val)

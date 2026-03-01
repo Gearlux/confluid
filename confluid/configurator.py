@@ -59,10 +59,10 @@ class Configurator:
             if name in ("self", "cls"):
                 continue
 
-            # Extract type hint. In post-construction, every field is optional 
+            # Extract type hint. In post-construction, every field is optional
             # because the instance already exists.
             annotation = param.annotation if param.annotation is not inspect.Parameter.empty else Any
-            
+
             # Default to None to make it optional in Pydantic
             fields[name] = (Optional[annotation], None)
 

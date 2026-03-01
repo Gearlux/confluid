@@ -30,7 +30,6 @@ def load(data: Any) -> Any:
     Args:
         data: Dict, YAML string, or path to a config file.
     """
-    from confluid.fluid import flow
     from confluid.resolver import Resolver
 
     # 1. Resolve raw data if it's a file path
@@ -50,7 +49,6 @@ def load(data: Any) -> Any:
 
 def _flow_recursive(data: Any) -> Any:
     """Recursively flow objects in dicts and lists."""
-    from confluid.fluid import flow
     from confluid.registry import get_registry
 
     if isinstance(data, dict):
