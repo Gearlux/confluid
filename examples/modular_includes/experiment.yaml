@@ -1,0 +1,8 @@
+# experiment.yaml
+include: base.yaml
+
+# Override base values
+base_lr: 0.0001
+
+Model:
+  layers: 50

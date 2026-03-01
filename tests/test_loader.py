@@ -24,3 +24,30 @@ def test_load_config_empty(tmp_path: Path) -> None:
 def test_load_config_not_found() -> None:
     with pytest.raises(FileNotFoundError):
         load_config("non_existent.yaml")
+
+
+def test_load_config_with_import() -> None:
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+
+        # Use a standard module that is always available
+        f.write("import: [os, sys]\n")
+        path = f.name
+
+    try:
+        data = load_config(path)
+        assert data == {}  # import is popped
+    finally:
+        import os
+
+        os.unlink(path)
+
+
+def test_load_with_custom_tags(tmp_path: Path) -> None:
+    config_file = tmp_path / "tags.yaml"
+    config_file.write_text("model: !class Model(layers=10)\nref: !ref base_lr")
+
+    data = load_config(config_file)
+    assert data["model"] == "@Model(layers=10)"
+    assert data["ref"] == "@base_lr"

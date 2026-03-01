@@ -7,8 +7,10 @@ from confluid.decorators import configurable, register
 from confluid.dumper import dump
 from confluid.fluid import Fluid, flow
 from confluid.loader import load, load_config
+from confluid.merger import deep_merge
 from confluid.registry import get_registry
 from confluid.resolver import Resolver
+from confluid.scopes import resolve_scopes
 
 __all__ = [
     "configurable",
@@ -21,4 +23,6 @@ __all__ = [
     "Fluid",
     "flow",
     "load",
+    "resolve_scopes",
+    "deep_merge",
 ]

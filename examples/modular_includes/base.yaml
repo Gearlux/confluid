@@ -1,0 +1,7 @@
+# base.yaml
+project_name: "MyResearch"
+base_lr: 0.001
+
+Model:
+  layers: 3
+  dropout: 0.1
