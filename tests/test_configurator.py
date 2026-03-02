@@ -19,7 +19,7 @@ def test_post_construction_configure() -> None:
     assert model.layers == 3
 
     # Configure existing instance
-    configure(model, {"Model": {"layers": 50, "lr": 0.001}})
+    configure(model, config={"Model": {"layers": 50, "lr": 0.001}})
 
     assert model.layers == 50
     assert model.lr == 0.001
@@ -34,7 +34,7 @@ def test_type_coercion_via_pydantic() -> None:
     model = Model()
 
     # Pass string "100", Pydantic should coerce to int 100
-    configure(model, {"Model": {"layers": "100"}})
+    configure(model, config={"Model": {"layers": "100"}})
 
     assert model.layers == 100
     assert isinstance(model.layers, int)
@@ -50,7 +50,7 @@ def test_scoped_configuration() -> None:
 
     # Nested data
     data = {"Model": {"val": 42}, "Other": {"val": 99}}
-    configure(model, data)
+    configure(model, config=data)
     assert model.val == 42
 
 
@@ -63,7 +63,7 @@ def test_unscoped_configuration() -> None:
     model = Model()
 
     # Direct dict
-    configure(model, {"val": 7})
+    configure(model, config={"val": 7})
     assert model.val == 7
 
 
@@ -74,7 +74,7 @@ def test_configure_none() -> None:
             self.val = val
 
     model = Model()
-    configure(model, None)
+    configure(model, config=None)
     assert model.val == 1
 
 
@@ -88,7 +88,7 @@ def test_configure_dotted_keys() -> None:
     model = Model()
     # Helios style flat-dotted keys
     data = {"Model.layers": 10, "Model.dropout": 0.5}
-    configure(model, data)
+    configure(model, config=data)
     assert model.layers == 10
     assert model.dropout == 0.5
 
@@ -101,5 +101,5 @@ def test_configure_non_dict() -> None:
 
     model = Model()
     # Passing a reference that resolves to a class, not a dict
-    configure(model, "@Model")
+    configure(model, config="@Model")
     assert model.val == 1

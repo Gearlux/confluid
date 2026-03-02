@@ -110,30 +110,37 @@ def load(data: Any, scopes: Optional[List[str]] = None) -> Any:
         data = resolve_scopes(data, active_scopes)
 
     # 3. Use resolver to turn strings into objects/Fluid
-    resolver = Resolver(context=data if isinstance(data, dict) else None)
+    context = data if isinstance(data, dict) else None
+    resolver = Resolver(context=context)
     resolved = resolver.resolve(data)
 
     # 4. Recursively flow the resolved data
-    return _flow_recursive(resolved)
+    return _flow_recursive(resolved, context=context)
 
 
-def _flow_recursive(data: Any) -> Any:
+def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
     """Recursively flow objects in dicts and lists."""
     from confluid.registry import get_registry
+    from confluid.resolver import Resolver
 
     if isinstance(data, dict):
-        # Check if this dict represents a single configurable class: {"Class": {...}}
         if len(data) == 1:
             cls_name = list(data.keys())[0]
             cls = get_registry().get_class(cls_name)
             if cls:
-                # Recurse into arguments first
-                kwargs = _flow_recursive(data[cls_name])
+                # Use Resolver to handle any @references in the arguments
+                resolver = Resolver(context=context)
+                resolved_kwargs = resolver.resolve(data[cls_name])
+
+                # Recurse into resolved arguments
+                kwargs = _flow_recursive(resolved_kwargs, context=context)
+
+                # Instantiate
                 return cls(**kwargs)
 
-        return {k: _flow_recursive(v) for k, v in data.items()}
+        return {k: _flow_recursive(v, context=context) for k, v in data.items()}
 
     if isinstance(data, list):
-        return [_flow_recursive(item) for item in data]
+        return [_flow_recursive(item, context=context) for item in data]
 
     return data
