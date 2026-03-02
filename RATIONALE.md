@@ -39,13 +39,13 @@ Confluid is designed for the **Dump -> Reconstruct** lifecycle.
 - **Dumping:** Export the exact runtime state of a complex trainer (including its model, optimizer, and datasets) to a clean, human-readable YAML file.
 - **Reconstruction:** Use that exported file to recreate the *entire* object graph in a new process, guaranteeing identical results.
 
-### 6. Type-Safe Validation (Pydantic Core)
-By leveraging Pydantic v2 internally, Confluid provides strict type coercion and validation at the moment of configuration. It catches "wrong-type" errors (e.g., passing a string where a float is expected) before the training loop begins.
+### 6. Robust Recursive Traversal
+Confluid uses an advanced recursive traversal engine that walks through object graphs (including lists and dictionaries) to identify and configure all nodes. It matches configuration keys based on a multi-tier priority: `ClassName.instance_name.attribute`, `instance_name.attribute`, `ClassName.attribute`, and global broadcast.
 
 ---
 
 ## Design Goals
 - **Explicit over Implicit:** If it's not marked `@configurable` or explicitly registered, it's not a config node.
 - **Reproducibility First:** The final config dump MUST be able to reconstruct the object graph.
-- **IDE Friendly:** Automatic JSON schema generation for YAML auto-complete.
+- **Deep Hierarchical Scoping:** Support for complex dotted-path resolution and scope overlays.
 - **Zero Blocking:** Lightweight, non-blocking configuration application.

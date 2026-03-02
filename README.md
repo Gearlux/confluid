@@ -8,7 +8,7 @@
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) part of your configurable graph.
 - **Smart Reference Resolution:** Uses `@` syntax for cross-config references and `${}` for environment variables.
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
-- **Type Safety:** Powered by Pydantic v2 for strict validation and IDE auto-complete.
+- **Hierarchical Scopes:** Robust support for scope overlays (debug, production) and dot-notation inheritance.
 
 ## Quick Start
 
