@@ -3,7 +3,8 @@ from typing import Any
 
 import pytest
 
-from confluid import Resolver, configurable, get_registry
+from confluid import configurable, get_registry
+from confluid.resolver import Resolver
 
 
 @pytest.fixture(autouse=True)

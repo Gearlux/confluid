@@ -91,25 +91,28 @@ class Resolver:
 
         # Strip parentheses
         content = args_str[1:-1].strip()
-        if not content:
-            return cls()
 
-        # For MVP, we use a simple dict-style kwarg parser.
+        # 1. Start with arguments provided in the @Class(...) syntax
         kwargs = {}
-        for pair in content.split(","):
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                k = k.strip()
-                v = v.strip()
+        if content:
+            # For MVP, we use a simple dict-style kwarg parser.
+            for pair in content.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    val = self.resolve(v)
+                    if isinstance(val, str):
+                        val = self._strip_quotes(val)
+                    kwargs[k] = val
 
-                # Resolve v if it contains references or env vars
-                val = self.resolve(v)
-
-                # If it's a string from literal_eval, strip quotes if needed
-                if isinstance(val, str):
-                    val = self._strip_quotes(val)
-
-                kwargs[k] = val
+        # 2. MERGE LOGIC: Get global settings for this class from the context
+        # This ensures "@Model()" picks up data from the "Model:" section of the YAML.
+        if self.context and cls.__name__ in self.context:
+            global_settings = self.context[cls.__name__]
+            if isinstance(global_settings, dict):
+                # Local arguments in @Class(arg=val) override global settings
+                kwargs = {**global_settings, **kwargs}
 
         return cls(**kwargs)
 
