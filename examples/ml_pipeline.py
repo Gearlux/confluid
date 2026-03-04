@@ -2,7 +2,7 @@ from typing import Any
 
 import yaml
 
-from confluid import configurable, configure, flow, register
+from confluid import configurable, configure, register, solidify
 
 # --- 1. Define modular components ---
 
@@ -38,9 +38,9 @@ class Trainer:
         self.epochs = epochs
 
     def setup(self) -> None:
-        # Use 'flow' to ensure we have a live optimizer instance
+        # Use 'solidify' to ensure we have a live optimizer instance
         # whether it was passed as a real object or a config reference
-        self.optimizer = flow(self.optimizer)
+        self.optimizer = solidify(self.optimizer)
 
     def __repr__(self) -> str:
         return f"Trainer(epochs={self.epochs}, model={self.model}, optimizer={self.optimizer})"
