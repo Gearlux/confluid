@@ -37,12 +37,17 @@ class Configurator:
         # 3. Recursively walk each instance
         self._visited.clear()
         for instance in instances:
-            self._walk_and_configure(instance, config_data, resolved_context)
+            self._walk_and_configure(instance, config_data, resolved_context, "")
 
-    def _walk_and_configure(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any]) -> None:
+    def _walk_and_configure(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any], path_prefix: str) -> None:
         """Recursively traverse the object graph and apply matching configuration."""
         if obj is None:
             return
+
+        # 0. Solidify the object before inspection
+        from confluid.solidify import solidify
+
+        obj = solidify(obj)
 
         obj_id = id(obj)
         if obj_id in self._visited:
@@ -52,18 +57,25 @@ class Configurator:
         # 1. Recurse into containers
         if isinstance(obj, (list, tuple)):
             for item in obj:
-                self._walk_and_configure(item, config, context)
+                self._walk_and_configure(item, config, context, path_prefix)
             return
 
         if isinstance(obj, dict):
             for v in obj.values():
-                self._walk_and_configure(v, config, context)
+                self._walk_and_configure(v, config, context, path_prefix)
             return
 
         # 2. Configure object if marked as configurable
         cls = obj.__class__
+        new_prefix = path_prefix
         if getattr(cls, "__confluid_configurable__", False):
-            self._apply_obj_config(obj, config, context)
+            # Calculate the path for this specific object
+            instance_name = getattr(obj, "name", None)
+            if instance_name and isinstance(instance_name, str):
+                new_prefix = f"{path_prefix}.{instance_name}" if path_prefix else instance_name
+
+            # We apply config using the NEW prefix (which includes this object's name)
+            self._apply_obj_config(obj, config, context, new_prefix)
 
         # 3. Recursively walk into object attributes
         for attr_name in dir(obj):
@@ -72,11 +84,11 @@ class Configurator:
             try:
                 attr_val = getattr(obj, attr_name)
                 if not callable(attr_val):
-                    self._walk_and_configure(attr_val, config, context)
+                    self._walk_and_configure(attr_val, config, context, new_prefix)
             except Exception:
                 continue
 
-    def _apply_obj_config(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any]) -> None:
+    def _apply_obj_config(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any], path_prefix: str) -> None:
         """Collect and apply configuration specifically for one object."""
         cls = obj.__class__
         cls_name = getattr(cls, "__confluid_name__", cls.__name__)
@@ -95,13 +107,21 @@ class Configurator:
 
         # Apply settings to attributes
         for attr_name in self._get_configurable_attributes(obj):
-            val = self._match_attr_value(attr_name, cls_name, instance_name, config, obj_config)
+            val = self._match_attr_value(attr_name, cls_name, instance_name, config, obj_config, path_prefix)
 
             if val is not None:
-                # Resolve references in the value
+                # 1. Resolve references in the value
                 resolver = Resolver(context=context)
                 resolved_val = resolver.resolve(val)
-                setattr(obj, attr_name, resolved_val)
+
+                # 2. RECURSION PROTECTION:
+                # If current attribute is an object and the config value is a dict,
+                # we should configure the object instead of overwriting it.
+                current_val = getattr(obj, attr_name, None)
+                if isinstance(resolved_val, dict) and hasattr(current_val.__class__, "__confluid_configurable__"):
+                    self._walk_and_configure(current_val, resolved_val, context, path_prefix)
+                else:
+                    setattr(obj, attr_name, resolved_val)
 
     def _match_attr_value(
         self,
@@ -110,9 +130,17 @@ class Configurator:
         instance_name: Optional[str],
         config: Dict[str, Any],
         obj_config: Dict[str, Any],
+        path_prefix: str,
     ) -> Any:
         """Find the best matching configuration value for an attribute based on priority."""
-        # 1. ClassName.instance_name.attr (Highest Priority)
+        # 0. Hierarchical Path (Highest Priority) e.g. "a.b.c.value"
+        if path_prefix:
+            full_path = f"{path_prefix}.{attr_name}"
+            val = self._deep_get(config, full_path)
+            if val is not None:
+                return val
+
+        # 1. ClassName.instance_name.attr
         if instance_name:
             val = self._deep_get(config, f"{cls_name}.{instance_name}.{attr_name}")
             if val is not None:
@@ -158,18 +186,31 @@ class Configurator:
     def _get_configurable_attributes(self, obj: Any) -> List[str]:
         """Identify which attributes of an object are candidates for configuration."""
         attrs = []
-        # Check __init__ signature
+        cls = obj.__class__
+
+        # 1. Check __init__ signature
         try:
-            sig = inspect.signature(obj.__class__.__init__)
+            sig = inspect.signature(cls.__init__)
             attrs.extend([p for p in sig.parameters.keys() if p not in ("self", "cls")])
         except (ValueError, TypeError):
             pass
 
-        # Add public attributes
+        # 2. Add public attributes and properties
         for name in dir(obj):
-            if not name.startswith("_") and not callable(getattr(obj, name)):
-                if name not in attrs:
-                    attrs.append(name)
+            if name.startswith("_") or callable(getattr(obj, name)):
+                continue
+
+            # Check visibility markers on the class member
+            member = getattr(cls, name, None)
+            if member and getattr(member, "__confluid_ignore__", False):
+                continue
+
+            # If it's a property, it MUST have a setter to be configurable
+            if isinstance(member, property) and member.fset is None:
+                continue
+
+            if name not in attrs:
+                attrs.append(name)
         return attrs
 
 
