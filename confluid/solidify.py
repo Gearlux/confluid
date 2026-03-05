@@ -7,19 +7,11 @@ from confluid.registry import get_registry
 def solidify(obj: Any, **runtime_kwargs: Any) -> Any:
     """
     Ensure an object is instantiated and solidified.
-
-    1. If 'obj' is a Fluid proxy, it instantiates it.
-    2. If 'obj' is a string reference (e.g. "@Model"), it resolves and instantiates it.
-    3. If 'obj' is a live instance, it checks _is_fluid(). If True, it calls _solidify().
-
-    Args:
-        obj: The object, Fluid, or reference to solidify.
-        **runtime_kwargs: Optional overrides to use during instantiation.
     """
     from confluid.resolver import Resolver
 
-    # 1. Handle String References
-    if isinstance(obj, str) and obj.startswith("@"):
+    # 1. Resolve String References or Tags
+    if isinstance(obj, str):
         resolver = Resolver()
         obj = resolver.resolve(obj)
 

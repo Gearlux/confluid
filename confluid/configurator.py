@@ -37,7 +37,10 @@ class Configurator:
         # 3. Recursively walk each instance
         self._visited.clear()
         for instance in instances:
-            self._walk_and_configure(instance, config_data, resolved_context, "")
+            # We start with empty prefix
+            # Resolve the config data specifically for this walker to handle IR objects
+            final_config = self.resolver.resolve(config_data)
+            self._walk_and_configure(instance, final_config, resolved_context, "")
 
     def _walk_and_configure(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any], path_prefix: str) -> None:
         """Recursively traverse the object graph and apply matching configuration."""
@@ -114,7 +117,13 @@ class Configurator:
                 resolver = Resolver(context=context)
                 resolved_val = resolver.resolve(val)
 
-                # 2. RECURSION PROTECTION:
+                # 2. Type parsing (Ensure strings like "100" become int 100)
+                from confluid.parser import parse_value
+
+                if isinstance(resolved_val, str):
+                    resolved_val = parse_value(resolved_val)
+
+                # 3. RECURSION PROTECTION
                 # If current attribute is an object and the config value is a dict,
                 # we should configure the object instead of overwriting it.
                 current_val = getattr(obj, attr_name, None)

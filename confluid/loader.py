@@ -9,21 +9,49 @@ from confluid.merger import deep_merge
 
 def _register_constructors() -> None:
     """Register custom YAML constructors for !ref and !class."""
+    from confluid.resolver import ClassReference, Reference
 
-    def ref_constructor(loader: yaml.SafeLoader, node: yaml.nodes.Node) -> str:
-        if not isinstance(node, (yaml.nodes.ScalarNode, yaml.nodes.MappingNode)):
-            raise ValueError(f"Expected ScalarNode or MappingNode, got {type(node)}")
-        value = loader.construct_scalar(node)
-        return f"@{value}"
+    def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        """Handle !ref:name."""
+        return Reference(tag_suffix)
 
-    def class_constructor(loader: yaml.SafeLoader, node: yaml.nodes.Node) -> str:
-        if not isinstance(node, (yaml.nodes.ScalarNode, yaml.nodes.MappingNode)):
-            raise ValueError(f"Expected ScalarNode or MappingNode, got {type(node)}")
-        value = loader.construct_scalar(node)
-        return f"@{value}"
+    def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        """Handle !class:Name(args) or !class:Name {args}."""
+        import re
 
-    yaml.SafeLoader.add_constructor("!ref", ref_constructor)
-    yaml.SafeLoader.add_constructor("!class", class_constructor)
+        if isinstance(node, yaml.nodes.MappingNode):
+            # !class:Name {kw: val}
+            from typing import cast
+
+            kwargs = cast(Dict[str, Any], loader.construct_mapping(node, deep=True))
+            return ClassReference(tag_suffix, kwargs)
+
+        if isinstance(node, yaml.nodes.ScalarNode):
+            # !class:Name(args)
+            match = re.match(r"^([\w_]+)(?:\((.*)\))?$", tag_suffix)
+            if match:
+                cls_name, args = match.groups()
+                return ClassReference(cls_name, args or "")
+
+        return ClassReference(tag_suffix)
+
+    # Register multi-constructors for the prefixes
+    yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
+    yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
+
+    # Keep standard single-tag constructors for compatibility
+    def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
+        return Reference(loader.construct_scalar(node))
+
+    def class_compat(loader: yaml.SafeLoader, node: Any) -> Any:
+        val = loader.construct_scalar(node)
+        if "(" in val and val.endswith(")"):
+            name, args = val[:-1].split("(", 1)
+            return ClassReference(name, args)
+        return ClassReference(val)
+
+    yaml.SafeLoader.add_constructor("!ref", ref_compat)
+    yaml.SafeLoader.add_constructor("!class", class_compat)
 
 
 def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
@@ -96,6 +124,9 @@ def load(data: Any, scopes: Optional[List[str]] = None) -> Any:
     """
     from confluid.resolver import Resolver
     from confluid.scopes import resolve_scopes
+
+    # Ensure custom constructors are registered
+    _register_constructors()
 
     # 1. Resolve raw data if it's a file path
     if isinstance(data, (str, Path)):
