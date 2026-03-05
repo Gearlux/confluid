@@ -1,6 +1,6 @@
 import pytest
 
-from confluid import Fluid, configurable, flow, get_registry, load
+from confluid import Fluid, configurable, get_registry, load, solidify
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +32,7 @@ def test_flow_idempotency() -> None:
 
     m = Model(layers=5)
     # flowing an already instantiated object should return it
-    assert flow(m) is m
+    assert solidify(m) is m
 
 
 def test_flow_fluid() -> None:
@@ -42,7 +42,8 @@ def test_flow_fluid() -> None:
             self.layers = layers
 
     f = Fluid(Model, layers=10)
-    instance = flow(f)
+    instance = solidify(f)
+
     assert instance.layers == 10
     assert isinstance(instance, Model)
 
@@ -54,7 +55,7 @@ def test_flow_string_reference() -> None:
             self.layers = layers
 
     # flow resolves @Class patterns
-    instance = flow("@Model(layers=20)")
+    instance = solidify("@Model(layers=20)")
     assert instance.layers == 20
 
 
@@ -77,11 +78,12 @@ def test_fluid_with_string_target() -> None:
             self.layers = layers
 
     f = Fluid("Model", layers=7)
-    instance = flow(f)
+    instance = solidify(f)
+
     assert instance.layers == 7
 
 
 def test_fluid_unknown_class_error() -> None:
     f = Fluid("Unknown", val=1)
     with pytest.raises(ValueError, match="not found in registry"):
-        flow(f)
+        solidify(f)

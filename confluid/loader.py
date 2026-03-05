@@ -98,11 +98,18 @@ def load(data: Any, scopes: Optional[List[str]] = None) -> Any:
     from confluid.scopes import resolve_scopes
 
     # 1. Resolve raw data if it's a file path
-    if isinstance(data, (str, Path)) and Path(str(data)).exists():
-        data = load_config(data)
-    elif isinstance(data, str) and ("\n" in data or ":" in data):
-        # YAML string
-        data = yaml.safe_load(data)
+    if isinstance(data, (str, Path)):
+        str_data = str(data)
+        # If it doesn't look like YAML (no newlines/colons) AND it's a reasonable path length, check exists
+        if "\n" not in str_data and ":" not in str_data and len(str_data) < 255:
+            if Path(str_data).exists():
+                data = load_config(data)
+            else:
+                # Might be a single-word YAML or reference, let safe_load try it
+                data = yaml.safe_load(str_data)
+        elif "\n" in str_data or ":" in str_data:
+            # Looks like YAML
+            data = yaml.safe_load(str_data)
 
     # 2. Resolve scopes if requested or declared in data
     active_scopes = scopes or data.get("scopes", []) if isinstance(data, dict) else []
