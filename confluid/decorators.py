@@ -49,3 +49,15 @@ def register(cls: Type[Any], *, name: Optional[str] = None) -> Type[Any]:
     # We don't modify third-party classes, just register them
     get_registry().register_class(cls, name=name)
     return cls
+
+
+def ignore_config(func: T) -> T:
+    """Decorator to mark a property or attribute to be ignored by configuration/overview."""
+    setattr(func, "__confluid_ignore__", True)
+    return func
+
+
+def readonly_config(func: T) -> T:
+    """Decorator to mark a property or attribute as read-only in configuration/overview."""
+    setattr(func, "__confluid_readonly__", True)
+    return func
