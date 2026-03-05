@@ -51,12 +51,13 @@ def test_flow_fluid() -> None:
 def test_flow_string_reference() -> None:
     @configurable
     class Model:
-        def __init__(self, layers: int = 3):
+        def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
-    # flow resolves @Class patterns
-    instance = solidify("@Model(layers=20)")
+    # solidify resolves !class: patterns
+    instance = solidify("!class:Model(layers=20)")
     assert instance.layers == 20
+    assert isinstance(instance, Model)
 
 
 def test_load_hierarchy() -> None:
