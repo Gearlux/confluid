@@ -54,7 +54,7 @@ base_lr: 0.0001
 Trainer:
   epochs: 10
   # Dependency Injection: Injecting a constructed Adam instance
-  optimizer: "@Adam(lr=@base_lr)"
+  optimizer: "!class:Adam(lr=!ref:base_lr)"
 
 Model:
   layers: 50

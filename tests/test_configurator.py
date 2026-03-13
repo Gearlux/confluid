@@ -101,5 +101,5 @@ def test_configure_non_dict() -> None:
 
     model = Model()
     # Passing a reference that resolves to a class, not a dict
-    configure(model, config="@Model")
+    configure(model, config="!class:Model")
     assert model.val == 1
