@@ -47,9 +47,11 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
     # 3. Handle String References
     if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
+        from confluid.loader import materialize
+
         resolver = Resolver()
-        # The resolver already handles instantiation for tags
-        return resolver.resolve(obj)
+        resolved = resolver.resolve(obj)
+        return materialize(resolved)
 
     # 4. Fallback for primitives or non-configurable objects
     return obj
