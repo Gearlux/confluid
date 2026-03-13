@@ -15,6 +15,8 @@ pipeline {
 
                 echo 'Installing Dependencies...'
                 sh "${VENV_BIN}/pip install --upgrade pip"
+                // Install our specific logflow from GitHub to avoid public PyPI confusion
+                sh "${VENV_BIN}/pip install git+https://github.com/Gearlux/logflow.git@dev/main"
                 sh "${VENV_BIN}/pip install -e .[dev]"
             }
         }
