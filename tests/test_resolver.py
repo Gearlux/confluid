@@ -34,28 +34,30 @@ def test_resolve_string_reference() -> None:
     assert resolver.resolve("!ref:base_lr") == 0.001
 
 
-def test_resolve_string_instantiation() -> None:
-    """Verify that !class: strings are resolved into live instances."""
+def test_resolve_string_instantiation_marker() -> None:
+    """Verify that !class: strings are resolved into flat markers."""
     resolver = Resolver()
-    obj = resolver.resolve("!class:Model(layers=10)")
-    assert obj.layers == 10
-    assert obj.__class__.__name__ == "Model"
+    marker = resolver.resolve("!class:Model(layers=10)")
+    assert isinstance(marker, dict)
+    assert marker["_confluid_class_"] == "Model"
+    assert marker["layers"] == 10
 
 
-def test_recursive_string_instantiation() -> None:
-    """Verify nested !class: and !ref: strings work together."""
+def test_recursive_string_instantiation_marker() -> None:
+    """Verify nested !class: and !ref: strings produce nested markers."""
     resolver = Resolver(context={"global_lr": 0.5})
-    # Nesting: Trainer with a Model and a reference for lr
-    obj = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
-    assert obj.lr == 0.5
-    assert obj.model.layers == 5
-    assert obj.model.__class__.__name__ == "Model"
+    marker = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
+
+    assert marker["_confluid_class_"] == "Trainer"
+    assert marker["lr"] == 0.5
+    assert marker["model"]["_confluid_class_"] == "Model"
+    assert marker["model"]["layers"] == 5
 
 
-def test_resolve_empty_instantiation() -> None:
+def test_resolve_empty_instantiation_marker() -> None:
     resolver = Resolver()
-    obj = resolver.resolve("!class:Model()")
-    assert obj.layers == 3
+    marker = resolver.resolve("!class:Model()")
+    assert marker["_confluid_class_"] == "Model"
 
 
 def test_resolve_dict_and_list_strings() -> None:

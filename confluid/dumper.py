@@ -1,5 +1,5 @@
 import inspect
-from typing import Any, Set
+from typing import Any, Dict, Set
 
 import yaml
 
@@ -40,19 +40,24 @@ def dump(obj: Any) -> str:
     Export a configurable object hierarchy to a YAML string.
     Uses !class tags for professional, compact output.
     """
-    from confluid.resolver import ClassReference, Reference
 
-    # 1. We create a fresh Dumper class to avoid global registration pollution
     class _LocalDumper(CompactDumper):
         pass
 
-    # 2. Register representers for IR types
-    _LocalDumper.add_representer(Reference, lambda d, data: d.represent_scalar("!ref:" + data.path, ""))
-    _LocalDumper.add_representer(
-        ClassReference, lambda d, data: d.represent_scalar("!class:" + data.cls_name, data.args_str)
-    )
+    def _dict_representer(dumper: _LocalDumper, data: Dict[str, Any]) -> yaml.Node:
+        if "_confluid_class_" in data:
+            cls_name = data["_confluid_class_"]
+            args = {k: v for k, v in data.items() if k != "_confluid_class_"}
+            return dumper.represent_mapping("!class:" + cls_name, args)
+        if "_confluid_ref_" in data:
+            return dumper.represent_scalar("!ref:" + data["_confluid_ref_"], "")
+
+        return dumper.represent_dict(data)
+
+    _LocalDumper.add_representer(dict, _dict_representer)
 
     # 3. Identify and register representers for @configurable classes in the graph
+
     visited_ids: Set[int] = set()
     registered_classes: Set[type] = set()
 

@@ -23,12 +23,9 @@ def test_basic_dump() -> None:
     output = dump(model)
     data = yaml.safe_load(output)
 
-    # Custom constructor returns ClassReference for !class: tags
-    from confluid.resolver import ClassReference
-
-    assert isinstance(data, ClassReference)
-    assert data.cls_name == "Model"
-    assert data.args_str == {"layers": 10}
+    # Custom constructor returns flat markers for !class: tags
+    assert data["_confluid_class_"] == "Model"
+    assert data["layers"] == 10
 
 
 def test_hierarchical_dump() -> None:
@@ -49,13 +46,10 @@ def test_hierarchical_dump() -> None:
     output = dump(trainer)
     data = yaml.safe_load(output)
 
-    from confluid.resolver import ClassReference
-
-    assert isinstance(data, ClassReference)
-    assert data.cls_name == "Trainer"
-    assert isinstance(data.args_str, dict)
-    assert data.args_str["lr"] == 0.001
-    assert isinstance(data.args_str["model"], ClassReference)
+    assert data["_confluid_class_"] == "Trainer"
+    assert data["lr"] == 0.001
+    assert data["model"]["_confluid_class_"] == "Model"
+    assert data["model"]["layers"] == 5
 
 
 def test_strict_gating() -> None:
@@ -101,13 +95,10 @@ def test_dump_list_and_dict() -> None:
 
     obj = Container(items=[1, 2], mapping={"a": 1})
     data = yaml.safe_load(dump(obj))
-    from confluid.resolver import ClassReference
 
-    assert isinstance(data, ClassReference)
-    assert data.cls_name == "Container"
-    assert isinstance(data.args_str, dict)
-    assert data.args_str["items"] == [1, 2]
-    assert data.args_str["mapping"] == {"a": 1}
+    assert data["_confluid_class_"] == "Container"
+    assert data["items"] == [1, 2]
+    assert data["mapping"] == {"a": 1}
 
 
 def test_dump_no_init() -> None:
@@ -117,10 +108,8 @@ def test_dump_no_init() -> None:
 
     obj = Simple()
     data = yaml.safe_load(dump(obj))
-    from confluid.resolver import ClassReference
 
-    assert isinstance(data, ClassReference)
-    assert data.cls_name == "Simple"
+    assert data["_confluid_class_"] == "Simple"
 
 
 def test_dump_none() -> None:

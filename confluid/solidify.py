@@ -8,6 +8,7 @@ def solidify(obj: Any, **runtime_kwargs: Any) -> Any:
     """
     Ensure an object is instantiated and solidified.
     """
+    from confluid.loader import materialize
     from confluid.resolver import Resolver
 
     # 1. Resolve String References or Tags
@@ -15,7 +16,14 @@ def solidify(obj: Any, **runtime_kwargs: Any) -> Any:
         resolver = Resolver()
         obj = resolver.resolve(obj)
 
-    # 2. Handle Fluid proxies
+    # 2. Materialize if it's a marker dictionary
+    if isinstance(obj, dict) and "_confluid_class_" in obj:
+        # Merge runtime overrides if provided
+        if runtime_kwargs:
+            obj = {**obj, **runtime_kwargs}
+        return materialize(obj)
+
+    # 3. Handle Fluid proxies
     if isinstance(obj, Fluid):
         cls = obj.target
         if isinstance(cls, str):
