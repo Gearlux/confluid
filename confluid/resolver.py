@@ -26,29 +26,25 @@ class Resolver:
             if value.startswith("!ref:"):
                 ref_path = value[5:]
                 res = self._resolve_ref(ref_path, local_context)
-                # Recurse if the resolved value is another marker
-                if isinstance(res, (str, dict)):
+                # Recurse only if the resolved value is DIFFERENT from the input
+                if res != value and isinstance(res, (str, dict)):
                     return self.resolve(res, local_context)
                 return res
 
             if value.startswith("!class:"):
                 content = value[7:]
-                if "(" in content and content.endswith(")"):
-                    cls_name, args_str = content[:-1].split("(", 1)
-                    kwargs = {}
-                    if args_str.strip():
-                        for pair in args_str.split(","):
-                            if "=" in pair:
-                                k, v = pair.split("=", 1)
-                                k = k.strip()
-                                v = v.strip()
-                                # Resolve and Parse the value!
-                                resolved_v = self.resolve(v, local_context)
-                                if isinstance(resolved_v, str):
-                                    resolved_v = self._parse_primitive(resolved_v)
-                                kwargs[k] = resolved_v
-                    return {"_confluid_class_": cls_name, **kwargs}
-                return {"_confluid_class_": content}
+                return self._parse_class_string(content, local_context)
+
+            if value.startswith("@"):
+                content = value[1:]
+                if "(" in content:
+                    return self._parse_class_string(content, local_context)
+                # Pure reference
+                res = self._resolve_ref(content, local_context)
+                # Recurse only if the resolved value is DIFFERENT from the input
+                if res != value and isinstance(res, (str, dict)):
+                    return self.resolve(res, local_context)
+                return res
 
             return value
 
@@ -80,6 +76,25 @@ class Resolver:
             return [self.resolve(item, local_context) for item in value]
 
         return value
+
+    def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Helper to parse 'ClassName(args)' into a marker dict."""
+        if "(" in content and content.endswith(")"):
+            cls_name, args_str = content[:-1].split("(", 1)
+            kwargs = {}
+            if args_str.strip():
+                for pair in args_str.split(","):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        # Resolve and Parse the value!
+                        resolved_v = self.resolve(v, local_context)
+                        if isinstance(resolved_v, str):
+                            resolved_v = self._parse_primitive(resolved_v)
+                        kwargs[k] = resolved_v
+            return {"_confluid_class_": cls_name, **kwargs}
+        return {"_confluid_class_": content}
 
     def _resolve_ref(self, ref_path: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
         """
