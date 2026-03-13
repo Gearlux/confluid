@@ -29,10 +29,10 @@ Unlike general-purpose serializers that attempt to dump every attribute, Conflui
 ### 3. Third-Party Integration
 Confluid provides a registration mechanism for objects from third-party libraries (e.g., `torch.optim.Adam`, `sklearn.svm.SVC`) that cannot be directly decorated. Once registered, these objects are treated as first-class configurable nodes within the Confluid hierarchy.
 
-### 4. Smart Reference Resolution (`@` Syntax)
+### 4. Smart Reference Resolution (Tag Syntax)
 Confluid bridges the gap between YAML and Source Code.
-- **Dependency Graph:** Define your model hierarchy in YAML using `@ClassName(...)`.
-- **DRY Configuration:** Use `@key` to reference other values in the same file, ensuring a single source of truth for paths and hyperparameters.
+- **Dependency Graph:** Define your model hierarchy in YAML using `!class:ClassName(...)`.
+- **DRY Configuration:** Use `!ref:key` to reference other values in the same file, ensuring a single source of truth for paths and hyperparameters.
 
 ### 5. Round-Trip Reproducibility
 Confluid is designed for the **Dump -> Reconstruct** lifecycle.

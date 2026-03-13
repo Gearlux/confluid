@@ -20,7 +20,7 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     Ensure an object is instantiated and flowing.
 
     If 'obj' is a Fluid, it instantiates it.
-    If 'obj' is a string reference (e.g. "@Model"), it resolves and instantiates it.
+    If 'obj' is a string reference (e.g. "!class:Model"), it resolves and instantiates it.
     If 'obj' is already an instance, it returns it as is.
 
     Args:
@@ -46,9 +46,9 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         return cls(**merged_kwargs)
 
     # 3. Handle String References
-    if isinstance(obj, str) and obj.startswith("@"):
+    if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
         resolver = Resolver()
-        # The resolver already handles instantiation for @Class(...) patterns
+        # The resolver already handles instantiation for tags
         return resolver.resolve(obj)
 
     # 4. Fallback for primitives or non-configurable objects

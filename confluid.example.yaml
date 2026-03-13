@@ -63,13 +63,10 @@ production.gpu:
   use_cuda: true
 
 # --- 9. Reference Syntax ---
-# @key -> Lookup in config
-# @Class -> Lookup in registry
-# @Class(args) -> Instantiate
-
-# YAML Tag Aliases (Helios Compatibility)
-# !ref key -> Identical to "@key"
-# !class Class -> Identical to "@Class"
+# Reference tags are used for late resolution and dependency injection.
+# !ref key -> Lookup in config (dotted paths supported)
+# !class Class -> Lookup in registry
+# !class Class(args) -> Instantiate with arguments
 Trainer:
   lr: !ref base_lr
   model: !class Model(layers=10)

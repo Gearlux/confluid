@@ -35,17 +35,6 @@ class Resolver:
                 content = value[7:]
                 return self._parse_class_string(content, local_context)
 
-            if value.startswith("@"):
-                content = value[1:]
-                if "(" in content:
-                    return self._parse_class_string(content, local_context)
-                # Pure reference
-                res = self._resolve_ref(content, local_context)
-                # Recurse only if the resolved value is DIFFERENT from the input
-                if res != value and isinstance(res, (str, dict)):
-                    return self.resolve(res, local_context)
-                return res
-
             return value
 
         # 2. Handle Dictionary Markers
