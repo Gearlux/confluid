@@ -1,10 +1,8 @@
-from typing import Optional
-
 from confluid import configurable
 from confluid.schema import get_hierarchy
 
 
-def test_basic_hierarchy():
+def test_basic_hierarchy() -> None:
     @configurable
     class Leaf:
         def __init__(self, val: int = 1):
@@ -35,7 +33,7 @@ def test_basic_hierarchy():
     assert hierarchy["Root.Leaf.val"] == ("int", 1, "A leaf value.")
 
 
-def test_hierarchy_instance():
+def test_hierarchy_instance() -> None:
     @configurable
     class MyClass:
         def __init__(self, name: str = "default"):
