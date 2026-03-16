@@ -1,123 +1,164 @@
-import ast
 import os
 import re
 from typing import Any, Dict, Optional
 
-from confluid.registry import get_registry
+from logflow import get_logger
 
-# Regex for environment variables: ${VAR} or ${VAR:-default}
-ENV_VAR_PATTERN = re.compile(r"\$\{([^}:]+)(?::-(.*))?\}")
-
-# Regex for references: @Class, @Class(), or @key
-REF_PATTERN = re.compile(r"^@([a-zA-Z0-9_./]+)(\(.*\))?$")
+logger = get_logger("confluid.resolver")
 
 
 class Resolver:
-    """Handles resolution of environment variables and hierarchical references."""
+    """Resolves references (!ref), environment variables (${ENV}), and deep keys."""
 
     def __init__(self, context: Optional[Dict[str, Any]] = None) -> None:
         self.context = context or {}
-        self.registry = get_registry()
 
-    def resolve(self, data: Any) -> Any:
-        """Recursively resolve all patterns in the provided data structure."""
-        if isinstance(data, dict):
-            return {k: self.resolve(v) for k, v in data.items()}
-        elif isinstance(data, list):
-            return [self.resolve(v) for v in data]
-        elif isinstance(data, str):
-            # 1. Resolve Environment Variables first
-            data = self._resolve_env_vars(data)
-            # 2. Resolve @References
-            resolved = self._resolve_reference(data)
+    def resolve(self, value: Any, local_context: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        Recursively resolves markers with support for local scoping.
+        """
+        # 1. Handle Strings (Interpolation and Tags)
+        if isinstance(value, str):
+            value = self._interpolate(value)
+            if not isinstance(value, str):
+                return value
 
-            # 3. If resolved is still a string, try to parse as literal
-            if isinstance(resolved, str):
-                try:
+            if value.startswith("!ref:"):
+                ref_path = value[5:]
+                res = self._resolve_ref(ref_path, local_context)
+                # Recurse only if the resolved value is DIFFERENT from the input
+                if res != value and isinstance(res, (str, dict)):
+                    return self.resolve(res, local_context)
+                return res
 
-                    # Only attempt literal_eval if it doesn't look like a raw string
-                    # or starts with quotes
-                    return ast.literal_eval(resolved)
-                except (ValueError, SyntaxError):
-                    return self._strip_quotes(resolved)
-            return resolved
-        return data
+            if value.startswith("!class:"):
+                content = value[7:]
+                return self._parse_class_string(content, local_context)
 
-    def _resolve_env_vars(self, value: str) -> str:
-        """Replace ${VAR} or ${VAR:-default} with environment values."""
-
-        def replacer(match: re.Match) -> str:
-            var_name = match.group(1)
-            default_value = match.group(2)
-            return os.getenv(var_name, default_value if default_value is not None else match.group(0))
-
-        return ENV_VAR_PATTERN.sub(replacer, value)
-
-    def _resolve_reference(self, value: str) -> Any:
-        """Resolve @ patterns to objects, classes, or values."""
-        if not value.startswith("@"):
             return value
 
-        match = REF_PATTERN.match(value)
-        if not match:
-            return value
+        # 2. Handle Dictionary Markers
+        if isinstance(value, dict):
+            if "_confluid_ref_" in value:
+                ref_path = value["_confluid_ref_"]
+                # Try local context first, then global
+                res = self._resolve_ref(ref_path, local_context)
 
-        target = match.group(1)
-        args_str = match.group(2)
+                # Check for recursion (is the result another marker?)
+                if isinstance(res, (dict, str)):
+                    return self.resolve(res, local_context)
 
-        # 1. Check Config Context (@key)
-        if not args_str and target in self.context:
-            return self.context[target]
+                # MANDATE: Ensure the resolved value is correctly typed (YAML conversion)
+                if isinstance(res, str):
+                    return self._parse_primitive(res)
+                return res
 
-        # 2. Check Registry (@Class or @Class())
-        cls = self.registry.get_class(target)
-        if cls:
-            if args_str:
-                # Instantiate with args
-                return self._instantiate(cls, args_str)
-            return cls
+            if "_confluid_class_" in value:
+                # We don't resolve classes here; materialization handles them.
+                return value
 
-        # 3. Check Registered Objects (@NamedObject)
-        obj = self.registry.get_object(target)
-        if obj:
-            if args_str:
-                raise ValueError(f"Cannot call registered object as a class: {value}")
-            return obj
+            # Recurse into normal dicts, passing the current dict as local_context
+            return {k: self.resolve(v, local_context=value) for k, v in value.items()}
+
+        # 3. Handle Lists
+        if isinstance(value, list):
+            return [self.resolve(item, local_context) for item in value]
 
         return value
 
-    def _instantiate(self, cls: type, args_str: str) -> Any:
-        """Safely evaluate arguments and instantiate the class."""
+    def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Helper to parse 'ClassName(args)' into a marker dict."""
+        if "(" in content and content.endswith(")"):
+            cls_name, args_str = content[:-1].split("(", 1)
+            kwargs = {}
+            if args_str.strip():
+                for pair in args_str.split(","):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        # Resolve and Parse the value!
+                        resolved_v = self.resolve(v, local_context)
+                        if isinstance(resolved_v, str):
+                            resolved_v = self._parse_primitive(resolved_v)
+                        kwargs[k] = resolved_v
+            return {"_confluid_class_": cls_name, **kwargs}
+        return {"_confluid_class_": content}
 
-        # Strip parentheses
-        content = args_str[1:-1].strip()
+    def _resolve_ref(self, ref_path: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        Resolve a dotted path against local and global contexts.
+        """
+        # 1. Try Local Context First
+        if local_context:
+            val = self._lookup_path(ref_path, local_context)
+            if val is not None and (not isinstance(val, str) or not val.startswith("!ref:")):
+                return val
 
-        # 1. Start with arguments provided in the @Class(...) syntax
-        kwargs = {}
-        if content:
-            # For MVP, we use a simple dict-style kwarg parser.
-            for pair in content.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    k = k.strip()
-                    v = v.strip()
-                    val = self.resolve(v)
-                    if isinstance(val, str):
-                        val = self._strip_quotes(val)
-                    kwargs[k] = val
+        # 2. Try Global Context
+        val = self._lookup_path(ref_path, self.context)
+        if val is not None:
+            return val
 
-        # 2. MERGE LOGIC: Get global settings for this class from the context
-        # This ensures "@Model()" picks up data from the "Model:" section of the YAML.
-        if self.context and cls.__name__ in self.context:
-            global_settings = self.context[cls.__name__]
-            if isinstance(global_settings, dict):
-                # Local arguments in @Class(arg=val) override global settings
-                kwargs = {**global_settings, **kwargs}
+        logger.warning(f"Failed to resolve reference: {ref_path}")
+        return f"!ref:{ref_path}"
 
-        return cls(**kwargs)
+    def _lookup_path(self, path: str, context: Dict[str, Any]) -> Any:
+        """Helper to drill into a dictionary via dotted path."""
+        parts = path.split(".")
+        current = context
 
-    @staticmethod
-    def _strip_quotes(v: str) -> str:
-        if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
-            return v[1:-1]
-        return v
+        # Try direct literal lookup first (handles keys with dots)
+        if path in context:
+            return context[path]
+
+        # Try recursive navigation
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return current
+
+    def _interpolate(self, value: str) -> Any:
+        env_pattern = r"\$\{([\w_]+)(?::([^}]+))?\}"
+
+        def env_replacer(match: re.Match) -> str:
+            var_name = match.group(1)
+            default_val = match.group(2)
+            return os.getenv(var_name, default_val or match.group(0))
+
+        if "${" in value:
+            match = re.fullmatch(env_pattern, value)
+            if match:
+                var_name = match.group(1)
+                default_val = match.group(2)
+                env_val = os.getenv(var_name)
+                if env_val is not None:
+                    return self._parse_primitive(env_val)
+                return self._parse_primitive(default_val) if default_val is not None else value
+
+            value = re.sub(env_pattern, env_replacer, value)
+
+        return value
+
+    def _parse_primitive(self, value: str) -> Any:
+        """Convert string to appropriate Python primitive (YAML-like conversion)."""
+        # Handle Confluid internal markers
+        if value.startswith("!ref:"):
+            return value
+
+        low = value.lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        if low == "none" or low == "null":
+            return None
+
+        try:
+            if "." in value:
+                return float(value)
+            return int(value)
+        except ValueError:
+            return value

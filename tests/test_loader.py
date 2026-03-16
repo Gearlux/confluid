@@ -46,8 +46,10 @@ def test_load_config_with_import() -> None:
 
 def test_load_with_custom_tags(tmp_path: Path) -> None:
     config_file = tmp_path / "tags.yaml"
-    config_file.write_text("model: !class Model(layers=10)\nref: !ref base_lr")
+    config_file.write_text("model: !class:Model(layers=10)\nref: !ref:base_lr")
 
     data = load_config(config_file)
-    assert data["model"] == "@Model(layers=10)"
-    assert data["ref"] == "@base_lr"
+    # Tags produce flat markers in the raw load_config output
+    assert data["model"]["_confluid_class_"] == "Model"
+    assert data["model"]["layers"] == "10"
+    assert data["ref"]["_confluid_ref_"] == "base_lr"

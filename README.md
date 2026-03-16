@@ -6,7 +6,7 @@
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) part of your configurable graph.
-- **Smart Reference Resolution:** Uses `@` syntax for cross-config references and `${}` for environment variables.
+- **Smart Reference Resolution:** Uses `!ref:` syntax for cross-config references and `${}` for environment variables.
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
 - **Hierarchical Scopes:** Robust support for scope overlays (debug, production) and dot-notation inheritance.
 
@@ -36,7 +36,7 @@ n_layers: 10
 
 Trainer:
   lr: 0.0001
-  model: "@Model(layers=@n_layers)"
+  model: "!class:Model(layers=!ref:n_layers)"
 ```
 
 ### 3. Load and Apply

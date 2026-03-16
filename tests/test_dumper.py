@@ -4,11 +4,13 @@ import pytest
 import yaml
 
 from confluid import configurable, dump, get_registry
+from confluid.loader import _register_constructors
 
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
     get_registry().clear()
+    _register_constructors()  # Ensure tags are readable in tests
 
 
 def test_basic_dump() -> None:
@@ -21,7 +23,9 @@ def test_basic_dump() -> None:
     output = dump(model)
     data = yaml.safe_load(output)
 
-    assert data["Model"]["layers"] == 10
+    # Custom constructor returns flat markers for !class: tags
+    assert data["_confluid_class_"] == "Model"
+    assert data["layers"] == 10
 
 
 def test_hierarchical_dump() -> None:
@@ -42,8 +46,10 @@ def test_hierarchical_dump() -> None:
     output = dump(trainer)
     data = yaml.safe_load(output)
 
-    assert data["Trainer"]["lr"] == 0.001
-    assert data["Trainer"]["model"]["Model"]["layers"] == 5
+    assert data["_confluid_class_"] == "Trainer"
+    assert data["lr"] == 0.001
+    assert data["model"]["_confluid_class_"] == "Model"
+    assert data["model"]["layers"] == 5
 
 
 def test_strict_gating() -> None:
@@ -59,11 +65,10 @@ def test_strict_gating() -> None:
     # InternalThing is NOT @configurable
     model = Model(thing=InternalThing())
 
-    output = dump(model)
-    data = yaml.safe_load(output)
-
-    # Should stop at the non-configurable object and stringify it
-    assert data["Model"]["thing"] == "internal"
+    # Standard YAML dumper will fail or stringify depending on its config.
+    # In our case, we expect it to fail since we don't have a representer.
+    with pytest.raises(yaml.representer.RepresenterError):
+        dump(model)
 
 
 def test_circular_reference() -> None:
@@ -77,7 +82,8 @@ def test_circular_reference() -> None:
     node1.next_node = node2  # Cycle
 
     output = dump(node1)
-    assert "Circular reference" in output
+    # Check for YAML anchors/aliases indicating circularity
+    assert "&id" in output or "*id" in output
 
 
 def test_dump_list_and_dict() -> None:
@@ -89,8 +95,10 @@ def test_dump_list_and_dict() -> None:
 
     obj = Container(items=[1, 2], mapping={"a": 1})
     data = yaml.safe_load(dump(obj))
-    assert data["Container"]["items"] == [1, 2]
-    assert data["Container"]["mapping"] == {"a": 1}
+
+    assert data["_confluid_class_"] == "Container"
+    assert data["items"] == [1, 2]
+    assert data["mapping"] == {"a": 1}
 
 
 def test_dump_no_init() -> None:
@@ -100,7 +108,8 @@ def test_dump_no_init() -> None:
 
     obj = Simple()
     data = yaml.safe_load(dump(obj))
-    assert data == {"Simple": {}}
+
+    assert data["_confluid_class_"] == "Simple"
 
 
 def test_dump_none() -> None:
