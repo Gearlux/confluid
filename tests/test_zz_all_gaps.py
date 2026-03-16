@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 import pytest
 import yaml
+
 from confluid import (
     Fluid,
     configurable,

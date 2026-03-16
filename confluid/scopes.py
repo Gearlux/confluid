@@ -1,10 +1,10 @@
 from copy import deepcopy
 from typing import Any, Dict, List, Set
 
+from logflow import get_logger
+
 from confluid.merger import deep_merge
 from confluid.registry import get_registry
-
-from logflow import get_logger
 
 logger = get_logger("confluid.scopes")
 registry = get_registry()
@@ -70,9 +70,7 @@ def _resolve_aliases(requested: List[str], aliases: Dict[str, Any]) -> List[str]
 
     def expand(name: str, path: List[str]) -> None:
         if name in path:
-            raise ValueError(
-                f"Circular scope alias detected: {' -> '.join(path + [name])}"
-            )
+            raise ValueError(f"Circular scope alias detected: {' -> '.join(path + [name])}")
 
         if name in seen:
             return

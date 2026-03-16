@@ -4,12 +4,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import yaml
+from logflow import get_logger
+
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.registry import get_registry
 from confluid.resolver import Resolver
 from confluid.scopes import resolve_scopes
-
-from logflow import get_logger
 
 logger = get_logger("confluid.loader")
 
@@ -17,14 +17,10 @@ logger = get_logger("confluid.loader")
 def _register_constructors() -> None:
     """Register custom YAML constructors for !ref and !class."""
 
-    def ref_constructor(
-        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
-    ) -> Any:
+    def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         return {"_confluid_ref_": tag_suffix}
 
-    def class_constructor(
-        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
-    ) -> Any:
+    def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
 
         if isinstance(node, yaml.nodes.MappingNode):
             kwargs = loader.construct_mapping(node, deep=True)
@@ -68,9 +64,7 @@ def _register_constructors() -> None:
     yaml.SafeLoader.add_constructor("!class", class_compat)
 
 
-def load_config(
-    path: Union[str, Path], _included: Optional[Set[Path]] = None
-) -> Dict[str, Any]:
+def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
     """Load raw YAML with markers and recursive includes."""
     path = Path(path).resolve()
     if _included is None:
@@ -83,9 +77,7 @@ def load_config(
         # SMART FALLBACK: If path not found, try resolving relative to SOURCE_ROOT
         # This handles project-prefixed paths like 'waivefront/configs/...'
         source_root = Path("/Users/gertbehi/source")
-        alt_path = (
-            source_root / str(path).split("/source/")[-1]
-        )  # Handle potential double-prefixing
+        alt_path = source_root / str(path).split("/source/")[-1]  # Handle potential double-prefixing
         if not alt_path.exists():
             # Try literal join with source_root
             # Find the first project name in the path
@@ -132,21 +124,16 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _process_includes_recursive(
-    data: Any, current_path: Path, _included: Set[Path]
-) -> Any:
+def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Path]) -> Any:
     if isinstance(data, list):
-        return [
-            _process_includes_recursive(item, current_path, _included) for item in data
-        ]
+        return [_process_includes_recursive(item, current_path, _included) for item in data]
 
     if not isinstance(data, dict):
         return data
 
     # From here, data is a dict
     processed_dict: Dict[str, Any] = {
-        str(k): _process_includes_recursive(v, current_path, _included)
-        for k, v in data.items()
+        str(k): _process_includes_recursive(v, current_path, _included) for k, v in data.items()
     }
 
     if "include" in processed_dict:
@@ -182,12 +169,7 @@ def load(
 
     if isinstance(data, (str, Path)):
         str_data = str(data)
-        if (
-            "\n" not in str_data
-            and ":" not in str_data
-            and len(str_data) < 255
-            and Path(str_data).exists()
-        ):
+        if "\n" not in str_data and ":" not in str_data and len(str_data) < 255 and Path(str_data).exists():
             data = load_config(data)
         else:
             data = cast(Dict[str, Any], yaml.safe_load(str_data) or {})
@@ -238,11 +220,7 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
                 global_settings = context.get(cls_name) or {}
                 if isinstance(global_settings, dict):
                     resolved_globals = resolver.resolve(global_settings)
-                    clean_settings = {
-                        k: v
-                        for k, v in resolved_globals.items()
-                        if not k.startswith("_confluid_")
-                    }
+                    clean_settings = {k: v for k, v in resolved_globals.items() if not k.startswith("_confluid_")}
                     final_kwargs = {**clean_settings, **final_kwargs}
 
             return cls(**final_kwargs)

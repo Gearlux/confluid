@@ -2,6 +2,7 @@ import os
 from typing import Any
 
 import pytest
+
 from confluid import configurable, get_registry
 from confluid.resolver import Resolver
 
@@ -45,9 +46,7 @@ def test_resolve_string_instantiation_marker() -> None:
 def test_recursive_string_instantiation_marker() -> None:
     """Verify nested !class: and !ref: strings produce nested markers."""
     resolver = Resolver(context={"global_lr": 0.5})
-    marker = resolver.resolve(
-        "!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)"
-    )
+    marker = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
 
     assert marker["_confluid_class_"] == "Trainer"
     assert marker["lr"] == 0.5

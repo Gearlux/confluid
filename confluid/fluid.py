@@ -30,9 +30,7 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     from confluid.resolver import Resolver
 
     # 1. Handle already instantiated objects (Idempotency)
-    if hasattr(obj.__class__, "__confluid_configurable__") and not isinstance(
-        obj, (Fluid, str)
-    ):
+    if hasattr(obj.__class__, "__confluid_configurable__") and not isinstance(obj, (Fluid, str)):
         return obj
 
     # 2. Handle Fluid objects

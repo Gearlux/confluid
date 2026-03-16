@@ -15,9 +15,7 @@ class Configurator:
         self.resolver = resolver or Resolver()
         self._visited: Set[int] = set()
 
-    def configure(
-        self, *instances: Any, data: Any, context: Optional[Dict[str, Any]] = None
-    ) -> None:
+    def configure(self, *instances: Any, data: Any, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Apply configuration to one or more object instances.
         """
@@ -26,9 +24,7 @@ class Configurator:
 
         # 1. Resolve references and environment variables
         # If context is not provided, use data as the context for reference resolution
-        resolved_context = (
-            context if context is not None else (data if isinstance(data, dict) else {})
-        )
+        resolved_context = context if context is not None else (data if isinstance(data, dict) else {})
         resolver = Resolver(context=resolved_context)
         resolved_data = resolver.resolve(data)
 
@@ -85,9 +81,7 @@ class Configurator:
             # Calculate the path for this specific object
             instance_name = getattr(obj, "name", None)
             if instance_name and isinstance(instance_name, str):
-                new_prefix = (
-                    f"{path_prefix}.{instance_name}" if path_prefix else instance_name
-                )
+                new_prefix = f"{path_prefix}.{instance_name}" if path_prefix else instance_name
 
             # We apply config using the NEW prefix (which includes this object's name)
             self._apply_obj_config(obj, config, context, new_prefix)
@@ -119,26 +113,16 @@ class Configurator:
         obj_config: Dict[str, Any] = {}
         if cls_name in config and isinstance(config[cls_name], dict):
             obj_config.update(config[cls_name])
-        if (
-            instance_name
-            and instance_name in config
-            and isinstance(config[instance_name], dict)
-        ):
+        if instance_name and instance_name in config and isinstance(config[instance_name], dict):
             obj_config.update(config[instance_name])
 
         scoped_name = f"{cls_name}.{instance_name}" if instance_name else None
-        if (
-            scoped_name
-            and scoped_name in config
-            and isinstance(config[scoped_name], dict)
-        ):
+        if scoped_name and scoped_name in config and isinstance(config[scoped_name], dict):
             obj_config.update(config[scoped_name])
 
         # Apply settings to attributes
         for attr_name in self._get_configurable_attributes(obj):
-            val = self._match_attr_value(
-                attr_name, cls_name, instance_name, config, obj_config, path_prefix
-            )
+            val = self._match_attr_value(attr_name, cls_name, instance_name, config, obj_config, path_prefix)
 
             if val is not None:
                 # 1. Resolve references in the value
@@ -155,12 +139,8 @@ class Configurator:
                 # If current attribute is an object and the config value is a dict,
                 # we should configure the object instead of overwriting it.
                 current_val = getattr(obj, attr_name, None)
-                if isinstance(resolved_val, dict) and hasattr(
-                    current_val.__class__, "__confluid_configurable__"
-                ):
-                    self._walk_and_configure(
-                        current_val, resolved_val, context, path_prefix
-                    )
+                if isinstance(resolved_val, dict) and hasattr(current_val.__class__, "__confluid_configurable__"):
+                    self._walk_and_configure(current_val, resolved_val, context, path_prefix)
                 else:
                     setattr(obj, attr_name, resolved_val)
 
@@ -259,9 +239,7 @@ class Configurator:
 _default_configurator = Configurator()
 
 
-def configure(
-    *instances: Any, config: Any, context: Optional[Dict[str, Any]] = None
-) -> None:
+def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
     """Global convenience function to configure one or more objects."""
     # Support both string (YAML) and dict configuration
     if isinstance(config, str) and (":" in config or "\n" in config):
