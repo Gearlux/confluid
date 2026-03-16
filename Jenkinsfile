@@ -42,7 +42,11 @@ ET.ElementTree(root).write('black-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'black-report.xml'
+                            recordCoverage(
+                                id: 'black-confluid',
+                                name: 'Black Formatting (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'black-report.xml']]
+                            )
                         }
                     }
                 }
@@ -64,7 +68,11 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'isort-report.xml'
+                            recordCoverage(
+                                id: 'isort-confluid',
+                                name: 'Isort Import Order (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'isort-report.xml']]
+                            )
                         }
                     }
                 }
@@ -76,7 +84,11 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'flake8-report.xml'
+                            recordCoverage(
+                                id: 'flake8-confluid',
+                                name: 'Flake8 (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'flake8-report.xml']]
+                            )
                         }
                     }
                 }
@@ -86,7 +98,11 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'mypy-report.xml'
+                            recordCoverage(
+                                id: 'mypy-confluid',
+                                name: 'Mypy (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'mypy-report.xml']]
+                            )
                         }
                     }
                 }
