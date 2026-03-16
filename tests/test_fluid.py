@@ -1,5 +1,6 @@
-import confluid
 import pytest
+
+import confluid
 from confluid import configurable, load, materialize, solidify
 
 

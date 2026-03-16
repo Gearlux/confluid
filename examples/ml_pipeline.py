@@ -1,6 +1,7 @@
 from typing import Any
 
 import yaml
+
 from confluid import configurable, configure, register, solidify
 
 # --- 1. Define modular components ---

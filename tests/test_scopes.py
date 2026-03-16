@@ -1,4 +1,5 @@
 import pytest
+
 from confluid import resolve_scopes
 
 

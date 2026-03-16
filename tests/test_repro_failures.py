@@ -1,7 +1,8 @@
 from typing import Any
 
-import confluid
 import pytest
+
+import confluid
 from confluid import configurable, load, materialize
 
 
@@ -31,9 +32,7 @@ def test_repro_dotted_override_into_tagged_class() -> None:
     Mirrors: DatasetProcessor.flux.source.count
     """
     config = {
-        "MockProcessor": {
-            "flux": "!class:MockFlux(source=!class:MockSource(count=10))"
-        },
+        "MockProcessor": {"flux": "!class:MockFlux(source=!class:MockSource(count=10))"},
         "MockProcessor.flux.source.count": 5,  # Dotted override
     }
 
@@ -57,9 +56,7 @@ def test_repro_scope_override_into_tagged_class() -> None:
     Scenario: A scope provides a dotted override for a tagged class in the root.
     """
     config = {
-        "MockProcessor": {
-            "flux": "!class:MockFlux(source=!class:MockSource(count=10))"
-        },
+        "MockProcessor": {"flux": "!class:MockFlux(source=!class:MockSource(count=10))"},
         "debug": {"MockProcessor.flux.source.count": 2},
     }
 
