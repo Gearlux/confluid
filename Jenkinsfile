@@ -41,10 +41,10 @@ ET.ElementTree(root).write('black-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            recordIssues(
-                                tools: [junit(id: 'black-confluid', name: 'Black Formatting (Confluid)', pattern: 'black-report.xml')],
-                                enabledForFailure: true,
-                                skipBlames: true
+                            recordCoverage(
+                                id: 'black-confluid',
+                                name: 'Black Formatting (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'black-report.xml']]
                             )
                         }
                     }
@@ -67,10 +67,10 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            recordIssues(
-                                tools: [junit(id: 'isort-confluid', name: 'Isort Import Order (Confluid)', pattern: 'isort-report.xml')],
-                                enabledForFailure: true,
-                                skipBlames: true
+                            recordCoverage(
+                                id: 'isort-confluid',
+                                name: 'Isort Import Order (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'isort-report.xml']]
                             )
                         }
                     }
@@ -83,10 +83,10 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            recordIssues(
-                                tools: [junit(id: 'flake8-confluid', name: 'Flake8 (Confluid)', pattern: 'flake8-report.xml')],
-                                enabledForFailure: true,
-                                skipBlames: true
+                            recordCoverage(
+                                id: 'flake8-confluid',
+                                name: 'Flake8 (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'flake8-report.xml']]
                             )
                         }
                     }
@@ -97,10 +97,10 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            recordIssues(
-                                tools: [junit(id: 'mypy-confluid', name: 'Mypy (Confluid)', pattern: 'mypy-report.xml')],
-                                enabledForFailure: true,
-                                skipBlames: true
+                            recordCoverage(
+                                id: 'mypy-confluid',
+                                name: 'Mypy (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'mypy-report.xml']]
                             )
                         }
                     }
