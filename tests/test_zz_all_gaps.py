@@ -2,6 +2,7 @@ import pytest
 import os
 import yaml
 from pathlib import Path
+from typing import Any, Dict
 from confluid import (
     configurable,
     get_registry,
@@ -14,28 +15,26 @@ from confluid import (
     dump,
     Fluid,
     flow,
-    get_hierarchy,
-    readonly_config,
-    ignore_config
+    get_hierarchy
 )
-from confluid.resolver import Resolver
 from confluid.configurator import Configurator
+from confluid.resolver import Resolver
 
 @pytest.fixture(autouse=True)
-def setup_registry():
+def setup_registry() -> Any:
     get_registry().clear()
     yield
 
 # --- 1. fluid.py ---
 
-def test_fluid_proxy_logic():
+def test_fluid_proxy_logic() -> None:
     # 10-11: target name fallback
     f = Fluid("X")
     assert "Fluid(X" in repr(f)
     # 14-15: repr target is type
     @configurable
     class T: 
-        def __init__(self, val=0): self.val = val
+        def __init__(self, val: int = 0): self.val = val
     f_type = Fluid(T)
     assert "Fluid(T" in repr(f_type)
     
@@ -61,28 +60,28 @@ def test_fluid_proxy_logic():
 
 # --- 2. configurator.py ---
 
-def test_configurator_coverage():
+def test_configurator_coverage() -> None:
     c = Configurator()
     # 32: data is None
     c.configure(None, data=None)
     # 48: data not dict
-    c.configure(None, data="x")
+    c.configure(None, data="x") # type: ignore[arg-type]
     
     @configurable
     class M:
-        def __init__(self, x=1): self.x = x
+        def __init__(self, x: int = 1): self.x = x
         @property
-        def r(self): return 1
+        def r(self) -> int: return 1
     
     m = M()
     
     # 114: recursion protection (resolved_val is dict AND current_val is configurable)
     @configurable
     class Sub:
-        def __init__(self, val=1): self.val = val
-    m.x = Sub()
+        def __init__(self, val: int = 1): self.val = val
+    m.x = Sub() # type: ignore[assignment]
     c.configure(m, data={"M": {"x": {"val": 10}}})
-    assert m.x.val == 10
+    assert m.x.val == 10 # type: ignore[attr-defined]
     
     # 176: broadcast (attr in config AND not dict)
     m2 = M()
@@ -98,11 +97,14 @@ def test_configurator_coverage():
     # 188: recursive navigation miss in _deep_get
     assert c._deep_get({"a": 1}, "a.b") is None
 
-def test_configurator_broken_dir_exhaustion():
+def test_configurator_broken_dir_exhaustion() -> None:
     c = Configurator()
     class Broken:
-        def __dir__(self): raise Exception("Fail")
-    c._walk_and_configure(Broken(), {}, {}, "")
+        def __dir__(self) -> Any: raise Exception("Fail")
+    
+    # dir() failure propagates out of _walk_and_configure
+    with pytest.raises(Exception, match="Fail"):
+        c._walk_and_configure(Broken(), {}, {}, "")
     
     # Iterable walking
     c._walk_and_configure((1, 2), {}, {}, "")
@@ -110,7 +112,7 @@ def test_configurator_broken_dir_exhaustion():
 
 # --- 3. decorators.py ---
 
-def test_decorators_coverage():
+def test_decorators_coverage() -> None:
     # 62-63
     @configurable(name="C")
     class X: pass
@@ -118,21 +120,21 @@ def test_decorators_coverage():
 
 # --- 4. dumper.py ---
 
-def test_dumper_coverage():
+def test_dumper_coverage() -> None:
     f = Fluid("M", x=1)
     assert "!class:M" in dump(f)
     assert "- 1" in dump([1, (2,)])
     assert "42" in dump(42)
     @configurable
     class Bad:
-        def __dir__(self): return ["b"]
+        def __dir__(self) -> Any: return ["b"]
         @property
-        def b(self): raise Exception("Fail")
+        def b(self) -> Any: raise Exception("Fail")
     dump(Bad())
 
 # --- 5. loader.py ---
 
-def test_loader_coverage(tmp_path):
+def test_loader_coverage(tmp_path: Path) -> None:
     from confluid.loader import _register_constructors, _process_imports
     _register_constructors()
     # 39: ScalarNode class tag
@@ -169,12 +171,12 @@ def test_loader_coverage(tmp_path):
     # 218-219: global_settings not dict
     @configurable
     class G:
-        def __init__(self, x=1): self.x=x
+        def __init__(self, x: int = 1): self.x=x
     assert materialize({"_confluid_class_": "G"}, context={"G": 42}).x == 1
 
 # --- 6. parser.py ---
 
-def test_parser_coverage():
+def test_parser_coverage() -> None:
     from confluid.parser import parse_value
     assert parse_value("true") is True
     assert parse_value("false") is False
@@ -184,13 +186,13 @@ def test_parser_coverage():
 
 # --- 7. registry.py ---
 
-def test_registry_coverage():
+def test_registry_coverage() -> None:
     r = get_registry()
     @configurable
     class D: pass
     r.register_class(D) # 22: duplicate
     assert "D" in r.list_classes() # 27-31
-    obj = {}
+    obj: Dict[str, Any] = {}
     r.register_object(obj, "o")
     assert r.get_object("o") is obj
     
@@ -202,7 +204,7 @@ def test_registry_coverage():
 
 # --- 8. resolver.py ---
 
-def test_resolver_coverage():
+def test_resolver_coverage() -> None:
     r = Resolver(context={"a": {"b": 1}, "r": "!ref:a"})
     # 24: non-str
     assert r.resolve(None) is None
@@ -224,10 +226,10 @@ def test_resolver_coverage():
 
 # --- 9. schema.py ---
 
-def test_schema_coverage():
+def test_schema_coverage() -> None:
     from confluid.schema import _build_hierarchy_recursive, _parse_docstring
     # 27
-    h = {}
+    h: Dict[str, Any] = {}
     _build_hierarchy_recursive(None, "", h, set())
     # 52-75
     class NoInit: pass
@@ -237,19 +239,19 @@ def test_schema_coverage():
 
 # --- 10. scopes.py ---
 
-def test_scopes_coverage():
+def test_scopes_coverage() -> None:
     # 76
     res = resolve_scopes({"scope_aliases": {"a": ["b"]}}, ["a"])
     assert res == {}
 
 # --- 11. solidify.py ---
 
-def test_solidify_coverage():
+def test_solidify_coverage() -> None:
     # 23
     assert solidify((1,)) == (1,)
     # 28-36
     assert solidify({"_confluid_class_": "Missing"}) == {"_confluid_class_": "Missing"}
     @configurable
     class S:
-        def __init__(self, x=1): self.x=x
+        def __init__(self, x: int = 1): self.x=x
     assert solidify({"_confluid_class_": "S", "x": 10}).x == 10
