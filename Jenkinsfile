@@ -5,6 +5,7 @@ pipeline {
         // Local virtual environment within the Jenkins workspace for portability
         VENV_PATH = "${WORKSPACE}/.venv"
         VENV_BIN = "${VENV_PATH}/bin"
+        FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 = 'true'
     }
 
     stages {
