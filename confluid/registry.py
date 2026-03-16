@@ -19,7 +19,9 @@ class ConfluidRegistry:
     def get_class(self, name: str) -> Optional[Type[Any]]:
         # Handle both name and type-to-name lookup
         if not isinstance(name, str):
-            name = getattr(name, "__confluid_name__", getattr(name, "__name__", str(name)))
+            name = getattr(
+                name, "__confluid_name__", getattr(name, "__name__", str(name))
+            )
         return self._classes.get(name)
 
     def is_configurable(self, obj: Any) -> bool:

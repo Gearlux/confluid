@@ -2,7 +2,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from confluid import configurable, get_registry, load
 
 

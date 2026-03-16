@@ -98,4 +98,6 @@ def dump(obj: Any) -> str:
 
     _discover_and_register(obj)
 
-    return yaml.dump(obj, Dumper=_LocalDumper, default_flow_style=False, sort_keys=False)
+    return yaml.dump(
+        obj, Dumper=_LocalDumper, default_flow_style=False, sort_keys=False
+    )

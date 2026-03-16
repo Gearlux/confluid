@@ -2,7 +2,6 @@ from typing import Any
 
 import pytest
 import yaml
-
 from confluid import configurable, dump, get_registry
 from confluid.loader import _register_constructors
 

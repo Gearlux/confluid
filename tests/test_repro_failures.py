@@ -1,8 +1,7 @@
 from typing import Any
 
-import pytest
-
 import confluid
+import pytest
 from confluid import configurable, load, materialize
 
 
@@ -32,7 +31,9 @@ def test_repro_dotted_override_into_tagged_class() -> None:
     Mirrors: DatasetProcessor.flux.source.count
     """
     config = {
-        "MockProcessor": {"flux": "!class:MockFlux(source=!class:MockSource(count=10))"},
+        "MockProcessor": {
+            "flux": "!class:MockFlux(source=!class:MockSource(count=10))"
+        },
         "MockProcessor.flux.source.count": 5,  # Dotted override
     }
 
@@ -56,7 +57,9 @@ def test_repro_scope_override_into_tagged_class() -> None:
     Scenario: A scope provides a dotted override for a tagged class in the root.
     """
     config = {
-        "MockProcessor": {"flux": "!class:MockFlux(source=!class:MockSource(count=10))"},
+        "MockProcessor": {
+            "flux": "!class:MockFlux(source=!class:MockSource(count=10))"
+        },
         "debug": {"MockProcessor.flux.source.count": 2},
     }
 
@@ -93,13 +96,19 @@ def test_repro_scope_replacing_class() -> None:
         def __init__(self, model: Any = None) -> None:
             self.model = model
 
-    config = {"Trainer": {"model": "!class:SimpleModel"}, "heavy": {"Trainer.model": "!class:ComplexModel"}}
+    config = {
+        "Trainer": {"model": "!class:SimpleModel"},
+        "heavy": {"Trainer.model": "!class:ComplexModel"},
+    }
 
     # Load with 'heavy' scope
     resolved = load(config, scopes=["heavy"], flow=False)
 
     trainer_block = resolved.get("Trainer")
-    marker_dict = {"_confluid_class_": "Trainer", **(trainer_block if isinstance(trainer_block, dict) else {})}
+    marker_dict = {
+        "_confluid_class_": "Trainer",
+        **(trainer_block if isinstance(trainer_block, dict) else {}),
+    }
     instance = materialize(marker_dict)
 
     assert isinstance(instance.model, ComplexModel)

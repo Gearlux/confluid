@@ -14,7 +14,9 @@ def configurable(cls: C) -> C: ...
 def configurable(*, name: Optional[str] = None) -> Callable[[C], C]: ...
 
 
-def configurable(cls: Optional[C] = None, *, name: Optional[str] = None) -> Union[C, Callable[[C], C]]:
+def configurable(
+    cls: Optional[C] = None, *, name: Optional[str] = None
+) -> Union[C, Callable[[C], C]]:
     """
     Decorator to mark a class as configurable.
 

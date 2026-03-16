@@ -1,5 +1,4 @@
 import pytest
-
 from confluid import configurable, get_registry, register
 
 
