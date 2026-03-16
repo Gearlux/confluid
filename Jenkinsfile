@@ -41,7 +41,11 @@ ET.ElementTree(root).write('black-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'black-report.xml'
+                            recordIssues(
+                                tool: junitXml(id: 'black-confluid', name: 'Black Formatting (Confluid)', pattern: 'black-report.xml'),
+                                enabledForFailure: true,
+                                skipBlames: true
+                            )
                         }
                     }
                 }
@@ -63,7 +67,11 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'isort-report.xml'
+                            recordIssues(
+                                tool: junitXml(id: 'isort-confluid', name: 'Isort Import Order (Confluid)', pattern: 'isort-report.xml'),
+                                enabledForFailure: true,
+                                skipBlames: true
+                            )
                         }
                     }
                 }
@@ -75,7 +83,11 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'flake8-report.xml'
+                            recordIssues(
+                                tool: junitXml(id: 'flake8-confluid', name: 'Flake8 (Confluid)', pattern: 'flake8-report.xml'),
+                                enabledForFailure: true,
+                                skipBlames: true
+                            )
                         }
                     }
                 }
@@ -85,7 +97,11 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'mypy-report.xml'
+                            recordIssues(
+                                tool: junitXml(id: 'mypy-confluid', name: 'Mypy (Confluid)', pattern: 'mypy-report.xml'),
+                                enabledForFailure: true,
+                                skipBlames: true
+                            )
                         }
                     }
                 }
