@@ -93,13 +93,19 @@ def test_repro_scope_replacing_class() -> None:
         def __init__(self, model: Any = None) -> None:
             self.model = model
 
-    config = {"Trainer": {"model": "!class:SimpleModel"}, "heavy": {"Trainer.model": "!class:ComplexModel"}}
+    config = {
+        "Trainer": {"model": "!class:SimpleModel"},
+        "heavy": {"Trainer.model": "!class:ComplexModel"},
+    }
 
     # Load with 'heavy' scope
     resolved = load(config, scopes=["heavy"], flow=False)
 
     trainer_block = resolved.get("Trainer")
-    marker_dict = {"_confluid_class_": "Trainer", **(trainer_block if isinstance(trainer_block, dict) else {})}
+    marker_dict = {
+        "_confluid_class_": "Trainer",
+        **(trainer_block if isinstance(trainer_block, dict) else {}),
+    }
     instance = materialize(marker_dict)
 
     assert isinstance(instance.model, ComplexModel)

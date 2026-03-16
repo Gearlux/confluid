@@ -83,7 +83,15 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
             # Find the first project name in the path
             parts = Path(path).parts
             for i, p in enumerate(parts):
-                if p in ["waivefront", "logflow", "confluid", "liquify", "dataflux", "torpedo", "navigaitor"]:
+                if p in [
+                    "waivefront",
+                    "logflow",
+                    "confluid",
+                    "liquify",
+                    "dataflux",
+                    "torpedo",
+                    "navigaitor",
+                ]:
                     candidate = source_root / Path(*parts[i:])
                     if candidate.exists():
                         path = candidate
@@ -152,7 +160,10 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
 
 
 def load(
-    data: Any, scopes: Optional[List[str]] = None, flow: bool = True, context: Optional[Dict[str, Any]] = None
+    data: Any,
+    scopes: Optional[List[str]] = None,
+    flow: bool = True,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Any:
     _register_constructors()
 

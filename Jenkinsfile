@@ -42,7 +42,11 @@ ET.ElementTree(root).write('black-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'black-report.xml'
+                            recordCoverage(
+                                id: 'black-confluid',
+                                name: 'Black Formatting (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'black-report.xml']]
+                            )
                         }
                     }
                 }
@@ -64,29 +68,53 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'isort-report.xml'
+                            recordCoverage(
+                                id: 'isort-confluid',
+                                name: 'Isort Import Order (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'isort-report.xml']]
+                            )
                         }
                     }
                 }
                 stage('Flake8') {
                     steps {
-                        sh "rm -f flake8.txt flake8-report.xml"
-                        sh "${VENV_BIN}/flake8 confluid tests examples --tee --output-file=flake8.txt || true"
-                        sh "if [ -f flake8.txt ]; then ${VENV_BIN}/flake8_junit flake8.txt flake8-report.xml; fi"
+                        script {
+                            def rc = sh(script: "${VENV_BIN}/flake8 confluid tests examples > flake8-output.txt 2>&1", returnStatus: true)
+                            sh """${VENV_BIN}/python3 -c "
+import xml.etree.ElementTree as ET
+rc = ${rc}
+root = ET.Element('testsuite', name='flake8', tests='1', failures=str(min(rc, 1)))
+tc = ET.SubElement(root, 'testcase', classname='flake8', name='lint-check')
+if rc != 0:
+    with open('flake8-output.txt') as f:
+        ET.SubElement(tc, 'failure', message='Flake8 linting issues found').text = f.read()
+ET.ElementTree(root).write('flake8-report.xml', xml_declaration=True, encoding='unicode')
+" """
+                        }
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'flake8-report.xml'
+                            recordCoverage(
+                                id: 'flake8-confluid',
+                                name: 'Flake8 (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'flake8-report.xml']]
+                            )
                         }
                     }
                 }
                 stage('Mypy') {
                     steps {
-                        sh "${VENV_BIN}/mypy confluid tests examples --junit-xml=mypy-report.xml || true"
+                        script {
+                            sh "${VENV_BIN}/mypy confluid tests examples --junit-xml=mypy-report.xml || true"
+                        }
                     }
                     post {
                         always {
-                            junit allowEmptyResults: true, testResults: 'mypy-report.xml'
+                            recordCoverage(
+                                id: 'mypy-confluid',
+                                name: 'Mypy (Confluid)',
+                                tools: [[parser: 'JUNIT', pattern: 'mypy-report.xml']]
+                            )
                         }
                     }
                 }
@@ -102,8 +130,17 @@ ET.ElementTree(root).write('isort-report.xml', xml_declaration=True, encoding='u
                     // Archive and display JUnit test results
                     junit allowEmptyResults: true, testResults: 'test-report.xml'
                     
-                    // Display Coverage in Jenkins UI using Code Coverage API Plugin
-                    recordCoverage tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']]
+                    // Display Coverage and Test Results as separate graphs using unique IDs
+                    recordCoverage(
+                        id: 'unit-tests-confluid',
+                        name: 'Unit Tests (Confluid)',
+                        tools: [[parser: 'JUNIT', pattern: 'test-report.xml']]
+                    )
+                    recordCoverage(
+                        id: 'coverage-confluid',
+                        name: 'Code Coverage (Confluid)',
+                        tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']]
+                    )
                 }
             }
         }
