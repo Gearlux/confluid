@@ -42,7 +42,13 @@ class Configurator:
             final_config = self.resolver.resolve(config_data)
             self._walk_and_configure(instance, final_config, resolved_context, "")
 
-    def _walk_and_configure(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any], path_prefix: str) -> None:
+    def _walk_and_configure(
+        self,
+        obj: Any,
+        config: Dict[str, Any],
+        context: Dict[str, Any],
+        path_prefix: str,
+    ) -> None:
         """Recursively traverse the object graph and apply matching configuration."""
         if obj is None:
             return
@@ -91,7 +97,13 @@ class Configurator:
             except Exception:
                 continue
 
-    def _apply_obj_config(self, obj: Any, config: Dict[str, Any], context: Dict[str, Any], path_prefix: str) -> None:
+    def _apply_obj_config(
+        self,
+        obj: Any,
+        config: Dict[str, Any],
+        context: Dict[str, Any],
+        path_prefix: str,
+    ) -> None:
         """Collect and apply configuration specifically for one object."""
         cls = obj.__class__
         cls_name = getattr(cls, "__confluid_name__", cls.__name__)

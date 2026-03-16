@@ -7,22 +7,23 @@ on:
     branches: [ main ]
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   formatting:
     name: Formatting (Isort & Black)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4.2.2
     - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v5.4.0
       with:
         python-version: "3.12"
         cache: 'pip'
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Isort
       run: isort --check-only .
@@ -33,15 +34,16 @@ jobs:
     name: Linting (Flake8)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4.2.2
     - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v5.4.0
       with:
         python-version: "3.12"
         cache: 'pip'
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Flake8
       run: flake8 .
@@ -50,15 +52,16 @@ jobs:
     name: Type Checking (Mypy)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4.2.2
     - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v5.4.0
       with:
         python-version: "3.12"
         cache: 'pip'
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Mypy
       run: mypy .
@@ -68,15 +71,16 @@ jobs:
     needs: [formatting, linting, type-check]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4.2.2
     - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v5.4.0
       with:
         python-version: "3.12"
         cache: 'pip'
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Run Tests
       run: |
@@ -93,15 +97,16 @@ jobs:
     needs: [unit-tests]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4.2.2
     - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v5.4.0
       with:
         python-version: "3.12"
         cache: 'pip'
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Run Examples
       run: |

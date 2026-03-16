@@ -89,7 +89,8 @@ def _parse_docstring(docstring: str) -> Dict[str, str]:
 
     # Match "parameter (type): description" or "parameter: description"
     pattern = re.compile(
-        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|$)", re.MULTILINE | re.DOTALL
+        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|$)",
+        re.MULTILINE | re.DOTALL,
     )
 
     for match in pattern.finditer(content):

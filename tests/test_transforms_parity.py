@@ -35,7 +35,10 @@ class Compose:
 def test_config_transforms_broadcast() -> None:
     """Verify that a top-level key applies to all matching attributes in a hierarchy."""
     pipeline = Compose(
-        transforms=[TransformClass(name="noise1"), Delegate(delegate=TransformClass(name="noise2"), name="wrapper")]
+        transforms=[
+            TransformClass(name="noise1"),
+            Delegate(delegate=TransformClass(name="noise2"), name="wrapper"),
+        ]
     )
 
     configure(
@@ -52,7 +55,10 @@ noise_std: 0.5
 def test_config_transforms_scoping() -> None:
     """Verify that scoped paths correctly target specific objects."""
     pipeline = Compose(
-        transforms=[TransformClass(name="noise1"), Delegate(delegate=TransformClass(name="noise2"), name="wrapper")]
+        transforms=[
+            TransformClass(name="noise1"),
+            Delegate(delegate=TransformClass(name="noise2"), name="wrapper"),
+        ]
     )
 
     configure(

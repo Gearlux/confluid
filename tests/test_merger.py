@@ -9,9 +9,18 @@ def test_deep_merge() -> None:
 
 
 def test_expand_dotted_keys() -> None:
-    data = {"model.layers": 10, "model.activation": "relu", "trainer.lr": 0.001, "simple": 1}
+    data = {
+        "model.layers": 10,
+        "model.activation": "relu",
+        "trainer.lr": 0.001,
+        "simple": 1,
+    }
     expanded = expand_dotted_keys(data)
-    assert expanded == {"model": {"layers": 10, "activation": "relu"}, "trainer": {"lr": 0.001}, "simple": 1}
+    assert expanded == {
+        "model": {"layers": 10, "activation": "relu"},
+        "trainer": {"lr": 0.001},
+        "simple": 1,
+    }
 
 
 def test_expand_dotted_keys_nested() -> None:

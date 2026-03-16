@@ -40,6 +40,7 @@ def dump(obj: Any) -> str:
     Export a configurable object hierarchy to a YAML string.
     Uses !class tags for professional, compact output.
     """
+    from confluid.fluid import Fluid
 
     class _LocalDumper(CompactDumper):
         pass
@@ -54,7 +55,12 @@ def dump(obj: Any) -> str:
 
         return dumper.represent_dict(data)
 
+    def _fluid_representer(dumper: _LocalDumper, data: Fluid) -> yaml.Node:
+        cls_name = data.target if isinstance(data.target, str) else data.target.__name__
+        return dumper.represent_mapping("!class:" + cls_name, data.kwargs)
+
     _LocalDumper.add_representer(dict, _dict_representer)
+    _LocalDumper.add_representer(Fluid, _fluid_representer)
 
     # 3. Identify and register representers for @configurable classes in the graph
 

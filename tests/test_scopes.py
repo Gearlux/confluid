@@ -25,7 +25,11 @@ def test_hierarchical_scopes() -> None:
 
 
 def test_scope_aliases() -> None:
-    config = {"scope_aliases": {"dev": ["debug", "local"]}, "debug": {"lr": 0.1}, "local": {"db": "sqlite"}}
+    config = {
+        "scope_aliases": {"dev": ["debug", "local"]},
+        "debug": {"lr": 0.1},
+        "local": {"db": "sqlite"},
+    }
 
     resolved = resolve_scopes(config, ["dev"])
     assert resolved["lr"] == 0.1
