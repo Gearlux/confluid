@@ -1,7 +1,6 @@
 from typing import Any
 
 import pytest
-
 from confluid import configurable, configure, get_registry
 
 

@@ -1,7 +1,6 @@
 from typing import Any, List
 
 import pytest
-
 from confluid import configurable, configure, get_registry
 
 
@@ -35,7 +34,10 @@ class Compose:
 def test_config_transforms_broadcast() -> None:
     """Verify that a top-level key applies to all matching attributes in a hierarchy."""
     pipeline = Compose(
-        transforms=[TransformClass(name="noise1"), Delegate(delegate=TransformClass(name="noise2"), name="wrapper")]
+        transforms=[
+            TransformClass(name="noise1"),
+            Delegate(delegate=TransformClass(name="noise2"), name="wrapper"),
+        ]
     )
 
     configure(
@@ -52,7 +54,10 @@ noise_std: 0.5
 def test_config_transforms_scoping() -> None:
     """Verify that scoped paths correctly target specific objects."""
     pipeline = Compose(
-        transforms=[TransformClass(name="noise1"), Delegate(delegate=TransformClass(name="noise2"), name="wrapper")]
+        transforms=[
+            TransformClass(name="noise1"),
+            Delegate(delegate=TransformClass(name="noise2"), name="wrapper"),
+        ]
     )
 
     configure(
@@ -69,7 +74,9 @@ wrapper.delegate.noise_std: 0.9
 
 def test_mixed_class_and_name_scoping() -> None:
     """Verify ClassName.name.attribute priority."""
-    pipeline = Compose(transforms=[TransformClass(name="noise1"), TransformClass(name="noise2")])
+    pipeline = Compose(
+        transforms=[TransformClass(name="noise1"), TransformClass(name="noise2")]
+    )
 
     configure(
         pipeline,

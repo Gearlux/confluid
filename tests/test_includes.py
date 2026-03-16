@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from confluid import load, load_config
 
 

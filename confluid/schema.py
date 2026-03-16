@@ -13,7 +13,9 @@ def get_hierarchy(target: Any) -> Dict[str, Any]:
     return hierarchy
 
 
-def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any], visited: set) -> None:
+def _build_hierarchy_recursive(
+    obj: Any, prefix: str, hierarchy: Dict[str, Any], visited: set
+) -> None:
     """Recursive helper for hierarchy building."""
     if obj is None:
         return
@@ -60,7 +62,9 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
             type_str = getattr(param_type, "__name__", str(param_type))
 
             # Extract default
-            default = param.default if param.default is not inspect.Parameter.empty else None
+            default = (
+                param.default if param.default is not inspect.Parameter.empty else None
+            )
 
             # Extract docstring for this parameter
             doc = param_docs.get(param_name, "")
@@ -69,7 +73,9 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
 
             # 3. Recurse if the parameter type is configurable
             if hasattr(param_type, "__confluid_configurable__"):
-                _build_hierarchy_recursive(param_type, current_prefix, hierarchy, visited)
+                _build_hierarchy_recursive(
+                    param_type, current_prefix, hierarchy, visited
+                )
 
     except (ValueError, TypeError):
         pass
@@ -84,12 +90,15 @@ def _parse_docstring(docstring: str) -> Dict[str, str]:
         return param_docs
 
     # Find the Args/Parameters section
-    section_match = re.search(r"(?:Args|Parameters|Arguments):\s*(.*)", docstring, re.DOTALL | re.IGNORECASE)
+    section_match = re.search(
+        r"(?:Args|Parameters|Arguments):\s*(.*)", docstring, re.DOTALL | re.IGNORECASE
+    )
     content = section_match.group(1) if section_match else docstring
 
     # Match "parameter (type): description" or "parameter: description"
     pattern = re.compile(
-        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|$)", re.MULTILINE | re.DOTALL
+        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|$)",
+        re.MULTILINE | re.DOTALL,
     )
 
     for match in pattern.finditer(content):
