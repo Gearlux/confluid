@@ -1,27 +1,29 @@
 from copy import deepcopy
 from typing import Any, Dict, List, Set
 
+from logflow import get_logger
+
 from confluid.merger import deep_merge
+from confluid.registry import get_registry
+
+logger = get_logger("confluid.scopes")
+registry = get_registry()
 
 
 def resolve_scopes(config: Dict[str, Any], active_scopes: List[str]) -> Dict[str, Any]:
     """
     Apply scoped overlays to the base configuration.
     """
-    from confluid.registry import get_registry
-
-    registry = get_registry()
+    logger.debug(f"Resolving scopes: {active_scopes}")
 
     # 1. Resolve aliases
     aliases = config.get("scope_aliases", {})
     resolved_scopes = _resolve_aliases(active_scopes, aliases)
 
-    # 2. Expand hierarchy (e.g. prod.gpu -> [prod, prod.gpu])
+    # 2. Re-expand scope list to include full hierarchy
     all_active: Set[str] = set()
     for s in resolved_scopes:
-        parts = s.split(".")
-        for i in range(len(parts)):
-            all_active.add(".".join(parts[: i + 1]))
+        all_active.update(_expand_hierarchy(s))
 
     # Work on a copy
     merged = deepcopy(config)
@@ -41,14 +43,14 @@ def resolve_scopes(config: Dict[str, Any], active_scopes: List[str]) -> Dict[str
             target_scope = key[4:]
             if target_scope not in all_active:
                 if isinstance(merged[key], dict):
-                    deep_merge(merged, merged[key])
+                    merged = deep_merge(merged, merged[key])
 
     # 5. Apply positive scopes in order
     for scope_name in resolved_scopes:
         hierarchy = _expand_hierarchy(scope_name)
         for s in hierarchy:
             if s in merged and isinstance(merged[s], dict):
-                deep_merge(merged, merged[s])
+                merged = deep_merge(merged, merged[s])
 
     # 6. Cleanup: remove all identified scope metadata
     for key in scope_keys:
@@ -62,27 +64,32 @@ def resolve_scopes(config: Dict[str, Any], active_scopes: List[str]) -> Dict[str
 
 
 def _resolve_aliases(requested: List[str], aliases: Dict[str, Any]) -> List[str]:
-    """Expand scope aliases recursively."""
+    """Recursively expand aliases in the requested scopes."""
     resolved: List[str] = []
     seen: Set[str] = set()
 
-    def expand(name: str) -> None:
+    def expand(name: str, path: List[str]) -> None:
+        if name in path:
+            raise ValueError(f"Circular scope alias detected: {' -> '.join(path + [name])}")
+
         if name in seen:
-            raise ValueError(f"Circular scope alias detected: {name}")
+            return
         seen.add(name)
 
         if name in aliases:
-            targets = aliases[name]
-            if isinstance(targets, str):
-                targets = [s.strip() for s in targets.split(",")]
-            for t in targets:
-                expand(t)
-
-        resolved.append(name)
+            target = aliases[name]
+            new_path = path + [name]
+            if isinstance(target, str):
+                expand(target, new_path)
+            elif isinstance(target, list):
+                for t in target:
+                    expand(t, new_path)
+        else:
+            resolved.append(name)
 
     for r in requested:
         seen.clear()
-        expand(r)
+        expand(r, [])
 
     return resolved
 

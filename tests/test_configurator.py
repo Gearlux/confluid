@@ -25,15 +25,15 @@ def test_post_construction_configure() -> None:
     assert model.lr == 0.001
 
 
-def test_type_coercion_via_pydantic() -> None:
+def test_type_coercion() -> None:
     @configurable
     class Model:
-        def __init__(self, layers: int = 3):
+        def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
     model = Model()
 
-    # Pass string "100", Pydantic should coerce to int 100
+    # Pass string "100", Resolver should use parse_value to coerce to int 100
     configure(model, config={"Model": {"layers": "100"}})
 
     assert model.layers == 100
@@ -101,5 +101,5 @@ def test_configure_non_dict() -> None:
 
     model = Model()
     # Passing a reference that resolves to a class, not a dict
-    configure(model, config="@Model")
+    configure(model, config="!class:Model")
     assert model.val == 1
