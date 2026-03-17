@@ -86,7 +86,7 @@ new_trainer = load(state_yaml)
 
 ## Installation
 ```bash
-pip install confluid
+pip install git+https://github.com/Gearlux/confluid.git@main
 ```
 
 ## License
