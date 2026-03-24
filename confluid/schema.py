@@ -49,18 +49,22 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     # Handle both classes and instances
     cls = obj if isinstance(obj, type) else obj.__class__
 
-    # Avoid infinite recursion
+    # Avoid infinite recursion - check id(obj) in current branch
     obj_id = id(obj)
     if obj_id in visited:
         return
-    visited.add(obj_id)
+    # Use a new set for children to allow same type in parallel branches but detect cycles
+    new_visited = visited | {obj_id}
 
-    # 1. Extract name for this node
-    cls_name = getattr(cls, "__confluid_name__", cls.__name__)
-    instance_name = getattr(obj, "name", None) if not isinstance(obj, type) else None
-
-    node_name = instance_name or cls_name
-    current_prefix = f"{prefix}.{node_name}" if prefix else node_name
+    # 1. Determine prefix
+    if not prefix:
+        cls_name = getattr(cls, "__confluid_name__", cls.__name__)
+        instance_name = getattr(obj, "name", None) if not isinstance(obj, type) else None
+        node_name = instance_name or cls_name
+        current_prefix = node_name
+    else:
+        # If prefix is provided, it already contains the parameter/instance name
+        current_prefix = prefix
 
     # 2. Extract parameter documentation from docstring
     docstring = getattr(cls.__init__, "__doc__", "") or ""  # type: ignore[misc]
@@ -95,7 +99,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
 
             # 3. Recurse if the parameter type is configurable
             if hasattr(param_type, "__confluid_configurable__"):
-                _build_hierarchy_recursive(param_type, current_prefix, hierarchy, visited)
+                _build_hierarchy_recursive(param_type, path, hierarchy, new_visited)
             else:
                 hierarchy[path] = (type_str, default, doc)
 
