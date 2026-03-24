@@ -36,10 +36,12 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
                 default = param.default if param.default is not inspect.Parameter.empty else None
                 doc = param_docs.get(param_name, "")
 
-                hierarchy[path] = (type_str, default, doc)
-
+                # 3. Recurse if the parameter type is configurable
                 if hasattr(param_type, "__confluid_configurable__"):
                     _build_hierarchy_recursive(param_type, path, hierarchy, visited)
+                else:
+                    # Only add to hierarchy if it's a "leaf" (not a configurable container)
+                    hierarchy[path] = (type_str, default, doc)
             return
         except (ValueError, TypeError):
             return
@@ -91,11 +93,11 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
             # Extract docstring for this parameter
             doc = param_docs.get(param_name, "")
 
-            hierarchy[path] = (type_str, default, doc)
-
             # 3. Recurse if the parameter type is configurable
             if hasattr(param_type, "__confluid_configurable__"):
                 _build_hierarchy_recursive(param_type, current_prefix, hierarchy, visited)
+            else:
+                hierarchy[path] = (type_str, default, doc)
 
     except (ValueError, TypeError):
         pass
