@@ -27,7 +27,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
             param_docs = _parse_docstring(docstring)
 
             for param_name, param in sig.parameters.items():
-                if param_name in ("self", "cls", "args", "kwargs"):
+                if param_name in ("self", "cls", "args", "kwargs", "name"):
                     continue
 
                 path = f"{prefix}.{param_name}" if prefix else param_name
@@ -77,7 +77,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         type_hints = get_type_hints(init_method)
 
         for param_name, param in sig.parameters.items():
-            if param_name in ("self", "cls", "args", "kwargs"):
+            if param_name in ("self", "cls", "args", "kwargs", "name"):
                 continue
 
             # Check visibility

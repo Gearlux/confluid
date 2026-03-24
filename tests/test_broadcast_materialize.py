@@ -1,29 +1,24 @@
-from confluid import configurable, get_registry, materialize, register
+from confluid import configurable, materialize, register
 
 
 @configurable
 class Leaf:
-    def __init__(self, value: int = 0, name: str = "default"):
+    def __init__(self, value: int = 0, name: str = "default") -> None:
         self.value = value
         self.name = name
 
 
 @configurable
 class Branch:
-    def __init__(self, leaf: Leaf, branch_val: int = 1):
+    def __init__(self, leaf: Leaf, branch_val: int = 1) -> None:
         self.leaf = leaf
         self.branch_val = branch_val
 
 
-register(Leaf)
-register(Branch)
-
-
 def test_broadcast_materialize() -> None:
-    # Verify registry
-    reg = get_registry()
-    assert "Branch" in reg.list_classes()
-    assert "Leaf" in reg.list_classes()
+    # Register here to avoid being cleared by other tests
+    register(Leaf)
+    register(Branch)
 
     # Context with flat keys at root
     # These should be "broadcast" to any matching parameter name in any class
@@ -46,6 +41,7 @@ def test_broadcast_materialize() -> None:
 
 
 def test_broadcast_priority() -> None:
+    register(Leaf)
     # Verify that explicit arguments and scoped settings have higher priority than broadcast
     context = {
         "value": 10,  # Broadcast (lowest)
@@ -66,6 +62,8 @@ def test_broadcast_priority() -> None:
 
 
 def test_dotted_broadcast_materialize() -> None:
+    register(Leaf)
+    register(Branch)
     # Verify that a dotted key at root can broadcast
     context = {"leaf.value": 99}
     data = {
