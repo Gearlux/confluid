@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union, cast
@@ -197,31 +198,64 @@ def load(
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
-    return _flow_recursive(data, context=context)
+    return _flow_recursive(data, context=context, path_prefix="")
 
 
-def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
+def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_prefix: str = "") -> Any:
     if isinstance(data, dict):
         if "_confluid_class_" in data:
             cls_name = data["_confluid_class_"]
-            args = {k: v for k, v in data.items() if not k.startswith("_confluid_")}
+            # args = {k: v for k, v in data.items() if not k.startswith("_confluid_")}
 
             cls = get_registry().get_class(cls_name)
             if not cls:
                 return data
 
+            instance_name = data.get("name")
+            new_prefix = path_prefix
+            if instance_name and isinstance(instance_name, str):
+                new_prefix = f"{path_prefix}.{instance_name}" if path_prefix else instance_name
+
             resolver = Resolver(context=context)
             final_kwargs = {}
-            for k, v in args.items():
+            for k, v in data.items():
+                if k.startswith("_confluid_"):
+                    continue
                 res_v = resolver.resolve(v)
-                final_kwargs[k] = _flow_recursive(res_v, context=context)
+                final_kwargs[k] = _flow_recursive(res_v, context=context, path_prefix=new_prefix)
 
             if context:
+                # 1. Scoped settings (highest priority)
                 global_settings = context.get(cls_name) or {}
                 if isinstance(global_settings, dict):
                     resolved_globals = resolver.resolve(global_settings)
                     clean_settings = {k: v for k, v in resolved_globals.items() if not k.startswith("_confluid_")}
                     final_kwargs = {**clean_settings, **final_kwargs}
+
+                # 2. Broadcasting: pull missing parameters from context root
+                try:
+                    sig = inspect.signature(cls.__init__)
+                    for param_name in sig.parameters:
+                        if param_name not in ("self", "cls") and param_name not in final_kwargs:
+                            # 2a. Try all possible suffixes of the hierarchical path:
+                            # e.g. for root.leaf.value, try "root.leaf.value", then "leaf.value", then "value"
+                            full_path = f"{new_prefix}.{param_name}" if new_prefix else param_name
+                            parts = full_path.split(".")
+                            for start_idx in range(len(parts)):
+                                candidate_path = ".".join(parts[start_idx:])
+                                if candidate_path in context and not isinstance(context[candidate_path], (dict, list)):
+                                    final_kwargs[param_name] = context[candidate_path]
+                                    break
+                except (ValueError, TypeError):
+                    pass
+
+            # 3. Final safety check: only pass what the constructor accepts
+            try:
+                sig = inspect.signature(cls.__init__)
+                valid_params = [p for p in sig.parameters if p not in ("self", "cls")]
+                final_kwargs = {k: v for k, v in final_kwargs.items() if k in valid_params}
+            except (ValueError, TypeError):
+                pass
 
             return cls(**final_kwargs)
 
@@ -229,9 +263,9 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
             resolver = Resolver(context=context)
             return resolver.resolve(data)
 
-        return {k: _flow_recursive(v, context=context) for k, v in data.items()}
+        return {k: _flow_recursive(v, context=context, path_prefix=path_prefix) for k, v in data.items()}
 
     if isinstance(data, list):
-        return [_flow_recursive(item, context=context) for item in data]
+        return [_flow_recursive(item, context=context, path_prefix=path_prefix) for item in data]
 
     return data
