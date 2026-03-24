@@ -18,6 +18,32 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     if obj is None:
         return
 
+    # 1. Handle Functions/Callables specifically
+    if not isinstance(obj, type) and callable(obj) and not hasattr(obj, "__confluid_configurable__"):
+        try:
+            sig = inspect.signature(obj)
+            type_hints = get_type_hints(obj)
+            docstring = getattr(obj, "__doc__", "") or ""
+            param_docs = _parse_docstring(docstring)
+
+            for param_name, param in sig.parameters.items():
+                if param_name in ("self", "cls", "args", "kwargs"):
+                    continue
+
+                path = f"{prefix}.{param_name}" if prefix else param_name
+                param_type = type_hints.get(param_name, Any)
+                type_str = getattr(param_type, "__name__", str(param_type))
+                default = param.default if param.default is not inspect.Parameter.empty else None
+                doc = param_docs.get(param_name, "")
+
+                hierarchy[path] = (type_str, default, doc)
+
+                if hasattr(param_type, "__confluid_configurable__"):
+                    _build_hierarchy_recursive(param_type, path, hierarchy, visited)
+            return
+        except (ValueError, TypeError):
+            return
+
     # Handle both classes and instances
     cls = obj if isinstance(obj, type) else obj.__class__
 
