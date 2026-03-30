@@ -32,11 +32,13 @@ def test_circular_include_error(tmp_path: Path) -> None:
 
 def test_load_with_active_scopes(tmp_path: Path) -> None:
     config_file = tmp_path / "app.yaml"
-    config_file.write_text("""
+    config_file.write_text(
+        """
 val: 1
 debug:
   val: 10
-""")
+"""
+    )
 
     # Test load with programmatic scope
     data = load(config_file, scopes=["debug"])

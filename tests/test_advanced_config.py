@@ -57,19 +57,23 @@ def test_recursive_includes_with_scopes() -> None:
         ext_path = Path(tmpdir) / "ext.yaml"
 
         # ext.yaml defines a scope and a negative scope
-        ext_path.write_text("""
+        ext_path.write_text(
+            """
 port: 1000
 debug:
   port: 2000
 not debug:
   port: 3000
-""")
+"""
+        )
 
         # base.yaml includes ext.yaml and overrides the base value
-        base_path.write_text("""
+        base_path.write_text(
+            """
 include: ext.yaml
 port: 80
-""")
+"""
+        )
 
         # Test Case A: Active scope 'debug'
         obj = load(base_path, scopes=["debug"])
