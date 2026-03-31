@@ -75,32 +75,38 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     _included.add(path)
 
     if not path.exists():
-        # SMART FALLBACK: If path not found, try resolving relative to SOURCE_ROOT
-        # This handles project-prefixed paths like 'waivefront/configs/...'
-        source_root = Path("/Users/gertbehi/source")
-        alt_path = source_root / str(path).split("/source/")[-1]  # Handle potential double-prefixing
-        if not alt_path.exists():
-            # Try literal join with source_root
-            # Find the first project name in the path
-            parts = Path(path).parts
-            for i, p in enumerate(parts):
-                if p in [
-                    "waivefront",
-                    "logflow",
-                    "confluid",
-                    "liquify",
-                    "dataflux",
-                    "torpedo",
-                    "navigaitor",
-                ]:
-                    candidate = source_root / Path(*parts[i:])
-                    if candidate.exists():
-                        path = candidate
-                        break
-            else:
-                raise FileNotFoundError(f"Not found: {path}")
-        else:
-            path = alt_path
+        # SMART FALLBACK: Resolve relative to the orchestrating workspace root.
+        # We search upwards for the directory containing '.gitmodules'.
+        curr = Path.cwd().resolve()
+        source_root = None
+        for _ in range(6):
+            if (curr / ".gitmodules").exists():
+                source_root = curr
+                break
+            curr = curr.parent
+        
+        if source_root:
+            # 1. Try stripping common workspace prefix if present in the string
+            path_str = str(path)
+            if "/source/" in path_str:
+                suffix = path_str.split("/source/")[-1]
+                candidate = source_root / suffix
+                if candidate.exists():
+                    path = candidate
+            
+            # 2. Try project-prefixed resolution (e.g., 'waivefront/configs/...')
+            if not path.exists():
+                parts = Path(path).parts
+                projects = ["waivefront", "logflow", "confluid", "liquify", "dataflux", "torpedo", "navigaitor", "aisland"]
+                for i, p in enumerate(parts):
+                    if p in projects:
+                        candidate = source_root / Path(*parts[i:])
+                        if candidate.exists():
+                            path = candidate
+                            break
+        
+        if not path.exists():
+            raise FileNotFoundError(f"Not found: {path}")
 
     _register_constructors()
     with open(path, "r") as f:
