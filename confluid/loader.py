@@ -84,7 +84,7 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
                 source_root = curr
                 break
             curr = curr.parent
-        
+
         if source_root:
             # 1. Try stripping common workspace prefix if present in the string
             path_str = str(path)
@@ -93,18 +93,27 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
                 candidate = source_root / suffix
                 if candidate.exists():
                     path = candidate
-            
+
             # 2. Try project-prefixed resolution (e.g., 'waivefront/configs/...')
             if not path.exists():
                 parts = Path(path).parts
-                projects = ["waivefront", "logflow", "confluid", "liquify", "dataflux", "torpedo", "navigaitor", "aisland"]
+                projects = [
+                    "waivefront",
+                    "logflow",
+                    "confluid",
+                    "liquify",
+                    "dataflux",
+                    "torpedo",
+                    "navigaitor",
+                    "aisland",
+                ]
                 for i, p in enumerate(parts):
                     if p in projects:
                         candidate = source_root / Path(*parts[i:])
                         if candidate.exists():
                             path = candidate
                             break
-        
+
         if not path.exists():
             raise FileNotFoundError(f"Not found: {path}")
 
