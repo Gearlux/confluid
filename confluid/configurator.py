@@ -53,10 +53,10 @@ class Configurator:
         if obj is None:
             return
 
-        # 0. Solidify the object before inspection
-        from confluid.solidify import solidify
+        # 0. Flow the object before inspection to ensure it's instantiated
+        from confluid.fluid import flow
 
-        obj = solidify(obj)
+        obj = flow(obj)
 
         obj_id = id(obj)
         if obj_id in self._visited:
