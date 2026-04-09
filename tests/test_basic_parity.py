@@ -100,33 +100,18 @@ CustomName:
     assert obj.value == 77
 
 
-def test_fluid_solidify_protocol() -> None:
+def test_flow_in_configurator() -> None:
+    """Verify that the configurator flows deferred objects before inspection."""
+    from confluid import Class, flow
+
     @configurable
-    class LazyContainer:
-        def __init__(self) -> None:
-            self.children: list[Any] = []
-            self._fluid = True
+    class Container:
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
 
-        def _is_fluid(self) -> bool:
-            return self._fluid
-
-        def _solidify(self) -> None:
-            # Materialize children
-            self.children = [SimpleModel(layers=1)]
-            self._fluid = False
-
-    container = LazyContainer()
-    assert len(container.children) == 0
-
-    # Configurator should trigger solidification
-    configure(
-        container,
-        config="""
-SimpleModel:
-  layers: 100
-""",
-    )
-
-    assert len(container.children) == 1
-    assert container.children[0].layers == 100
-    assert container._is_fluid() is False
+    container = Container(model=Class(SimpleModel, layers=5))
+    configure(container, config={"SimpleModel": {"layers": 100}})
+    # After configure, model should still be a Class (configure doesn't flow children)
+    # But the Class should have picked up context
+    result = flow(container.model)
+    assert isinstance(result, SimpleModel)

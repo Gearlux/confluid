@@ -45,11 +45,15 @@ def test_load_config_with_import() -> None:
 
 
 def test_load_with_custom_tags(tmp_path: Path) -> None:
+    from confluid.fluid import Class, Reference
+
     config_file = tmp_path / "tags.yaml"
-    config_file.write_text("model: !class:Model(layers=10)\nref: !ref:base_lr")
+    config_file.write_text("model: !class:Model\n  layers: 10\nref: !ref:base_lr")
 
     data = load_config(config_file)
-    # Tags produce flat markers in the raw load_config output
-    assert data["model"]["_confluid_class_"] == "Model"
-    assert data["model"]["layers"] == "10"
-    assert data["ref"]["_confluid_ref_"] == "base_lr"
+    # Tags produce Class/Reference objects
+    assert isinstance(data["model"], Class)
+    assert data["model"].target == "Model"
+    assert data["model"].kwargs["layers"] == 10
+    assert isinstance(data["ref"], Reference)
+    assert data["ref"].target == "base_lr"

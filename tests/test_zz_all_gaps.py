@@ -6,7 +6,9 @@ import pytest
 import yaml
 
 from confluid import (
+    Class,
     Fluid,
+    Reference,
     configurable,
     dump,
     flow,
@@ -16,7 +18,6 @@ from confluid import (
     load_config,
     materialize,
     resolve_scopes,
-    solidify,
 )
 from confluid.configurator import Configurator
 from confluid.resolver import Resolver
@@ -144,7 +145,7 @@ def test_decorators_coverage() -> None:
 
 
 def test_dumper_coverage() -> None:
-    f = Fluid("M", x=1)
+    f = Class("M", x=1)
     assert "!class:M" in dump(f)
     assert "- 1" in dump([1, (2,)])
     assert "42" in dump(42)
@@ -168,16 +169,23 @@ def test_loader_coverage(tmp_path: Path) -> None:
     from confluid.loader import _process_imports, _register_constructors
 
     _register_constructors()
-    # 39: ScalarNode class tag
-    assert yaml.safe_load("!class:Model") == {"_confluid_class_": "Model"}
+    # 39: ScalarNode class tag — now returns Class object
+    result = yaml.safe_load("!class:Model")
+    assert isinstance(result, Class)
+    assert result.target == "Model"
     # 45: ref_compat
-    assert yaml.safe_load("!ref r") == {"_confluid_ref_": "r"}
+    ref_result = yaml.safe_load("!ref r")
+    assert isinstance(ref_result, Reference)
+    assert ref_result.target == "r"
     # 48-61: class compat variants
-    assert yaml.safe_load("!class Model(x=1)") == {
-        "_confluid_class_": "Model",
-        "x": "1",
-    }
-    assert yaml.safe_load("!class Model") == {"_confluid_class_": "Model"}
+    compat_result = yaml.safe_load("!class Model(x=1)")
+    assert isinstance(compat_result, Class)
+    assert compat_result.target == "Model"
+    assert compat_result.kwargs["x"] == "1"
+    # Legacy !class tag also returns Class object
+    legacy_result = yaml.safe_load("!class Model")
+    assert isinstance(legacy_result, Class)
+    assert legacy_result.target == "Model"
 
     # 89-90, 94: smart fallback
     with pytest.raises(FileNotFoundError):
@@ -301,18 +309,17 @@ def test_scopes_coverage() -> None:
     assert res == {}
 
 
-# --- 11. solidify.py ---
+# --- 11. flow() coverage ---
 
 
-def test_solidify_coverage() -> None:
-    # 23
-    assert solidify((1,)) == (1,)
-    # 28-36
-    assert solidify({"_confluid_class_": "Missing"}) == {"_confluid_class_": "Missing"}
+def test_flow_coverage() -> None:
+    # Idempotent for non-deferred objects
+    assert flow((1,)) == (1,)
 
     @configurable
     class S:
-        def __init__(self, x: int = 1):
+        def __init__(self, x: int = 1) -> None:
             self.x = x
 
-    assert solidify({"_confluid_class_": "S", "x": 10}).x == 10
+    # flow marker dicts
+    assert flow({"_confluid_class_": "S", "x": 10}).x == 10

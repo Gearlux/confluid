@@ -1,5 +1,5 @@
 import inspect
-from typing import Any, Dict, Set
+from typing import Any, Optional, Set
 
 import yaml
 
@@ -10,15 +10,14 @@ class CompactDumper(yaml.SafeDumper):
     pass
 
 
-def _configurable_presenter(dumper: yaml.SafeDumper, data: Any) -> yaml.Node:
-    """Presenter for objects marked as @configurable."""
-    cls = data.__class__
-    cls_name = getattr(cls, "__confluid_name__", cls.__name__)
+def _configurable_presenter(dumper: yaml.SafeDumper, data: Any) -> Any:
+    """Represent @configurable objects as !class mappings."""
+    cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
 
-    # 1. Collect attributes that are part of the constructor
+    # Use inspect to find which fields are actually constructor parameters
     try:
-        sig = inspect.signature(cls.__init__)
-        params = [p for p in sig.parameters.keys() if p not in ("self", "cls")]
+        sig = inspect.signature(data.__class__.__init__)
+        params = [p for p in sig.parameters if p not in ("self", "cls")]
     except (ValueError, TypeError):
         params = []
 
@@ -28,6 +27,14 @@ def _configurable_presenter(dumper: yaml.SafeDumper, data: Any) -> yaml.Node:
             val = getattr(data, p)
             # Skip defaults or None to keep it compact
             if val is not None:
+                # SPECIAL HANDLING: If the value is a CLASS, represent it as a string or !class tag
+                if isinstance(val, type):
+                    # If it's a configurable class, use the !class notation
+                    if hasattr(val, "__confluid_configurable__"):
+                        val = f"!class:{getattr(val, '__confluid_name__', val.__name__)}"
+                    else:
+                        # Fallback to full name
+                        val = f"{val.__module__}.{val.__name__}"
                 kwargs[p] = val
 
     # 2. Use the !class tag with colon separator to avoid encoding issues
@@ -35,66 +42,64 @@ def _configurable_presenter(dumper: yaml.SafeDumper, data: Any) -> yaml.Node:
     return dumper.represent_mapping(tag, kwargs)
 
 
+def _fluid_presenter(dumper: yaml.SafeDumper, data: Any) -> Any:
+    """Represent Fluid/Class/Reference citizens back to YAML tags."""
+    from confluid.fluid import Class, Reference
+
+    if isinstance(data, Reference):
+        return dumper.represent_scalar("!ref", data.target)
+
+    if isinstance(data, Class):
+        target = data.target
+        if isinstance(target, type):
+            name = f"{target.__module__}.{target.__qualname__}"
+        else:
+            name = str(target)
+        tag = f"!class:{name}"
+        return dumper.represent_mapping(tag, data.kwargs)
+
+    return dumper.represent_data(data.target)
+
+
 def dump(obj: Any) -> str:
     """
-    Export a configurable object hierarchy to a YAML string.
-    Uses !class tags for professional, compact output.
+    Serialize a (potentially nested) object tree to YAML.
+    Supports @configurable objects via !class tags.
     """
-    from confluid.fluid import Fluid
 
     class _LocalDumper(CompactDumper):
         pass
 
-    def _dict_representer(dumper: _LocalDumper, data: Dict[str, Any]) -> yaml.Node:
-        if "_confluid_class_" in data:
-            cls_name = data["_confluid_class_"]
-            args = {k: v for k, v in data.items() if k != "_confluid_class_"}
-            return dumper.represent_mapping("!class:" + cls_name, args)
-        if "_confluid_ref_" in data:
-            return dumper.represent_scalar("!ref:" + data["_confluid_ref_"], "")
-
-        return dumper.represent_dict(data)
-
-    def _fluid_representer(dumper: _LocalDumper, data: Fluid) -> yaml.Node:
-        cls_name = data.target if isinstance(data.target, str) else data.target.__name__
-        return dumper.represent_mapping("!class:" + cls_name, data.kwargs)
-
-    _LocalDumper.add_representer(dict, _dict_representer)
-    _LocalDumper.add_representer(Fluid, _fluid_representer)
-
-    # 3. Identify and register representers for @configurable classes in the graph
-
-    visited_ids: Set[int] = set()
-    registered_classes: Set[type] = set()
-
-    def _discover_and_register(target: Any) -> None:
-        if target is None or id(target) in visited_ids:
+    # Walk the object tree to find all unique configurable classes
+    def _discover_and_register(target: Any, visited: Optional[Set[int]] = None) -> None:
+        if visited is None:
+            visited = set()
+        if id(target) in visited:
             return
-        visited_ids.add(id(target))
+        visited.add(id(target))
 
-        cls = target.__class__
-        if hasattr(cls, "__confluid_configurable__"):
-            if cls not in registered_classes:
-                _LocalDumper.add_representer(cls, _configurable_presenter)
-                registered_classes.add(cls)
+        from confluid.fluid import Fluid
 
-            # Recurse into configurable attributes
-            for attr in dir(target):
-                if not attr.startswith("_"):
-                    try:
-                        val = getattr(target, attr)
-                        if not callable(val):
-                            _discover_and_register(val)
-                    except Exception:
-                        pass
+        if isinstance(target, Fluid):
+            _LocalDumper.add_representer(type(target), _fluid_presenter)
+            return
 
-        # Recurse into containers
-        if isinstance(target, (list, tuple)):
+        if hasattr(target.__class__, "__confluid_configurable__"):
+            _LocalDumper.add_representer(target.__class__, _configurable_presenter)
+            # Recurse into constructor-passed attributes
+            try:
+                sig = inspect.signature(target.__class__.__init__)
+                for p in sig.parameters:
+                    if hasattr(target, p):
+                        _discover_and_register(getattr(target, p), visited)
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(target, list):
             for item in target:
-                _discover_and_register(item)
+                _discover_and_register(item, visited)
         elif isinstance(target, dict):
             for val in target.values():
-                _discover_and_register(val)
+                _discover_and_register(val, visited)
 
     _discover_and_register(obj)
 

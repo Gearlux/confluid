@@ -37,7 +37,26 @@ class Resolver:
 
             return value
 
-        # 2. Handle Dictionary Markers
+        # 2. Handle Fluid citizens (Reference/Class from YAML tags)
+        from confluid.fluid import Class, Reference
+
+        if isinstance(value, Reference):
+            if not value.automatic:
+                return value  # Code-created References stay deferred until flow()
+            res = self._resolve_ref(value.target, local_context)
+            if res != f"!ref:{value.target}" and isinstance(res, (str, dict)):
+                return self.resolve(res, local_context)
+            if isinstance(res, str) and res.startswith("!ref:"):
+                return value  # Unresolvable — keep as Reference
+            return res
+
+        if isinstance(value, Class):
+            # Resolve kwargs within the Class but keep it as a Class
+            resolved_kwargs = {k: self.resolve(v, local_context) for k, v in value.kwargs.items()}
+            value.kwargs = resolved_kwargs
+            return value
+
+        # 3. Handle Dictionary Markers
         if isinstance(value, dict):
             if "_confluid_ref_" in value:
                 ref_path = value["_confluid_ref_"]
@@ -60,7 +79,7 @@ class Resolver:
             # Recurse into normal dicts, passing the current dict as local_context
             return {k: self.resolve(v, local_context=value) for k, v in value.items()}
 
-        # 3. Handle Lists
+        # 4. Handle Lists
         if isinstance(value, list):
             return [self.resolve(item, local_context) for item in value]
 
