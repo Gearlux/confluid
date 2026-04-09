@@ -83,44 +83,7 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     _included.add(path)
 
     if not path.exists():
-        curr = Path.cwd().resolve()
-        source_root = None
-        for _ in range(6):
-            if (curr / ".gitmodules").exists():
-                source_root = curr
-                break
-            curr = curr.parent
-
-        if source_root:
-            path_str = str(path)
-            if "/source/" in path_str:
-                suffix = path_str.split("/source/")[-1]
-                candidate = source_root / suffix
-                if candidate.exists():
-                    path = candidate
-
-            if not path.exists():
-                parts = Path(path).parts
-                projects = [
-                    "waivefront",
-                    "logflow",
-                    "confluid",
-                    "liquify",
-                    "dataflux",
-                    "torpedo",
-                    "navigaitor",
-                    "aisland",
-                    "marainer",
-                ]
-                for i, p in enumerate(parts):
-                    if p in projects:
-                        candidate = source_root / Path(*parts[i:])
-                        if candidate.exists():
-                            path = candidate
-                            break
-
-        if not path.exists():
-            raise FileNotFoundError(f"Not found: {path}")
+        raise FileNotFoundError(f"Not found: {path}")
 
     _register_constructors()
     with open(path, "r") as f:
@@ -175,7 +138,7 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
                     continue
                 target_path = current_path.parent / inc_path
                 if not target_path.exists():
-                    target_path = Path(inc_path)
+                    target_path = Path(inc_path).resolve()
 
                 inc_data = load_config(target_path, _included=set(_included))
                 merged_base = deep_merge(merged_base, inc_data)
@@ -278,43 +241,50 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
                 final_kwargs[k] = _flow_recursive(res_v, context=context, path_prefix=new_prefix)
 
             if context:
-                # Prioritized Broadcasting
-                for param_name in (valid_params if valid_params else final_kwargs.keys()):
-                    full_path = f"{new_prefix}.{param_name}" if new_prefix else param_name
-                    parts = full_path.split(".")
-                    found_val = None
-                    for start_idx in range(len(parts)):
-                        candidate_path = ".".join(parts[start_idx:])
-                        if candidate_path in context:
-                            found_val = context[candidate_path]
-                            if not isinstance(found_val, (dict, list)) or _is_marker(found_val):
-                                break
-                            found_val = None
-
-                    if found_val is not None and param_name not in data.kwargs:
-                        if isinstance(found_val, Fluid):
-                            # Context value is a complete replacement (e.g., YAML !class:)
-                            final_kwargs[param_name] = found_val
-                        elif isinstance(final_kwargs.get(param_name), Fluid):
-                            _broadcast_into_fluid(final_kwargs[param_name], param_name, context)
-                        else:
-                            final_kwargs[param_name] = found_val
-
-                # Scoped settings (lower priority than explicit kwargs)
-                global_settings = context.get(cls_name) or {}
-                if isinstance(global_settings, dict):
-                    resolved_globals = resolver.resolve(global_settings)
-                    clean_settings = {k: v for k, v in resolved_globals.items() if not k.startswith("_confluid_")}
-                    for k, v in clean_settings.items():
-                        if k not in data.kwargs:
+                # Scoped settings: ClassName block (lower priority than explicit)
+                scoped = context.get(cls_name)
+                if isinstance(scoped, dict):
+                    resolved_scoped = resolver.resolve(scoped)
+                    for k, v in resolved_scoped.items():
+                        if not k.startswith("_confluid_") and k not in data.kwargs:
                             final_kwargs[k] = v
+
+                # Broadcasting: fill in remaining params from context root
+                instance_name = data.kwargs.get("name")
+                for param_name in (valid_params if valid_params else list(final_kwargs.keys())):
+                    if param_name in data.kwargs:
+                        continue
+                    if isinstance(scoped, dict) and param_name in scoped:
+                        continue
+                    # Check candidates: instance.param, ClassName.param, param
+                    candidates = [param_name]
+                    if instance_name and isinstance(instance_name, str):
+                        candidates.insert(0, f"{instance_name}.{param_name}")
+                    for candidate in candidates:
+                        if candidate in context:
+                            val = context[candidate]
+                            if isinstance(val, Fluid) or not isinstance(val, (dict, list)):
+                                final_kwargs[param_name] = val
+                                break
 
             if valid_params:
                 final_kwargs = {k: v for k, v in final_kwargs.items() if k in valid_params}
 
-            for k, v in final_kwargs.items():
-                if isinstance(v, Fluid):
-                    _broadcast_into_fluid(v, k, context)
+            # Broadcast context into any deferred Fluid values in kwargs
+            if context:
+                for k, v in final_kwargs.items():
+                    if isinstance(v, Class) and v.target:
+                        target_cls = resolve_class(v.target) if isinstance(v.target, str) else v.target
+                        if target_cls:
+                            try:
+                                tsig = inspect.signature(target_cls.__init__)  # type: ignore[misc]
+                                for tp in tsig.parameters:
+                                    if tp in ("self", "cls") or tp in v.kwargs:
+                                        continue
+                                    if tp in context and not isinstance(context[tp], (dict, list)):
+                                        v.kwargs[tp] = context[tp]
+                            except (ValueError, TypeError):
+                                pass
 
             return cls(**final_kwargs)
 
@@ -328,7 +298,17 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
         # Stays deferred if not automatic (code-created Class citizen)
         if context:
             data.context = context
-        _broadcast_into_fluid(data, path_prefix, context)
+            # Broadcast context values into deferred Fluid kwargs
+            if isinstance(data, Class) and cls:
+                try:
+                    sig = inspect.signature(cls.__init__)  # type: ignore[misc]
+                    for p in sig.parameters:
+                        if p in ("self", "cls") or p in data.kwargs:
+                            continue
+                        if p in context and not isinstance(context[p], (dict, list)):
+                            data.kwargs[p] = context[p]
+                except (ValueError, TypeError):
+                    pass
         return data
 
     # 3. Handle Reference Objects
@@ -347,7 +327,6 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
     if isinstance(data, Fluid):
         if context:
             data.context = context
-        _broadcast_into_fluid(data, path_prefix, context)
         return data
 
     # 5. Handle Lists
@@ -359,50 +338,3 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
         return {k: _flow_recursive(v, context=context, path_prefix=path_prefix) for k, v in data.items()}
 
     return data
-
-
-def _broadcast_into_fluid(fluid: Any, path_prefix: str, context: Optional[Dict[str, Any]]) -> None:
-    """Helper to perform broadcasting into a Fluid object's kwargs."""
-    from confluid.fluid import Class, Fluid
-
-    if not isinstance(fluid, Fluid) or not context:
-        return
-
-    target_cls = None
-    if isinstance(fluid, Class):
-        target_cls = fluid.target
-    if isinstance(target_cls, str):
-        target_cls = get_registry().get_class(target_cls)
-
-    if target_cls:
-        try:
-            sig = inspect.signature(target_cls.__init__)
-            cls_name = getattr(target_cls, "__confluid_name__", target_cls.__name__)
-            for param_name in sig.parameters:
-                if param_name in ("self", "cls"):
-                    continue
-
-                # Check root, then check ClassName.param
-                candidates = [param_name, f"{cls_name}.{param_name}"]
-                if path_prefix:
-                    candidates.append(f"{path_prefix}.{param_name}")
-
-                for candidate in candidates:
-                    if candidate in context and param_name not in fluid.kwargs:
-                        val = context[candidate]
-                        if not isinstance(val, (dict, list)) or _is_marker(val):
-                            fluid.kwargs[param_name] = val
-                            break
-        except (ValueError, TypeError):
-            pass
-
-
-def _is_marker(val: Any) -> bool:
-    """Helper to identify confluid markers."""
-    from confluid.fluid import Class, Fluid, Reference
-
-    if isinstance(val, (Fluid, Class, Reference)):
-        return True
-    if isinstance(val, dict):
-        return "_confluid_class_" in val or "_confluid_ref_" in val
-    return False
