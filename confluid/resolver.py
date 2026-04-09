@@ -2,6 +2,7 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+import yaml
 from logflow import get_logger
 
 logger = get_logger("confluid.resolver")
@@ -162,22 +163,27 @@ class Resolver:
         return value
 
     def _parse_primitive(self, value: str) -> Any:
-        """Convert string to appropriate Python primitive (YAML-like conversion)."""
-        # Handle Confluid internal markers
+        """Convert string to appropriate Python primitive."""
         if value.startswith("!ref:"):
             return value
+        return parse_value(value)
 
-        low = value.lower()
-        if low == "true":
-            return True
-        if low == "false":
-            return False
-        if low == "none" or low == "null":
-            return None
 
-        try:
-            if "." in value:
-                return float(value)
-            return int(value)
-        except ValueError:
-            return value
+def parse_value(value: str) -> Any:
+    """Parse a string value into a Python type using YAML for complex types.
+
+    Examples:
+        "42" -> 42, "3.14" -> 3.14, "true" -> True, "[1, 2]" -> [1, 2]
+    """
+    low = value.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("null", "none"):
+        return None
+
+    try:
+        return yaml.safe_load(value)
+    except Exception:
+        return value

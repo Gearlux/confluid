@@ -8,8 +8,8 @@ from confluid.dumper import dump
 from confluid.fluid import Class, Fluid, Reference, flow
 from confluid.loader import load, load_config, materialize
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.parser import parse_value
 from confluid.registry import get_registry
+from confluid.resolver import parse_value
 from confluid.schema import get_hierarchy
 from confluid.scopes import resolve_scopes
 
