@@ -8,6 +8,7 @@ import yaml
 from confluid import (
     Class,
     Fluid,
+    Instance,
     Reference,
     configurable,
     dump,
@@ -162,7 +163,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
     assert ref_result.target == "r"
     # 48-61: class compat variants
     compat_result = yaml.safe_load("!class Model(x=1)")
-    assert isinstance(compat_result, Class)
+    assert isinstance(compat_result, Instance)
     assert compat_result.target == "Model"
     assert compat_result.kwargs["x"] == "1"
     # Legacy !class tag also returns Class object

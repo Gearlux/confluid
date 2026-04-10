@@ -1,7 +1,7 @@
 import importlib
-import inspect
 import re
 import threading
+from copy import copy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union, cast
 
@@ -9,7 +9,6 @@ import yaml
 from logflow import get_logger
 
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.registry import get_registry, resolve_class
 from confluid.resolver import Resolver
 from confluid.scopes import resolve_scopes
 
@@ -24,50 +23,47 @@ def get_active_context() -> Optional[Dict[str, Any]]:
 
 
 def _register_constructors() -> None:
-    """Register custom YAML constructors for !ref and !class to return Class/Reference citizens."""
-    from confluid.fluid import Class, Reference
+    """Register YAML constructors for !ref: and !class: tags."""
+    from confluid.fluid import Class, Instance, Reference
+
+    def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if args_str and args_str.strip():
+            for pair in args_str.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    kwargs[k.strip()] = v.strip()
+        return kwargs
 
     def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
-        # YAML tags are marked as automatic=True so materialize() resolves them
-        return Reference(tag_suffix, automatic=True)
+        return Reference(tag_suffix)
 
     def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
+        factory = Instance if instant else Class
+        name = instant.group(1) if instant else tag_suffix
+
         if isinstance(node, yaml.nodes.MappingNode):
-            kwargs: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return Class(tag_suffix, automatic=True, **kwargs)
-        if isinstance(node, yaml.nodes.ScalarNode):
-            match = re.match(r"^([\w_]+)(?:\((.*)\))?$", tag_suffix)
-            if match:
-                cls_name, args_str = match.groups()
-                str_kwargs: dict[str, Any] = {}
-                if args_str and args_str.strip():
-                    for pair in args_str.split(","):
-                        if "=" in pair:
-                            k, v = pair.split("=", 1)
-                            str_kwargs[k.strip()] = v.strip()
-                return Class(cls_name, automatic=True, **str_kwargs)
-        return Class(tag_suffix, automatic=True)
+            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            return factory(name, **mapping)
+
+        if isinstance(node, yaml.nodes.ScalarNode) and instant:
+            return factory(name, **_parse_inline_kwargs(instant.group(2)))
+
+        return Class(tag_suffix)
 
     yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
     yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
-        return Reference(loader.construct_scalar(node), automatic=True)
+        return Reference(loader.construct_scalar(node))
 
     def class_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         val = loader.construct_scalar(node)
-        if "(" in val and val.endswith(")"):
-            match = re.match(r"^([\w_]+)\((.*)\)$", val)
-            if match:
-                cls_name, args_str = match.groups()
-                compat_kwargs: dict[str, Any] = {}
-                if args_str and args_str.strip():
-                    for pair in args_str.split(","):
-                        if "=" in pair:
-                            k, v = pair.split("=", 1)
-                            compat_kwargs[k.strip()] = v.strip()
-                return Class(cls_name, automatic=True, **compat_kwargs)
-        return Class(val, automatic=True)
+        instant = re.match(r"^([\w_.]+)\((.*)\)$", val)
+        if instant:
+            return Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2)))
+        return Class(val)
 
     yaml.SafeLoader.add_constructor("!ref", ref_compat)
     yaml.SafeLoader.add_constructor("!class", class_compat)
@@ -168,7 +164,7 @@ def load(
 
     if isinstance(data, Fluid):
         if flow:
-            return materialize(data, context=context)
+            return _deep_flow(data)
         return data
 
     if not isinstance(data, dict):
@@ -190,30 +186,56 @@ def load(
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
+    """Resolve config data and instantiate all Class objects recursively."""
+    if context:
+        context = expand_dotted_keys(context)
     old_ctx = getattr(_state, "context", None)
     _state.context = context
     try:
-        return _flow_recursive(data, context=context, path_prefix="")
+        result = _flow_recursive(data, context=context, path_prefix="")
+        return _deep_flow(result)
     finally:
         _state.context = old_ctx
 
 
-def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_prefix: str = "") -> Any:
-    from confluid.fluid import Class, Fluid, Reference
+def _deep_flow(data: Any) -> Any:
+    """Flow the top-level Fluid + any Instance objects in the tree."""
+    from confluid.fluid import Fluid, Instance
+    from confluid.fluid import flow as _flow
 
-    # 1. Convert marker dictionaries to citizens immediately (legacy support)
+    if isinstance(data, Fluid):
+        return _flow(data)
+    if isinstance(data, dict):
+        return {k: (_flow(v) if isinstance(v, Instance) else v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [(_flow(item) if isinstance(item, Instance) else item) for item in data]
+    return data
+
+
+def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_prefix: str = "") -> Any:
+    from confluid.fluid import Class, Fluid, Instance, Reference
+
+    # 1. Convert marker dictionaries to Class/Reference citizens
     if isinstance(data, dict):
         if "_confluid_class_" in data:
             cls_name = data.pop("_confluid_class_")
-            data = Class(cls_name, automatic=True, **data)
+            if cls_name.endswith("()"):
+                cls_name = cls_name[:-2]
+            data = Instance(cls_name, **data)
         elif "_confluid_ref_" in data:
-            ref_path = data["_confluid_ref_"]
-            data = Reference(ref_path, automatic=True)
+            data = Reference(data["_confluid_ref_"])
 
-    # 2. Handle Class Objects
-    if isinstance(data, Class):
-        cls_name = data.target
-        cls = resolve_class(cls_name)
+    # 2. Class/Instance — resolve kwargs recursively, attach context
+    if isinstance(data, (Class, Instance)):
+        resolver = Resolver(context=context)
+        resolved_kwargs = {
+            k: _flow_recursive(resolver.resolve(v), context=context, path_prefix=path_prefix)
+            for k, v in data.kwargs.items()
+        }
+        res_obj = copy(data)
+        res_obj.kwargs = resolved_kwargs
+        res_obj.context = context
+        return res_obj
 
         # Materialize if configurable AND marked as automatic (from YAML tag)
         if data.automatic and cls and get_registry().is_configurable(cls):
@@ -313,17 +335,14 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
 
     # 3. Handle Reference Objects
     if isinstance(data, Reference):
-        if context:
-            data.context = context
-        # Resolve immediately if automatic (from YAML tag)
-        if data.automatic:
-            resolver = Resolver(context=context)
-            resolved = resolver.resolve(f"!ref:{data.target}")
-            if resolved != f"!ref:{data.target}":
-                return _flow_recursive(resolved, context=context, path_prefix=path_prefix)
-        return data
+        # Try context directly, then resolver for nested paths
+        if context and data.target in context:
+            return _flow_recursive(context[data.target], context=context, path_prefix=path_prefix)
+        res_ref = copy(data)
+        res_ref.context = context
+        return res_ref
 
-    # 4. Handle generic Fluid
+    # 4. Generic Fluid — attach context
     if isinstance(data, Fluid):
         if context:
             data.context = context
@@ -333,8 +352,9 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
     if isinstance(data, list):
         return [_flow_recursive(item, context=context, path_prefix=path_prefix) for item in data]
 
-    # 6. Handle Standard Dictionaries
+    # 6. Handle Standard Dictionaries — use dict as local context for nested resolution
     if isinstance(data, dict):
-        return {k: _flow_recursive(v, context=context, path_prefix=path_prefix) for k, v in data.items()}
+        local_ctx = {**context, **data} if context else dict(data)
+        return {k: _flow_recursive(v, context=local_ctx, path_prefix=path_prefix) for k, v in data.items()}
 
     return data
