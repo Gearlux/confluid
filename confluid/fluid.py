@@ -1,5 +1,4 @@
-from copy import copy
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Type, Union
 
 from confluid.registry import get_registry, resolve_class
 
@@ -12,7 +11,6 @@ class Fluid:
     def __init__(self, target: Any, **kwargs: Any) -> None:
         self.target = target
         self.kwargs = kwargs
-        self.context: Optional[Dict[str, Any]] = None
 
     def __repr__(self) -> str:
         name = self.target if isinstance(self.target, str) else getattr(self.target, "__name__", str(self.target))
@@ -53,10 +51,8 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     if not isinstance(obj, (Fluid, str, type, dict)):
         return obj
 
-    # 2. Resolve context from the Fluid object or the global active context
-    context = getattr(obj, "context", None) if isinstance(obj, Fluid) else None
-    if not context:
-        context = get_active_context()
+    # 2. Resolve context from the global active context
+    context = get_active_context()
 
     # 3. Class/Instance — resolve, merge kwargs, instantiate
     if isinstance(obj, (Class, Instance)):
@@ -69,33 +65,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                 raise ValueError(f"Cannot resolve class: {target}")
             target = resolved
 
-        # Build merged kwargs: context < explicit kwargs < runtime kwargs
-        obj_context = getattr(obj, "context", None) or {}
-        merged: dict[str, Any] = {}
-        for k, v in obj_context.items():
-            if not isinstance(v, (dict, list, Fluid)):
-                merged[k] = v
-        # Scoped: ClassName and instance name blocks from context
-        cls_name = getattr(target, "__confluid_name__", target.__name__)
-        for key in [cls_name, obj.kwargs.get("name")]:
-            block = obj_context.get(key) if key else None
-            if isinstance(block, dict):
-                merged.update(block)
-        merged.update(obj.kwargs)
+        # kwargs already contain broadcasting (merged by _flow_recursive)
+        merged: dict[str, Any] = dict(obj.kwargs)
         merged.update(runtime_kwargs)
 
-        # Flow Instance values (instant), propagate context to Class (deferred)
+        # Flow Instance values (instant), keep Class/Reference deferred
         def _resolve_value(v: Any) -> Any:
             if isinstance(v, Instance):
-                if not v.context and obj_context:
-                    v = copy(v)
-                    v.kwargs = dict(v.kwargs)
-                    v.context = obj_context
                 return flow(v)
-            if isinstance(v, Fluid) and not v.context and obj_context:
-                v = copy(v)
-                v.kwargs = dict(v.kwargs)
-                v.context = obj_context
+            if isinstance(v, Fluid):
                 return v  # Class/Reference stay deferred
             if isinstance(v, list):
                 return [_resolve_value(item) for item in v]
@@ -130,7 +108,7 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
     # 5. Reference objects — resolve from context
     if isinstance(obj, Reference):
-        obj_context = getattr(obj, "context", None) or context
+        obj_context = context
         if obj_context and obj.target in obj_context:
             return flow(obj_context[obj.target], **runtime_kwargs)
         # Fallback: try resolver for nested paths
