@@ -134,7 +134,7 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
                     continue
                 target_path = current_path.parent / inc_path
                 if not target_path.exists():
-                    target_path = Path(inc_path).resolve()
+                    target_path = Path(inc_path)
 
                 inc_data = load_config(target_path, _included=set(_included))
                 merged_base = deep_merge(merged_base, inc_data)
@@ -237,103 +237,7 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
         res_obj.context = context
         return res_obj
 
-        # Materialize if configurable AND marked as automatic (from YAML tag)
-        if data.automatic and cls and get_registry().is_configurable(cls):
-            instance_name = data.kwargs.get("name")
-            new_prefix = path_prefix
-            if instance_name and isinstance(instance_name, str):
-                new_prefix = f"{path_prefix}.{instance_name}" if path_prefix else instance_name
-
-            resolver = Resolver(context=context)
-            final_kwargs = {}
-
-            try:
-                sig = inspect.signature(cls.__init__)  # type: ignore[misc]
-                valid_params = [p for p in sig.parameters if p not in ("self", "cls")]
-                for p_name, p_obj in sig.parameters.items():
-                    if p_name in ("self", "cls"):
-                        continue
-                    if p_obj.default is not inspect.Parameter.empty:
-                        final_kwargs[p_name] = p_obj.default
-            except (ValueError, TypeError):
-                valid_params = []
-
-            for k, v in data.kwargs.items():
-                res_v = resolver.resolve(v)
-                final_kwargs[k] = _flow_recursive(res_v, context=context, path_prefix=new_prefix)
-
-            if context:
-                # Scoped settings: ClassName block (lower priority than explicit)
-                scoped = context.get(cls_name)
-                if isinstance(scoped, dict):
-                    resolved_scoped = resolver.resolve(scoped)
-                    for k, v in resolved_scoped.items():
-                        if not k.startswith("_confluid_") and k not in data.kwargs:
-                            final_kwargs[k] = v
-
-                # Broadcasting: fill in remaining params from context root
-                instance_name = data.kwargs.get("name")
-                for param_name in (valid_params if valid_params else list(final_kwargs.keys())):
-                    if param_name in data.kwargs:
-                        continue
-                    if isinstance(scoped, dict) and param_name in scoped:
-                        continue
-                    # Check candidates: instance.param, ClassName.param, param
-                    candidates = [param_name]
-                    if instance_name and isinstance(instance_name, str):
-                        candidates.insert(0, f"{instance_name}.{param_name}")
-                    for candidate in candidates:
-                        if candidate in context:
-                            val = context[candidate]
-                            if isinstance(val, Fluid) or not isinstance(val, (dict, list)):
-                                final_kwargs[param_name] = val
-                                break
-
-            if valid_params:
-                final_kwargs = {k: v for k, v in final_kwargs.items() if k in valid_params}
-
-            # Broadcast context into any deferred Fluid values in kwargs
-            if context:
-                for k, v in final_kwargs.items():
-                    if isinstance(v, Class) and v.target:
-                        target_cls = resolve_class(v.target) if isinstance(v.target, str) else v.target
-                        if target_cls:
-                            try:
-                                tsig = inspect.signature(target_cls.__init__)  # type: ignore[misc]
-                                for tp in tsig.parameters:
-                                    if tp in ("self", "cls") or tp in v.kwargs:
-                                        continue
-                                    if tp in context and not isinstance(context[tp], (dict, list)):
-                                        v.kwargs[tp] = context[tp]
-                            except (ValueError, TypeError):
-                                pass
-
-            return cls(**final_kwargs)
-
-        # Non-configurable but automatic (from YAML): instantiate directly
-        if data.automatic and cls:
-            resolved_kwargs = {}
-            for k, v in data.kwargs.items():
-                resolved_kwargs[k] = _flow_recursive(v, context=context, path_prefix=path_prefix)
-            return cls(**resolved_kwargs)
-
-        # Stays deferred if not automatic (code-created Class citizen)
-        if context:
-            data.context = context
-            # Broadcast context values into deferred Fluid kwargs
-            if isinstance(data, Class) and cls:
-                try:
-                    sig = inspect.signature(cls.__init__)  # type: ignore[misc]
-                    for p in sig.parameters:
-                        if p in ("self", "cls") or p in data.kwargs:
-                            continue
-                        if p in context and not isinstance(context[p], (dict, list)):
-                            data.kwargs[p] = context[p]
-                except (ValueError, TypeError):
-                    pass
-        return data
-
-    # 3. Handle Reference Objects
+    # 3. Reference — resolve against context
     if isinstance(data, Reference):
         # Try context directly, then resolver for nested paths
         if context and data.target in context:
@@ -344,9 +248,10 @@ def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_pr
 
     # 4. Generic Fluid — attach context
     if isinstance(data, Fluid):
-        if context:
-            data.context = context
-        return data
+        res_fluid = copy(data)
+        res_fluid.kwargs = dict(data.kwargs)
+        res_fluid.context = context
+        return res_fluid
 
     # 5. Handle Lists
     if isinstance(data, list):

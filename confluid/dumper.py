@@ -14,7 +14,6 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
     from confluid.fluid import Class, Reference
 
-    # Fluid citizens: Class and Reference
     if isinstance(data, Reference):
         return dumper.represent_scalar("!ref", data.target)
 
@@ -26,7 +25,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             name = str(target)
         return dumper.represent_mapping(f"!class:{name}", data.kwargs)
 
-    # @configurable instances
+    # Live @configurable instance → dump with () to indicate instant construction on reload
     cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
     try:
         sig = inspect.signature(data.__class__.__init__)
@@ -46,7 +45,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
                         val = f"{val.__module__}.{val.__name__}"
                 kwargs[p] = val
 
-    return dumper.represent_mapping(f"!class:{cls_name}", kwargs)
+    return dumper.represent_mapping(f"!class:{cls_name}()", kwargs)
 
 
 def dump(obj: Any) -> str:
@@ -74,12 +73,12 @@ def dump(obj: Any) -> str:
                 sig = inspect.signature(target.__class__.__init__)
                 for p in sig.parameters:
                     if hasattr(target, p):
-                        _discover(getattr(target, p), visited)
+                        _discover_and_register(getattr(target, p), visited)
             except (ValueError, TypeError):
                 pass
         elif isinstance(target, list):
             for item in target:
-                _discover(item, visited)
+                _discover_and_register(item, visited)
         elif isinstance(target, dict):
             for val in target.values():
                 _discover_and_register(val, visited)
