@@ -4,7 +4,6 @@ import pytest
 import yaml
 
 from confluid import configurable, dump, get_registry
-from confluid.fluid import Class
 from confluid.loader import _register_constructors
 
 
@@ -23,15 +22,16 @@ def test_basic_dump() -> None:
     model = Model(layers=10)
     output = dump(model)
 
-    # Verify the YAML output contains the class tag and attributes
-    assert "!class:Model" in output
+    # Instances dump with () for instant construction on reload
+    assert "!class:Model()" in output
     assert "layers: 10" in output
 
-    # Round-trip via safe_load returns a Class object (not a dict)
-    data = yaml.safe_load(output)
-    assert isinstance(data, Class)
-    assert data.target == "Model"
-    assert data.kwargs["layers"] == 10
+    # Round-trip via confluid.load produces a live instance
+    from confluid import load
+
+    data = load(output)
+    assert isinstance(data, Model)
+    assert data.layers == 10
 
 
 def test_hierarchical_dump() -> None:

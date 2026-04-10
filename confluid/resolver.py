@@ -38,23 +38,16 @@ class Resolver:
 
             return value
 
-        # 2. Handle Fluid citizens (Reference/Class from YAML tags)
-        from confluid.fluid import Class, Reference
+        # 2. Handle Fluid citizens
+        from confluid.fluid import Class, Fluid, Reference
 
         if isinstance(value, Reference):
-            if not value.automatic:
-                return value  # Code-created References stay deferred until flow()
             res = self._resolve_ref(value.target, local_context)
-            if res != f"!ref:{value.target}" and isinstance(res, (str, dict)):
+            if res != f"!ref:{value.target}":
                 return self.resolve(res, local_context)
-            if isinstance(res, str) and res.startswith("!ref:"):
-                return value  # Unresolvable — keep as Reference
-            return res
+            return value
 
-        if isinstance(value, Class):
-            # Resolve kwargs within the Class but keep it as a Class
-            resolved_kwargs = {k: self.resolve(v, local_context) for k, v in value.kwargs.items()}
-            value.kwargs = resolved_kwargs
+        if isinstance(value, (Class, Fluid)):
             return value
 
         # 3. Handle Dictionary Markers

@@ -5,7 +5,7 @@ import yaml
 
 
 class CompactDumper(yaml.SafeDumper):
-    """Custom YAML dumper that uses !class tag for @configurable objects."""
+    """Custom YAML dumper with !class tag support."""
 
     pass
 
@@ -74,12 +74,12 @@ def dump(obj: Any) -> str:
                 sig = inspect.signature(target.__class__.__init__)
                 for p in sig.parameters:
                     if hasattr(target, p):
-                        _discover_and_register(getattr(target, p), visited)
+                        _discover(getattr(target, p), visited)
             except (ValueError, TypeError):
                 pass
         elif isinstance(target, list):
             for item in target:
-                _discover_and_register(item, visited)
+                _discover(item, visited)
         elif isinstance(target, dict):
             for val in target.values():
                 _discover_and_register(val, visited)

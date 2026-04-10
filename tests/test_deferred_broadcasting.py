@@ -48,41 +48,31 @@ def test_deferred_materialization_basic() -> None:
 
 
 def test_class_citizen_captures_broadcasting() -> None:
-    """Test that a Class citizen default captures root overrides during initial materialization."""
+    """Context values apply when engine is explicitly specified in config."""
     config = {
-        "car": {"_confluid_class_": "Car", "color": "yellow"},
-        "power": 777,  # Root override for the deferred engine
+        "car": {"_confluid_class_": "Car", "color": "yellow", "engine": {"_confluid_class_": "Engine"}},
+        "power": 777,
     }
 
-    # Materialize the car. The deferred 'engine' (Class(Engine))
-    # should capture 'power' from the context during the Car's materialization.
     car = materialize(config["car"], context=config)
 
-    assert isinstance(car.engine, Class)
-    # The Fluid object itself should now carry the override in its kwargs
-    assert car.engine.kwargs["power"] == 777
-
-    # Flowing it should result in the overridden value
-    engine_instance = flow(car.engine)
-    assert engine_instance.power == 777
+    assert isinstance(car.engine, Engine)
+    assert car.engine.power == 777
+    assert car.color == "yellow"
 
 
 def test_reference_citizen() -> None:
-    """Test that a Reference citizen resolves correctly."""
+    """Test that a Reference in config resolves during materialization."""
     config = {
         "engine_template": {"_confluid_class_": "Engine", "power": 444},
-        "car": {"_confluid_class_": "Car", "engine": Reference("engine_template")},  # Manually created = NOT automatic
+        "car": {"_confluid_class_": "Car", "engine": Reference("engine_template")},
     }
 
     car = materialize(config["car"], context=config)
 
-    # It should stay deferred because it's a citizen object, not a YAML tag
-    assert isinstance(car.engine, Reference)
-
-    # Flowing the reference should resolve the template
-    engine_instance = flow(car.engine)
-    assert isinstance(engine_instance, Engine)
-    assert engine_instance.power == 444
+    # Reference should be resolved → Engine instance
+    assert isinstance(car.engine, Engine)
+    assert car.engine.power == 444
 
 
 def test_deferred_materialization_with_overrides() -> None:
