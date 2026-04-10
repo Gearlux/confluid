@@ -61,6 +61,33 @@ def test_broadcast_priority() -> None:
     assert res2.value == 30
 
 
+def test_deep_broadcast_propagation() -> None:
+    """Root-level scalars propagate through nested class instances (mnist_train_minimal scenario)."""
+
+    @configurable
+    class Inner:
+        def __init__(self, max_epochs: int = 1, name: str = "inner") -> None:
+            self.max_epochs = max_epochs
+            self.name = name
+
+    @configurable
+    class Outer:
+        def __init__(self, inner: "Inner" = None, name: str = "outer") -> None:  # type: ignore[assignment]
+            self.inner = inner
+            self.name = name
+
+    register(Inner)
+    register(Outer)
+
+    config = {"max_epochs": 10}
+    data = {"_confluid_class_": "Outer", "inner": {"_confluid_class_": "Inner"}}
+
+    result = materialize(data, context=config)
+    assert isinstance(result, Outer)
+    assert isinstance(result.inner, Inner)
+    assert result.inner.max_epochs == 10
+
+
 def test_dotted_broadcast_materialize() -> None:
     register(Leaf)
     register(Branch)

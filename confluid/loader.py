@@ -192,7 +192,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
     old_ctx = getattr(_state, "context", None)
     _state.context = context
     try:
-        result = _flow_recursive(data, context=context, path_prefix="")
+        result = _flow_recursive(data, parent_context=context)
         return _deep_flow(result)
     finally:
         _state.context = old_ctx
@@ -212,54 +212,94 @@ def _deep_flow(data: Any) -> Any:
     return data
 
 
-def _flow_recursive(data: Any, context: Optional[Dict[str, Any]] = None, path_prefix: str = "") -> Any:
+def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge broadcast values and scoped blocks into a class marker dict.
+
+    Priority: explicit kwargs > class-scoped block > instance-scoped block > broadcast scalars.
+    """
+    from confluid.fluid import Fluid
+
+    cls_name = marker_dict.get("_confluid_class_", "")
+    if cls_name.endswith("()"):
+        cls_name = cls_name[:-2]
+    instance_name = marker_dict.get("name")
+
+    merged: Dict[str, Any] = {}
+
+    # 1. Broadcast: non-dict, non-list, non-Fluid scalars from parent
+    for k, v in parent_context.items():
+        if not isinstance(v, (dict, list, Fluid)):
+            merged[k] = v
+
+    # 2. Class-scoped and instance-scoped blocks
+    for key in [cls_name, instance_name]:
+        block = parent_context.get(key) if key else None
+        if isinstance(block, dict):
+            merged.update(block)
+
+    # 3. Explicit kwargs win
+    merged.update(marker_dict)
+
+    return merged
+
+
+def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
     from confluid.fluid import Class, Fluid, Instance, Reference
 
-    # 1. Convert marker dictionaries to Class/Reference citizens
+    # 1. Marker dictionaries → Fluid citizens with broadcasting applied
     if isinstance(data, dict):
         if "_confluid_class_" in data:
+            if parent_context:
+                data = _prepare_kwargs(data, parent_context)
+
             cls_name = data.pop("_confluid_class_")
             if cls_name.endswith("()"):
                 cls_name = cls_name[:-2]
-            data = Instance(cls_name, **data)
-        elif "_confluid_ref_" in data:
-            data = Reference(data["_confluid_ref_"])
 
-    # 2. Class/Instance — resolve kwargs recursively, attach context
+            # Child context: parent context merges into data (context values fill gaps)
+            child_ctx = deep_merge(data, parent_context) if parent_context else dict(data)
+            resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
+            return Instance(cls_name, **resolved_kwargs)
+
+        if "_confluid_ref_" in data:
+            data = Reference(data["_confluid_ref_"])
+        else:
+            # Plain dict — pass merged context down
+            local_ctx = {**parent_context, **data} if parent_context else dict(data)
+            return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
+
+    # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
     if isinstance(data, (Class, Instance)):
-        resolver = Resolver(context=context)
-        resolved_kwargs = {
-            k: _flow_recursive(resolver.resolve(v), context=context, path_prefix=path_prefix)
-            for k, v in data.kwargs.items()
-        }
+        if parent_context:
+            target_name = (
+                data.target
+                if isinstance(data.target, str)
+                else getattr(data.target, "__confluid_name__", getattr(data.target, "__name__", ""))
+            )
+            synthetic = {**data.kwargs, "_confluid_class_": target_name}
+            merged_kwargs = _prepare_kwargs(synthetic, parent_context)
+            merged_kwargs.pop("_confluid_class_", None)
+        else:
+            merged_kwargs = dict(data.kwargs)
+
+        child_ctx = deep_merge(merged_kwargs, parent_context) if parent_context else dict(merged_kwargs)
+        resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs
-        res_obj.context = context
         return res_obj
 
-    # 3. Reference — resolve against context
+    # 3. Reference — resolve against parent context
     if isinstance(data, Reference):
-        # Try context directly, then resolver for nested paths
-        if context and data.target in context:
-            return _flow_recursive(context[data.target], context=context, path_prefix=path_prefix)
-        res_ref = copy(data)
-        res_ref.context = context
-        return res_ref
+        if parent_context and data.target in parent_context:
+            return _flow_recursive(parent_context[data.target], parent_context=parent_context)
+        return data
 
-    # 4. Generic Fluid — attach context
+    # 4. Generic Fluid — pass through
     if isinstance(data, Fluid):
-        res_fluid = copy(data)
-        res_fluid.kwargs = dict(data.kwargs)
-        res_fluid.context = context
-        return res_fluid
+        return data
 
-    # 5. Handle Lists
+    # 5. Lists
     if isinstance(data, list):
-        return [_flow_recursive(item, context=context, path_prefix=path_prefix) for item in data]
-
-    # 6. Handle Standard Dictionaries — use dict as local context for nested resolution
-    if isinstance(data, dict):
-        local_ctx = {**context, **data} if context else dict(data)
-        return {k: _flow_recursive(v, context=local_ctx, path_prefix=path_prefix) for k, v in data.items()}
+        return [_flow_recursive(item, parent_context=parent_context) for item in data]
 
     return data
