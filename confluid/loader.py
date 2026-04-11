@@ -216,32 +216,41 @@ def _deep_flow(data: Any) -> Any:
 _acceptable_keys_cache: Dict[str, Optional[frozenset]] = {}  # type: ignore[type-arg]
 
 
-def _get_acceptable_keys(cls_name: str) -> Optional[frozenset]:  # type: ignore[type-arg]
+def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset]:  # type: ignore[type-arg]
     """Return constructor params (+ configurable properties) for a class.
 
+    Accepts either a class object or a string name (resolved via registry).
     Returns None if the class cannot be resolved or accepts **kwargs (broadcast everything).
     """
-    if cls_name in _acceptable_keys_cache:
-        return _acceptable_keys_cache[cls_name]
+    if isinstance(cls_or_name, type):
+        cache_key = f"{cls_or_name.__module__}.{cls_or_name.__qualname__}"
+        target = cls_or_name
+    else:
+        cache_key = cls_or_name
+        target = None  # resolve below
+
+    if cache_key in _acceptable_keys_cache:
+        return _acceptable_keys_cache[cache_key]
 
     import inspect
 
-    from confluid.registry import resolve_class
-
-    target = resolve_class(cls_name)
     if target is None:
-        _acceptable_keys_cache[cls_name] = None
-        return None
+        from confluid.registry import resolve_class
+
+        target = resolve_class(cache_key)
+        if target is None:
+            _acceptable_keys_cache[cache_key] = None
+            return None
 
     keys: set = set()  # type: ignore[type-arg]
     try:
         sig = inspect.signature(target.__init__)  # type: ignore[misc]
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-            _acceptable_keys_cache[cls_name] = None
+            _acceptable_keys_cache[cache_key] = None
             return None
         keys.update(p for p in sig.parameters if p not in ("self", "cls"))
     except (ValueError, TypeError):
-        _acceptable_keys_cache[cls_name] = None
+        _acceptable_keys_cache[cache_key] = None
         return None
 
     if getattr(target, "__confluid_configurable__", False):
@@ -258,14 +267,15 @@ def _get_acceptable_keys(cls_name: str) -> Optional[frozenset]:  # type: ignore[
             keys.add(name)
 
     result = frozenset(keys)
-    _acceptable_keys_cache[cls_name] = result
+    _acceptable_keys_cache[cache_key] = result
     return result
 
 
-def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any]) -> Dict[str, Any]:
+def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any], target: Any = None) -> Dict[str, Any]:
     """Merge broadcast values and scoped blocks into a class marker dict.
 
     Priority: explicit kwargs > class-scoped block > instance-scoped block > broadcast scalars.
+    ``target`` is an optional actual class object for parameter inspection (avoids name collisions).
     """
     from confluid.fluid import Fluid
 
@@ -277,7 +287,7 @@ def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any])
     merged: Dict[str, Any] = {}
 
     # 1. Broadcast: only scalars from parent that match the class's acceptable keys
-    acceptable = _get_acceptable_keys(cls_name)
+    acceptable = _get_acceptable_keys(target or cls_name)
     for k, v in parent_context.items():
         if not isinstance(v, (dict, list, Fluid)):
             if acceptable is None or k in acceptable:
@@ -338,7 +348,8 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 else getattr(data.target, "__confluid_name__", getattr(data.target, "__name__", ""))
             )
             synthetic = {**data.kwargs, "_confluid_class_": target_name}
-            merged_kwargs = _prepare_kwargs(synthetic, parent_context)
+            actual_target = data.target if isinstance(data.target, type) else None
+            merged_kwargs = _prepare_kwargs(synthetic, parent_context, target=actual_target)
             merged_kwargs.pop("_confluid_class_", None)
         else:
             merged_kwargs = dict(data.kwargs)
