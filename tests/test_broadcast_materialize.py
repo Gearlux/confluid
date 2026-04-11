@@ -1,3 +1,5 @@
+from typing import Any
+
 from confluid import configurable, materialize, register
 
 
@@ -151,6 +153,57 @@ def test_parameter_aware_broadcast_filtering() -> None:
     assert result["optimizer"].lr == 0.001
     assert not hasattr(result["optimizer"], "max_epochs")
     assert not hasattr(result["optimizer"], "experiment_name")
+
+
+def test_unregistered_class_broadcast_filtering() -> None:
+    """Deferred defaults with unregistered class objects must filter by actual constructor params."""
+    from confluid import Class, flow
+
+    # Unregistered classes — not in confluid registry
+    class PlainTrainer:
+        def __init__(self, max_epochs: int = 1, accelerator: str = "auto") -> None:
+            self.max_epochs = max_epochs
+            self.accelerator = accelerator
+
+    class PlainLoader:
+        def __init__(self, batch_size: int = 32, shuffle: bool = False) -> None:
+            self.batch_size = batch_size
+            self.shuffle = shuffle
+
+    @configurable
+    class Pipeline:
+        def __init__(
+            self,
+            trainer: Any = Class(PlainTrainer),
+            loader: Any = Class(PlainLoader),
+            experiment_name: str = "default",
+        ) -> None:
+            self.trainer = trainer
+            self.loader = loader
+            self.experiment_name = experiment_name
+
+    register(Pipeline)
+
+    config = {"max_epochs": 10, "batch_size": 64, "experiment_name": "mnist"}
+    data = {"_confluid_class_": "Pipeline"}
+    result = materialize(data, context=config)
+
+    assert isinstance(result, Pipeline)
+    assert result.experiment_name == "mnist"
+
+    # Deferred defaults — flow them
+    trainer = flow(result.trainer)
+    loader = flow(result.loader)
+
+    assert isinstance(trainer, PlainTrainer)
+    assert trainer.max_epochs == 10  # matches PlainTrainer constructor
+    assert trainer.accelerator == "auto"  # default preserved
+    assert not hasattr(trainer, "batch_size")  # NOT broadcast
+
+    assert isinstance(loader, PlainLoader)
+    assert loader.batch_size == 64  # matches PlainLoader constructor
+    assert loader.shuffle is False  # default preserved
+    assert not hasattr(loader, "max_epochs")  # NOT broadcast
 
 
 def test_dotted_broadcast_materialize() -> None:

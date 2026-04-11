@@ -79,16 +79,14 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                 return flow(v)
             if isinstance(v, Class):
                 # Apply broadcasting: pull matching keys from full context
-                from confluid.loader import _prepare_kwargs
+                from confluid.loader import _get_acceptable_keys
 
-                target_name = (
-                    v.target
-                    if isinstance(v.target, str)
-                    else getattr(v.target, "__confluid_name__", getattr(v.target, "__name__", ""))
-                )
-                synthetic = {**v.kwargs, "_confluid_class_": target_name}
-                broadcasted = _prepare_kwargs(synthetic, broadcast_ctx)
-                broadcasted.pop("_confluid_class_", None)
+                broadcasted = dict(v.kwargs)
+                acceptable = _get_acceptable_keys(v.target)
+                for bk, bv in broadcast_ctx.items():
+                    if bk not in broadcasted and not isinstance(bv, (dict, list, Fluid)):
+                        if acceptable is None or bk in acceptable:
+                            broadcasted[bk] = bv
                 v_copy = copy(v)
                 v_copy.kwargs = broadcasted
                 return v_copy
