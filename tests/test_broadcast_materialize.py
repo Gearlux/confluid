@@ -109,6 +109,50 @@ def test_deep_broadcast_propagation() -> None:
     assert inner.max_epochs == 10
 
 
+def test_parameter_aware_broadcast_filtering() -> None:
+    """Non-matching scalars must NOT be broadcast into classes that don't accept them."""
+
+    @configurable
+    class TrainerLike:
+        def __init__(self, max_epochs: int = 1, name: str = "trainer") -> None:
+            self.max_epochs = max_epochs
+            self.name = name
+
+    class OptimizerLike:
+        """Non-configurable class — only constructor params, no setattr."""
+
+        def __init__(self, lr: float = 0.01) -> None:
+            self.lr = lr
+
+    register(TrainerLike)
+    register(OptimizerLike)
+
+    # Root config has scalars that only match some classes
+    context = {
+        "experiment_name": "mnist",  # matches nobody
+        "max_epochs": 10,  # matches TrainerLike only
+        "lr": 0.001,  # matches OptimizerLike only
+    }
+
+    data = {
+        "trainer": {"_confluid_class_": "TrainerLike"},
+        "optimizer": {"_confluid_class_": "OptimizerLike"},
+    }
+
+    result = materialize(data, context=context)
+
+    # TrainerLike gets max_epochs but NOT experiment_name or lr
+    assert isinstance(result["trainer"], TrainerLike)
+    assert result["trainer"].max_epochs == 10
+    assert not hasattr(result["trainer"], "experiment_name") or result["trainer"].name != "mnist"
+
+    # OptimizerLike gets lr but NOT experiment_name or max_epochs
+    assert isinstance(result["optimizer"], OptimizerLike)
+    assert result["optimizer"].lr == 0.001
+    assert not hasattr(result["optimizer"], "max_epochs")
+    assert not hasattr(result["optimizer"], "experiment_name")
+
+
 def test_dotted_broadcast_materialize() -> None:
     register(Leaf)
     register(Branch)
