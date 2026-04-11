@@ -99,6 +99,12 @@ def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: st
 
             resolved_val = parse_value(resolved_val)
 
+        # Materialize marker dicts into live instances
+        if isinstance(resolved_val, dict) and "_confluid_class_" in resolved_val:
+            from confluid.fluid import flow as _flow
+
+            resolved_val = _flow(resolved_val)
+
         current_val = getattr(obj, attr_name, None)
         if isinstance(resolved_val, dict) and hasattr(
             getattr(current_val, "__class__", None), "__confluid_configurable__"

@@ -63,6 +63,7 @@ def test_broadcast_priority() -> None:
 
 def test_deep_broadcast_propagation() -> None:
     """Root-level scalars propagate through nested class instances (mnist_train_minimal scenario)."""
+    from confluid import Class, flow
 
     @configurable
     class Inner:
@@ -79,6 +80,7 @@ def test_deep_broadcast_propagation() -> None:
     register(Inner)
     register(Outer)
 
+    # Case 1: Inner is in the config dict
     config = {"max_epochs": 10}
     data = {"_confluid_class_": "Outer", "inner": {"_confluid_class_": "Inner"}}
 
@@ -86,6 +88,25 @@ def test_deep_broadcast_propagation() -> None:
     assert isinstance(result, Outer)
     assert isinstance(result.inner, Inner)
     assert result.inner.max_epochs == 10
+
+    # Case 2: Inner is a Python default Class (not in config) — the mnist_train_minimal scenario
+    @configurable
+    class OuterDeferred:
+        def __init__(self, inner: "Inner" = Class(Inner), name: str = "outer") -> None:  # type: ignore[assignment]
+            self.inner = inner
+            self.name = name
+
+    register(OuterDeferred)
+
+    config2 = {"max_epochs": 10}
+    data2 = {"_confluid_class_": "OuterDeferred"}
+    result2 = materialize(data2, context=config2)
+    assert isinstance(result2, OuterDeferred)
+    # inner is deferred — flow it to materialize
+    assert isinstance(result2.inner, Class)
+    inner = flow(result2.inner)
+    assert isinstance(inner, Inner)
+    assert inner.max_epochs == 10
 
 
 def test_dotted_broadcast_materialize() -> None:

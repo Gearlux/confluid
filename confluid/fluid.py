@@ -1,3 +1,4 @@
+from copy import copy
 from typing import Any, Type, Union
 
 from confluid.registry import get_registry, resolve_class
@@ -70,11 +71,29 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         merged.update(runtime_kwargs)
 
         # Flow Instance values (instant), keep Class/Reference deferred
+        # Apply broadcasting from full context to deferred Class objects
+        broadcast_ctx = context or merged
+
         def _resolve_value(v: Any) -> Any:
             if isinstance(v, Instance):
                 return flow(v)
+            if isinstance(v, Class):
+                # Apply broadcasting: pull matching keys from full context
+                from confluid.loader import _prepare_kwargs
+
+                target_name = (
+                    v.target
+                    if isinstance(v.target, str)
+                    else getattr(v.target, "__confluid_name__", getattr(v.target, "__name__", ""))
+                )
+                synthetic = {**v.kwargs, "_confluid_class_": target_name}
+                broadcasted = _prepare_kwargs(synthetic, broadcast_ctx)
+                broadcasted.pop("_confluid_class_", None)
+                v_copy = copy(v)
+                v_copy.kwargs = broadcasted
+                return v_copy
             if isinstance(v, Fluid):
-                return v  # Class/Reference stay deferred
+                return v  # Reference stays as-is
             if isinstance(v, list):
                 return [_resolve_value(item) for item in v]
             if isinstance(v, dict):
@@ -92,9 +111,27 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
         ctor = {k: v for k, v in merged.items() if k in params} if params else merged
         instance = target(**ctor)
-        for k, v in merged.items():
-            if params and k not in params:
-                setattr(instance, k, v)
+
+        # Only set non-constructor attributes on configurable classes
+        if getattr(target, "__confluid_configurable__", False):
+            for k, v in merged.items():
+                if params and k not in params:
+                    member = getattr(target, k, None)
+                    if isinstance(member, property) and member.fset is None:
+                        continue
+                    if getattr(member, "__confluid_ignore__", False):
+                        continue
+                    setattr(instance, k, v)
+
+        # Apply broadcasting to constructor defaults not in config (e.g. lightning=Class(L.Trainer))
+        for param_name in params:
+            if param_name not in ctor:
+                attr_val = getattr(instance, param_name, None)
+                if attr_val is not None:
+                    resolved = _resolve_value(attr_val)
+                    if resolved is not attr_val:
+                        setattr(instance, param_name, resolved)
+
         return instance
 
     # 4. Bare type passed directly (e.g., flow(MyClass, x=1))

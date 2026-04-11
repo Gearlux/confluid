@@ -40,7 +40,8 @@ class Trainer:
     def setup(self) -> None:
         # Use flow() to ensure we have a live optimizer instance
         # whether it was passed as a real object or a config reference
-        self.optimizer = flow(self.optimizer)
+        if self.optimizer is not None:
+            self.optimizer = flow(self.optimizer)
 
     def __repr__(self) -> str:
         return f"Trainer(epochs={self.epochs}, model={self.model}, optimizer={self.optimizer})"

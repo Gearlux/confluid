@@ -187,6 +187,7 @@ def load(
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
     """Resolve config data and instantiate all Class objects recursively."""
+    _acceptable_keys_cache.clear()
     if context:
         context = expand_dotted_keys(context)
     old_ctx = getattr(_state, "context", None)
@@ -212,6 +213,55 @@ def _deep_flow(data: Any) -> Any:
     return data
 
 
+_acceptable_keys_cache: Dict[str, Optional[frozenset]] = {}  # type: ignore[type-arg]
+
+
+def _get_acceptable_keys(cls_name: str) -> Optional[frozenset]:  # type: ignore[type-arg]
+    """Return constructor params (+ configurable properties) for a class.
+
+    Returns None if the class cannot be resolved or accepts **kwargs (broadcast everything).
+    """
+    if cls_name in _acceptable_keys_cache:
+        return _acceptable_keys_cache[cls_name]
+
+    import inspect
+
+    from confluid.registry import resolve_class
+
+    target = resolve_class(cls_name)
+    if target is None:
+        _acceptable_keys_cache[cls_name] = None
+        return None
+
+    keys: set = set()  # type: ignore[type-arg]
+    try:
+        sig = inspect.signature(target.__init__)  # type: ignore[misc]
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            _acceptable_keys_cache[cls_name] = None
+            return None
+        keys.update(p for p in sig.parameters if p not in ("self", "cls"))
+    except (ValueError, TypeError):
+        _acceptable_keys_cache[cls_name] = None
+        return None
+
+    if getattr(target, "__confluid_configurable__", False):
+        for name in dir(target):
+            if name.startswith("_") or name in keys:
+                continue
+            member = getattr(target, name, None)
+            if member is None or callable(member):
+                continue
+            if getattr(member, "__confluid_ignore__", False):
+                continue
+            if isinstance(member, property) and member.fset is None:
+                continue
+            keys.add(name)
+
+    result = frozenset(keys)
+    _acceptable_keys_cache[cls_name] = result
+    return result
+
+
 def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any]) -> Dict[str, Any]:
     """Merge broadcast values and scoped blocks into a class marker dict.
 
@@ -226,10 +276,12 @@ def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any])
 
     merged: Dict[str, Any] = {}
 
-    # 1. Broadcast: non-dict, non-list, non-Fluid scalars from parent
+    # 1. Broadcast: only scalars from parent that match the class's acceptable keys
+    acceptable = _get_acceptable_keys(cls_name)
     for k, v in parent_context.items():
         if not isinstance(v, (dict, list, Fluid)):
-            merged[k] = v
+            if acceptable is None or k in acceptable:
+                merged[k] = v
 
     # 2. Class-scoped and instance-scoped blocks
     for key in [cls_name, instance_name]:
@@ -239,6 +291,13 @@ def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any])
 
     # 3. Explicit kwargs win
     merged.update(marker_dict)
+
+    # 4. Recursion: ensure nested Fluid objects in merged also get the context
+    for k, v in merged.items():
+        if k == "_confluid_class_":
+            continue
+        if isinstance(v, dict) and "_confluid_class_" in v:
+            merged[k] = _prepare_kwargs(v, merged)
 
     return merged
 
@@ -251,6 +310,8 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         if "_confluid_class_" in data:
             if parent_context:
                 data = _prepare_kwargs(data, parent_context)
+            else:
+                data = dict(data)  # Don't mutate the original
 
             cls_name = data.pop("_confluid_class_")
             if cls_name.endswith("()"):
