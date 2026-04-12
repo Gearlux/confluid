@@ -16,27 +16,33 @@ def setup_registry() -> None:
 def test_basic_dump() -> None:
     @configurable
     class Model:
-        def __init__(self, layers: int = 3):
+        def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
     model = Model(layers=10)
     output = dump(model)
-    data = yaml.safe_load(output)
 
-    # Custom constructor returns flat markers for !class: tags
-    assert data["_confluid_class_"] == "Model"
-    assert data["layers"] == 10
+    # Instances dump with () for instant construction on reload
+    assert "!class:Model()" in output
+    assert "layers: 10" in output
+
+    # Round-trip via confluid.load produces a live instance
+    from confluid import load
+
+    data = load(output)
+    assert isinstance(data, Model)
+    assert data.layers == 10
 
 
 def test_hierarchical_dump() -> None:
     @configurable
     class Model:
-        def __init__(self, layers: int = 3):
+        def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
     @configurable
     class Trainer:
-        def __init__(self, model: Model, lr: float = 0.01):
+        def __init__(self, model: Model, lr: float = 0.01) -> None:
             self.model = model
             self.lr = lr
 
@@ -44,12 +50,11 @@ def test_hierarchical_dump() -> None:
     trainer = Trainer(model=model, lr=0.001)
 
     output = dump(trainer)
-    data = yaml.safe_load(output)
 
-    assert data["_confluid_class_"] == "Trainer"
-    assert data["lr"] == 0.001
-    assert data["model"]["_confluid_class_"] == "Model"
-    assert data["model"]["layers"] == 5
+    assert "!class:Trainer" in output
+    assert "!class:Model" in output
+    assert "lr: 0.001" in output
+    assert "layers: 5" in output
 
 
 def test_strict_gating() -> None:
@@ -59,14 +64,13 @@ def test_strict_gating() -> None:
 
     @configurable
     class Model:
-        def __init__(self, thing: Any):
+        def __init__(self, thing: Any) -> None:
             self.thing = thing
 
     # InternalThing is NOT @configurable
     model = Model(thing=InternalThing())
 
-    # Standard YAML dumper will fail or stringify depending on its config.
-    # In our case, we expect it to fail since we don't have a representer.
+    # Standard YAML dumper will fail since we don't have a representer.
     with pytest.raises(yaml.representer.RepresenterError):
         dump(model)
 
@@ -74,7 +78,7 @@ def test_strict_gating() -> None:
 def test_circular_reference() -> None:
     @configurable
     class Node:
-        def __init__(self, next_node: Any = None):
+        def __init__(self, next_node: Any = None) -> None:
             self.next_node = next_node
 
     node1 = Node()
@@ -89,16 +93,16 @@ def test_circular_reference() -> None:
 def test_dump_list_and_dict() -> None:
     @configurable
     class Container:
-        def __init__(self, items: list[Any], mapping: dict[str, Any]):
+        def __init__(self, items: list[Any], mapping: dict[str, Any]) -> None:
             self.items = items
             self.mapping = mapping
 
     obj = Container(items=[1, 2], mapping={"a": 1})
-    data = yaml.safe_load(dump(obj))
+    output = dump(obj)
 
-    assert data["_confluid_class_"] == "Container"
-    assert data["items"] == [1, 2]
-    assert data["mapping"] == {"a": 1}
+    assert "!class:Container" in output
+    assert "- 1" in output
+    assert "a: 1" in output
 
 
 def test_dump_no_init() -> None:
@@ -107,10 +111,64 @@ def test_dump_no_init() -> None:
         pass
 
     obj = Simple()
-    data = yaml.safe_load(dump(obj))
-
-    assert data["_confluid_class_"] == "Simple"
+    output = dump(obj)
+    assert "!class:Simple" in output
 
 
 def test_dump_none() -> None:
     assert "null" in dump(None)
+
+
+def test_dump_non_configurable_with_confluid_origin() -> None:
+    """Objects created via Instance/flow() retain origin metadata for dump."""
+    from confluid.fluid import Instance, flow
+
+    class Metric:
+        def __init__(self, num_classes: int = 10) -> None:
+            self.num_classes = num_classes
+
+    inst = Instance(Metric, num_classes=5)
+    live = flow(inst)
+
+    output = dump(live)
+    assert "!class:" in output
+    assert "num_classes: 5" in output
+
+
+def test_dump_non_configurable_in_configurable_parent() -> None:
+    """Non-configurable objects nested inside configurable ones serialize correctly."""
+    from confluid.fluid import Instance, flow
+
+    class Metric:
+        def __init__(self, average: str = "macro") -> None:
+            self.average = average
+
+    @configurable
+    class Trainer:
+        def __init__(self, metrics: Any = None) -> None:
+            self.metrics = metrics
+
+    metric = Instance(Metric, average="weighted")
+    trainer = Trainer(metrics=[flow(metric)])
+
+    output = dump(trainer)
+    assert "!class:Trainer" in output
+    assert "!class:" in output
+    assert "average: weighted" in output
+
+
+def test_dump_non_configurable_round_trip() -> None:
+    """Dump/load round-trip for non-configurable objects preserves kwargs."""
+    from confluid.fluid import Instance, flow
+
+    class Widget:
+        def __init__(self, size: int = 3, color: str = "red") -> None:
+            self.size = size
+            self.color = color
+
+    inst = Instance(Widget, size=7, color="blue")
+    live = flow(inst)
+
+    output = dump(live)
+    assert "size: 7" in output
+    assert "color: blue" in output

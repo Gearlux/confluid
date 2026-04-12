@@ -2,6 +2,7 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+import yaml
 from logflow import get_logger
 
 logger = get_logger("confluid.resolver")
@@ -37,7 +38,19 @@ class Resolver:
 
             return value
 
-        # 2. Handle Dictionary Markers
+        # 2. Handle Fluid citizens
+        from confluid.fluid import Class, Fluid, Reference
+
+        if isinstance(value, Reference):
+            res = self._resolve_ref(value.target, local_context)
+            if res != f"!ref:{value.target}":
+                return self.resolve(res, local_context)
+            return value
+
+        if isinstance(value, (Class, Fluid)):
+            return value
+
+        # 3. Handle Dictionary Markers
         if isinstance(value, dict):
             if "_confluid_ref_" in value:
                 ref_path = value["_confluid_ref_"]
@@ -60,7 +73,7 @@ class Resolver:
             # Recurse into normal dicts, passing the current dict as local_context
             return {k: self.resolve(v, local_context=value) for k, v in value.items()}
 
-        # 3. Handle Lists
+        # 4. Handle Lists
         if isinstance(value, list):
             return [self.resolve(item, local_context) for item in value]
 
@@ -143,22 +156,27 @@ class Resolver:
         return value
 
     def _parse_primitive(self, value: str) -> Any:
-        """Convert string to appropriate Python primitive (YAML-like conversion)."""
-        # Handle Confluid internal markers
+        """Convert string to appropriate Python primitive."""
         if value.startswith("!ref:"):
             return value
+        return parse_value(value)
 
-        low = value.lower()
-        if low == "true":
-            return True
-        if low == "false":
-            return False
-        if low == "none" or low == "null":
-            return None
 
-        try:
-            if "." in value:
-                return float(value)
-            return int(value)
-        except ValueError:
-            return value
+def parse_value(value: str) -> Any:
+    """Parse a string value into a Python type using YAML for complex types.
+
+    Examples:
+        "42" -> 42, "3.14" -> 3.14, "true" -> True, "[1, 2]" -> [1, 2]
+    """
+    low = value.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("null", "none"):
+        return None
+
+    try:
+        return yaml.safe_load(value)
+    except Exception:
+        return value

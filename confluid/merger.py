@@ -27,14 +27,24 @@ def expand_dotted_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     # 2. Process dotted keys
     dotted_keys = sorted([k for k in data.keys() if "." in k], key=lambda k: (k.count("."), k))
 
+    from confluid.fluid import Fluid
+
     for key in dotted_keys:
         value = data[key]
         parts = key.split(".")
         current = result
 
         for part in parts[:-1]:
-            if part not in current or not isinstance(current[part], dict):
-                current[part] = {}
+            if part in current:
+                entry = current[part]
+                if isinstance(entry, Fluid):
+                    # Traverse into Fluid kwargs
+                    current = entry.kwargs
+                    continue
+                elif isinstance(entry, dict):
+                    current = entry
+                    continue
+            current[part] = {}
             current = current[part]
 
         last_part = parts[-1]

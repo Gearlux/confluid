@@ -6,7 +6,10 @@ import pytest
 import yaml
 
 from confluid import (
+    Class,
     Fluid,
+    Instance,
+    Reference,
     configurable,
     dump,
     flow,
@@ -16,9 +19,8 @@ from confluid import (
     load_config,
     materialize,
     resolve_scopes,
-    solidify,
 )
-from confluid.configurator import Configurator
+from confluid.configurator import configure
 from confluid.resolver import Resolver
 
 
@@ -70,15 +72,14 @@ def test_fluid_proxy_logic() -> None:
 
 
 def test_configurator_coverage() -> None:
-    c = Configurator()
-    # 32: data is None
-    c.configure(None, data=None)
-    # 48: data not dict
-    c.configure(None, data="x")  # type: ignore[arg-type]
+    # None config is a no-op
+    configure(None, config=None)
+    # Non-dict config is a no-op
+    configure(None, config="x")
 
     @configurable
     class M:
-        def __init__(self, x: int = 1):
+        def __init__(self, x: int = 1) -> None:
             self.x = x
 
         @property
@@ -87,45 +88,29 @@ def test_configurator_coverage() -> None:
 
     m = M()
 
-    # 114: recursion protection (resolved_val is dict AND current_val is configurable)
+    # Recursion protection (resolved_val is dict AND current_val is configurable)
     @configurable
     class Sub:
-        def __init__(self, val: int = 1):
+        def __init__(self, val: int = 1) -> None:
             self.val = val
 
     m.x = Sub()  # type: ignore[assignment]
-    c.configure(m, data={"M": {"x": {"val": 10}}})
+    configure(m, config={"M": {"x": {"val": 10}}})
     assert m.x.val == 10  # type: ignore[attr-defined]
 
-    # 176: broadcast (attr in config AND not dict)
+    # Broadcast (attr in config AND not dict)
     m2 = M()
-    c.configure(m2, data={"x": 20})
+    configure(m2, config={"x": 20})
     assert m2.x == 20
 
-    # 220: property no setter
-    c.configure(m2, data={"M": {"r": 2}})
-
-    # 209-210: signature error (built-in or non-callable __init__)
-    c._get_configurable_attributes(int)
-
-    # 188: recursive navigation miss in _deep_get
-    assert c._deep_get({"a": 1}, "a.b") is None
+    # Property without setter (should be skipped)
+    configure(m2, config={"M": {"r": 2}})
 
 
-def test_configurator_broken_dir_exhaustion() -> None:
-    c = Configurator()
-
-    class Broken:
-        def __dir__(self) -> Any:
-            raise Exception("Fail")
-
-    # dir() failure propagates out of _walk_and_configure
-    with pytest.raises(Exception, match="Fail"):
-        c._walk_and_configure(Broken(), {}, {}, "")
-
-    # Iterable walking
-    c._walk_and_configure((1, 2), {}, {}, "")
-    c._walk_and_configure({"a": 1}, {}, {}, "")
+def test_configurator_container_walking() -> None:
+    # configure handles lists/dicts/tuples gracefully
+    configure((1, 2), config={"x": 1})
+    configure({"a": 1}, config={"x": 1})
 
 
 # --- 3. decorators.py ---
@@ -144,7 +129,7 @@ def test_decorators_coverage() -> None:
 
 
 def test_dumper_coverage() -> None:
-    f = Fluid("M", x=1)
+    f = Class("M", x=1)
     assert "!class:M" in dump(f)
     assert "- 1" in dump([1, (2,)])
     assert "42" in dump(42)
@@ -168,16 +153,23 @@ def test_loader_coverage(tmp_path: Path) -> None:
     from confluid.loader import _process_imports, _register_constructors
 
     _register_constructors()
-    # 39: ScalarNode class tag
-    assert yaml.safe_load("!class:Model") == {"_confluid_class_": "Model"}
+    # 39: ScalarNode class tag — now returns Class object
+    result = yaml.safe_load("!class:Model")
+    assert isinstance(result, Class)
+    assert result.target == "Model"
     # 45: ref_compat
-    assert yaml.safe_load("!ref r") == {"_confluid_ref_": "r"}
+    ref_result = yaml.safe_load("!ref r")
+    assert isinstance(ref_result, Reference)
+    assert ref_result.target == "r"
     # 48-61: class compat variants
-    assert yaml.safe_load("!class Model(x=1)") == {
-        "_confluid_class_": "Model",
-        "x": "1",
-    }
-    assert yaml.safe_load("!class Model") == {"_confluid_class_": "Model"}
+    compat_result = yaml.safe_load("!class Model(x=1)")
+    assert isinstance(compat_result, Instance)
+    assert compat_result.target == "Model"
+    assert compat_result.kwargs["x"] == "1"
+    # Legacy !class tag also returns Class object
+    legacy_result = yaml.safe_load("!class Model")
+    assert isinstance(legacy_result, Class)
+    assert legacy_result.target == "Model"
 
     # 89-90, 94: smart fallback
     with pytest.raises(FileNotFoundError):
@@ -215,7 +207,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
 
 
 def test_parser_coverage() -> None:
-    from confluid.parser import parse_value
+    from confluid.resolver import parse_value
 
     assert parse_value("true") is True
     assert parse_value("false") is False
@@ -301,18 +293,17 @@ def test_scopes_coverage() -> None:
     assert res == {}
 
 
-# --- 11. solidify.py ---
+# --- 11. flow() coverage ---
 
 
-def test_solidify_coverage() -> None:
-    # 23
-    assert solidify((1,)) == (1,)
-    # 28-36
-    assert solidify({"_confluid_class_": "Missing"}) == {"_confluid_class_": "Missing"}
+def test_flow_coverage() -> None:
+    # Idempotent for non-deferred objects
+    assert flow((1,)) == (1,)
 
     @configurable
     class S:
-        def __init__(self, x: int = 1):
+        def __init__(self, x: int = 1) -> None:
             self.x = x
 
-    assert solidify({"_confluid_class_": "S", "x": 10}).x == 10
+    # flow marker dicts
+    assert flow({"_confluid_class_": "S", "x": 10}).x == 10
