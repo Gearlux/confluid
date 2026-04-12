@@ -1,4 +1,8 @@
-from typing import Any, Dict, Optional, Set, Type
+import importlib
+import logging
+from typing import Any, Dict, Optional, Set, Type, Union
+
+logger = logging.getLogger(__name__)
 
 
 class ConfluidRegistry:
@@ -12,8 +16,12 @@ class ConfluidRegistry:
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
         # Set markers for discovery
-        setattr(cls, "__confluid_configurable__", True)
-        setattr(cls, "__confluid_name__", cls_name)
+        try:
+            setattr(cls, "__confluid_configurable__", True)
+            setattr(cls, "__confluid_name__", cls_name)
+        except (TypeError, AttributeError):
+            # Built-in or immutable types don't allow attribute setting
+            pass
         return cls
 
     def get_class(self, name: str) -> Optional[Type[Any]]:
@@ -54,3 +62,36 @@ _registry = ConfluidRegistry()
 def get_registry() -> ConfluidRegistry:
     """Get the global Confluid registry instance."""
     return _registry
+
+
+def resolve_class(name: Union[str, type]) -> Optional[type]:
+    """Resolve a class name to an actual Python type.
+
+    Resolution order:
+    1. If already a type, return as-is.
+    2. Registry lookup by name.
+    3. Module path import (e.g., "torch.optim.Adam").
+    """
+    if isinstance(name, type):
+        return name
+
+    if not isinstance(name, str):
+        return None
+
+    # Registry lookup
+    cls = _registry.get_class(name)
+    if cls is not None:
+        return cls
+
+    # Module path import (requires a dot in the name)
+    if "." in name:
+        module_path, class_attr = name.rsplit(".", 1)
+        try:
+            module = importlib.import_module(module_path)
+            cls = getattr(module, class_attr)
+            if isinstance(cls, type):
+                return cls
+        except (ImportError, AttributeError) as e:
+            logger.debug("Failed to resolve '%s' via module path: %s", name, e)
+
+    return None

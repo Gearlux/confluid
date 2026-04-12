@@ -1,24 +1,49 @@
 import inspect
-from typing import Any, Dict, Set
+from typing import Any, Optional, Set
 
 import yaml
 
 
 class CompactDumper(yaml.SafeDumper):
-    """Custom YAML dumper that uses !class tag for @configurable objects."""
+    """Custom YAML dumper with !class tag support."""
 
     pass
 
 
-def _configurable_presenter(dumper: yaml.SafeDumper, data: Any) -> yaml.Node:
-    """Presenter for objects marked as @configurable."""
-    cls = data.__class__
-    cls_name = getattr(cls, "__confluid_name__", cls.__name__)
+def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
+    """Represent @configurable objects and Fluid citizens as YAML tags."""
+    from confluid.fluid import Class, Clone, Reference
 
-    # 1. Collect attributes that are part of the constructor
+    if isinstance(data, Clone):
+        if data.kwargs:
+            return dumper.represent_mapping(f"!clone:{data.target}", data.kwargs)
+        return dumper.represent_scalar(f"!clone:{data.target}", "")
+
+    if isinstance(data, Reference):
+        return dumper.represent_scalar("!ref", data.target)
+
+    if isinstance(data, Class):
+        target = data.target
+        if isinstance(target, type):
+            name = f"{target.__module__}.{target.__qualname__}"
+        else:
+            name = str(target)
+        return dumper.represent_mapping(f"!class:{name}", data.kwargs)
+
+    # Objects materialized via Confluid but not @configurable — use stored origin metadata
+    if hasattr(data, "__confluid_class__") and not hasattr(data.__class__, "__confluid_configurable__"):
+        target = data.__confluid_class__
+        if isinstance(target, type):
+            cls_name = f"{target.__module__}.{target.__qualname__}"
+        else:
+            cls_name = str(target)
+        return dumper.represent_mapping(f"!class:{cls_name}()", data.__confluid_kwargs__)
+
+    # Live @configurable instance → dump with () to indicate instant construction on reload
+    cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
     try:
-        sig = inspect.signature(cls.__init__)
-        params = [p for p in sig.parameters.keys() if p not in ("self", "cls")]
+        sig = inspect.signature(data.__class__.__init__)
+        params = [p for p in sig.parameters if p not in ("self", "cls")]
     except (ValueError, TypeError):
         params = []
 
@@ -26,76 +51,78 @@ def _configurable_presenter(dumper: yaml.SafeDumper, data: Any) -> yaml.Node:
     for p in params:
         if hasattr(data, p):
             val = getattr(data, p)
-            # Skip defaults or None to keep it compact
             if val is not None:
+                if isinstance(val, type):
+                    if hasattr(val, "__confluid_configurable__"):
+                        val = f"!class:{getattr(val, '__confluid_name__', val.__name__)}"
+                    else:
+                        val = f"{val.__module__}.{val.__name__}"
                 kwargs[p] = val
 
-    # 2. Use the !class tag with colon separator to avoid encoding issues
-    tag = f"!class:{cls_name}"
-    return dumper.represent_mapping(tag, kwargs)
+    # Include post-construction attributes set via @configurable
+    for name in getattr(data, "__confluid_extra__", []):
+        if name in kwargs:
+            continue
+        val = getattr(data, name, None)
+        if val is not None:
+            kwargs[name] = val
+
+    return dumper.represent_mapping(f"!class:{cls_name}()", kwargs)
 
 
 def dump(obj: Any) -> str:
-    """
-    Export a configurable object hierarchy to a YAML string.
-    Uses !class tags for professional, compact output.
-    """
-    from confluid.fluid import Fluid
+    """Serialize a (potentially nested) object tree to YAML."""
 
     class _LocalDumper(CompactDumper):
         pass
 
-    def _dict_representer(dumper: _LocalDumper, data: Dict[str, Any]) -> yaml.Node:
-        if "_confluid_class_" in data:
-            cls_name = data["_confluid_class_"]
-            args = {k: v for k, v in data.items() if k != "_confluid_class_"}
-            return dumper.represent_mapping("!class:" + cls_name, args)
-        if "_confluid_ref_" in data:
-            return dumper.represent_scalar("!ref:" + data["_confluid_ref_"], "")
-
-        return dumper.represent_dict(data)
-
-    def _fluid_representer(dumper: _LocalDumper, data: Fluid) -> yaml.Node:
-        cls_name = data.target if isinstance(data.target, str) else data.target.__name__
-        return dumper.represent_mapping("!class:" + cls_name, data.kwargs)
-
-    _LocalDumper.add_representer(dict, _dict_representer)
-    _LocalDumper.add_representer(Fluid, _fluid_representer)
-
-    # 3. Identify and register representers for @configurable classes in the graph
-
-    visited_ids: Set[int] = set()
-    registered_classes: Set[type] = set()
-
-    def _discover_and_register(target: Any) -> None:
-        if target is None or id(target) in visited_ids:
+    def _discover_and_register(target: Any, visited: Optional[Set[int]] = None) -> None:
+        if visited is None:
+            visited = set()
+        if id(target) in visited:
             return
-        visited_ids.add(id(target))
+        visited.add(id(target))
 
-        cls = target.__class__
-        if hasattr(cls, "__confluid_configurable__"):
-            if cls not in registered_classes:
-                _LocalDumper.add_representer(cls, _configurable_presenter)
-                registered_classes.add(cls)
+        from confluid.fluid import Clone, Fluid
 
-            # Recurse into configurable attributes
-            for attr in dir(target):
-                if not attr.startswith("_"):
-                    try:
-                        val = getattr(target, attr)
-                        if not callable(val):
-                            _discover_and_register(val)
-                    except Exception:
-                        pass
+        if isinstance(target, Clone):
+            _LocalDumper.add_representer(Clone, _represent_object)
+            return
 
-        # Recurse into containers
-        if isinstance(target, (list, tuple)):
+        if isinstance(target, Fluid):
+            _LocalDumper.add_representer(type(target), _represent_object)
+            return
+
+        if hasattr(target.__class__, "__confluid_configurable__"):
+            _LocalDumper.add_representer(target.__class__, _represent_object)
+            # Traverse constructor params
+            param_set: set[str] = set()
+            try:
+                sig = inspect.signature(target.__class__.__init__)
+                for p in sig.parameters:
+                    param_set.add(p)
+                    if hasattr(target, p):
+                        _discover_and_register(getattr(target, p), visited)
+            except (ValueError, TypeError):
+                pass
+            # Traverse post-construction attributes (set via @configurable)
+            for name in getattr(target, "__confluid_extra__", []):
+                if name in param_set:
+                    continue
+                val = getattr(target, name, None)
+                if val is not None:
+                    _discover_and_register(val, visited)
+        elif hasattr(target, "__confluid_class__"):
+            _LocalDumper.add_representer(target.__class__, _represent_object)
+            if hasattr(target, "__confluid_kwargs__"):
+                for v in target.__confluid_kwargs__.values():
+                    _discover_and_register(v, visited)
+        elif isinstance(target, list):
             for item in target:
-                _discover_and_register(item)
+                _discover_and_register(item, visited)
         elif isinstance(target, dict):
             for val in target.values():
-                _discover_and_register(val)
+                _discover_and_register(val, visited)
 
     _discover_and_register(obj)
-
     return yaml.dump(obj, Dumper=_LocalDumper, default_flow_style=False, sort_keys=False)

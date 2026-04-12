@@ -1,7 +1,7 @@
 import pytest
 
 import confluid
-from confluid import configurable, load, materialize, solidify
+from confluid import configurable, flow, load, materialize
 
 
 @pytest.fixture(autouse=True)
@@ -9,15 +9,15 @@ def setup_registry() -> None:
     confluid.get_registry().clear()
 
 
-def test_basic_solidify() -> None:
+def test_basic_flow_idempotent() -> None:
     @configurable
     class Model:
         def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
-    # solidify already solid instance
+    # flow on already-live instance returns it unchanged
     model = Model(layers=10)
-    assert solidify(model).layers == 10
+    assert flow(model).layers == 10
 
 
 def test_flow_string_reference() -> None:
@@ -26,8 +26,8 @@ def test_flow_string_reference() -> None:
         def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
-    # solidify resolves !class: patterns
-    instance = solidify("!class:Model(layers=20)")
+    # flow resolves !class: patterns
+    instance = flow("!class:Model(layers=20)")
     assert instance.layers == 20
     assert isinstance(instance, Model)
 

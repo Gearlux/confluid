@@ -21,7 +21,7 @@ dependencies = [
     "pyyaml>=6.0",
     "logflow",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 
 [project.optional-dependencies]
 dev = [
@@ -55,7 +55,6 @@ profile = "black"
 line_length = 120
 
 [tool.mypy]
-python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

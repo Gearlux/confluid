@@ -1,252 +1,185 @@
 import inspect
 from typing import Any, Dict, List, Optional, Set
 
+import yaml
+
 from confluid.merger import expand_dotted_keys
 from confluid.resolver import Resolver
 
 
-class Configurator:
+def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
+    """Apply configuration to one or more existing object instances.
+
+    Recursively walks the object graph and sets attributes based on matching
+    class names, instance names, and dotted paths in the config.
     """
-    Advanced recursive configuration engine.
-    Supports attribute matching, dotted-path scoping, and broadcast configuration.
-    """
+    if config is None:
+        return
 
-    def __init__(self, resolver: Optional[Resolver] = None) -> None:
-        self.resolver = resolver or Resolver()
-        self._visited: Set[int] = set()
+    if isinstance(config, str) and (":" in config or "\n" in config):
+        config = yaml.safe_load(config)
 
-    def configure(self, *instances: Any, data: Any, context: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Apply configuration to one or more object instances.
-        """
-        if data is None:
-            return
+    if not isinstance(config, dict):
+        return
 
-        # 1. Resolve references and environment variables
-        # If context is not provided, use data as the context for reference resolution
-        resolved_context = context if context is not None else (data if isinstance(data, dict) else {})
-        resolver = Resolver(context=resolved_context)
-        resolved_data = resolver.resolve(data)
+    resolved_context = context if context is not None else config
+    resolver = Resolver(context=resolved_context)
+    config = expand_dotted_keys(resolver.resolve(config))
 
-        if not isinstance(resolved_data, dict):
-            return
+    visited: Set[int] = set()
+    for instance in instances:
+        _walk(instance, config, resolved_context, "", visited)
 
-        # 2. Expand any top-level dotted keys for easier lookup
-        config_data = expand_dotted_keys(resolved_data)
 
-        # 3. Recursively walk each instance
-        self._visited.clear()
-        for instance in instances:
-            # We start with empty prefix
-            # Resolve the config data specifically for this walker to handle IR objects
-            final_config = self.resolver.resolve(config_data)
-            self._walk_and_configure(instance, final_config, resolved_context, "")
+def _walk(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str, visited: Set[int]) -> None:
+    """Recursively traverse the object graph and apply matching configuration."""
+    if obj is None:
+        return
 
-    def _walk_and_configure(
-        self,
-        obj: Any,
-        config: Dict[str, Any],
-        context: Dict[str, Any],
-        path_prefix: str,
-    ) -> None:
-        """Recursively traverse the object graph and apply matching configuration."""
-        if obj is None:
-            return
+    from confluid.fluid import flow
 
-        # 0. Solidify the object before inspection
-        from confluid.solidify import solidify
+    obj = flow(obj)
 
-        obj = solidify(obj)
+    obj_id = id(obj)
+    if obj_id in visited:
+        return
+    visited.add(obj_id)
 
-        obj_id = id(obj)
-        if obj_id in self._visited:
-            return
-        self._visited.add(obj_id)
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            _walk(item, config, context, prefix, visited)
+        return
 
-        # 1. Recurse into containers
-        if isinstance(obj, (list, tuple)):
-            for item in obj:
-                self._walk_and_configure(item, config, context, path_prefix)
-            return
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _walk(v, config, context, prefix, visited)
+        return
 
-        if isinstance(obj, dict):
-            for v in obj.values():
-                self._walk_and_configure(v, config, context, path_prefix)
-            return
-
-        # 2. Configure object if marked as configurable
-        cls = obj.__class__
-        new_prefix = path_prefix
-        if getattr(cls, "__confluid_configurable__", False):
-            # Calculate the path for this specific object
-            instance_name = getattr(obj, "name", None)
-            if instance_name and isinstance(instance_name, str):
-                new_prefix = f"{path_prefix}.{instance_name}" if path_prefix else instance_name
-
-            # We apply config using the NEW prefix (which includes this object's name)
-            self._apply_obj_config(obj, config, context, new_prefix)
-
-        # 3. Recursively walk into object attributes
-        for attr_name in dir(obj):
-            if attr_name.startswith("_"):
-                continue
-            try:
-                attr_val = getattr(obj, attr_name)
-                if not callable(attr_val):
-                    self._walk_and_configure(attr_val, config, context, new_prefix)
-            except Exception:
-                continue
-
-    def _apply_obj_config(
-        self,
-        obj: Any,
-        config: Dict[str, Any],
-        context: Dict[str, Any],
-        path_prefix: str,
-    ) -> None:
-        """Collect and apply configuration specifically for one object."""
-        cls = obj.__class__
-        cls_name = getattr(cls, "__confluid_name__", cls.__name__)
+    cls = obj.__class__
+    if getattr(cls, "__confluid_configurable__", False):
         instance_name = getattr(obj, "name", None)
+        if isinstance(instance_name, str):
+            prefix = f"{prefix}.{instance_name}" if prefix else instance_name
+        _apply(obj, config, context, prefix)
 
-        # Build local configuration overlay
-        obj_config: Dict[str, Any] = {}
-        if cls_name in config and isinstance(config[cls_name], dict):
-            obj_config.update(config[cls_name])
-        if instance_name and instance_name in config and isinstance(config[instance_name], dict):
-            obj_config.update(config[instance_name])
+    # Recurse into non-callable attributes
+    for attr_name in dir(obj):
+        if attr_name.startswith("_"):
+            continue
+        try:
+            attr_val = getattr(obj, attr_name)
+            if not callable(attr_val):
+                _walk(attr_val, config, context, prefix, visited)
+        except Exception:
+            continue
 
-        scoped_name = f"{cls_name}.{instance_name}" if instance_name else None
-        if scoped_name and scoped_name in config and isinstance(config[scoped_name], dict):
-            obj_config.update(config[scoped_name])
 
-        # Apply settings to attributes
-        for attr_name in self._get_configurable_attributes(obj):
-            val = self._match_attr_value(attr_name, cls_name, instance_name, config, obj_config, path_prefix)
+def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str) -> None:
+    """Apply matching config values to a single configurable object."""
+    cls = obj.__class__
+    cls_name = getattr(cls, "__confluid_name__", cls.__name__)
+    instance_name = getattr(obj, "name", None)
 
-            if val is not None:
-                # 1. Resolve references in the value
-                resolver = Resolver(context=context)
-                resolved_val = resolver.resolve(val)
+    # Build scoped overlay: ClassName > instance_name > ClassName.instance_name
+    obj_config: Dict[str, Any] = {}
+    for key in [cls_name, instance_name, f"{cls_name}.{instance_name}" if instance_name else None]:
+        if key and key in config and isinstance(config[key], dict):
+            obj_config.update(config[key])
 
-                # 2. Type parsing (Ensure strings like "100" become int 100)
-                from confluid.parser import parse_value
+    resolver = Resolver(context=context)
 
-                if isinstance(resolved_val, str):
-                    resolved_val = parse_value(resolved_val)
+    for attr_name in _configurable_attrs(obj):
+        val = _match(attr_name, cls_name, instance_name, config, obj_config, prefix)
+        if val is None:
+            continue
 
-                # 3. RECURSION PROTECTION
-                # If current attribute is an object and the config value is a dict,
-                # we should configure the object instead of overwriting it.
-                current_val = getattr(obj, attr_name, None)
-                if isinstance(resolved_val, dict) and hasattr(current_val.__class__, "__confluid_configurable__"):
-                    self._walk_and_configure(current_val, resolved_val, context, path_prefix)
-                else:
-                    setattr(obj, attr_name, resolved_val)
+        resolved_val = resolver.resolve(val)
+        if isinstance(resolved_val, str):
+            from confluid.resolver import parse_value
 
-    def _match_attr_value(
-        self,
-        attr_name: str,
-        cls_name: str,
-        instance_name: Optional[str],
-        config: Dict[str, Any],
-        obj_config: Dict[str, Any],
-        path_prefix: str,
-    ) -> Any:
-        """Find the best matching configuration value for an attribute based on priority."""
-        # 0. Hierarchical Path (Highest Priority) e.g. "a.b.c.value"
-        if path_prefix:
-            full_path = f"{path_prefix}.{attr_name}"
-            val = self._deep_get(config, full_path)
-            if val is not None:
-                return val
+            resolved_val = parse_value(resolved_val)
 
-        # 1. ClassName.instance_name.attr
-        if instance_name:
-            val = self._deep_get(config, f"{cls_name}.{instance_name}.{attr_name}")
-            if val is not None:
-                return val
+        # Materialize marker dicts into live instances
+        if isinstance(resolved_val, dict) and "_confluid_class_" in resolved_val:
+            from confluid.fluid import flow as _flow
 
-        # 2. ClassName.attr
-        val = self._deep_get(config, f"{cls_name}.{attr_name}")
+            resolved_val = _flow(resolved_val)
+
+        current_val = getattr(obj, attr_name, None)
+        if isinstance(resolved_val, dict) and hasattr(
+            getattr(current_val, "__class__", None), "__confluid_configurable__"
+        ):
+            _walk(current_val, resolved_val, context, prefix, set())
+        else:
+            setattr(obj, attr_name, resolved_val)
+
+
+def _match(
+    attr: str,
+    cls_name: str,
+    inst_name: Optional[str],
+    config: Dict[str, Any],
+    obj_config: Dict[str, Any],
+    prefix: str,
+) -> Any:
+    """Find the best matching config value for an attribute (priority order)."""
+    candidates = []
+    if prefix:
+        candidates.append(f"{prefix}.{attr}")
+    if inst_name:
+        candidates.append(f"{cls_name}.{inst_name}.{attr}")
+    candidates.append(f"{cls_name}.{attr}")
+    if inst_name:
+        candidates.append(f"{inst_name}.{attr}")
+
+    for path in candidates:
+        val = _deep_get(config, path)
         if val is not None:
             return val
 
-        # 3. instance_name.attr
-        if instance_name:
-            val = self._deep_get(config, f"{instance_name}.{attr_name}")
-            if val is not None:
-                return val
+    if attr in obj_config:
+        return obj_config[attr]
 
-        # 4. Direct attribute in object config
-        if attr_name in obj_config:
-            return obj_config[attr_name]
+    # Broadcast: direct attribute in global config (non-dict only)
+    if attr in config and not isinstance(config[attr], dict):
+        return config[attr]
 
-        # 5. Broadcast check: direct attribute in global config
-        if attr_name in config and not isinstance(config[attr_name], dict):
-            return config[attr_name]
-
-        return None
-
-    def _deep_get(self, data: Dict[str, Any], path: str) -> Any:
-        """Retrieve a value from a nested dictionary using a dotted path."""
-        # First try literal match (flat key)
-        if path in data:
-            return data[path]
-
-        # Then try walking the nested structure
-        parts = path.split(".")
-        current = data
-        for part in parts:
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            else:
-                return None
-        return current
-
-    def _get_configurable_attributes(self, obj: Any) -> List[str]:
-        """Identify which attributes of an object are candidates for configuration."""
-        attrs = []
-        cls = obj.__class__
-
-        # 1. Check __init__ signature
-        try:
-            sig = inspect.signature(cls.__init__)
-            attrs.extend([p for p in sig.parameters.keys() if p not in ("self", "cls")])
-        except (ValueError, TypeError):
-            pass
-
-        # 2. Add public attributes and properties
-        for name in dir(obj):
-            if name.startswith("_") or callable(getattr(obj, name)):
-                continue
-
-            # Check visibility markers on the class member
-            member = getattr(cls, name, None)
-            if member and getattr(member, "__confluid_ignore__", False):
-                continue
-
-            # If it's a property, it MUST have a setter to be configurable
-            if isinstance(member, property) and member.fset is None:
-                continue
-
-            if name not in attrs:
-                attrs.append(name)
-        return attrs
+    return None
 
 
-# Global convenience instance
-_default_configurator = Configurator()
+def _deep_get(data: Dict[str, Any], path: str) -> Any:
+    """Get value from nested dict by dotted path."""
+    if path in data:
+        return data[path]
+    current: Any = data
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
 
 
-def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
-    """Global convenience function to configure one or more objects."""
-    # Support both string (YAML) and dict configuration
-    if isinstance(config, str) and (":" in config or "\n" in config):
-        import yaml
+def _configurable_attrs(obj: Any) -> List[str]:
+    """Get configurable attribute names from an object."""
+    cls = obj.__class__
+    attrs: List[str] = []
 
-        config_dict = yaml.safe_load(config)
-    else:
-        config_dict = config
+    try:
+        sig = inspect.signature(cls.__init__)
+        attrs.extend(p for p in sig.parameters if p not in ("self", "cls"))
+    except (ValueError, TypeError):
+        pass
 
-    _default_configurator.configure(*instances, data=config_dict, context=context)
+    for name in dir(obj):
+        if name.startswith("_") or callable(getattr(obj, name)):
+            continue
+        member = getattr(cls, name, None)
+        if member and getattr(member, "__confluid_ignore__", False):
+            continue
+        if isinstance(member, property) and member.fset is None:
+            continue
+        if name not in attrs:
+            attrs.append(name)
+
+    return attrs
