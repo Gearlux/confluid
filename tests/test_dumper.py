@@ -117,3 +117,58 @@ def test_dump_no_init() -> None:
 
 def test_dump_none() -> None:
     assert "null" in dump(None)
+
+
+def test_dump_non_configurable_with_confluid_origin() -> None:
+    """Objects created via Instance/flow() retain origin metadata for dump."""
+    from confluid.fluid import Instance, flow
+
+    class Metric:
+        def __init__(self, num_classes: int = 10) -> None:
+            self.num_classes = num_classes
+
+    inst = Instance(Metric, num_classes=5)
+    live = flow(inst)
+
+    output = dump(live)
+    assert "!class:" in output
+    assert "num_classes: 5" in output
+
+
+def test_dump_non_configurable_in_configurable_parent() -> None:
+    """Non-configurable objects nested inside configurable ones serialize correctly."""
+    from confluid.fluid import Instance, flow
+
+    class Metric:
+        def __init__(self, average: str = "macro") -> None:
+            self.average = average
+
+    @configurable
+    class Trainer:
+        def __init__(self, metrics: Any = None) -> None:
+            self.metrics = metrics
+
+    metric = Instance(Metric, average="weighted")
+    trainer = Trainer(metrics=[flow(metric)])
+
+    output = dump(trainer)
+    assert "!class:Trainer" in output
+    assert "!class:" in output
+    assert "average: weighted" in output
+
+
+def test_dump_non_configurable_round_trip() -> None:
+    """Dump/load round-trip for non-configurable objects preserves kwargs."""
+    from confluid.fluid import Instance, flow
+
+    class Widget:
+        def __init__(self, size: int = 3, color: str = "red") -> None:
+            self.size = size
+            self.color = color
+
+    inst = Instance(Widget, size=7, color="blue")
+    live = flow(inst)
+
+    output = dump(live)
+    assert "size: 7" in output
+    assert "color: blue" in output

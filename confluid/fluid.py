@@ -39,6 +39,13 @@ class Reference(Fluid):
         super().__init__(path, **kwargs)
 
 
+class Clone(Fluid):
+    """Deep-copy reference. Resolves like !ref: but returns a deepcopy."""
+
+    def __init__(self, path: str, **kwargs: Any) -> None:
+        super().__init__(path, **kwargs)
+
+
 def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     """Instantiate a deferred object (Class, Reference, marker dict) into a live instance.
 
@@ -90,8 +97,13 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                 v_copy = copy(v)
                 v_copy.kwargs = broadcasted
                 return v_copy
+            if isinstance(v, Reference) and context:
+                try:
+                    return flow(v)
+                except ValueError:
+                    return v  # Unresolvable reference — keep deferred
             if isinstance(v, Fluid):
-                return v  # Reference stays as-is
+                return v  # Other Fluid types stay as-is
             if isinstance(v, list):
                 return [_resolve_value(item) for item in v]
             if isinstance(v, dict):
@@ -102,7 +114,10 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
         # Instantiate: constructor params go to __init__, rest set as attributes
         try:
-            sig = inspect.signature(target.__init__)  # type: ignore[misc]
+            init_method = getattr(target, "__init__", None)
+            if init_method is None:
+                return obj
+            sig = inspect.signature(init_method)
             params = {p for p in sig.parameters if p not in ("self", "cls")}
         except (ValueError, TypeError):
             params = set()
@@ -110,8 +125,16 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         ctor = {k: v for k, v in merged.items() if k in params} if params else merged
         instance = target(**ctor)
 
+        # Preserve Confluid origin for serialization round-trip
+        try:
+            instance.__confluid_class__ = target
+            instance.__confluid_kwargs__ = ctor
+        except (TypeError, AttributeError):
+            pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
+
         # Only set non-constructor attributes on configurable classes
         if getattr(target, "__confluid_configurable__", False):
+            extra_keys: list[str] = []
             for k, v in merged.items():
                 if params and k not in params:
                     member = getattr(target, k, None)
@@ -120,6 +143,11 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                     if getattr(member, "__confluid_ignore__", False):
                         continue
                     setattr(instance, k, v)
+                    extra_keys.append(k)
+            try:
+                instance.__confluid_extra__ = extra_keys
+            except (TypeError, AttributeError):
+                pass
 
         # Apply broadcasting to constructor defaults not in config (e.g. lightning=Class(L.Trainer))
         for param_name in params:
@@ -128,7 +156,10 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                 if attr_val is not None:
                     resolved = _resolve_value(attr_val)
                     if resolved is not attr_val:
-                        setattr(instance, param_name, resolved)
+                        try:
+                            setattr(instance, param_name, resolved)
+                        except (AttributeError, TypeError):
+                            pass  # Read-only property or __slots__
 
         return instance
 
@@ -146,12 +177,29 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         obj_context = context
         if obj_context and obj.target in obj_context:
             return flow(obj_context[obj.target], **runtime_kwargs)
+        # Try dotted path / method call resolution
+        if obj_context:
+            from confluid.loader import _resolve_dotted_ref
+
+            dotted = _resolve_dotted_ref(obj.target, obj_context)
+            if dotted is not None:
+                return dotted
         # Fallback: try resolver for nested paths
         resolver = Resolver(context=obj_context or {})
         resolved = resolver._resolve_ref(obj.target)
         if resolved is not None and resolved != f"!ref:{obj.target}":
             return flow(resolved, **runtime_kwargs)
         raise ValueError(f"Cannot resolve Reference: {obj.target}")
+
+    # 5b. Clone objects — resolve reference then deepcopy
+    if isinstance(obj, Clone):
+        from copy import deepcopy
+
+        resolved = flow(Reference(obj.target), **runtime_kwargs)
+        cloned = deepcopy(resolved)
+        for k, v in obj.kwargs.items():
+            setattr(cloned, k, v)
+        return cloned
 
     # 6. Generic Fluid fallback — treat as Class if target resolves to a type
     if isinstance(obj, Fluid):

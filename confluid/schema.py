@@ -67,12 +67,14 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         current_prefix = prefix
 
     # 2. Extract parameter documentation from docstring
-    docstring = getattr(cls.__init__, "__doc__", "") or ""  # type: ignore[misc]
+    init_method = getattr(cls, "__init__", None)
+    docstring = getattr(init_method, "__doc__", "") or ""
     param_docs = _parse_docstring(docstring)
 
     # 3. Get type hints and defaults from __init__
     try:
-        init_method = cls.__init__  # type: ignore[misc]
+        if init_method is None:
+            return
         sig = inspect.signature(init_method)
         type_hints = get_type_hints(init_method)
 

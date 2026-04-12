@@ -24,7 +24,7 @@ def get_active_context() -> Optional[Dict[str, Any]]:
 
 def _register_constructors() -> None:
     """Register YAML constructors for !ref: and !class: tags."""
-    from confluid.fluid import Class, Instance, Reference
+    from confluid.fluid import Class, Clone, Instance, Reference
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
@@ -52,8 +52,15 @@ def _register_constructors() -> None:
 
         return Class(tag_suffix)
 
+    def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        if isinstance(node, yaml.nodes.MappingNode):
+            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            return Clone(tag_suffix, **mapping)
+        return Clone(tag_suffix)
+
     yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
     yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
+    yaml.SafeLoader.add_multi_constructor("!clone:", clone_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         return Reference(loader.construct_scalar(node))
@@ -213,10 +220,10 @@ def _deep_flow(data: Any) -> Any:
     return data
 
 
-_acceptable_keys_cache: Dict[str, Optional[frozenset]] = {}  # type: ignore[type-arg]
+_acceptable_keys_cache: Dict[str, Optional[frozenset[str]]] = {}
 
 
-def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset]:  # type: ignore[type-arg]
+def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     """Return constructor params (+ configurable properties) for a class.
 
     Accepts either a class object or a string name (resolved via registry).
@@ -242,9 +249,13 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset]:  # type: igno
             _acceptable_keys_cache[cache_key] = None
             return None
 
-    keys: set = set()  # type: ignore[type-arg]
+    keys: Set[str] = set()
     try:
-        sig = inspect.signature(target.__init__)  # type: ignore[misc]
+        init_method = getattr(target, "__init__", None)
+        if init_method is None:
+            _acceptable_keys_cache[cache_key] = None
+            return None
+        sig = inspect.signature(init_method)
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
             _acceptable_keys_cache[cache_key] = None
             return None
@@ -312,8 +323,57 @@ def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any],
     return merged
 
 
+def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
+    """Resolve a dotted reference path, supporting attribute access and method calls.
+
+    Handles patterns like:
+      - ``obj.attr`` — attribute access on a flowed object
+      - ``obj.method()`` — method call on a flowed object
+
+    Returns None if the reference cannot be resolved.
+    """
+    import re
+
+    from confluid.fluid import Fluid
+    from confluid.fluid import flow as _flow
+
+    # Detect method call suffix: "path.method()"
+    match = re.match(r"^(.+)\.([\w_]+)\(\)$", target)
+    if match:
+        obj_path, method_name = match.group(1), match.group(2)
+    else:
+        # Try plain dotted path: "path.attr"
+        parts = target.rsplit(".", 1)
+        if len(parts) == 2 and parts[0] in context:
+            obj_path, method_name = parts[0], None
+        else:
+            return None
+
+    if obj_path not in context:
+        return None
+
+    # Resolve and flow the base object
+    raw = context[obj_path]
+    if isinstance(raw, Fluid):
+        obj = _flow(raw)
+    else:
+        obj = raw
+
+    if match and method_name:
+        # Method call
+        method = getattr(obj, method_name, None)
+        if method is not None and callable(method):
+            return method()
+    elif method_name is None:
+        # Plain dotted path — return attribute
+        attr_name = parts[1]
+        return getattr(obj, attr_name, None)
+
+    return None
+
+
 def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
-    from confluid.fluid import Class, Fluid, Instance, Reference
+    from confluid.fluid import Class, Clone, Fluid, Instance, Reference
 
     # 1. Marker dictionaries → Fluid citizens with broadcasting applied
     if isinstance(data, dict):
@@ -364,6 +424,24 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     if isinstance(data, Reference):
         if parent_context and data.target in parent_context:
             return _flow_recursive(parent_context[data.target], parent_context=parent_context)
+        # Support dotted paths and method calls (e.g., "obj.method()")
+        if parent_context:
+            resolved = _resolve_dotted_ref(data.target, parent_context)
+            if resolved is not None:
+                return resolved
+        return data
+
+    # 3b. Clone — resolve reference then deepcopy, merging extra kwargs
+    if isinstance(data, Clone):
+        if parent_context and data.target in parent_context:
+            from copy import deepcopy
+
+            resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
+            cloned = deepcopy(resolved)
+            if data.kwargs and isinstance(cloned, (Class, Instance)):
+                resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
+                cloned.kwargs.update(resolved_kwargs)
+            return cloned
         return data
 
     # 4. Generic Fluid — pass through
