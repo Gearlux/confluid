@@ -15,8 +15,8 @@ pipeline {
                 echo 'Installing Dependencies...'
                 sh "${VENV_BIN}/pip install --upgrade pip"
                 
-        # Internal Gearlux dependencies
-        pip install git+https://github.com/Gearlux/logflow.git@main
+                // Internal Gearlux dependencies
+                sh "${VENV_BIN}/pip install git+https://github.com/Gearlux/logflow.git@main"
                 sh "${VENV_BIN}/pip install -e .[dev]"
             }
         }
