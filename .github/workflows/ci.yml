@@ -22,7 +22,7 @@ jobs:
         python -m pip install --upgrade pip
         
         # Internal Gearlux dependencies
-        pip install git+https://github.com/Gearlux/logflow.git@main
+        pip install --no-deps git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Run Isort
       run: isort --check-only .
@@ -49,7 +49,7 @@ jobs:
         python -m pip install --upgrade pip
         
         # Internal Gearlux dependencies
-        pip install git+https://github.com/Gearlux/logflow.git@main
+        pip install --no-deps git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Run Tests
       run: |
@@ -77,7 +77,7 @@ jobs:
         python -m pip install --upgrade pip
         
         # Internal Gearlux dependencies
-        pip install git+https://github.com/Gearlux/logflow.git@main
+        pip install --no-deps git+https://github.com/Gearlux/logflow.git@main
         pip install -e ".[dev]"
     - name: Run Examples
       run: |
