@@ -329,9 +329,11 @@ def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
     Handles patterns like:
       - ``obj.attr`` — attribute access on a flowed object
       - ``obj.method()`` — method call on a flowed object
+      - ``module.sub.func()`` — module-level function call (if not in context)
 
     Returns None if the reference cannot be resolved.
     """
+    import importlib
     import re
 
     from confluid.fluid import Fluid
@@ -344,30 +346,38 @@ def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
     else:
         # Try plain dotted path: "path.attr"
         parts = target.rsplit(".", 1)
-        if len(parts) == 2 and parts[0] in context:
-            obj_path, method_name = parts[0], None
+        if len(parts) == 2:
+            obj_path, method_name = parts[0], parts[1]
+            is_call = False
         else:
             return None
 
-    if obj_path not in context:
+    # Resolve the base object
+    obj = None
+    if obj_path in context:
+        raw = context[obj_path]
+        obj = _flow(raw) if isinstance(raw, Fluid) else raw
+    else:
+        # Fallback: try to import obj_path as a module or resolve as a class
+        try:
+            obj = importlib.import_module(obj_path)
+        except ImportError:
+            # Maybe obj_path is "module.Class", try resolving it
+            from confluid.registry import resolve_class
+
+            obj = resolve_class(obj_path)
+
+    if obj is None:
         return None
 
-    # Resolve and flow the base object
-    raw = context[obj_path]
-    if isinstance(raw, Fluid):
-        obj = _flow(raw)
-    else:
-        obj = raw
-
-    if match and method_name:
-        # Method call
+    if match:
+        # Method/Function call
         method = getattr(obj, method_name, None)
         if method is not None and callable(method):
             return method()
-    elif method_name is None:
+    else:
         # Plain dotted path — return attribute
-        attr_name = parts[1]
-        return getattr(obj, attr_name, None)
+        return getattr(obj, method_name, None)
 
     return None
 
