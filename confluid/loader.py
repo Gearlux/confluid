@@ -348,7 +348,6 @@ def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
         parts = target.rsplit(".", 1)
         if len(parts) == 2:
             obj_path, method_name = parts[0], parts[1]
-            is_call = False
         else:
             return None
 
