@@ -7,7 +7,7 @@ name = "confluid"
 version = "0.1.0"
 description = "Modern, hierarchical configuration and dependency injection for Python."
 readme = "README.md"
-authors = [{name = "gearlux"}]
+authors = [{name = "Taidal"}]
 license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -36,8 +36,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/gearlux/confluid"
-Repository = "https://github.com/gearlux/confluid.git"
+Homepage = "https://github.com/Gearlux/confluid"
+Repository = "https://github.com/Gearlux/confluid.git"
 
 [tool.setuptools.packages.find]
 where = ["."]

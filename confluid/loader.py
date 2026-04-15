@@ -193,17 +193,29 @@ def load(
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
-    """Resolve config data and instantiate all Class objects recursively."""
+    """Resolve config data and instantiate all Class objects recursively.
+
+    Within a single materialize pass, identical raw markers (reached directly
+    or via ``!ref:``) produce a single flowed ``Instance`` object, which is
+    materialized into a single live instance. ``!clone:`` opts out of this
+    sharing with an explicit deepcopy.
+    """
     _acceptable_keys_cache.clear()
     if context:
         context = expand_dotted_keys(context)
     old_ctx = getattr(_state, "context", None)
+    old_flow_memo = getattr(_state, "flow_memo", None)
+    old_instance_memo = getattr(_state, "instance_memo", None)
     _state.context = context
+    _state.flow_memo = {}
+    _state.instance_memo = {}
     try:
         result = _flow_recursive(data, parent_context=context)
         return _deep_flow(result)
     finally:
         _state.context = old_ctx
+        _state.flow_memo = old_flow_memo
+        _state.instance_memo = old_instance_memo
 
 
 def _deep_flow(data: Any) -> Any:
@@ -384,9 +396,17 @@ def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
 def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
     from confluid.fluid import Class, Clone, Fluid, Instance, Reference
 
+    # Shared-identity memo: ensures the same raw marker (reached directly or via
+    # !ref:) always flows to the same Instance/Class marker object, so a single
+    # live object is instantiated downstream.
+    flow_memo: Optional[Dict[int, Any]] = getattr(_state, "flow_memo", None)
+
     # 1. Marker dictionaries → Fluid citizens with broadcasting applied
     if isinstance(data, dict):
         if "_confluid_class_" in data:
+            if flow_memo is not None and id(data) in flow_memo:
+                return flow_memo[id(data)]
+            raw_id = id(data)
             if parent_context:
                 data = _prepare_kwargs(data, parent_context)
             else:
@@ -399,7 +419,10 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             # Child context: parent context merges into data (context values fill gaps)
             child_ctx = deep_merge(data, parent_context) if parent_context else dict(data)
             resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
-            return Instance(cls_name, **resolved_kwargs)
+            result = Instance(cls_name, **resolved_kwargs)
+            if flow_memo is not None:
+                flow_memo[raw_id] = result
+            return result
 
         if "_confluid_ref_" in data:
             data = Reference(data["_confluid_ref_"])
@@ -410,6 +433,9 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
     if isinstance(data, (Class, Instance)):
+        if flow_memo is not None and id(data) in flow_memo:
+            return flow_memo[id(data)]
+        raw_id = id(data)
         if parent_context:
             target_name = (
                 data.target
@@ -427,6 +453,8 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs
+        if flow_memo is not None:
+            flow_memo[raw_id] = res_obj
         return res_obj
 
     # 3. Reference — resolve against parent context

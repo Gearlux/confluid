@@ -206,6 +206,53 @@ def test_unregistered_class_broadcast_filtering() -> None:
     assert not hasattr(loader, "max_epochs")  # NOT broadcast
 
 
+def test_broadcast_into_body_assigned_class_attribute() -> None:
+    """Broadcasting reaches Class attrs assigned in __init__'s body.
+
+    Mirrors the Marainer Trainer pattern: deferred injection points are
+    assigned inside __init__ rather than pre-declared in the constructor
+    signature. The broadcaster must reach them just like it does for
+    constructor defaults.
+    """
+    from confluid import Class, flow
+
+    @configurable
+    class InnerCfg:
+        def __init__(self, max_epochs: int = 1, batch_size: int = 1) -> None:
+            self.max_epochs = max_epochs
+            self.batch_size = batch_size
+
+    @configurable
+    class OuterCfg:
+        def __init__(self, name: str = "outer") -> None:
+            # Body-assigned: no `inner` ctor param; broadcaster must still reach it.
+            self.name = name
+            self.inner = Class(InnerCfg)
+
+    register(InnerCfg)
+    register(OuterCfg)
+
+    config = {"max_epochs": 7, "batch_size": 16}
+    data = {"_confluid_class_": "OuterCfg"}
+    result = materialize(data, context=config)
+
+    assert isinstance(result, OuterCfg)
+    assert isinstance(result.inner, Class)
+    assert result.inner.kwargs.get("max_epochs") == 7
+    assert result.inner.kwargs.get("batch_size") == 16
+
+    inner = flow(result.inner)
+    assert isinstance(inner, InnerCfg)
+    assert inner.max_epochs == 7
+    assert inner.batch_size == 16
+
+    # Idempotency: materializing the same config again produces the same result.
+    result2 = materialize(data, context=config)
+    inner2 = flow(result2.inner)
+    assert inner2.max_epochs == 7
+    assert inner2.batch_size == 16
+
+
 def test_dotted_broadcast_materialize() -> None:
     register(Leaf)
     register(Branch)

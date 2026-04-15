@@ -138,6 +138,41 @@ def test_deferred_marker_dictionary_flow() -> None:
     assert engine_instance.power == 123
 
 
+@configurable
+class BodyAssigned:
+    """Post-construction attr: ``self.nested = Class(Engine)`` — no ctor param for it.
+
+    Mirrors the Marainer Trainer pattern where nested deferred objects are
+    assigned inside __init__ rather than declared in the signature.
+    """
+
+    def __init__(self, color: str = "red") -> None:
+        self.color = color
+        self.nested = Class(Engine)
+
+
+def test_broadcast_reaches_body_assigned_class_attribute() -> None:
+    """A Class assigned in __init__'s body (not as a ctor param) must still
+    receive root-level broadcasting."""
+    get_registry().register_class(BodyAssigned, name="BodyAssigned")
+
+    config = {
+        "obj": {"_confluid_class_": "BodyAssigned", "color": "blue"},
+        "power": 321,  # Should reach BodyAssigned.nested (= Class(Engine))
+    }
+
+    obj = materialize(config["obj"], context=config)
+
+    # Class stays deferred but its kwargs are populated with broadcast scalars
+    assert isinstance(obj.nested, Class)
+    assert obj.nested.kwargs.get("power") == 321
+
+    # Flowing the deferred Class produces an Engine configured from broadcast
+    engine = flow(obj.nested)
+    assert isinstance(engine, Engine)
+    assert engine.power == 321
+
+
 if __name__ == "__main__":
     from typing import Any
 

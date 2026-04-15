@@ -51,8 +51,12 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
     Idempotent: already-live objects are returned unchanged.
     Accepts runtime kwargs that merge with stored kwargs (runtime wins).
+
+    Within a ``materialize()`` pass, the same ``Instance`` marker (reached
+    directly or via ``!ref:``) produces a single live object — subsequent
+    ``flow()`` calls on the same marker return the cached instance.
     """
-    from confluid.loader import get_active_context, materialize
+    from confluid.loader import _state, get_active_context, materialize
     from confluid.resolver import Resolver
 
     # 1. Idempotency — already-live objects pass through
@@ -61,6 +65,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
     # 2. Resolve context from the global active context
     context = get_active_context()
+
+    # Instance memoization — only within an active materialize() pass and only
+    # when no runtime kwargs override the stored ones (overrides must yield a
+    # fresh object).
+    instance_memo = getattr(_state, "instance_memo", None)
+    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
+        cached = instance_memo.get(id(obj))
+        if cached is not None:
+            return cached
 
     # 3. Class/Instance — resolve, merge kwargs, instantiate
     if isinstance(obj, (Class, Instance)):
@@ -125,6 +138,11 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         ctor = {k: v for k, v in merged.items() if k in params} if params else merged
         instance = target(**ctor)
 
+        # Memoize so a second flow() of the same Instance marker returns this
+        # exact object (see module docstring).
+        if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
+            instance_memo[id(obj)] = instance
+
         # Preserve Confluid origin for serialization round-trip
         try:
             instance.__confluid_class__ = target
@@ -149,11 +167,32 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             except (TypeError, AttributeError):
                 pass
 
-        # Apply broadcasting to constructor defaults not in config (e.g. lightning=Class(L.Trainer))
-        for param_name in params:
+        # Apply broadcasting to any Fluid-valued instance attribute — whether it
+        # came from a constructor default or was assigned in __init__'s body
+        # (e.g. ``self.lightning = Class(L.Trainer)`` without a ``lightning``
+        # ctor parameter). This lets users keep @configurable signatures clean
+        # without sacrificing broadcast reach.
+        seen: set[str] = set()
+        for attr_name, attr_val in list(vars(instance).items()):
+            if attr_name.startswith("__confluid_"):
+                continue
+            if not isinstance(attr_val, Fluid):
+                continue
+            resolved = _resolve_value(attr_val)
+            if resolved is not attr_val:
+                try:
+                    setattr(instance, attr_name, resolved)
+                except (AttributeError, TypeError):
+                    pass  # Read-only property or __slots__
+            seen.add(attr_name)
+
+        # Preserve prior behaviour for ctor-default params that don't appear
+        # on __dict__ yet (e.g. slot descriptors that getattr resolves but
+        # vars() misses).
+        for param_name in params - seen:
             if param_name not in ctor:
                 attr_val = getattr(instance, param_name, None)
-                if attr_val is not None:
+                if isinstance(attr_val, Fluid):
                     resolved = _resolve_value(attr_val)
                     if resolved is not attr_val:
                         try:
