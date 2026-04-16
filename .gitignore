@@ -33,6 +33,8 @@ models/*.pt
 models/*.onnx
 *.h5
 *.zarr
+mlflow.db
+mlruns/
 
 # Reports
 *-checkstyle.xml
