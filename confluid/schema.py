@@ -1,6 +1,6 @@
 import inspect
 import re
-from typing import Any, Dict, get_type_hints
+from typing import Any, Dict, Tuple, get_type_hints
 
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
@@ -107,6 +107,204 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
 
     except (ValueError, TypeError):
         pass
+
+
+def get_hierarchy_from_instance(root: Any) -> Dict[str, Tuple[str, Any, str]]:
+    """Walk a live (flowed) object graph to enumerate every configurable kwarg.
+
+    Mirror of :func:`get_hierarchy` but driven by the *concrete* objects DI
+    handed back from ``flow()`` / ``LiquifyApp.liquify()``. That means this
+    function sees post-construction setattr keys (e.g. ``Enable.visualize``)
+    and defaults the user never wrote into YAML — both are invisible to the
+    static-type walker.
+
+    Rules applied at each ``@configurable`` instance reached through
+    ``root`` (a dict, list, or object):
+
+    * For every ``__init__`` param (skipping ``self``/``cls``), record
+      ``(type_str, live_attribute_value, docstring)`` at path
+      ``"<prefix>.<ClassName>.<param>"``.
+    * Every ``vars(instance)`` key that is NOT in ``__init__``, NOT
+      leading-underscore and NOT a ``__confluid_*__`` marker is surfaced as
+      a leaf with current value + runtime type (docstring blank). This
+      exposes the post-construction toggle pattern.
+    * If a ctor-param value is itself ``@configurable`` → recurse. If it is
+      a non-``@configurable`` instance → enumerate *its* ``__init__`` params
+      as leaves (one level) but do not recurse further into its own
+      attribute graph.
+    * ``list`` / ``tuple`` / ``dict`` of configurables recurse with
+      ``[N]`` / ``[key]`` suffixes.
+    * Cycle-safe: tracks ``id(obj)`` per branch (same convention as
+      :func:`get_hierarchy`).
+
+    ``root`` is typically the ``dict`` returned by
+    :meth:`liquifai.core.LiquifyApp.liquify` (top-level command kwargs).
+    Any dict/list/object shape is accepted — the walker routes.
+    """
+    hierarchy: Dict[str, Tuple[str, Any, str]] = {}
+    _walk_instance(root, "", hierarchy, set())
+    return hierarchy
+
+
+def _walk_instance(
+    obj: Any,
+    prefix: str,
+    hierarchy: Dict[str, Tuple[str, Any, str]],
+    visited: set,
+    *,
+    shallow: bool = False,
+) -> None:
+    """Recursive walker. ``shallow`` = True: enumerate ctor params as leaves,
+    don't recurse into their values (used when the host class isn't
+    ``@configurable`` — per the plan's one-level rule)."""
+    if obj is None:
+        return
+    if isinstance(obj, (str, bytes, int, float, bool)):
+        return  # primitives at the top level aren't hosts for kwargs
+
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            sub = f"{prefix}.{k}" if prefix else str(k)
+            _walk_instance(v, sub, hierarchy, visited)
+        return
+
+    if isinstance(obj, (list, tuple)):
+        for i, item in enumerate(obj):
+            sub = f"{prefix}[{i}]"
+            _walk_instance(item, sub, hierarchy, visited)
+        return
+
+    # Class objects fall through to type-based walk — defer to get_hierarchy's
+    # existing logic by recursing via the canonical helper.
+    if isinstance(obj, type):
+        _build_hierarchy_recursive(obj, prefix, hierarchy, visited)
+        return
+
+    # Instance path
+    obj_id = id(obj)
+    if obj_id in visited:
+        return
+    new_visited = visited | {obj_id}
+
+    cls = obj.__class__
+    is_configurable = bool(getattr(cls, "__confluid_configurable__", False))
+
+    cls_name = _configurable_class_name(cls)
+    node_prefix = f"{prefix}.{cls_name}" if prefix else cls_name
+
+    init_method = getattr(cls, "__init__", None)
+    if init_method is None:
+        return
+
+    try:
+        sig = inspect.signature(init_method)
+        type_hints = get_type_hints(init_method)
+    except (ValueError, TypeError):
+        return
+
+    # Prefer __init__'s own docstring; fall back to the class docstring
+    # because user code commonly puts the Args: block at class level.
+    docstring = init_method.__doc__ or cls.__doc__ or ""
+    param_docs = _parse_docstring(docstring)
+
+    ctor_param_names: set = set()
+    for param_name, param in sig.parameters.items():
+        if param_name in ("self", "cls", "args", "kwargs"):
+            continue
+        ctor_param_names.add(param_name)
+
+        member = getattr(cls, param_name, None)
+        if member is not None and getattr(member, "__confluid_ignore__", False):
+            continue
+
+        path = f"{node_prefix}.{param_name}"
+        param_type = type_hints.get(param_name, Any)
+        type_str = getattr(param_type, "__name__", str(param_type))
+        live_value = getattr(obj, param_name, param.default if param.default is not inspect.Parameter.empty else None)
+        doc = param_docs.get(param_name, "")
+
+        # Shallow mode (host is non-@configurable): record and move on.
+        if shallow:
+            hierarchy[path] = (type_str, live_value, doc)
+            continue
+
+        # Full walk: recurse into configurable-bearing values; otherwise leaf.
+        if _is_configurable_instance(live_value):
+            _walk_instance(live_value, path, hierarchy, new_visited)
+            continue
+        if _is_non_configurable_instance(live_value):
+            # One level deep — walker will enumerate its ctor args as leaves
+            # and stop (shallow=True) because the host isn't @configurable.
+            _walk_instance(live_value, path, hierarchy, new_visited, shallow=True)
+            continue
+        if isinstance(live_value, (list, tuple)) and any(_is_any_instance(x) for x in live_value):
+            for i, item in enumerate(live_value):
+                child_shallow = not _is_configurable_instance(item)
+                _walk_instance(item, f"{path}[{i}]", hierarchy, new_visited, shallow=child_shallow)
+            continue
+        if isinstance(live_value, dict) and any(_is_any_instance(x) for x in live_value.values()):
+            for k, v in live_value.items():
+                child_shallow = not _is_configurable_instance(v)
+                _walk_instance(v, f"{path}[{k}]", hierarchy, new_visited, shallow=child_shallow)
+            continue
+
+        hierarchy[path] = (type_str, live_value, doc)
+
+    if not is_configurable:
+        # Non-@configurable: ctor args are enumerated above but we don't
+        # enumerate post-construction setattr keys — per the one-level rule.
+        return
+
+    # Post-construction keys: everything on the instance not in __init__
+    for attr_name, attr_value in vars(obj).items():
+        if attr_name in ctor_param_names:
+            continue
+        if attr_name.startswith("_"):
+            continue
+        if attr_name.startswith("__confluid_"):
+            continue
+        path = f"{node_prefix}.{attr_name}"
+        type_str = type(attr_value).__name__
+        if _is_configurable_instance(attr_value):
+            _walk_instance(attr_value, path, hierarchy, new_visited)
+            continue
+        if isinstance(attr_value, (list, tuple)) and any(_is_configurable_instance(x) for x in attr_value):
+            for i, item in enumerate(attr_value):
+                _walk_instance(item, f"{path}[{i}]", hierarchy, new_visited)
+            continue
+        if isinstance(attr_value, dict) and any(_is_configurable_instance(x) for x in attr_value.values()):
+            for k, v in attr_value.items():
+                _walk_instance(v, f"{path}[{k}]", hierarchy, new_visited)
+            continue
+        hierarchy[path] = (type_str, attr_value, "")
+
+
+def _is_configurable_instance(obj: Any) -> bool:
+    """True when ``obj`` is a live (non-type) instance of a ``@configurable`` class."""
+    if obj is None or isinstance(obj, type):
+        return False
+    cls = getattr(obj, "__class__", None)
+    if cls is None:
+        return False
+    return bool(getattr(cls, "__confluid_configurable__", False))
+
+
+def _is_any_instance(obj: Any) -> bool:
+    """True when ``obj`` is any user-class instance (not a primitive/None/type)."""
+    if obj is None or isinstance(obj, type):
+        return False
+    if isinstance(obj, (str, bytes, int, float, bool, list, tuple, dict, set)):
+        return False
+    return hasattr(obj, "__class__")
+
+
+def _is_non_configurable_instance(obj: Any) -> bool:
+    return _is_any_instance(obj) and not _is_configurable_instance(obj)
+
+
+def _configurable_class_name(cls: type) -> str:
+    """Honour ``__confluid_name__`` when present, falling back to ``__name__``."""
+    return getattr(cls, "__confluid_name__", cls.__name__)
 
 
 def _parse_docstring(docstring: str) -> Dict[str, str]:
