@@ -35,6 +35,11 @@ pipeline {
                 // (Gearlux distribution names are intentionally unpublished on PyPI).
                 sh "${VENV_BIN}/uv pip install --no-deps git+https://github.com/Gearlux/log-flow.git@main"
                 sh "${VENV_BIN}/uv pip install -e .[dev]"
+                // Notebook-only extras (matplotlib, jupyter kernels, etc.) live
+                // in the optional `[notebook]` extra when the project ships
+                // notebooks; absence is not an error.
+                sh "${VENV_BIN}/uv pip install -e .[notebook] 2>/dev/null || echo 'No [notebook] extras declared; continuing with defaults.'"
+                sh "${VENV_BIN}/uv pip install jupyter nbconvert"
             }
         }
 
