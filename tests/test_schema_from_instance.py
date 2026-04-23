@@ -158,6 +158,40 @@ def test_dict_input_maps_to_key_prefixed_paths() -> None:
     assert any("processor.Parent.child.SimpleLeaf.x" in p for p in h)
 
 
+def test_named_instance_uses_name_as_path_segment() -> None:
+    """When an @configurable instance has a `.name` attr, use it as the path segment."""
+    obj = SimpleLeaf(x=7)
+    obj.name = "my_leaf"  # type: ignore[attr-defined]
+    h = get_hierarchy_from_instance(obj)
+    # Path uses "my_leaf" instead of "SimpleLeaf"
+    assert "my_leaf.x" in h
+    assert not any(p.startswith("SimpleLeaf.") for p in h)
+
+
+def test_sibling_named_instances_yield_distinct_paths() -> None:
+    """Two Parents with distinct names → their children's paths don't collide."""
+    a = Parent(child=SimpleLeaf(x=1), tag="A")
+    b = Parent(child=SimpleLeaf(x=2), tag="B")
+    a.name = "overlay"  # type: ignore[attr-defined]
+    b.name = "labelstudio"  # type: ignore[attr-defined]
+    container = {"a": a, "b": b}
+    h = get_hierarchy_from_instance(container)
+    # Each instance's children live under its name, not a shared class segment.
+    assert "a.overlay.tag" in h
+    assert "b.labelstudio.tag" in h
+    assert "a.overlay.child.SimpleLeaf.x" in h
+    assert "b.labelstudio.child.SimpleLeaf.x" in h
+
+
+def test_unnamed_instance_falls_back_to_class_name() -> None:
+    """Instances without `.name` keep class-name segments (back-compat)."""
+    obj = Parent(child=SimpleLeaf(x=9), tag="T")
+    h = get_hierarchy_from_instance(obj)
+    # No .name set → class-name segments reinstate.
+    assert "Parent.tag" in h
+    assert "Parent.child.SimpleLeaf.x" in h
+
+
 def test_primitive_root_returns_empty() -> None:
     assert get_hierarchy_from_instance(42) == {}
     assert get_hierarchy_from_instance("hello") == {}
