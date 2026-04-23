@@ -189,8 +189,14 @@ def _walk_instance(
     cls = obj.__class__
     is_configurable = bool(getattr(cls, "__confluid_configurable__", False))
 
-    cls_name = _configurable_class_name(cls)
-    node_prefix = f"{prefix}.{cls_name}" if prefix else cls_name
+    # Prefer an instance-level `name` over the class name when it's set — this
+    # matches `_build_hierarchy_recursive`'s root-level behaviour and lets a
+    # YAML disambiguate sibling instances of the same class (e.g. two Enable
+    # wrappers named "overlay" and "labelstudio") so shortest-unique-path
+    # display and dotted CLI overrides (`--overlay.visualize`) both work.
+    instance_name = getattr(obj, "name", None) if not isinstance(obj, type) else None
+    segment = str(instance_name) if instance_name else _configurable_class_name(cls)
+    node_prefix = f"{prefix}.{segment}" if prefix else segment
 
     init_method = getattr(cls, "__init__", None)
     if init_method is None:
