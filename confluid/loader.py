@@ -204,6 +204,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
     sharing with an explicit deepcopy.
     """
     _acceptable_keys_cache.clear()
+    _post_init_attrs_cache.clear()
     if context:
         context = expand_dotted_keys(context)
     old_ctx = getattr(_state, "context", None)
@@ -236,13 +237,113 @@ def _deep_flow(data: Any) -> Any:
 
 
 _acceptable_keys_cache: Dict[str, Optional[frozenset[str]]] = {}
+_post_init_attrs_cache: Dict[str, frozenset[str]] = {}
+
+
+def _same_target(fluid_target: Any, cls: type) -> bool:
+    """True if ``fluid_target`` refers to the same class as ``cls``.
+
+    Handles both the post-resolution case (``fluid_target`` is a type) and
+    the pre-resolution case (``fluid_target`` is a dotted-name string that
+    hasn't been turned into a class yet — typical at YAML-load time).
+    """
+    if fluid_target is cls:
+        return True
+    if isinstance(fluid_target, str):
+        from confluid.registry import resolve_class
+
+        resolved = resolve_class(fluid_target)
+        if resolved is cls:
+            return True
+        # Last-resort string compare in case resolve_class misses (e.g. the
+        # class hasn't been imported into the registry yet but the names
+        # match a fully-qualified module path).
+        qualified = f"{cls.__module__}.{cls.__qualname__}"
+        if fluid_target in (cls.__name__, qualified):
+            return True
+    return False
+
+
+def _get_post_init_attrs(target: type) -> frozenset[str]:
+    """Extract attribute names assigned in ``__init__`` bodies via AST.
+
+    Walks the class MRO, parses each class's ``__init__`` source, and collects
+    every ``self.<name> = ...`` target. Private names (underscore-prefixed) are
+    skipped to avoid broadcasting into implementation details. Results cache
+    per-class by dotted module name.
+
+    This is what lets broadcasting see post-init attributes (e.g.
+    ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's ``__init__``
+    body) in addition to the constructor signature — so a top-level YAML
+    ``loss_fn: !class:...`` flows into the Trainer without the user
+    duplicating the key under the trainer block.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    cache_key = f"{target.__module__}.{target.__qualname__}"
+    if cache_key in _post_init_attrs_cache:
+        return _post_init_attrs_cache[cache_key]
+
+    names: Set[str] = set()
+    try:
+        mro = target.__mro__
+    except AttributeError:
+        _post_init_attrs_cache[cache_key] = frozenset()
+        return frozenset()
+
+    for klass in mro:
+        if klass is object:
+            continue
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        try:
+            source = inspect.getsource(init)
+        except (OSError, TypeError):
+            continue
+        try:
+            # ``textwrap.dedent`` preserves relative indentation (strips the
+            # common leading whitespace), so the method body still sits
+            # under its ``def`` header. ``inspect.cleandoc`` would flatten
+            # every line to column 0 and break the parse.
+            tree = ast.parse(textwrap.dedent(source))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            targets = (
+                [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else
+                node.targets if isinstance(node, ast.Assign) else
+                []
+            )
+            for t in targets:
+                if (
+                    isinstance(t, ast.Attribute)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == "self"
+                    and not t.attr.startswith("_")
+                ):
+                    names.add(t.attr)
+
+    result = frozenset(names)
+    _post_init_attrs_cache[cache_key] = result
+    return result
 
 
 def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
-    """Return constructor params (+ configurable properties) for a class.
+    """Return constructor params (+ configurable properties + post-init attrs) for a class.
 
     Accepts either a class object or a string name (resolved via registry).
     Returns None if the class cannot be resolved or accepts **kwargs (broadcast everything).
+
+    For ``@configurable`` targets the result also includes attribute names
+    assigned in the class's ``__init__`` body (via AST inspection). This
+    makes broadcasting see post-init attributes such as
+    ``self.loss_fn = nn.CrossEntropyLoss()`` even though they aren't listed
+    in the constructor signature — so a top-level YAML key matching one of
+    those names flows into the target without having to be duplicated under
+    the target's block.
     """
     if isinstance(cls_or_name, type):
         cache_key = f"{cls_or_name.__module__}.{cls_or_name.__qualname__}"
@@ -292,6 +393,13 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
                 continue
             keys.add(name)
 
+        # Fold in attribute names assigned in __init__'s body (AST scan).
+        # These are instance attributes not visible via dir(cls), but the
+        # post-init injection loop in confluid.fluid.flow already assigns
+        # any matching kwarg via setattr — broadcasting just needs to know
+        # the names so a top-level YAML key can flow into them.
+        keys.update(_get_post_init_attrs(target))
+
     result = frozenset(keys)
     _acceptable_keys_cache[cache_key] = result
     return result
@@ -303,8 +411,6 @@ def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any],
     Priority: explicit kwargs > class-scoped block > instance-scoped block > broadcast scalars.
     ``target`` is an optional actual class object for parameter inspection (avoids name collisions).
     """
-    from confluid.fluid import Fluid
-
     cls_name = marker_dict.get("_confluid_class_", "")
     if cls_name.endswith("()"):
         cls_name = cls_name[:-2]
@@ -312,12 +418,35 @@ def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any],
 
     merged: Dict[str, Any] = {}
 
-    # 1. Broadcast: only scalars from parent that match the class's acceptable keys
+    # 1. Broadcast parent values into this class when the key matches an
+    # acceptable target (ctor param, class-level attr, or post-init body
+    # attr). Dicts and lists are filtered out — those top-level shapes are
+    # typically class-scope blocks (``ClassName: {...}``) or unrelated
+    # collections. Fluids broadcast only when ``k`` is EXPLICITLY listed in
+    # ``acceptable`` — never through the ``**kwargs`` catchall (which would
+    # pull the outer class back into nested classes and loop infinitely).
+    # Self-broadcast is also guarded: a Fluid whose target matches the
+    # receiving class itself is skipped. Inherited attrs from base classes
+    # (e.g. ``pytorch_lightning.LightningModule.trainer`` is a settable
+    # property, so ``trainer`` would otherwise land in every Trainer's
+    # ``acceptable`` set and infinitely broadcast a top-level ``trainer:``
+    # into its own materialization).
+    from confluid.fluid import Fluid
+    from confluid.registry import resolve_class
+
     acceptable = _get_acceptable_keys(target or cls_name)
+    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
     for k, v in parent_context.items():
-        if not isinstance(v, (dict, list, Fluid)):
-            if acceptable is None or k in acceptable:
-                merged[k] = v
+        if isinstance(v, (dict, list)):
+            continue
+        if isinstance(v, Fluid):
+            if acceptable is None or k not in acceptable:
+                continue
+            if target_cls is not None and _same_target(v.target, target_cls):
+                continue  # self-broadcast — skip to avoid infinite recursion
+        elif acceptable is not None and k not in acceptable:
+            continue
+        merged[k] = v
 
     # 2. Class-scoped and instance-scoped blocks
     for key in [cls_name, instance_name]:

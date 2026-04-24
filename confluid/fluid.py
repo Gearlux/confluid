@@ -103,10 +103,29 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
                 broadcasted = dict(v.kwargs)
                 acceptable = _get_acceptable_keys(v.target)
+                inner_target_cls = v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
                 for bk, bv in broadcast_ctx.items():
-                    if bk not in broadcasted and not isinstance(bv, (dict, list, Fluid)):
-                        if acceptable is None or bk in acceptable:
-                            broadcasted[bk] = bv
+                    if bk in broadcasted or isinstance(bv, (dict, list)):
+                        continue
+                    if isinstance(bv, Fluid):
+                        # Fluids only broadcast through an explicit accepted
+                        # key — never via the **kwargs catchall (which would
+                        # pull the outer Class into nested targets and loop).
+                        if acceptable is None or bk not in acceptable:
+                            continue
+                        # Self-broadcast guard: skip a Fluid whose target is
+                        # the same class we're filling. Avoids infinite
+                        # recursion when an inherited attribute (e.g.
+                        # pl.LightningModule.trainer) makes the class's own
+                        # name an acceptable broadcast target.
+                        if inner_target_cls is not None:
+                            from confluid.loader import _same_target
+
+                            if _same_target(bv.target, inner_target_cls):
+                                continue
+                    elif acceptable is not None and bk not in acceptable:
+                        continue
+                    broadcasted[bk] = bv
                 v_copy = copy(v)
                 v_copy.kwargs = broadcasted
                 return v_copy
@@ -160,6 +179,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                         continue
                     if getattr(member, "__confluid_ignore__", False):
                         continue
+                    # Post-init attrs land on a live instance — if the value
+                    # is still a Fluid marker (e.g. a nested ``!class:X`` that
+                    # broadcasting carried in), materialize it now. Unlike
+                    # constructor args, post-init attrs have no runtime-kwarg
+                    # injection channel, so a deferred marker here would just
+                    # pollute a slot typed as the real dependency (and e.g.
+                    # ``nn.Module.__setattr__`` would outright reject it).
+                    if isinstance(v, Fluid):
+                        v = flow(v)
                     setattr(instance, k, v)
                     extra_keys.append(k)
             try:
