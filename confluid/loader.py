@@ -171,7 +171,10 @@ def load(
 
     if isinstance(data, Fluid):
         if flow:
-            return _deep_flow(data)
+            # Route through materialize() so inner !ref: targets (dotted imports
+            # like `posixpath.join`, cross-kwarg references) get resolved
+            # against the Fluid's own kwargs. A raw _deep_flow skips that pass.
+            return materialize(data, context=context)
         return data
 
     if not isinstance(data, dict):

@@ -172,3 +172,50 @@ def test_dump_non_configurable_round_trip() -> None:
     output = dump(live)
     assert "size: 7" in output
     assert "color: blue" in output
+
+
+def test_dump_function_reference_round_trip() -> None:
+    """Module-level callables dump as ``!ref:module.qualname`` and reload as the live function."""
+    import os.path
+
+    from confluid import load
+
+    @configurable
+    class Loader:
+        def __init__(self, joiner: Any = None) -> None:
+            self.joiner = joiner
+
+    obj = Loader(joiner=os.path.join)
+    output = dump(obj)
+
+    assert "!ref 'posixpath.join'" in output or "!ref 'ntpath.join'" in output
+
+    reloaded = load(output)
+    assert isinstance(reloaded, Loader)
+    assert reloaded.joiner is os.path.join
+
+
+def test_dump_lambda_rejected() -> None:
+    """Anonymous callables (lambdas, closures) cannot be referenced — dump raises."""
+
+    @configurable
+    class Holder:
+        def __init__(self, fn: Any = None) -> None:
+            self.fn = fn
+
+    obj = Holder(fn=lambda x: x)
+    with pytest.raises(yaml.representer.RepresenterError):
+        dump(obj)
+
+
+def test_dump_builtin_function_reference() -> None:
+    """Built-in callables (e.g., ``len``) dump as ``!ref:builtins.len``."""
+
+    @configurable
+    class Holder:
+        def __init__(self, fn: Any = None) -> None:
+            self.fn = fn
+
+    obj = Holder(fn=len)
+    output = dump(obj)
+    assert "!ref 'builtins.len'" in output
