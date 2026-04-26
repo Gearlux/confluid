@@ -35,8 +35,20 @@ def _register_constructors() -> None:
                     kwargs[k.strip()] = v.strip()
         return kwargs
 
+    def _stamp(fl: Any, loader: yaml.SafeLoader, node: yaml.nodes.Node) -> Any:
+        """Attach the YAML source location of `node` to `fl` for diagnostics.
+
+        Stored as ``(filename_or_None, line, column)`` on ``fl._yaml_loc``;
+        line/column are 1-based. Surfaces in :func:`format_yaml_loc` so error
+        messages can point at the offending YAML mapping.
+        """
+        mark = node.start_mark
+        filename = getattr(loader, "name", None)
+        fl._yaml_loc = (filename, mark.line + 1, mark.column + 1)
+        return fl
+
     def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
-        return Reference(tag_suffix)
+        return _stamp(Reference(tag_suffix), loader, node)
 
     def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
@@ -45,32 +57,32 @@ def _register_constructors() -> None:
 
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return factory(name, **mapping)
+            return _stamp(factory(name, **mapping), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return factory(name, **_parse_inline_kwargs(instant.group(2)))
+            return _stamp(factory(name, **_parse_inline_kwargs(instant.group(2))), loader, node)
 
-        return Class(tag_suffix)
+        return _stamp(Class(tag_suffix), loader, node)
 
     def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return Clone(tag_suffix, **mapping)
-        return Clone(tag_suffix)
+            return _stamp(Clone(tag_suffix, **mapping), loader, node)
+        return _stamp(Clone(tag_suffix), loader, node)
 
     yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
     yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
     yaml.SafeLoader.add_multi_constructor("!clone:", clone_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
-        return Reference(loader.construct_scalar(node))
+        return _stamp(Reference(loader.construct_scalar(node)), loader, node)
 
     def class_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         val = loader.construct_scalar(node)
         instant = re.match(r"^([\w_.]+)\((.*)\)$", val)
         if instant:
-            return Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2)))
-        return Class(val)
+            return _stamp(Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2))), loader, node)
+        return _stamp(Class(val), loader, node)
 
     yaml.SafeLoader.add_constructor("!ref", ref_compat)
     yaml.SafeLoader.add_constructor("!class", class_compat)
@@ -313,9 +325,9 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
             continue
         for node in ast.walk(tree):
             targets = (
-                [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else
-                node.targets if isinstance(node, ast.Assign) else
-                []
+                [node.target]
+                if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+                else node.targets if isinstance(node, ast.Assign) else []
             )
             for t in targets:
                 if (

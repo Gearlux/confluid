@@ -5,7 +5,7 @@ Confluid: Modern, hierarchical configuration and dependency injection.
 from confluid.configurator import configure
 from confluid.decorators import configurable, ignore_config, readonly_config, register
 from confluid.dumper import dump
-from confluid.fluid import Class, Clone, Fluid, Instance, Reference, flow
+from confluid.fluid import Class, Clone, Fluid, Instance, Reference, flow, format_yaml_loc
 from confluid.loader import load, load_config, materialize
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.registry import get_registry
@@ -34,6 +34,7 @@ __all__ = [
     "Instance",
     "Reference",
     "flow",
+    "format_yaml_loc",
     "get_hierarchy",
     "get_hierarchy_from_instance",
 ]
