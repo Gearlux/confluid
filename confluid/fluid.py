@@ -1,7 +1,10 @@
 from copy import copy
-from typing import Any, Type, Union
+from typing import Any, Optional, Tuple, Type, Union
 
 from confluid.registry import get_registry, resolve_class
+
+YamlLoc = Tuple[Optional[str], int, int]
+"""``(filename or None, line, column)`` — 1-based YAML source location."""
 
 
 class Fluid:
@@ -12,10 +15,28 @@ class Fluid:
     def __init__(self, target: Any, **kwargs: Any) -> None:
         self.target = target
         self.kwargs = kwargs
+        # Set by the YAML loader (see ``confluid.loader._stamp``) so error
+        # messages can point at the offending YAML node. Not part of the
+        # serialization contract — copy()/dump() preserve it best-effort.
+        self._yaml_loc: Optional[YamlLoc] = None
 
     def __repr__(self) -> str:
         name = self.target if isinstance(self.target, str) else getattr(self.target, "__name__", str(self.target))
         return f"{self.__class__.__name__}({name}, {self.kwargs})"
+
+
+def format_yaml_loc(obj: Any) -> str:
+    """Render a Fluid's YAML source location as ``"path/to.yaml:line:col"`` or ``""``.
+
+    Returns an empty string if ``obj`` is not a Fluid or carries no location
+    (e.g. constructed in code rather than loaded from YAML).
+    """
+    loc: Optional[YamlLoc] = getattr(obj, "_yaml_loc", None)
+    if loc is None:
+        return ""
+    filename, line, col = loc
+    head = filename if filename else "<config>"
+    return f"{head}:{line}:{col}"
 
 
 class Class(Fluid):
@@ -90,11 +111,19 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         merged: dict[str, Any] = dict(obj.kwargs)
         merged.update(runtime_kwargs)
 
-        # Flow Instance values (instant), keep Class/Reference deferred
-        # Apply broadcasting from full context to deferred Class objects
+        # Flow Instance values (instant), keep Class/Reference deferred for
+        # configurable targets (which manually flow their kwargs with runtime
+        # injection — e.g. ``configure_optimizers`` flows the optimizer Class
+        # with ``params=self.parameters()``). For NON-configurable targets
+        # (e.g. ``pytorch_lightning.Trainer``) the constructor receives the
+        # kwargs verbatim and never flow()s them, so deferred Class fluids
+        # would reach attribute hooks unconverted ("'Class' object has no
+        # attribute 'setup'"). For those targets, eagerly materialize nested
+        # Class fluids inside list/dict kwargs.
+        is_configurable_target = bool(getattr(target, "__confluid_configurable__", False))
         broadcast_ctx = context or merged
 
-        def _resolve_value(v: Any) -> Any:
+        def _resolve_value(v: Any, *, eager_classes: bool = False) -> Any:
             if isinstance(v, Instance):
                 return flow(v)
             if isinstance(v, Class):
@@ -103,12 +132,38 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
                 broadcasted = dict(v.kwargs)
                 acceptable = _get_acceptable_keys(v.target)
+                inner_target_cls = (
+                    v.target
+                    if isinstance(v.target, type)
+                    else resolve_class(v.target) if isinstance(v.target, str) else None
+                )
                 for bk, bv in broadcast_ctx.items():
-                    if bk not in broadcasted and not isinstance(bv, (dict, list, Fluid)):
-                        if acceptable is None or bk in acceptable:
-                            broadcasted[bk] = bv
+                    if bk in broadcasted or isinstance(bv, (dict, list)):
+                        continue
+                    if isinstance(bv, Fluid):
+                        # Fluids only broadcast through an explicit accepted
+                        # key — never via the **kwargs catchall (which would
+                        # pull the outer Class into nested targets and loop).
+                        if acceptable is None or bk not in acceptable:
+                            continue
+                        # Self-broadcast guard: skip a Fluid whose target is
+                        # the same class we're filling. Avoids infinite
+                        # recursion when an inherited attribute (e.g.
+                        # pl.LightningModule.trainer) makes the class's own
+                        # name an acceptable broadcast target.
+                        if inner_target_cls is not None:
+                            from confluid.loader import _same_target
+
+                            if _same_target(bv.target, inner_target_cls):
+                                continue
+                    elif acceptable is not None and bk not in acceptable:
+                        continue
+                    broadcasted[bk] = bv
                 v_copy = copy(v)
                 v_copy.kwargs = broadcasted
+                v_copy._yaml_loc = getattr(v, "_yaml_loc", None)
+                if eager_classes:
+                    return flow(v_copy)
                 return v_copy
             if isinstance(v, Reference) and context:
                 try:
@@ -118,12 +173,12 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             if isinstance(v, Fluid):
                 return v  # Other Fluid types stay as-is
             if isinstance(v, list):
-                return [_resolve_value(item) for item in v]
+                return [_resolve_value(item, eager_classes=eager_classes) for item in v]
             if isinstance(v, dict):
-                return {dk: _resolve_value(dv) for dk, dv in v.items()}
+                return {dk: _resolve_value(dv, eager_classes=eager_classes) for dk, dv in v.items()}
             return v
 
-        merged = {k: _resolve_value(v) for k, v in merged.items()}
+        merged = {k: _resolve_value(v, eager_classes=not is_configurable_target) for k, v in merged.items()}
 
         # Instantiate: constructor params go to __init__, rest set as attributes
         try:
@@ -136,7 +191,13 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             params = set()
 
         ctor = {k: v for k, v in merged.items() if k in params} if params else merged
-        instance = target(**ctor)
+        try:
+            instance = target(**ctor)
+        except Exception as exc:
+            target_name = getattr(target, "__name__", str(target))
+            loc = format_yaml_loc(obj)
+            location = f" at {loc}" if loc else ""
+            raise type(exc)(f"Failed to construct {target_name}{location}: {exc}") from exc
 
         # Memoize so a second flow() of the same Instance marker returns this
         # exact object (see module docstring).
@@ -160,6 +221,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                         continue
                     if getattr(member, "__confluid_ignore__", False):
                         continue
+                    # Post-init attrs land on a live instance — if the value
+                    # is still a Fluid marker (e.g. a nested ``!class:X`` that
+                    # broadcasting carried in), materialize it now. Unlike
+                    # constructor args, post-init attrs have no runtime-kwarg
+                    # injection channel, so a deferred marker here would just
+                    # pollute a slot typed as the real dependency (and e.g.
+                    # ``nn.Module.__setattr__`` would outright reject it).
+                    if isinstance(v, Fluid):
+                        v = flow(v)
                     setattr(instance, k, v)
                     extra_keys.append(k)
             try:

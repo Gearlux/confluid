@@ -92,6 +92,6 @@ def resolve_class(name: Union[str, type]) -> Optional[type]:
             if isinstance(cls, type):
                 return cls
         except (ImportError, AttributeError) as e:
-            logger.debug("Failed to resolve '%s' via module path: %s", name, e)
+            logger.debug(f"Failed to resolve '{name}' via module path: {e}")
 
     return None

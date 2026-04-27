@@ -1,4 +1,5 @@
 import inspect
+import types
 from typing import Any, Optional, Set
 
 import yaml
@@ -10,9 +11,28 @@ class CompactDumper(yaml.SafeDumper):
     pass
 
 
+def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
+    """Emit a module-level function/builtin as ``!ref:module.qualname``.
+
+    The loader's ``_resolve_dotted_ref`` resolves this back to the live
+    object via ``importlib.import_module`` + ``getattr``, so dump/load
+    round-trips hold as long as the symbol stays importable at the same
+    dotted path.
+    """
+    module = getattr(data, "__module__", None)
+    qualname = getattr(data, "__qualname__", None) or getattr(data, "__name__", None)
+    if not module or not qualname or "<" in qualname:
+        # Lambdas, closures, and anything anonymous can't be referenced —
+        # fall back to the default "cannot represent" error.
+        raise yaml.representer.RepresenterError(
+            f"cannot represent callable {data!r} — no resolvable dotted import path"
+        )
+    return dumper.represent_scalar("!ref", f"{module}.{qualname}")
+
+
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
-    from confluid.fluid import Class, Clone, Reference
+    from confluid.fluid import Class, Clone, Instance, Reference
 
     if isinstance(data, Clone):
         if data.kwargs:
@@ -21,6 +41,18 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
 
     if isinstance(data, Reference):
         return dumper.represent_scalar("!ref", data.target)
+
+    # Instance comes BEFORE Class in the isinstance ladder (Class is a sibling,
+    # but we match the exact type first to pick the right tag: `!class:X()` for
+    # Instance, `!class:X` for Class — so a reload reproduces the same
+    # eager/deferred semantics.
+    if isinstance(data, Instance):
+        target = data.target
+        if isinstance(target, type):
+            name = f"{target.__module__}.{target.__qualname__}"
+        else:
+            name = str(target)
+        return dumper.represent_mapping(f"!class:{name}()", data.kwargs)
 
     if isinstance(data, Class):
         target = data.target
@@ -76,6 +108,21 @@ def dump(obj: Any) -> str:
     class _LocalDumper(CompactDumper):
         pass
 
+    # Callable references (module-level functions, builtins) serialize as
+    # `!ref:module.qualname` — the loader resolves these via dotted import.
+    _LocalDumper.add_representer(types.FunctionType, _represent_callable)
+    _LocalDumper.add_representer(types.BuiltinFunctionType, _represent_callable)
+
+    # Register representers for all four Fluid subclasses upfront — Confluid
+    # has a fixed, small set of Fluid shapes, and the traversal below can
+    # only register what it has seen. Doing it here closes the gap where a
+    # nested Instance (or Reference / Clone) inside another Fluid's kwargs
+    # would miss out and fall through to `represent_undefined`.
+    from confluid.fluid import Class, Clone, Instance, Reference
+
+    for _fluid_cls in (Class, Instance, Reference, Clone):
+        _LocalDumper.add_representer(_fluid_cls, _represent_object)
+
     def _discover_and_register(target: Any, visited: Optional[Set[int]] = None) -> None:
         if visited is None:
             visited = set()
@@ -83,14 +130,15 @@ def dump(obj: Any) -> str:
             return
         visited.add(id(target))
 
-        from confluid.fluid import Clone, Fluid
-
-        if isinstance(target, Clone):
-            _LocalDumper.add_representer(Clone, _represent_object)
-            return
+        from confluid.fluid import Fluid
 
         if isinstance(target, Fluid):
-            _LocalDumper.add_representer(type(target), _represent_object)
+            # All four Fluid subclasses already have representers registered
+            # above; recurse into kwargs to pick up @configurable types nested
+            # inside them (so their post-construction attribute round-trip
+            # still works).
+            for v in getattr(target, "kwargs", {}).values():
+                _discover_and_register(v, visited)
             return
 
         if hasattr(target.__class__, "__confluid_configurable__"):
