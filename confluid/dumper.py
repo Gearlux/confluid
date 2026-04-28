@@ -137,8 +137,10 @@ def dump(obj: Any) -> str:
     for _fluid_cls in (Class, Instance, Reference, Clone):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
 
-    # Catch-all fallback for opaque non-@configurable objects.
-    _LocalDumper.add_representer(None, _represent_opaque)
+    # Catch-all fallback for opaque non-@configurable objects. PyYAML
+    # documents add_representer(None, ...) as the catch-all hook, but
+    # typeshed types the first arg as `type[Any]` and rejects None.
+    _LocalDumper.add_representer(None, _represent_opaque)  # type: ignore[arg-type]
 
     def _discover_and_register(target: Any, visited: Optional[Set[int]] = None) -> None:
         if visited is None:
