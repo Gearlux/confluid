@@ -18,7 +18,6 @@ from confluid import (
     load,
     load_config,
     materialize,
-    resolve_scopes,
 )
 from confluid.configurator import configure
 from confluid.resolver import Resolver
@@ -284,13 +283,7 @@ def test_schema_coverage() -> None:
     assert _parse_docstring("Args:\n  x: d") == {"x": "d"}
 
 
-# --- 10. scopes.py ---
-
-
-def test_scopes_coverage() -> None:
-    # 76
-    res = resolve_scopes({"scope_aliases": {"a": ["b"]}}, ["a"])
-    assert res == {}
+# --- 10. (removed: scopes.py is now in liquifai) ---
 
 
 # --- 11. flow() coverage ---

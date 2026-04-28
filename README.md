@@ -8,12 +8,13 @@
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) part of your configurable graph.
 - **Smart Reference Resolution:** Uses `!ref:` syntax for cross-config references and `${}` for environment variables.
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
-- **Hierarchical Scopes:** Robust support for scope overlays (debug, production) and dot-notation inheritance.
+- **Flat-View Ordered Matching:** When a class materializes, the visible context is the document minus the descent path; matching scalars are applied in YAML document order with **last-write-wins** semantics. Explicit kwargs are not privileged — every source (own kwargs, sibling broadcasts, class-name blocks) takes its slot at its document position.
+
+> **Note on scopes:** Scoped overlays (`debug:`, `prod:`, dotted hierarchies, `not <name>:` blocks) are a runtime/CLI concern and live in **liquifai**, not confluid. Confluid only sees the post-unwrap config dict.
 
 ## Design Goals & Requirements
 
 ### Configuration Engine
-- **Hierarchical Scoping:** Support nested configuration with scoped overrides (e.g. `train:`, `debug:`).
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
 - **Tag-Based IR:** Use standard YAML tags (`!class:Name`, `!ref:path`) instead of proprietary symbols like `@`.
 - **Object-Based Internal Representation:** Use typed `Reference` and `ClassReference` objects for internal resolution.

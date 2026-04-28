@@ -3,14 +3,13 @@ import re
 import threading
 from copy import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Any, Dict, Optional, Set, Union, cast
 
 import yaml
 from logflow import get_logger
 
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver
-from confluid.scopes import resolve_scopes
 
 logger = get_logger("confluid.loader")
 
@@ -164,7 +163,7 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
 
 def load(
     data: Any,
-    scopes: Optional[List[str]] = None,
+    *,
     flow: bool = True,
     context: Optional[Dict[str, Any]] = None,
 ) -> Any:
@@ -193,9 +192,6 @@ def load(
         return data
 
     data = cast(Dict[str, Any], _process_imports(data))
-    active_scopes = scopes or data.get("scopes", [])
-    if active_scopes:
-        data = resolve_scopes(data, active_scopes)
 
     resolver = Resolver(context=context or data)
     data = resolver.resolve(data)
@@ -417,64 +413,127 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     return result
 
 
-def _prepare_kwargs(marker_dict: Dict[str, Any], parent_context: Dict[str, Any], target: Any = None) -> Dict[str, Any]:
-    """Merge broadcast values and scoped blocks into a class marker dict.
+def _splice_kwargs_at_slot(
+    parent_context: Dict[str, Any],
+    self_key: Optional[str],
+    kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a new ordered dict by replacing ``parent_context[self_key]``
+    with ``kwargs``'s items at the same position, preserving document
+    order. When ``self_key`` is not in ``parent_context`` (top-level call,
+    or identity match failed), kwargs are appended at the end.
 
-    Priority: explicit kwargs > class-scoped block > instance-scoped block > broadcast scalars.
-    ``target`` is an optional actual class object for parameter inspection (avoids name collisions).
+    Collisions: if a key in ``kwargs`` already exists in ``parent_context``,
+    the parent's value is kept. This preserves Reference targets — a
+    receiver's own ``foo: !ref:foo`` would otherwise overwrite the actual
+    ``foo`` Fluid in the ambient view, causing infinite recursion when
+    the Reference is resolved against the same context.
+    """
+    out: Dict[str, Any] = {}
+    if self_key is None or self_key not in parent_context:
+        for k, v in parent_context.items():
+            out[k] = v
+        for k, v in kwargs.items():
+            if k not in out:
+                out[k] = v
+        return out
+    for k, v in parent_context.items():
+        if k == self_key:
+            for kk, kv in kwargs.items():
+                if kk not in out and kk not in parent_context:
+                    out[kk] = kv
+        else:
+            out[k] = v
+    return out
+
+
+def _prepare_kwargs(
+    marker_dict: Dict[str, Any],
+    parent_context: Dict[str, Any],
+    target: Any = None,
+    self_obj: Any = None,
+) -> Dict[str, Any]:
+    """Flat-view, document-order, last-write-wins kwarg assembly.
+
+    Walks ``parent_context`` in document order. The receiving class's own
+    ``marker_dict`` is unrolled at the position WHERE ``self_obj`` sits in
+    ``parent_context`` (matched by Python identity); when ``self_obj`` is
+    not found, ``marker_dict`` is applied at the end. Class-name and
+    instance-name dict blocks (``Foo: {...}``) are unrolled inline at their
+    position. Scalar/Fluid values broadcast when the key matches the
+    receiving class's ``acceptable`` set.
+
+    There is no "explicit kwargs > broadcast" priority — every source is
+    ordered by its YAML position. Whichever assignment comes last wins.
+
+    ``target`` is an optional class object for parameter inspection (avoids
+    name collisions). ``self_obj`` is the Fluid (or marker dict) being
+    materialized — passed so we can locate its slot in ``parent_context``.
     """
     cls_name = marker_dict.get("_confluid_class_", "")
     if cls_name.endswith("()"):
         cls_name = cls_name[:-2]
     instance_name = marker_dict.get("name")
 
-    merged: Dict[str, Any] = {}
-
-    # 1. Broadcast parent values into this class when the key matches an
-    # acceptable target (ctor param, class-level attr, or post-init body
-    # attr). Dicts and lists are filtered out — those top-level shapes are
-    # typically class-scope blocks (``ClassName: {...}``) or unrelated
-    # collections. Fluids broadcast only when ``k`` is EXPLICITLY listed in
-    # ``acceptable`` — never through the ``**kwargs`` catchall (which would
-    # pull the outer class back into nested classes and loop infinitely).
-    # Self-broadcast is also guarded: a Fluid whose target matches the
-    # receiving class itself is skipped. Inherited attrs from base classes
-    # (e.g. ``pytorch_lightning.LightningModule.trainer`` is a settable
-    # property, so ``trainer`` would otherwise land in every Trainer's
-    # ``acceptable`` set and infinitely broadcast a top-level ``trainer:``
-    # into its own materialization).
     from confluid.fluid import Fluid
     from confluid.registry import resolve_class
 
     acceptable = _get_acceptable_keys(target or cls_name)
     target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
-    for k, v in parent_context.items():
-        if isinstance(v, (dict, list)):
-            continue
+
+    def _accepts(k: str, v: Any) -> bool:
         if isinstance(v, Fluid):
             if acceptable is None or k not in acceptable:
-                continue
+                return False
+            # Skip same-target Fluids that are not self — broadcasting them
+            # in would loop on infinite re-materialization.
             if target_cls is not None and _same_target(v.target, target_cls):
-                continue  # self-broadcast — skip to avoid infinite recursion
-        elif acceptable is not None and k not in acceptable:
+                return False
+            return True
+        if isinstance(v, (dict, list)):
+            return False
+        if acceptable is not None and k not in acceptable:
+            return False
+        return True
+
+    def _unroll_marker_dict(into: Dict[str, Any]) -> None:
+        # Keep ``_confluid_class_`` so callers can still pop it after this
+        # function returns; everything else lands at its document position.
+        for bk, bv in marker_dict.items():
+            into[bk] = bv
+
+    merged: Dict[str, Any] = {}
+    self_unrolled = False
+
+    for k, v in parent_context.items():
+        # Receiving class's own marker — unroll its kwargs at this position.
+        if self_obj is not None and v is self_obj and not self_unrolled:
+            _unroll_marker_dict(merged)
+            self_unrolled = True
             continue
-        merged[k] = v
 
-    # 2. Class-scoped and instance-scoped blocks
-    for key in [cls_name, instance_name]:
-        block = parent_context.get(key) if key else None
-        if isinstance(block, dict):
-            merged.update(block)
-
-    # 3. Explicit kwargs win
-    merged.update(marker_dict)
-
-    # 4. Recursion: ensure nested Fluid objects in merged also get the context
-    for k, v in merged.items():
-        if k == "_confluid_class_":
+        # Same-target Fluid that isn't self — skip (would otherwise loop).
+        if isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls):
             continue
+
+        # Class-name / instance-name dict block — unroll inline.
+        if k in (cls_name, instance_name) and isinstance(v, dict):
+            for bk, bv in v.items():
+                if _accepts(bk, bv):
+                    merged[bk] = bv
+            continue
+
+        # Plain broadcast.
+        if _accepts(k, v):
+            merged[k] = v
+
+    if not self_unrolled:
+        _unroll_marker_dict(merged)
+
+    # Recurse into nested marker dicts so their own contexts are prepared.
+    for k, v in list(merged.items()):
         if isinstance(v, dict) and "_confluid_class_" in v:
-            merged[k] = _prepare_kwargs(v, merged)
+            merged[k] = _prepare_kwargs(v, merged, self_obj=v)
 
     return merged
 
@@ -551,8 +610,10 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             if flow_memo is not None and id(data) in flow_memo:
                 return flow_memo[id(data)]
             raw_id = id(data)
+            self_obj = data
+            self_key = next((k for k, v in parent_context.items() if v is self_obj), None) if parent_context else None
             if parent_context:
-                data = _prepare_kwargs(data, parent_context)
+                data = _prepare_kwargs(data, parent_context, self_obj=self_obj)
             else:
                 data = dict(data)  # Don't mutate the original
 
@@ -560,8 +621,13 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             if cls_name.endswith("()"):
                 cls_name = cls_name[:-2]
 
-            # Child context: parent context merges into data (context values fill gaps)
-            child_ctx = deep_merge(data, parent_context) if parent_context else dict(data)
+            # Child context: splice this class's prepared kwargs into the
+            # parent's ambient view at THIS class's slot, preserving document
+            # order. When this class isn't in parent_context (top-level call),
+            # append at end.
+            child_ctx = (
+                _splice_kwargs_at_slot(parent_context, self_key, data) if parent_context is not None else dict(data)
+            )
             resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
             result = Instance(cls_name, **resolved_kwargs)
             if flow_memo is not None:
@@ -588,12 +654,18 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             )
             synthetic = {**data.kwargs, "_confluid_class_": target_name}
             actual_target = data.target if isinstance(data.target, type) else None
-            merged_kwargs = _prepare_kwargs(synthetic, parent_context, target=actual_target)
+            merged_kwargs = _prepare_kwargs(synthetic, parent_context, target=actual_target, self_obj=data)
             merged_kwargs.pop("_confluid_class_", None)
         else:
             merged_kwargs = dict(data.kwargs)
 
-        child_ctx = deep_merge(merged_kwargs, parent_context) if parent_context else dict(merged_kwargs)
+        # Splice this Fluid's prepared kwargs into its slot in parent_context to
+        # preserve document order for downstream broadcasts.
+        if parent_context:
+            self_key = next((k for k, v in parent_context.items() if v is data), None)
+            child_ctx = _splice_kwargs_at_slot(parent_context, self_key, merged_kwargs)
+        else:
+            child_ctx = dict(merged_kwargs)
         resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs

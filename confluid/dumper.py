@@ -30,6 +30,20 @@ def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
     return dumper.represent_scalar("!ref", f"{module}.{qualname}")
 
 
+def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
+    """Fallback: emit a ``!class:<module.qualname>`` scalar marker.
+
+    Used for objects that aren't ``@configurable`` and have no registered
+    representer (e.g. Lightning auto-injects ``RichProgressBar`` into
+    ``Trainer.callbacks``). Not round-trippable — the marker carries no
+    kwargs — but lets ``dump()`` complete with informational placeholders
+    instead of aborting on the first opaque object.
+    """
+    cls = data.__class__
+    name = f"{cls.__module__}.{cls.__qualname__}"
+    return dumper.represent_scalar(f"!class:{name}", "")
+
+
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
     from confluid.fluid import Class, Clone, Instance, Reference
@@ -122,6 +136,9 @@ def dump(obj: Any) -> str:
 
     for _fluid_cls in (Class, Instance, Reference, Clone):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
+
+    # Catch-all fallback for opaque non-@configurable objects.
+    _LocalDumper.add_representer(None, _represent_opaque)
 
     def _discover_and_register(target: Any, visited: Optional[Set[int]] = None) -> None:
         if visited is None:

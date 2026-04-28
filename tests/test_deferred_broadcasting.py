@@ -85,29 +85,32 @@ def test_deferred_materialization_with_overrides() -> None:
     assert engine_instance.power == 500
 
 
-def test_prioritized_broadcasting_from_root() -> None:
-    """Test that explicit kwargs beat root-level broadcasting.
+def test_ordered_broadcasting_from_root() -> None:
+    """Confluid uses flat-view ordered last-write-wins.
 
-    Priority order: explicit > scoped > broadcast.
+    The engine's own ``power: 200`` lives at ``car.engine.power`` — earlier
+    in document order than the top-level ``power: 999``. Under flat-view
+    ordered semantics, the later-positioned scalar wins, so ``power: 999``
+    is the final value. (Old priority was "explicit > broadcast"; that
+    rule is gone — every source is just ordered by its YAML position.)
     """
     config = {
         "car": {"_confluid_class_": "Car", "color": "green", "engine": {"_confluid_class_": "Engine", "power": 200}},
-        "power": 999,  # Root broadcast (lowest priority)
+        "power": 999,  # Root broadcast — appears AFTER car in document order
     }
 
     car = materialize(config["car"], context=config)
 
-    # Explicit power=200 in the engine config wins over root broadcast power=999
-    assert car.engine.power == 200
+    # Top-level power=999 appears later in doc order than the nested 200 → wins.
+    assert car.engine.power == 999
     assert car.color == "green"
 
-    # Verify broadcasting fills in MISSING params (not override explicit ones)
+    # Without an explicit nested power, the broadcast still fills it in.
     config2 = {
         "car": {"_confluid_class_": "Car", "color": "blue", "engine": {"_confluid_class_": "Engine"}},
         "power": 999,
     }
     car2 = materialize(config2["car"], context=config2)
-    # Engine has no explicit power → broadcast fills it in
     assert car2.engine.power == 999
 
 

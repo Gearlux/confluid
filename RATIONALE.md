@@ -40,12 +40,12 @@ Confluid is designed for the **Dump -> Reconstruct** lifecycle.
 - **Reconstruction:** Use that exported file to recreate the *entire* object graph in a new process, guaranteeing identical results.
 
 ### 6. Robust Recursive Traversal
-Confluid uses an advanced recursive traversal engine that walks through object graphs (including lists and dictionaries) to identify and configure all nodes. It matches configuration keys based on a multi-tier priority: `ClassName.instance_name.attribute`, `instance_name.attribute`, `ClassName.attribute`, and global broadcast.
+Confluid uses a recursive traversal engine that walks through object graphs (including lists and dictionaries) to identify and configure all nodes. Matching is **flat-view ordered last-write-wins**: when a class materializes, its visible context is the document with the descent path popped (each ancestor's wrapper key is replaced in place by its kwargs); scalar values whose key is in the receiving class's accept-list are applied in YAML document order, with later positions overriding earlier. Class-name (`ClassName: {...}`) and instance-name blocks are spliced inline at their document position. There is no static priority over explicit kwargs — every source takes its slot at its YAML position.
 
 ---
 
 ## Design Goals
 - **Explicit over Implicit:** If it's not marked `@configurable` or explicitly registered, it's not a config node.
 - **Reproducibility First:** The final config dump MUST be able to reconstruct the object graph.
-- **Deep Hierarchical Scoping:** Support for complex dotted-path resolution and scope overlays.
+- **Dotted-Path Resolution:** Support for complex dotted-path resolution (e.g. `model.layers: 10`). Scope overlays themselves are handled upstream in liquifai.
 - **Zero Blocking:** Lightweight, non-blocking configuration application.

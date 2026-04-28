@@ -57,7 +57,9 @@ def test_hierarchical_dump() -> None:
     assert "layers: 5" in output
 
 
-def test_strict_gating() -> None:
+def test_opaque_fallback_emits_class_marker() -> None:
+    """Non-@configurable objects degrade to a ``!class:<name>`` scalar marker."""
+
     class InternalThing:
         def __str__(self) -> str:
             return "internal"
@@ -67,12 +69,10 @@ def test_strict_gating() -> None:
         def __init__(self, thing: Any) -> None:
             self.thing = thing
 
-    # InternalThing is NOT @configurable
     model = Model(thing=InternalThing())
-
-    # Standard YAML dumper will fail since we don't have a representer.
-    with pytest.raises(yaml.representer.RepresenterError):
-        dump(model)
+    output = dump(model)
+    assert "!class:" in output
+    assert "InternalThing" in output
 
 
 def test_circular_reference() -> None:
