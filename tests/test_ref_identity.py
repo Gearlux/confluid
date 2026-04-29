@@ -92,6 +92,44 @@ second: !class:Consumer()
     assert result["first"].service is result["second"].service
 
 
+def test_self_referential_kwarg_raises_informative_error() -> None:
+    """A kwarg ``foo: !ref:foo`` with no outer ``foo`` would loop forever
+    (the kwarg splices itself into scope as the only ``foo``). Confluid
+    must detect this and raise a clear, actionable error instead of
+    stack-overflowing.
+    """
+
+    @configurable
+    class Widget:
+        def __init__(self, checkpoint_path: Any = None) -> None:
+            self.checkpoint_path = checkpoint_path
+
+    yaml_str = """
+widget: !class:Widget()
+  checkpoint_path: !ref:checkpoint_path
+"""
+    with pytest.raises(ValueError, match=r"Self-referential !ref:checkpoint_path"):
+        load(yaml_str)
+
+
+def test_self_referential_kwarg_with_outer_value_resolves_normally() -> None:
+    """When the outer scope DOES define the target, the kwarg-with-same-name
+    pattern must still work — it's just an alias, not a self-reference."""
+
+    @configurable
+    class Widget:
+        def __init__(self, checkpoint_path: Any = None) -> None:
+            self.checkpoint_path = checkpoint_path
+
+    yaml_str = """
+checkpoint_path: /tmp/model.ckpt
+widget: !class:Widget()
+  checkpoint_path: !ref:checkpoint_path
+"""
+    result: Any = load(yaml_str)
+    assert result["widget"].checkpoint_path == "/tmp/model.ckpt"
+
+
 def test_ref_vs_clone_distinction() -> None:
     """!ref: shares identity; !clone: creates a deep copy. Both must coexist."""
 

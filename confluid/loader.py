@@ -676,7 +676,23 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     # 3. Reference — resolve against parent context
     if isinstance(data, Reference):
         if parent_context and data.target in parent_context:
-            return _flow_recursive(parent_context[data.target], parent_context=parent_context)
+            resolved = parent_context[data.target]
+            # Self-reference guard: a kwarg like ``foo: !ref:foo`` with no
+            # outer ``foo`` in scope splices itself into ``parent_context``,
+            # so the only ``foo`` it can resolve against is itself —
+            # recursing here would stack-overflow. Fail loudly instead.
+            if resolved is data:
+                from confluid.fluid import format_yaml_loc
+
+                loc = format_yaml_loc(data)
+                loc_str = f" at {loc}" if loc else ""
+                raise ValueError(
+                    f"Self-referential !ref:{data.target}{loc_str}: the only "
+                    f"{data.target!r} in scope is this reference itself. "
+                    f"Define a top-level {data.target!r} key (e.g. "
+                    f"`{data.target}: null`), or remove the kwarg."
+                )
+            return _flow_recursive(resolved, parent_context=parent_context)
         # Support dotted paths and method calls (e.g., "obj.method()")
         if parent_context:
             resolved = _resolve_dotted_ref(data.target, parent_context)
