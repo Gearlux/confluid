@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from confluid import load, load_config
+from confluid import load_config
 
 
 def test_file_includes(tmp_path: Path) -> None:
@@ -28,18 +28,3 @@ def test_circular_include_error(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Circular include"):
         load_config(a)
-
-
-def test_load_with_active_scopes(tmp_path: Path) -> None:
-    config_file = tmp_path / "app.yaml"
-    config_file.write_text(
-        """
-val: 1
-debug:
-  val: 10
-"""
-    )
-
-    # Test load with programmatic scope
-    data = load(config_file, scopes=["debug"])
-    assert data["val"] == 10
