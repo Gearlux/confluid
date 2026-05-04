@@ -57,3 +57,23 @@ def test_load_with_custom_tags(tmp_path: Path) -> None:
     assert data["model"].kwargs["layers"] == 10
     assert isinstance(data["ref"], Reference)
     assert data["ref"].target == "base_lr"
+
+
+def test_load_config_root_level_class(tmp_path: Path) -> None:
+    """Top-level `!class:` documents must round-trip via the path loader.
+
+    The text loader (`confluid.loader.load(text)`) already handles a root
+    Fluid (loader.py:183); the path loader must be symmetric so callers
+    that point at a YAML file containing a single class doc don't blow
+    up in `_process_imports` (which assumes a dict).
+    """
+    from confluid.fluid import Class
+
+    config_file = tmp_path / "root_class.yaml"
+    config_file.write_text("!class:Model\nlayers: 10\nactivation: relu\n")
+
+    data = load_config(config_file)
+    assert isinstance(data, Class)
+    assert data.target == "Model"
+    assert data.kwargs["layers"] == 10
+    assert data.kwargs["activation"] == "relu"

@@ -103,6 +103,14 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     with open(path, "r") as f:
         data = yaml.safe_load(f) or {}
 
+    # Root-level !class: documents parse to a Fluid. Imports/includes are
+    # dict-only constructs, so skip them and just walk the Fluid's kwargs
+    # for nested includes — keeps load_config symmetric with load(text).
+    from confluid.fluid import Fluid
+
+    if isinstance(data, Fluid):
+        return cast(Dict[str, Any], _process_includes_recursive(data, path, _included))
+
     data = _process_imports(data)
     data = cast(Dict[str, Any], _process_includes_recursive(data, path, _included))
     return data
