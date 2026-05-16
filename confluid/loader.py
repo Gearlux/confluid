@@ -22,8 +22,8 @@ def get_active_context() -> Optional[Dict[str, Any]]:
 
 
 def _register_constructors() -> None:
-    """Register YAML constructors for !ref: and !class: tags."""
-    from confluid.fluid import Class, Clone, Instance, Reference
+    """Register YAML constructors for !ref: / !class: / !clone: / !lazy: tags."""
+    from confluid.fluid import Class, Clone, Instance, Lazy, Reference
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
@@ -69,9 +69,26 @@ def _register_constructors() -> None:
             return _stamp(Clone(tag_suffix, **mapping), loader, node)
         return _stamp(Clone(tag_suffix), loader, node)
 
+    def lazy_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        # Mirror class_constructor's grammar so users can write either
+        # ``!lazy:Adam`` (bare), ``!lazy:Adam(lr=1e-3)`` (inline kwargs),
+        # or ``!lazy:Adam`` with a YAML mapping body for the kwargs.
+        instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
+        name = instant.group(1) if instant else tag_suffix
+
+        if isinstance(node, yaml.nodes.MappingNode):
+            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            return _stamp(Lazy(name, **mapping), loader, node)
+
+        if isinstance(node, yaml.nodes.ScalarNode) and instant:
+            return _stamp(Lazy(name, **_parse_inline_kwargs(instant.group(2))), loader, node)
+
+        return _stamp(Lazy(tag_suffix), loader, node)
+
     yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
     yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
     yaml.SafeLoader.add_multi_constructor("!clone:", clone_constructor)
+    yaml.SafeLoader.add_multi_constructor("!lazy:", lazy_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         return _stamp(Reference(loader.construct_scalar(node)), loader, node)
@@ -221,6 +238,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
     """
     _acceptable_keys_cache.clear()
     _post_init_attrs_cache.clear()
+    _param_kind_cache.clear()
     if context:
         context = expand_dotted_keys(context)
     old_ctx = getattr(_state, "context", None)
@@ -239,29 +257,61 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
 
 
 def _deep_flow(data: Any) -> Any:
-    """Flow the top-level Fluid + any Instance objects in the tree."""
-    from confluid.fluid import Fluid, Instance
+    """Flow the top-level Fluid + any Instance objects in the tree.
+
+    ``Lazy`` Fluids are left deferred at every level — they are
+    runtime-injection points whose construction happens later (e.g.
+    inside ``configure_optimizers`` once ``model.parameters()`` is
+    available). Flowing them here would either fail (missing runtime
+    args) or produce a partially-initialized object.
+    """
+    from confluid.fluid import Fluid, Instance, Lazy
     from confluid.fluid import flow as _flow
 
+    def _maybe_flow(v: Any) -> Any:
+        if isinstance(v, Lazy):
+            return v
+        if isinstance(v, Instance):
+            return _flow(v)
+        return v
+
+    if isinstance(data, Lazy):
+        return data
     if isinstance(data, Fluid):
         return _flow(data)
     if isinstance(data, dict):
-        return {k: (_flow(v) if isinstance(v, Instance) else v) for k, v in data.items()}
+        return {k: _maybe_flow(v) for k, v in data.items()}
     if isinstance(data, list):
-        return [(_flow(item) if isinstance(item, Instance) else item) for item in data]
+        return [_maybe_flow(item) for item in data]
     return data
 
 
 _acceptable_keys_cache: Dict[str, Optional[frozenset[str]]] = {}
 _post_init_attrs_cache: Dict[str, frozenset[str]] = {}
+# Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
+# as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
+_param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
 
 
 def _same_target(fluid_target: Any, cls: type) -> bool:
-    """True if ``fluid_target`` refers to the same class as ``cls``.
+    """True if ``fluid_target`` resolves to the same class object as ``cls``.
 
-    Handles both the post-resolution case (``fluid_target`` is a type) and
-    the pre-resolution case (``fluid_target`` is a dotted-name string that
-    hasn't been turned into a class yet — typical at YAML-load time).
+    Identity-only comparison: two classes that share a short name across
+    different modules are NOT considered "same". This prevents the
+    self-broadcast guard from over-skipping fluids whose target happens to
+    share a name with the receiving class.
+
+    Handles three cases:
+      * ``fluid_target`` IS ``cls`` — fast path.
+      * ``fluid_target`` is a string and ``resolve_class`` resolves it to
+        ``cls`` — registry-confirmed match.
+      * ``fluid_target`` is a string equal to the fully-qualified
+        ``cls.__module__.__qualname__`` — last-resort match for classes
+        that aren't registered yet but whose dotted path is unambiguous.
+
+    Bare-name strings (``"Trainer"``) that can't be registry-resolved are
+    treated as "not same" — better to broadcast and let the receiver's
+    accept-list filter than to silently skip across module boundaries.
     """
     if fluid_target is cls:
         return True
@@ -271,11 +321,8 @@ def _same_target(fluid_target: Any, cls: type) -> bool:
         resolved = resolve_class(fluid_target)
         if resolved is cls:
             return True
-        # Last-resort string compare in case resolve_class misses (e.g. the
-        # class hasn't been imported into the registry yet but the names
-        # match a fully-qualified module path).
         qualified = f"{cls.__module__}.{cls.__qualname__}"
-        if fluid_target in (cls.__name__, qualified):
+        if fluid_target == qualified:
             return True
     return False
 
@@ -328,6 +375,7 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
+            # Pattern 1: ``self.x = ...`` / ``self.x: T = ...`` / ``self.x += ...``
             targets = (
                 [node.target]
                 if isinstance(node, (ast.AnnAssign, ast.AugAssign))
@@ -341,6 +389,23 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
                     and not t.attr.startswith("_")
                 ):
                     names.add(t.attr)
+
+            # Pattern 2: ``setattr(self, "x", ...)`` with a string literal name.
+            # Common when classes apply external config in a loop or use a
+            # helper to bulk-assign attributes. Non-literal names (variables,
+            # f-strings) stay invisible — we don't try to be clever.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "self"
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and not node.args[1].value.startswith("_")
+            ):
+                names.add(node.args[1].value)
 
     result = frozenset(names)
     _post_init_attrs_cache[cache_key] = result
@@ -360,26 +425,36 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     in the constructor signature — so a top-level YAML key matching one of
     those names flows into the target without having to be duplicated under
     the target's block.
+
+    Resolution order: a string name is resolved to its class FIRST, then
+    cached under the resolved class's fully-qualified name. This prevents
+    two classes that share a short name across different modules from
+    silently inheriting one another's accept-list.
     """
-    if isinstance(cls_or_name, type):
-        cache_key = f"{cls_or_name.__module__}.{cls_or_name.__qualname__}"
-        target = cls_or_name
-    else:
-        cache_key = cls_or_name
-        target = None  # resolve below
-
-    if cache_key in _acceptable_keys_cache:
-        return _acceptable_keys_cache[cache_key]
-
     import inspect
 
-    if target is None:
+    target: Any
+    if isinstance(cls_or_name, type):
+        target = cls_or_name
+    else:
+        # Always resolve the string first so the cache key is module-qualified.
         from confluid.registry import resolve_class
 
-        target = resolve_class(cache_key)
-        if target is None:
-            _acceptable_keys_cache[cache_key] = None
+        resolved = resolve_class(cls_or_name)
+        if resolved is None:
+            # Truly unresolvable — cache the negative result under the raw
+            # name so repeated lookups stay O(1). Two modules with the same
+            # unresolvable name collide, but the value is None in both cases
+            # so the collision is benign.
+            if cls_or_name in _acceptable_keys_cache:
+                return _acceptable_keys_cache[cls_or_name]
+            _acceptable_keys_cache[cls_or_name] = None
             return None
+        target = resolved
+
+    cache_key = f"{target.__module__}.{target.__qualname__}"
+    if cache_key in _acceptable_keys_cache:
+        return _acceptable_keys_cache[cache_key]
 
     keys: Set[str] = set()
     try:
@@ -419,6 +494,111 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     result = frozenset(keys)
     _acceptable_keys_cache[cache_key] = result
     return result
+
+
+def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
+    """Return ``{param_name: "dict" | "list" | None}`` for a target's ctor.
+
+    Used by :func:`_accepts` to decide whether a dict/list value at a
+    matching key in the parent context should be broadcast IN (when the
+    target's annotation says it expects a dict/list) or left to recurse as
+    a config sub-block (the default for un-annotated/scalar-shaped params).
+
+    Resolution is annotation-only (no runtime values); if a class doesn't
+    annotate, the value stays None and the legacy "skip dict/list" rule
+    applies. ``typing.get_type_hints`` is wrapped in a try/except because
+    forward references that can't be resolved would otherwise raise.
+    """
+    import inspect
+    import typing
+
+    target: Any
+    if isinstance(cls_or_name, type):
+        target = cls_or_name
+    else:
+        from confluid.registry import resolve_class
+
+        target = resolve_class(cls_or_name)
+        if target is None:
+            return {}
+
+    cache_key = f"{target.__module__}.{target.__qualname__}"
+    if cache_key in _param_kind_cache:
+        return _param_kind_cache[cache_key]
+
+    kinds: Dict[str, Optional[str]] = {}
+    try:
+        init_method = getattr(target, "__init__", None)
+        if init_method is None:
+            _param_kind_cache[cache_key] = kinds
+            return kinds
+        sig = inspect.signature(init_method)
+    except (ValueError, TypeError):
+        _param_kind_cache[cache_key] = kinds
+        return kinds
+
+    # Try to resolve forward refs via typing.get_type_hints; fall back to
+    # the raw .annotation when that fails (common for self-referential or
+    # third-party-imported annotations).
+    try:
+        hints = typing.get_type_hints(init_method)
+    except Exception:
+        hints = {}
+
+    for name, param in sig.parameters.items():
+        if name in ("self", "cls"):
+            continue
+        ann = hints.get(name, param.annotation)
+        kinds[name] = _classify_annotation(ann)
+
+    _param_kind_cache[cache_key] = kinds
+    return kinds
+
+
+def _classify_annotation(ann: Any) -> Optional[str]:
+    """Map a type annotation to ``"dict"`` / ``"list"`` / None.
+
+    Recognizes the obvious built-ins (``dict``, ``list``, ``tuple``,
+    ``set``) and their ``typing`` analogues (``Dict``, ``List``, ``Tuple``,
+    ``Set``, ``Mapping``, ``Sequence``, ``MutableMapping``, etc.). Unions
+    that include any of these on either side count as the corresponding
+    kind — e.g. ``Optional[Dict[str, int]]`` classifies as ``"dict"``.
+
+    Returns None for anything else (including bare ``Any`` and unannotated).
+    """
+    import inspect
+    import typing
+
+    if ann is inspect.Parameter.empty:
+        return None
+
+    # Direct built-ins.
+    if ann in (dict, list, tuple, set, frozenset):
+        return "dict" if ann is dict else "list"
+
+    # typing.* origins.
+    origin = typing.get_origin(ann)
+    if origin is not None:
+        if origin in (dict,) or origin is typing.Dict:  # type: ignore[attr-defined]
+            return "dict"
+        if origin in (list, tuple, set, frozenset):
+            return "list"
+        # Abstract collections from typing/collections.abc.
+        try:
+            import collections.abc as cabc
+        except ImportError:  # pragma: no cover
+            cabc = None  # type: ignore[assignment]
+        if cabc is not None:
+            if origin in (cabc.Mapping, cabc.MutableMapping):
+                return "dict"
+            if origin in (cabc.Sequence, cabc.MutableSequence, cabc.Iterable, cabc.Collection):
+                return "list"
+        if origin is typing.Union:
+            for arg in typing.get_args(ann):
+                kind = _classify_annotation(arg)
+                if kind is not None:
+                    return kind
+    return None
 
 
 def _splice_kwargs_at_slot(
@@ -488,6 +668,7 @@ def _prepare_kwargs(
 
     acceptable = _get_acceptable_keys(target or cls_name)
     target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
+    param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
 
     def _accepts(k: str, v: Any) -> bool:
         if isinstance(v, Fluid):
@@ -498,7 +679,24 @@ def _prepare_kwargs(
             if target_cls is not None and _same_target(v.target, target_cls):
                 return False
             return True
-        if isinstance(v, (dict, list)):
+        if isinstance(v, dict):
+            # Marker dicts (``{"_confluid_class_": ...}``) are flowable
+            # values, treat them like Fluids — accept when the key is in
+            # the accept-list.
+            if "_confluid_class_" in v:
+                if acceptable is None or k not in acceptable:
+                    return False
+                return True
+            # Plain dict — only broadcast IN when the target annotates the
+            # param as a dict/mapping. Otherwise keep the legacy behavior
+            # (recurse as a config sub-block, do NOT pull the dict in as
+            # a value).
+            if param_kinds.get(k) == "dict":
+                return acceptable is None or k in acceptable
+            return False
+        if isinstance(v, list):
+            if param_kinds.get(k) == "list":
+                return acceptable is None or k in acceptable
             return False
         if acceptable is not None and k not in acceptable:
             return False

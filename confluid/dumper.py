@@ -46,7 +46,9 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
 
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
-    from confluid.fluid import Class, Clone, Instance, Reference
+    from confluid.fluid import Class, Clone, Instance
+    from confluid.fluid import Lazy as LazyFluid
+    from confluid.fluid import Reference
 
     if isinstance(data, Clone):
         if data.kwargs:
@@ -55,6 +57,19 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
 
     if isinstance(data, Reference):
         return dumper.represent_scalar("!ref", data.target)
+
+    # Lazy comes BEFORE Class/Instance — it's a Class subclass, so the
+    # isinstance ladder must match it first to emit ``!lazy:`` instead of
+    # ``!class:`` and preserve the deferred-construction contract on reload.
+    if isinstance(data, LazyFluid):
+        target = data.target
+        if isinstance(target, type):
+            name = f"{target.__module__}.{target.__qualname__}"
+        else:
+            name = str(target)
+        if data.kwargs:
+            return dumper.represent_mapping(f"!lazy:{name}", data.kwargs)
+        return dumper.represent_scalar(f"!lazy:{name}", "")
 
     # Instance comes BEFORE Class in the isinstance ladder (Class is a sibling,
     # but we match the exact type first to pick the right tag: `!class:X()` for
@@ -132,9 +147,11 @@ def dump(obj: Any) -> str:
     # only register what it has seen. Doing it here closes the gap where a
     # nested Instance (or Reference / Clone) inside another Fluid's kwargs
     # would miss out and fall through to `represent_undefined`.
-    from confluid.fluid import Class, Clone, Instance, Reference
+    from confluid.fluid import Class, Clone, Instance
+    from confluid.fluid import Lazy as LazyFluid
+    from confluid.fluid import Reference
 
-    for _fluid_cls in (Class, Instance, Reference, Clone):
+    for _fluid_cls in (Class, Instance, Reference, Clone, LazyFluid):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
 
     # Catch-all fallback for opaque non-@configurable objects. PyYAML

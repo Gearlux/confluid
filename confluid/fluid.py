@@ -67,6 +67,29 @@ class Clone(Fluid):
         super().__init__(path, **kwargs)
 
 
+class Lazy(Class):
+    """Class fluid that stays deferred through ``materialize()`` / deep-flow.
+
+    Behaves identically to :class:`Class` for the purposes of broadcasting:
+    a ``Lazy`` value receives broadcast kwargs from its surrounding context
+    just like a regular ``!class:`` Fluid. The difference is downstream —
+    materialization passes (``materialize``, the liquifai ``_deep_flow``
+    walker, and any caller that uses ``Instance``-only auto-flow) leave a
+    ``Lazy`` deferred. The receiving code is responsible for calling
+    ``flow(value, **runtime_kwargs)`` when it has the runtime arguments
+    needed to actually construct the target.
+
+    The classic use is an optimizer that needs ``params=model.parameters()``
+    — declared in YAML as ``optimizer: !lazy:torch.optim.Adam(lr=0.01)``,
+    then instantiated inside ``configure_optimizers`` with the live params.
+    Mirrors the Python-side ``confluid.Lazy[T]`` annotation but expressed
+    at the YAML layer.
+    """
+
+    def __init__(self, target: Union[Type[Any], str], **kwargs: Any) -> None:
+        super().__init__(target, **kwargs)
+
+
 def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     """Instantiate a deferred object (Class, Reference, marker dict) into a live instance.
 
@@ -82,6 +105,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
 
     # 1. Idempotency — already-live objects pass through
     if not isinstance(obj, (Fluid, str, type, dict)):
+        return obj
+
+    # 1b. Lazy stays deferred unless the caller supplies runtime kwargs.
+    # Declaring an optimizer in YAML as ``!lazy:Adam(lr=0.01)`` lets the
+    # surrounding broadcast pass merge in any matching scalars, but
+    # the actual ``Adam(...)`` construction is postponed until domain code
+    # calls ``flow(value, params=model.parameters())`` with the missing
+    # runtime-injected arguments.
+    if isinstance(obj, Lazy) and not runtime_kwargs:
         return obj
 
     # 2. Resolve context from the global active context
