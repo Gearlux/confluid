@@ -5,6 +5,7 @@ Confluid: Modern, hierarchical configuration and dependency injection.
 from confluid.configurator import configure
 from confluid.decorators import configurable, ignore_config, readonly_config, register
 from confluid.dumper import dump
+from confluid.env import load_workspace_env
 from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
 from confluid.fluid import Reference, flow, format_yaml_loc
@@ -28,6 +29,7 @@ __all__ = [
     "expand_dotted_keys",
     "parse_value",
     "dump",
+    "load_workspace_env",
     "configure",
     "Fluid",
     "Class",
