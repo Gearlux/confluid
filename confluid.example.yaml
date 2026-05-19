@@ -1,7 +1,8 @@
 # Confluid: Example Configuration File
 # This file illustrates the configuration options confluid handles directly.
-# Note: scope overlays (debug:, production:, not <name>:, dotted hierarchies)
-# are handled upstream by liquifai. See liquifai's docs for scope features.
+# Scope overlays (!scope:NAME, !scope:KEY=VAL, !notscope:...) live at the
+# bottom of this file. Activate them via `confluid.load(path, scopes=[...])`
+# or, in a liquifai CLI, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
 
 # --- 1. Module Imports ---
 # Dynamically import Python modules to populate the class registry.
@@ -34,3 +35,34 @@ Trainer:
   model: !class Model(layers=10)
   # Environment variable resolution
   log_dir: "${HOME}/logs/my_app"
+
+# --- 5. Scopes ---
+# Optional aliases let one CLI name expand to multiple boolean scopes.
+scope_aliases:
+  dev: [debug, local]
+
+# A scope wrapper lives at an arbitrary key whose VALUE carries the
+# !scope:/!notscope: tag. The key itself is inert — it's just YAML
+# scaffolding because top-level mappings can't hold bare tags. Pick a
+# descriptive label; on activation the key disappears and its contents
+# are spliced in at that slot.
+
+# Boolean scope: fires when the user passes `--scope debug`.
+if_debug: !scope:debug
+  log_level: DEBUG
+  base_lr: 0.0001
+
+# Keyed scope (assignment form): fires for `--scope task=classification`
+# or, equivalently, `--task classification` / `--task=classification`.
+if_classification: !scope:task=classification
+  model: !class Model(layers=3)
+
+# Keyed scope (function-call form) — semantically identical to the
+# assignment form above. Use whichever reads better in context.
+if_prod: !scope:env(prod)
+  log_level: WARNING
+
+# Negative scope. Active when no `--task ...` is supplied at all OR when
+# the supplied value differs from `segmentation` (the unset-⇒-active rule).
+unless_segmentation: !notscope:task=segmentation
+  postproc: !class DefaultPost()

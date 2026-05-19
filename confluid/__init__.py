@@ -8,13 +8,14 @@ from confluid.dumper import dump
 from confluid.env import load_workspace_env
 from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
-from confluid.fluid import Reference, flow, format_yaml_loc
+from confluid.fluid import Reference, ScopeBlock, flow, format_yaml_loc
 from confluid.lazy import Lazy, is_lazy_annotation, lazy_param_names
 from confluid.loader import load, load_config, materialize
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
 from confluid.schema import get_hierarchy, get_hierarchy_from_instance
+from confluid.scopes import discover_dimensions, normalize_active, parse_scope_arg, resolve_scopes
 
 __all__ = [
     "configurable",
@@ -36,6 +37,7 @@ __all__ = [
     "Clone",
     "Instance",
     "Reference",
+    "ScopeBlock",
     "flow",
     "format_yaml_loc",
     "Lazy",
@@ -44,4 +46,8 @@ __all__ = [
     "lazy_param_names",
     "get_hierarchy",
     "get_hierarchy_from_instance",
+    "discover_dimensions",
+    "normalize_active",
+    "parse_scope_arg",
+    "resolve_scopes",
 ]

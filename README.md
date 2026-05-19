@@ -10,7 +10,7 @@
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
 - **Flat-View Ordered Matching:** When a class materializes, the visible context is the document minus the descent path; matching scalars are applied in YAML document order with **last-write-wins** semantics. Explicit kwargs are not privileged — every source (own kwargs, sibling broadcasts, class-name blocks) takes its slot at its document position.
 
-> **Note on scopes:** Scoped overlays (`debug:`, `prod:`, dotted hierarchies, `not <name>:` blocks) are a runtime/CLI concern and live in **liquifai**, not confluid. Confluid only sees the post-unwrap config dict.
+> **Scopes:** Conditional overlays use explicit YAML tags — `!scope:debug`, `!scope:task=classification` (or equivalently `!scope:task(classification)`), and the `!notscope:…` negative twins. Activate via `confluid.load(path, scopes=["debug", "task=classification"])` or, in liquifai-built CLIs, via `--scope debug` / `--scope task=classification` / `--task classification`. See the [Scopes](#scopes) section below.
 
 ## Design Goals & Requirements
 
@@ -84,6 +84,43 @@ state_yaml = dump(trainer)
 # Recreate exact same hierarchy in a new process
 new_trainer = load(state_yaml)
 ```
+
+## Scopes
+
+Conditional config blocks live at an arbitrary key whose value carries a
+`!scope:` / `!notscope:` tag. The key is inert — pick a descriptive label
+(`if_debug`, `if_classification`, …); on activation the wrapper disappears
+and the block's contents are spliced in at that slot. Three activation
+forms are supported, all equivalent at the IR level:
+
+```yaml
+# Boolean — flips on with `--scope debug`
+if_debug: !scope:debug
+  log_level: DEBUG
+
+# Keyed — flips on with `--scope task=classification` (or `--task classification`)
+if_classification: !scope:task=classification
+  model: !class:ClassifierModel
+
+# Equivalent function-call form
+also_classification: !scope:task(classification)
+  model: !class:ClassifierModel
+
+# Negation. `!notscope:KEY=VAL` is also active when the user passes no
+# `--KEY ...` at all (the *unset ⇒ active* convention).
+unless_debug: !notscope:debug
+  log_level: WARNING
+```
+
+Resolve them by passing `scopes=` to `load()`:
+
+```python
+from confluid import load
+trainer = load("experiment.yaml", scopes=["debug", "task=classification"])
+```
+
+Liquifai apps wire `--scope NAME` / `--scope KEY=VAL` and per-dimension
+`--KEY VAL` flags automatically — see liquifai's docs.
 
 ## Installation
 ```bash

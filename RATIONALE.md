@@ -47,5 +47,6 @@ Confluid uses a recursive traversal engine that walks through object graphs (inc
 ## Design Goals
 - **Explicit over Implicit:** If it's not marked `@configurable` or explicitly registered, it's not a config node.
 - **Reproducibility First:** The final config dump MUST be able to reconstruct the object graph.
-- **Dotted-Path Resolution:** Support for complex dotted-path resolution (e.g. `model.layers: 10`). Scope overlays themselves are handled upstream in liquifai.
+- **Dotted-Path Resolution:** Support for complex dotted-path resolution (e.g. `model.layers: 10`).
+- **Tag-Driven Scopes:** Conditional overlays are tag-marked (`!scope:KEY[=VAL]` / `!notscope:KEY[=VAL]`) and resolved in confluid. Boolean (`!scope:debug`) and keyed (`!scope:task=classification`) forms share the same sentinel; liquifai forwards CLI activations via the `scopes=` kwarg on `load()`.
 - **Zero Blocking:** Lightweight, non-blocking configuration application.

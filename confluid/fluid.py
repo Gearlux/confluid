@@ -67,6 +67,41 @@ class Clone(Fluid):
         super().__init__(path, **kwargs)
 
 
+class ScopeBlock:
+    """A conditional block carried in the IR until ``resolve_scopes`` rewrites it.
+
+    Produced by the ``!scope:`` / ``!notscope:`` YAML constructors. Three forms
+    are accepted at parse time, all normalized to the same fields:
+
+    * ``!scope:debug``                  → ``key="debug"``, ``value=None`` (boolean)
+    * ``!scope:task=classification``    → ``key="task"``, ``value="classification"``
+    * ``!scope:task(classification)``   → ``key="task"``, ``value="classification"``
+
+    ``negate=True`` denotes the ``!notscope:`` variants, whose activation is
+    inverted with an "unset ⇒ active" convention (see ``confluid.scopes``).
+    """
+
+    __confluid_configurable__ = False
+
+    def __init__(
+        self,
+        key: str,
+        value: Optional[str],
+        negate: bool,
+        contents: Any,
+    ) -> None:
+        self.key = key
+        self.value = value
+        self.negate = negate
+        self.contents = contents
+        self._yaml_loc: Optional[YamlLoc] = None
+
+    def __repr__(self) -> str:
+        tag = "!notscope" if self.negate else "!scope"
+        suffix = self.key if self.value is None else f"{self.key}={self.value}"
+        return f"{tag}:{suffix} {self.contents!r}"
+
+
 class Lazy(Class):
     """Class fluid that stays deferred through ``materialize()`` / deep-flow.
 

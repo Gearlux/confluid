@@ -3,13 +3,14 @@ import re
 import threading
 from copy import copy
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Union, cast
+from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import yaml
 from logflow import get_logger
 
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver
+from confluid.scopes import normalize_active, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
@@ -22,8 +23,8 @@ def get_active_context() -> Optional[Dict[str, Any]]:
 
 
 def _register_constructors() -> None:
-    """Register YAML constructors for !ref: / !class: / !clone: / !lazy: tags."""
-    from confluid.fluid import Class, Clone, Instance, Lazy, Reference
+    """Register YAML constructors for !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: tags."""
+    from confluid.fluid import Class, Clone, Instance, Lazy, Reference, ScopeBlock
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
@@ -85,10 +86,38 @@ def _register_constructors() -> None:
 
         return _stamp(Lazy(tag_suffix), loader, node)
 
+    def _parse_scope_suffix(tag_suffix: str) -> tuple[str, Optional[str]]:
+        # ``KEY(VALUE)`` — function-call form, mirrors ``!class:Foo(...)`` grammar.
+        paren = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
+        if paren:
+            return paren.group(1), paren.group(2).strip()
+        # ``KEY=VALUE`` — assignment form. Split on the first ``=``.
+        if "=" in tag_suffix:
+            key, value = tag_suffix.split("=", 1)
+            return key.strip(), value.strip()
+        # Bare ``KEY`` — boolean scope.
+        return tag_suffix, None
+
+    def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
+        key, value = _parse_scope_suffix(tag_suffix)
+        if isinstance(node, yaml.nodes.MappingNode):
+            contents: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+        else:
+            contents = {}
+        return _stamp(ScopeBlock(key=key, value=value, negate=negate, contents=contents), loader, node)
+
+    def scope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        return _build_scope(loader, tag_suffix, node, negate=False)
+
+    def notscope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+        return _build_scope(loader, tag_suffix, node, negate=True)
+
     yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
     yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
     yaml.SafeLoader.add_multi_constructor("!clone:", clone_constructor)
     yaml.SafeLoader.add_multi_constructor("!lazy:", lazy_constructor)
+    yaml.SafeLoader.add_multi_constructor("!scope:", scope_constructor)
+    yaml.SafeLoader.add_multi_constructor("!notscope:", notscope_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         return _stamp(Reference(loader.construct_scalar(node)), loader, node)
@@ -148,7 +177,7 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Path]) -> Any:
-    from confluid.fluid import Fluid
+    from confluid.fluid import Fluid, ScopeBlock
 
     if isinstance(data, list):
         return [_process_includes_recursive(item, current_path, _included) for item in data]
@@ -156,6 +185,11 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
     # Traverse into Class/Fluid kwargs
     if isinstance(data, Fluid):
         data.kwargs = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.kwargs.items()}
+        return data
+
+    # Scope blocks: walk their contents so nested includes still process.
+    if isinstance(data, ScopeBlock):
+        data.contents = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.contents.items()}
         return data
 
     if not isinstance(data, dict):
@@ -191,7 +225,16 @@ def load(
     *,
     flow: bool = True,
     context: Optional[Dict[str, Any]] = None,
+    scopes: Optional[List[str]] = None,
 ) -> Any:
+    """Load and (optionally) materialize a config.
+
+    ``scopes`` is a list of activation strings forwarded from the CLI layer
+    (typically liquifai). Each entry is either a bare boolean name
+    (``"debug"``) or a ``"key=value"`` pair (``"task=classification"``). Scope
+    blocks tagged with ``!scope:…`` / ``!notscope:…`` in the YAML are resolved
+    against this set before flow runs. See :mod:`confluid.scopes`.
+    """
     _register_constructors()
 
     if isinstance(data, (str, Path)):
@@ -201,6 +244,18 @@ def load(
         else:
             data = cast(Dict[str, Any], yaml.safe_load(str_data) or {})
             data = _process_includes_recursive(data, Path.cwd() / "string.yaml", set())
+
+    # Resolve scope blocks before anything else — they only carry until this
+    # point. Aliases live at the top level of the loaded dict; pull them out
+    # before normalizing the activation map.
+    if isinstance(data, dict):
+        aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
+        active = normalize_active(scopes or [], aliases)
+        data = resolve_scopes(data, active)
+    elif scopes:
+        # Non-dict roots (e.g. YAML starting with !class:) carry no metadata,
+        # but a ScopeBlock could still sit at the top level. Resolve directly.
+        data = resolve_scopes(data, normalize_active(scopes, None))
 
     # Handle root-level Fluid objects (e.g., YAML starting with !class:)
     from confluid.fluid import Fluid
