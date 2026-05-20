@@ -194,29 +194,22 @@ def test_inner_overrides_are_independent() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Wrapper-level kwarg overrides do not currently shield same-class "
-        "descendants from an ancestor's broadcast. The broadcaster checks "
-        "the WRAPPER's accept-list, sees no `ops` there, and propagates the "
-        "outer-level value straight through. See the test docstring for the "
-        "scenario this protects."
-    ),
-    strict=True,
-)
 def test_override_at_wrapper_should_shield_inner_classes() -> None:
-    """The user's natural intuition (and the YAML edit they tried first):
+    """A kwarg set on a ``@configurable`` wrapper block MUST shield that
+    wrapper's same-class descendants from an ancestor-level broadcast.
 
-    putting ``ops: []`` on the wrapper block should stop the broadcast
-    from reaching ANY descendant — the wrapper acts as a "shield"
-    declaring "no ops below this point", regardless of whether the
-    wrapper class itself uses ``ops``.
+    The wrapper class itself does not need ``ops`` in its ``__init__``
+    accept-list — declaring ``ops: []`` (or any value) on the wrapper's
+    YAML block is a statement about what the WRAPPER'S SUBTREE looks
+    like, not about the wrapper instance's own attributes. The
+    broadcaster must treat the wrapper-block kwarg as a sibling
+    broadcast scoped to that subtree, shadowing the outer broadcast for
+    everything beneath it.
 
-    This currently does NOT work. The xfail marker means today's
-    behaviour (broadcast leaks past the wrapper) is what runs in CI; the
-    day someone teaches the broadcaster to honour wrapper-level
-    overrides, this flips to a passing test and a separate baseline
-    regression test will be needed.
+    Today's confluid behaviour silently drops the wrapper-level kwarg
+    because the wrapper's accept-list excludes ``ops``, so the
+    outer-level broadcast leaks straight through. This test fails red
+    until the broadcaster honours kwargs set on configurable wrappers.
     """
     config = {
         "_confluid_class_": "_Outer",

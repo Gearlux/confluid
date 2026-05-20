@@ -660,31 +660,67 @@ def _splice_kwargs_at_slot(
     parent_context: Dict[str, Any],
     self_key: Optional[str],
     kwargs: Dict[str, Any],
+    receiver_cls: Any = None,
 ) -> Dict[str, Any]:
     """Build a new ordered dict by replacing ``parent_context[self_key]``
     with ``kwargs``'s items at the same position, preserving document
     order. When ``self_key`` is not in ``parent_context`` (top-level call,
     or identity match failed), kwargs are appended at the end.
 
-    Collisions: if a key in ``kwargs`` already exists in ``parent_context``,
-    the parent's value is kept. This preserves Reference targets — a
-    receiver's own ``foo: !ref:foo`` would otherwise overwrite the actual
-    ``foo`` Fluid in the ambient view, causing infinite recursion when
-    the Reference is resolved against the same context.
+    Collisions on a key ``kk`` that appears in BOTH ``parent_context`` and
+    ``kwargs`` are resolved by inspecting the receiver class's type:
+
+    * ``kwargs[kk]`` is a :class:`Reference` → keep parent's value
+      (avoids infinite recursion when ``foo: !ref:foo`` would resolve
+      against itself).
+    * ``kk`` is a typed param of the receiver (i.e. in its accept-list)
+      → keep parent's value. The receiver's constructor consumes
+      ``kwargs[kk]`` directly via ``resolved_kwargs``; the parent's
+      entry at ``kk`` is broadcast metadata aimed at descendants and
+      must remain visible in ``child_ctx``.
+    * Otherwise (``kk`` is NOT a typed param of the receiver) →
+      ``kwargs`` wins. The kwarg was placed on the receiver's YAML
+      block specifically to pass through to descendants; it sits at a
+      later document position than the colliding parent broadcast, so
+      last-write-wins gives it the slot.
+    * ``receiver_cls`` is unknown or accepts ``**kwargs`` (accept-list
+      is ``None``) → keep parent's value. Conservative fallback that
+      preserves pre-existing dotted-broadcast behaviour.
     """
+    from confluid.fluid import Reference
+
+    acceptable = _get_acceptable_keys(receiver_cls) if receiver_cls is not None else None
+
+    def _parent_wins(kk: str, kv: Any) -> bool:
+        if kk not in parent_context:
+            return False
+        if isinstance(kv, Reference):
+            return True
+        if acceptable is None:
+            return True
+        return kk in acceptable
+
     out: Dict[str, Any] = {}
     if self_key is None or self_key not in parent_context:
         for k, v in parent_context.items():
             out[k] = v
         for k, v in kwargs.items():
-            if k not in out:
-                out[k] = v
+            if _parent_wins(k, v):
+                continue
+            out[k] = v
         return out
     for k, v in parent_context.items():
         if k == self_key:
             for kk, kv in kwargs.items():
-                if kk not in out and kk not in parent_context:
-                    out[kk] = kv
+                if _parent_wins(kk, kv):
+                    continue
+                out.pop(kk, None)
+                out[kk] = kv
+        elif k in kwargs and not _parent_wins(k, kwargs[k]):
+            # Wrapper's value at this key will win at the self_key slot;
+            # skip parent's value at its original position so the wrapper's
+            # value ends up at the slot.
+            continue
         else:
             out[k] = v
     return out
@@ -887,7 +923,9 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             # order. When this class isn't in parent_context (top-level call),
             # append at end.
             child_ctx = (
-                _splice_kwargs_at_slot(parent_context, self_key, data) if parent_context is not None else dict(data)
+                _splice_kwargs_at_slot(parent_context, self_key, data, receiver_cls=cls_name)
+                if parent_context is not None
+                else dict(data)
             )
             resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
             result = Instance(cls_name, **resolved_kwargs)
@@ -924,7 +962,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         # preserve document order for downstream broadcasts.
         if parent_context:
             self_key = next((k for k, v in parent_context.items() if v is data), None)
-            child_ctx = _splice_kwargs_at_slot(parent_context, self_key, merged_kwargs)
+            child_ctx = _splice_kwargs_at_slot(parent_context, self_key, merged_kwargs, receiver_cls=data.target)
         else:
             child_ctx = dict(merged_kwargs)
         resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
