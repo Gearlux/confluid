@@ -177,6 +177,4 @@ def test_broadcast_reaches_body_assigned_class_attribute() -> None:
 
 
 if __name__ == "__main__":
-    from typing import Any
-
     pytest.main([__file__])
