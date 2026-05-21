@@ -126,14 +126,8 @@ if_cls: !scope:task=classification
 if_seg: !scope:task=segmentation
   model: segmenter
 """
-    assert (
-        load(yaml_text, flow=False, scopes=["task=classification"])["model"]
-        == "classifier"
-    )
-    assert (
-        load(yaml_text, flow=False, scopes=["task=segmentation"])["model"]
-        == "segmenter"
-    )
+    assert load(yaml_text, flow=False, scopes=["task=classification"])["model"] == "classifier"
+    assert load(yaml_text, flow=False, scopes=["task=segmentation"])["model"] == "segmenter"
 
 
 def test_splice_preserves_position() -> None:
@@ -204,10 +198,7 @@ unless_seg: !notscope:task=segmentation
   postproc: default
 """
     # Different value → notscope fires.
-    assert (
-        load(yaml_text, flow=False, scopes=["task=classification"])["postproc"]
-        == "default"
-    )
+    assert load(yaml_text, flow=False, scopes=["task=classification"])["postproc"] == "default"
 
 
 def test_notscope_keyed_dropped_when_value_matches() -> None:
@@ -216,9 +207,7 @@ postproc: base
 unless_seg: !notscope:task=segmentation
   postproc: default
 """
-    assert (
-        load(yaml_text, flow=False, scopes=["task=segmentation"])["postproc"] == "base"
-    )
+    assert load(yaml_text, flow=False, scopes=["task=segmentation"])["postproc"] == "base"
 
 
 # ---------------------------------------------------------------------------
@@ -460,9 +449,7 @@ def test_normalize_active_keyed_and_boolean() -> None:
 
 
 def test_normalize_active_last_write_wins() -> None:
-    active = normalize_active(
-        ["task=classification", "task=segmentation"], aliases=None
-    )
+    active = normalize_active(["task=classification", "task=segmentation"], aliases=None)
     assert active == {"task": "segmentation"}
 
 

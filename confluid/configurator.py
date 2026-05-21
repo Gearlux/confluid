@@ -7,9 +7,7 @@ from confluid.merger import expand_dotted_keys
 from confluid.resolver import Resolver
 
 
-def configure(
-    *instances: Any, config: Any, context: Optional[Dict[str, Any]] = None
-) -> None:
+def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
     """Apply configuration to one or more existing object instances.
 
     Recursively walks the object graph and sets attributes based on matching
@@ -82,9 +80,7 @@ def _walk(
             continue
 
 
-def _apply(
-    obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str
-) -> None:
+def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str) -> None:
     """Apply matching config values to a single configurable object."""
     cls = obj.__class__
     cls_name = getattr(cls, "__confluid_name__", cls.__name__)

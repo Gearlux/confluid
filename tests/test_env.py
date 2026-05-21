@@ -16,9 +16,7 @@ def _write_env(env_dir: Path, contents: str) -> Path:
     return env_path
 
 
-def test_loads_nearest_env_and_returns_required_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_loads_nearest_env_and_returns_required_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATA_ROOT", raising=False)
     _write_env(tmp_path, f"DATA_ROOT={tmp_path}\n")
 
@@ -38,9 +36,7 @@ def test_walks_up_to_find_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert result == {"DATA_ROOT": str(tmp_path)}
 
 
-def test_raises_when_no_env_found(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_raises_when_no_env_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Isolate from any host .env files higher up the tree.
     original_exists = Path.exists
 
@@ -55,9 +51,7 @@ def test_raises_when_no_env_found(
         load_workspace_env(start=tmp_path)
 
 
-def test_raises_when_required_key_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_raises_when_required_key_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATA_ROOT", raising=False)
     _write_env(tmp_path, "OTHER=value\n")
 
@@ -65,9 +59,7 @@ def test_raises_when_required_key_missing(
         load_workspace_env(start=tmp_path)
 
 
-def test_raises_when_required_path_does_not_exist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_raises_when_required_path_does_not_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     missing = tmp_path / "does_not_exist"
     monkeypatch.delenv("DATA_ROOT", raising=False)
     _write_env(tmp_path, f"DATA_ROOT={missing}\n")
@@ -76,9 +68,7 @@ def test_raises_when_required_path_does_not_exist(
         load_workspace_env(start=tmp_path)
 
 
-def test_custom_require_skips_path_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_custom_require_skips_path_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FOO", raising=False)
     _write_env(tmp_path, "FOO=bar\n")
 
@@ -87,9 +77,7 @@ def test_custom_require_skips_path_validation(
     assert result == {"FOO": "bar"}
 
 
-def test_override_flag_controls_existing_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_override_flag_controls_existing_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     old = tmp_path / "old"
     new = tmp_path / "new"
     old.mkdir()
@@ -109,9 +97,7 @@ def test_reexport_from_top_level() -> None:
     assert top_level is load_workspace_env
 
 
-def test_default_start_uses_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_default_start_uses_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATA_ROOT", raising=False)
     _write_env(tmp_path, f"DATA_ROOT={tmp_path}\n")
     monkeypatch.chdir(tmp_path)

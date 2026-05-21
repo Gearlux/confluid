@@ -38,9 +38,7 @@ user2: !ref:shared
 """
     result: Any = load(yaml_str)
 
-    assert (
-        Counter.instantiations == 1
-    ), "Expected one construction; got extra copies via !ref:"
+    assert Counter.instantiations == 1, "Expected one construction; got extra copies via !ref:"
     assert result["user1"] is result["shared"]
     assert result["user2"] is result["shared"]
 

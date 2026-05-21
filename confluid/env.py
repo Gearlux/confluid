@@ -41,17 +41,13 @@ def load_workspace_env(
             load_dotenv(env_path, override=override)
             break
     if env_path is None:
-        raise RuntimeError(
-            f"No .env file found walking up from {here} -- create one at the workspace root."
-        )
+        raise RuntimeError(f"No .env file found walking up from {here} -- create one at the workspace root.")
 
     resolved: dict[str, str] = {}
     for key in require:
         value = os.environ.get(key)
         if not value:
-            raise RuntimeError(
-                f"{key} is not set -- add it to {env_path} (e.g. {key}=/Volumes/Store)."
-            )
+            raise RuntimeError(f"{key} is not set -- add it to {env_path} (e.g. {key}=/Volumes/Store).")
         if key in require_paths and not Path(value).exists():
             raise RuntimeError(
                 f"{key}={value!r} does not exist on this machine -- mount the volume or update {env_path}."
