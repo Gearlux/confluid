@@ -13,13 +13,19 @@ def get_hierarchy(target: Any) -> Dict[str, Any]:
     return hierarchy
 
 
-def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any], visited: set) -> None:
+def _build_hierarchy_recursive(
+    obj: Any, prefix: str, hierarchy: Dict[str, Any], visited: set
+) -> None:
     """Recursive helper for hierarchy building."""
     if obj is None:
         return
 
     # 1. Handle Functions/Callables specifically
-    if not isinstance(obj, type) and callable(obj) and not hasattr(obj, "__confluid_configurable__"):
+    if (
+        not isinstance(obj, type)
+        and callable(obj)
+        and not hasattr(obj, "__confluid_configurable__")
+    ):
         try:
             sig = inspect.signature(obj)
             type_hints = get_type_hints(obj)
@@ -33,7 +39,11 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
                 path = f"{prefix}.{param_name}" if prefix else param_name
                 param_type = type_hints.get(param_name, Any)
                 type_str = getattr(param_type, "__name__", str(param_type))
-                default = param.default if param.default is not inspect.Parameter.empty else None
+                default = (
+                    param.default
+                    if param.default is not inspect.Parameter.empty
+                    else None
+                )
                 doc = param_docs.get(param_name, "")
 
                 # 3. Recurse if the parameter type is configurable
@@ -59,7 +69,9 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     # 1. Determine prefix
     if not prefix:
         cls_name = getattr(cls, "__confluid_name__", cls.__name__)
-        instance_name = getattr(obj, "name", None) if not isinstance(obj, type) else None
+        instance_name = (
+            getattr(obj, "name", None) if not isinstance(obj, type) else None
+        )
         node_name = instance_name or cls_name
         current_prefix = node_name
     else:
@@ -94,7 +106,9 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
             type_str = getattr(param_type, "__name__", str(param_type))
 
             # Extract default
-            default = param.default if param.default is not inspect.Parameter.empty else None
+            default = (
+                param.default if param.default is not inspect.Parameter.empty else None
+            )
 
             # Extract docstring for this parameter
             doc = param_docs.get(param_name, "")
@@ -226,7 +240,11 @@ def _walk_instance(
         path = f"{node_prefix}.{param_name}"
         param_type = type_hints.get(param_name, Any)
         type_str = getattr(param_type, "__name__", str(param_type))
-        live_value = getattr(obj, param_name, param.default if param.default is not inspect.Parameter.empty else None)
+        live_value = getattr(
+            obj,
+            param_name,
+            param.default if param.default is not inspect.Parameter.empty else None,
+        )
         doc = param_docs.get(param_name, "")
 
         # Shallow mode (host is non-@configurable): record and move on.
@@ -243,15 +261,23 @@ def _walk_instance(
             # and stop (shallow=True) because the host isn't @configurable.
             _walk_instance(live_value, path, hierarchy, new_visited, shallow=True)
             continue
-        if isinstance(live_value, (list, tuple)) and any(_is_any_instance(x) for x in live_value):
+        if isinstance(live_value, (list, tuple)) and any(
+            _is_any_instance(x) for x in live_value
+        ):
             for i, item in enumerate(live_value):
                 child_shallow = not _is_configurable_instance(item)
-                _walk_instance(item, f"{path}[{i}]", hierarchy, new_visited, shallow=child_shallow)
+                _walk_instance(
+                    item, f"{path}[{i}]", hierarchy, new_visited, shallow=child_shallow
+                )
             continue
-        if isinstance(live_value, dict) and any(_is_any_instance(x) for x in live_value.values()):
+        if isinstance(live_value, dict) and any(
+            _is_any_instance(x) for x in live_value.values()
+        ):
             for k, v in live_value.items():
                 child_shallow = not _is_configurable_instance(v)
-                _walk_instance(v, f"{path}[{k}]", hierarchy, new_visited, shallow=child_shallow)
+                _walk_instance(
+                    v, f"{path}[{k}]", hierarchy, new_visited, shallow=child_shallow
+                )
             continue
 
         hierarchy[path] = (type_str, live_value, doc)
@@ -274,11 +300,15 @@ def _walk_instance(
         if _is_configurable_instance(attr_value):
             _walk_instance(attr_value, path, hierarchy, new_visited)
             continue
-        if isinstance(attr_value, (list, tuple)) and any(_is_configurable_instance(x) for x in attr_value):
+        if isinstance(attr_value, (list, tuple)) and any(
+            _is_configurable_instance(x) for x in attr_value
+        ):
             for i, item in enumerate(attr_value):
                 _walk_instance(item, f"{path}[{i}]", hierarchy, new_visited)
             continue
-        if isinstance(attr_value, dict) and any(_is_configurable_instance(x) for x in attr_value.values()):
+        if isinstance(attr_value, dict) and any(
+            _is_configurable_instance(x) for x in attr_value.values()
+        ):
             for k, v in attr_value.items():
                 _walk_instance(v, f"{path}[{k}]", hierarchy, new_visited)
             continue
@@ -322,7 +352,9 @@ def _parse_docstring(docstring: str) -> Dict[str, str]:
         return param_docs
 
     # Find the Args/Parameters section
-    section_match = re.search(r"(?:Args|Parameters|Arguments):\s*(.*)", docstring, re.DOTALL | re.IGNORECASE)
+    section_match = re.search(
+        r"(?:Args|Parameters|Arguments):\s*(.*)", docstring, re.DOTALL | re.IGNORECASE
+    )
     content = section_match.group(1) if section_match else docstring
 
     # Match "parameter (type): description" or "parameter: description"

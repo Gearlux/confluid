@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import yaml
-from logflow import get_logger
 
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver
 from confluid.scopes import normalize_active, resolve_scopes
+from logflow import get_logger
 
 logger = get_logger("confluid.loader")
 
@@ -47,30 +47,44 @@ def _register_constructors() -> None:
         fl._yaml_loc = (filename, mark.line + 1, mark.column + 1)
         return fl
 
-    def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+    def ref_constructor(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
+    ) -> Any:
         return _stamp(Reference(tag_suffix), loader, node)
 
-    def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+    def class_constructor(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
+    ) -> Any:
         instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
         factory = Instance if instant else Class
         name = instant.group(1) if instant else tag_suffix
 
         if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            mapping: dict[str, Any] = {
+                str(k): v for k, v in loader.construct_mapping(node, deep=True).items()
+            }
             return _stamp(factory(name, **mapping), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(factory(name, **_parse_inline_kwargs(instant.group(2))), loader, node)
+            return _stamp(
+                factory(name, **_parse_inline_kwargs(instant.group(2))), loader, node
+            )
 
         return _stamp(Class(tag_suffix), loader, node)
 
-    def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+    def clone_constructor(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
+    ) -> Any:
         if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            mapping: dict[str, Any] = {
+                str(k): v for k, v in loader.construct_mapping(node, deep=True).items()
+            }
             return _stamp(Clone(tag_suffix, **mapping), loader, node)
         return _stamp(Clone(tag_suffix), loader, node)
 
-    def lazy_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+    def lazy_constructor(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
+    ) -> Any:
         # Mirror class_constructor's grammar so users can write either
         # ``!lazy:Adam`` (bare), ``!lazy:Adam(lr=1e-3)`` (inline kwargs),
         # or ``!lazy:Adam`` with a YAML mapping body for the kwargs.
@@ -78,11 +92,15 @@ def _register_constructors() -> None:
         name = instant.group(1) if instant else tag_suffix
 
         if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            mapping: dict[str, Any] = {
+                str(k): v for k, v in loader.construct_mapping(node, deep=True).items()
+            }
             return _stamp(Lazy(name, **mapping), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(Lazy(name, **_parse_inline_kwargs(instant.group(2))), loader, node)
+            return _stamp(
+                Lazy(name, **_parse_inline_kwargs(instant.group(2))), loader, node
+            )
 
         return _stamp(Lazy(tag_suffix), loader, node)
 
@@ -98,18 +116,30 @@ def _register_constructors() -> None:
         # Bare ``KEY`` — boolean scope.
         return tag_suffix, None
 
-    def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
+    def _build_scope(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool
+    ) -> Any:
         key, value = _parse_scope_suffix(tag_suffix)
         if isinstance(node, yaml.nodes.MappingNode):
-            contents: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            contents: dict[str, Any] = {
+                str(k): v for k, v in loader.construct_mapping(node, deep=True).items()
+            }
         else:
             contents = {}
-        return _stamp(ScopeBlock(key=key, value=value, negate=negate, contents=contents), loader, node)
+        return _stamp(
+            ScopeBlock(key=key, value=value, negate=negate, contents=contents),
+            loader,
+            node,
+        )
 
-    def scope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+    def scope_constructor(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
+    ) -> Any:
         return _build_scope(loader, tag_suffix, node, negate=False)
 
-    def notscope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
+    def notscope_constructor(
+        loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node
+    ) -> Any:
         return _build_scope(loader, tag_suffix, node, negate=True)
 
     yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
@@ -126,14 +156,20 @@ def _register_constructors() -> None:
         val = loader.construct_scalar(node)
         instant = re.match(r"^([\w_.]+)\((.*)\)$", val)
         if instant:
-            return _stamp(Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2))), loader, node)
+            return _stamp(
+                Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2))),
+                loader,
+                node,
+            )
         return _stamp(Class(val), loader, node)
 
     yaml.SafeLoader.add_constructor("!ref", ref_compat)
     yaml.SafeLoader.add_constructor("!class", class_compat)
 
 
-def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
+def load_config(
+    path: Union[str, Path], _included: Optional[Set[Path]] = None
+) -> Dict[str, Any]:
     """Load raw YAML with markers and recursive includes."""
     path = Path(path).resolve()
     if _included is None:
@@ -176,27 +212,38 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Path]) -> Any:
+def _process_includes_recursive(
+    data: Any, current_path: Path, _included: Set[Path]
+) -> Any:
     from confluid.fluid import Fluid, ScopeBlock
 
     if isinstance(data, list):
-        return [_process_includes_recursive(item, current_path, _included) for item in data]
+        return [
+            _process_includes_recursive(item, current_path, _included) for item in data
+        ]
 
     # Traverse into Class/Fluid kwargs
     if isinstance(data, Fluid):
-        data.kwargs = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.kwargs.items()}
+        data.kwargs = {
+            k: _process_includes_recursive(v, current_path, _included)
+            for k, v in data.kwargs.items()
+        }
         return data
 
     # Scope blocks: walk their contents so nested includes still process.
     if isinstance(data, ScopeBlock):
-        data.contents = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.contents.items()}
+        data.contents = {
+            k: _process_includes_recursive(v, current_path, _included)
+            for k, v in data.contents.items()
+        }
         return data
 
     if not isinstance(data, dict):
         return data
 
     processed_dict: Dict[str, Any] = {
-        str(k): _process_includes_recursive(v, current_path, _included) for k, v in data.items()
+        str(k): _process_includes_recursive(v, current_path, _included)
+        for k, v in data.items()
     }
 
     if "include" in processed_dict:
@@ -239,7 +286,12 @@ def load(
 
     if isinstance(data, (str, Path)):
         str_data = str(data)
-        if "\n" not in str_data and ":" not in str_data and len(str_data) < 255 and Path(str_data).exists():
+        if (
+            "\n" not in str_data
+            and ":" not in str_data
+            and len(str_data) < 255
+            and Path(str_data).exists()
+        ):
             data = load_config(data)
         else:
             data = cast(Dict[str, Any], yaml.safe_load(str_data) or {})
@@ -249,7 +301,11 @@ def load(
     # point. Aliases live at the top level of the loaded dict; pull them out
     # before normalizing the activation map.
     if isinstance(data, dict):
-        aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
+        aliases = (
+            data.get("scope_aliases")
+            if isinstance(data.get("scope_aliases"), dict)
+            else None
+        )
         active = normalize_active(scopes or [], aliases)
         data = resolve_scopes(data, active)
     elif scopes:
@@ -518,7 +574,9 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
             _acceptable_keys_cache[cache_key] = None
             return None
         sig = inspect.signature(init_method)
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        if any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
             _acceptable_keys_cache[cache_key] = None
             return None
         keys.update(p for p in sig.parameters if p not in ("self", "cls"))
@@ -646,7 +704,12 @@ def _classify_annotation(ann: Any) -> Optional[str]:
         if cabc is not None:
             if origin in (cabc.Mapping, cabc.MutableMapping):
                 return "dict"
-            if origin in (cabc.Sequence, cabc.MutableSequence, cabc.Iterable, cabc.Collection):
+            if origin in (
+                cabc.Sequence,
+                cabc.MutableSequence,
+                cabc.Iterable,
+                cabc.Collection,
+            ):
                 return "list"
         if origin is typing.Union:
             for arg in typing.get_args(ann):
@@ -689,7 +752,9 @@ def _splice_kwargs_at_slot(
     """
     from confluid.fluid import Reference
 
-    acceptable = _get_acceptable_keys(receiver_cls) if receiver_cls is not None else None
+    acceptable = (
+        _get_acceptable_keys(receiver_cls) if receiver_cls is not None else None
+    )
 
     def _parent_wins(kk: str, kv: Any) -> bool:
         if kk not in parent_context:
@@ -758,8 +823,14 @@ def _prepare_kwargs(
     from confluid.registry import resolve_class
 
     acceptable = _get_acceptable_keys(target or cls_name)
-    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
-    param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
+    target_cls = (
+        target
+        if isinstance(target, type)
+        else resolve_class(cls_name) if cls_name else None
+    )
+    param_kinds = (
+        _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
+    )
 
     def _accepts(k: str, v: Any) -> bool:
         if isinstance(v, Fluid):
@@ -810,7 +881,11 @@ def _prepare_kwargs(
             continue
 
         # Same-target Fluid that isn't self — skip (would otherwise loop).
-        if isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls):
+        if (
+            isinstance(v, Fluid)
+            and target_cls is not None
+            and _same_target(v.target, target_cls)
+        ):
             continue
 
         # Class-name / instance-name dict block — unroll inline.
@@ -908,7 +983,11 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 return flow_memo[id(data)]
             raw_id = id(data)
             self_obj = data
-            self_key = next((k for k, v in parent_context.items() if v is self_obj), None) if parent_context else None
+            self_key = (
+                next((k for k, v in parent_context.items() if v is self_obj), None)
+                if parent_context
+                else None
+            )
             if parent_context:
                 data = _prepare_kwargs(data, parent_context, self_obj=self_obj)
             else:
@@ -923,11 +1002,15 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             # order. When this class isn't in parent_context (top-level call),
             # append at end.
             child_ctx = (
-                _splice_kwargs_at_slot(parent_context, self_key, data, receiver_cls=cls_name)
+                _splice_kwargs_at_slot(
+                    parent_context, self_key, data, receiver_cls=cls_name
+                )
                 if parent_context is not None
                 else dict(data)
             )
-            resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
+            resolved_kwargs = {
+                k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()
+            }
             result = Instance(cls_name, **resolved_kwargs)
             if flow_memo is not None:
                 flow_memo[raw_id] = result
@@ -938,7 +1021,9 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         else:
             # Plain dict — pass merged context down
             local_ctx = {**parent_context, **data} if parent_context else dict(data)
-            return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
+            return {
+                k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()
+            }
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
     if isinstance(data, (Class, Instance)):
@@ -949,11 +1034,17 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             target_name = (
                 data.target
                 if isinstance(data.target, str)
-                else getattr(data.target, "__confluid_name__", getattr(data.target, "__name__", ""))
+                else getattr(
+                    data.target,
+                    "__confluid_name__",
+                    getattr(data.target, "__name__", ""),
+                )
             )
             synthetic = {**data.kwargs, "_confluid_class_": target_name}
             actual_target = data.target if isinstance(data.target, type) else None
-            merged_kwargs = _prepare_kwargs(synthetic, parent_context, target=actual_target, self_obj=data)
+            merged_kwargs = _prepare_kwargs(
+                synthetic, parent_context, target=actual_target, self_obj=data
+            )
             merged_kwargs.pop("_confluid_class_", None)
         else:
             merged_kwargs = dict(data.kwargs)
@@ -962,10 +1053,15 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         # preserve document order for downstream broadcasts.
         if parent_context:
             self_key = next((k for k, v in parent_context.items() if v is data), None)
-            child_ctx = _splice_kwargs_at_slot(parent_context, self_key, merged_kwargs, receiver_cls=data.target)
+            child_ctx = _splice_kwargs_at_slot(
+                parent_context, self_key, merged_kwargs, receiver_cls=data.target
+            )
         else:
             child_ctx = dict(merged_kwargs)
-        resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
+        resolved_kwargs = {
+            k: _flow_recursive(v, parent_context=child_ctx)
+            for k, v in merged_kwargs.items()
+        }
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs
         if flow_memo is not None:
@@ -1004,10 +1100,15 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         if parent_context and data.target in parent_context:
             from copy import deepcopy
 
-            resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
+            resolved = _flow_recursive(
+                parent_context[data.target], parent_context=parent_context
+            )
             cloned = deepcopy(resolved)
             if data.kwargs and isinstance(cloned, (Class, Instance)):
-                resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
+                resolved_kwargs = {
+                    k: _flow_recursive(v, parent_context=parent_context)
+                    for k, v in data.kwargs.items()
+                }
                 cloned.kwargs.update(resolved_kwargs)
             return cloned
         return data

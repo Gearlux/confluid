@@ -146,7 +146,10 @@ def test_parameter_aware_broadcast_filtering() -> None:
     # TrainerLike gets max_epochs but NOT experiment_name or lr
     assert isinstance(result["trainer"], TrainerLike)
     assert result["trainer"].max_epochs == 10
-    assert not hasattr(result["trainer"], "experiment_name") or result["trainer"].name != "mnist"
+    assert (
+        not hasattr(result["trainer"], "experiment_name")
+        or result["trainer"].name != "mnist"
+    )
 
     # OptimizerLike gets lr but NOT experiment_name or max_epochs
     assert isinstance(result["optimizer"], OptimizerLike)
