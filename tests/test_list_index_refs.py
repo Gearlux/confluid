@@ -83,7 +83,10 @@ def test_lookup_bracketed_int_indexes_list() -> None:
 def test_lookup_bracketed_name_resolves_against_context() -> None:
     """The user's literal use case: a top-level int decides which list
     entry the outer ref returns."""
-    ctx = {"drone_labels": ["YUNZHUO H16", "DAUTEL EVO NANO", "DJI MINI3"], "drone_index": 2}
+    ctx = {
+        "drone_labels": ["YUNZHUO H16", "DAUTEL EVO NANO", "DJI MINI3"],
+        "drone_index": 2,
+    }
     assert _lookup(ctx, "drone_labels[drone_index]") == "DJI MINI3"
 
 

@@ -25,9 +25,8 @@ stripped at the end of resolution.
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from logflow import get_logger
-
 from confluid.fluid import ScopeBlock
+from logflow import get_logger
 
 logger = get_logger("confluid.scopes")
 
@@ -44,7 +43,9 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
     return arg.strip(), None
 
 
-def normalize_active(scopes: List[str], aliases: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+def normalize_active(
+    scopes: List[str], aliases: Optional[Dict[str, Any]] = None
+) -> Dict[str, Optional[str]]:
     """Build the post-alias post-hierarchy ``{key: value_or_None}`` activation map.
 
     Aliases only apply to *boolean* scope names; a keyed entry like
@@ -88,7 +89,9 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
     logger.debug(f"Resolving scopes: {active}")
     resolved = _resolve_value(config, active)
     if isinstance(resolved, dict):
-        resolved = {k: v for k, v in resolved.items() if k not in ("scope_aliases", "scopes")}
+        resolved = {
+            k: v for k, v in resolved.items() if k not in ("scope_aliases", "scopes")
+        }
     return resolved
 
 
@@ -161,12 +164,16 @@ def _resolve_value(value: Any, active: Dict[str, Optional[str]]) -> Any:
     return value
 
 
-def _resolve_dict(d: Dict[str, Any], active: Dict[str, Optional[str]]) -> Dict[str, Any]:
+def _resolve_dict(
+    d: Dict[str, Any], active: Dict[str, Optional[str]]
+) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for k, v in d.items():
         if isinstance(v, ScopeBlock):
             if _is_active(v, active):
-                resolved_contents = _resolve_dict(v.contents, active) if v.contents else {}
+                resolved_contents = (
+                    _resolve_dict(v.contents, active) if v.contents else {}
+                )
                 for bk, bv in resolved_contents.items():
                     out[bk] = bv
             # else: drop the wrapper entirely
@@ -199,7 +206,9 @@ def _resolve_aliases(requested: List[str], aliases: Dict[str, Any]) -> List[str]
 
     def expand(name: str, path: List[str]) -> None:
         if name in path:
-            raise ValueError(f"Circular scope alias detected: {' -> '.join(path + [name])}")
+            raise ValueError(
+                f"Circular scope alias detected: {' -> '.join(path + [name])}"
+            )
         if name in seen:
             return
         seen.add(name)

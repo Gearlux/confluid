@@ -50,7 +50,11 @@ def test_deferred_materialization_basic() -> None:
 def test_class_citizen_captures_broadcasting() -> None:
     """Context values apply when engine is explicitly specified in config."""
     config = {
-        "car": {"_confluid_class_": "Car", "color": "yellow", "engine": {"_confluid_class_": "Engine"}},
+        "car": {
+            "_confluid_class_": "Car",
+            "color": "yellow",
+            "engine": {"_confluid_class_": "Engine"},
+        },
         "power": 777,
     }
 
@@ -95,7 +99,11 @@ def test_ordered_broadcasting_from_root() -> None:
     rule is gone — every source is just ordered by its YAML position.)
     """
     config = {
-        "car": {"_confluid_class_": "Car", "color": "green", "engine": {"_confluid_class_": "Engine", "power": 200}},
+        "car": {
+            "_confluid_class_": "Car",
+            "color": "green",
+            "engine": {"_confluid_class_": "Engine", "power": 200},
+        },
         "power": 999,  # Root broadcast — appears AFTER car in document order
     }
 
@@ -107,7 +115,11 @@ def test_ordered_broadcasting_from_root() -> None:
 
     # Without an explicit nested power, the broadcast still fills it in.
     config2 = {
-        "car": {"_confluid_class_": "Car", "color": "blue", "engine": {"_confluid_class_": "Engine"}},
+        "car": {
+            "_confluid_class_": "Car",
+            "color": "blue",
+            "engine": {"_confluid_class_": "Engine"},
+        },
         "power": 999,
     }
     car2 = materialize(config2["car"], context=config2)

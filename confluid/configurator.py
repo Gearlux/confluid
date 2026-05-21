@@ -7,7 +7,9 @@ from confluid.merger import expand_dotted_keys
 from confluid.resolver import Resolver
 
 
-def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
+def configure(
+    *instances: Any, config: Any, context: Optional[Dict[str, Any]] = None
+) -> None:
     """Apply configuration to one or more existing object instances.
 
     Recursively walks the object graph and sets attributes based on matching
@@ -31,7 +33,13 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         _walk(instance, config, resolved_context, "", visited)
 
 
-def _walk(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str, visited: Set[int]) -> None:
+def _walk(
+    obj: Any,
+    config: Dict[str, Any],
+    context: Dict[str, Any],
+    prefix: str,
+    visited: Set[int],
+) -> None:
     """Recursively traverse the object graph and apply matching configuration."""
     if obj is None:
         return
@@ -74,7 +82,9 @@ def _walk(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str
             continue
 
 
-def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str) -> None:
+def _apply(
+    obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str
+) -> None:
     """Apply matching config values to a single configurable object."""
     cls = obj.__class__
     cls_name = getattr(cls, "__confluid_name__", cls.__name__)
@@ -82,7 +92,11 @@ def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: st
 
     # Build scoped overlay: ClassName > instance_name > ClassName.instance_name
     obj_config: Dict[str, Any] = {}
-    for key in [cls_name, instance_name, f"{cls_name}.{instance_name}" if instance_name else None]:
+    for key in [
+        cls_name,
+        instance_name,
+        f"{cls_name}.{instance_name}" if instance_name else None,
+    ]:
         if key and key in config and isinstance(config[key], dict):
             obj_config.update(config[key])
 
