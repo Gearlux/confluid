@@ -3,7 +3,6 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import yaml
-
 from logflow import get_logger
 
 logger = get_logger("confluid.resolver")
@@ -83,9 +82,7 @@ def _walk_path_segments(
             return None
         if kind == "idx":
             assert isinstance(val, int)
-            if isinstance(current, (list, tuple)) and -len(current) <= val < len(
-                current
-            ):
+            if isinstance(current, (list, tuple)) and -len(current) <= val < len(current):
                 current = current[val]
                 continue
             return None
@@ -118,9 +115,7 @@ class Resolver:
     def __init__(self, context: Optional[Dict[str, Any]] = None) -> None:
         self.context = context or {}
 
-    def resolve(
-        self, value: Any, local_context: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    def resolve(self, value: Any, local_context: Optional[Dict[str, Any]] = None) -> Any:
         """
         Recursively resolves markers with support for local scoping.
         """
@@ -194,9 +189,7 @@ class Resolver:
 
         return value
 
-    def _parse_class_string(
-        self, content: str, local_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Helper to parse 'ClassName(args)' into a marker dict."""
         if "(" in content and content.endswith(")"):
             cls_name, args_str = content[:-1].split("(", 1)
@@ -215,18 +208,14 @@ class Resolver:
             return {"_confluid_class_": cls_name, **kwargs}
         return {"_confluid_class_": content}
 
-    def _resolve_ref(
-        self, ref_path: str, local_context: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    def _resolve_ref(self, ref_path: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
         """
         Resolve a dotted path against local and global contexts.
         """
         # 1. Try Local Context First
         if local_context:
             val = self._lookup_path(ref_path, local_context)
-            if val is not None and (
-                not isinstance(val, str) or not val.startswith("!ref:")
-            ):
+            if val is not None and (not isinstance(val, str) or not val.startswith("!ref:")):
                 return val
 
         # 2. Try Global Context
@@ -282,11 +271,7 @@ class Resolver:
                 env_val = os.getenv(var_name)
                 if env_val is not None:
                     return self._parse_primitive(env_val)
-                return (
-                    self._parse_primitive(default_val)
-                    if default_val is not None
-                    else value
-                )
+                return self._parse_primitive(default_val) if default_val is not None else value
 
             value = re.sub(env_pattern, env_replacer, value)
 

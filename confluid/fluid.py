@@ -21,11 +21,7 @@ class Fluid:
         self._yaml_loc: Optional[YamlLoc] = None
 
     def __repr__(self) -> str:
-        name = (
-            self.target
-            if isinstance(self.target, str)
-            else getattr(self.target, "__name__", str(self.target))
-        )
+        name = self.target if isinstance(self.target, str) else getattr(self.target, "__name__", str(self.target))
         return f"{self.__class__.__name__}({name}, {self.kwargs})"
 
 
@@ -191,9 +187,7 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         # would reach attribute hooks unconverted ("'Class' object has no
         # attribute 'setup'"). For those targets, eagerly materialize nested
         # Class fluids inside list/dict kwargs.
-        is_configurable_target = bool(
-            getattr(target, "__confluid_configurable__", False)
-        )
+        is_configurable_target = bool(getattr(target, "__confluid_configurable__", False))
         broadcast_ctx = context or merged
 
         def _resolve_value(v: Any, *, eager_classes: bool = False) -> Any:
@@ -248,16 +242,10 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             if isinstance(v, list):
                 return [_resolve_value(item, eager_classes=eager_classes) for item in v]
             if isinstance(v, dict):
-                return {
-                    dk: _resolve_value(dv, eager_classes=eager_classes)
-                    for dk, dv in v.items()
-                }
+                return {dk: _resolve_value(dv, eager_classes=eager_classes) for dk, dv in v.items()}
             return v
 
-        merged = {
-            k: _resolve_value(v, eager_classes=not is_configurable_target)
-            for k, v in merged.items()
-        }
+        merged = {k: _resolve_value(v, eager_classes=not is_configurable_target) for k, v in merged.items()}
 
         # Instantiate: constructor params go to __init__, rest set as attributes
         try:
@@ -276,17 +264,11 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             target_name = getattr(target, "__name__", str(target))
             loc = format_yaml_loc(obj)
             location = f" at {loc}" if loc else ""
-            raise type(exc)(
-                f"Failed to construct {target_name}{location}: {exc}"
-            ) from exc
+            raise type(exc)(f"Failed to construct {target_name}{location}: {exc}") from exc
 
         # Memoize so a second flow() of the same Instance marker returns this
         # exact object (see module docstring).
-        if (
-            isinstance(obj, Instance)
-            and instance_memo is not None
-            and not runtime_kwargs
-        ):
+        if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
             instance_memo[id(obj)] = instance
 
         # Preserve Confluid origin for serialization round-trip
@@ -416,9 +398,7 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
         resolver = Resolver(context=context)
         resolved = resolver.resolve(obj)
-        if isinstance(resolved, str) and (
-            resolved.startswith("!class:") or resolved.startswith("!ref:")
-        ):
+        if isinstance(resolved, str) and (resolved.startswith("!class:") or resolved.startswith("!ref:")):
             return obj
         return flow(resolved, **runtime_kwargs)
 

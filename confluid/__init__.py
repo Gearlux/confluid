@@ -15,12 +15,7 @@ from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
 from confluid.schema import get_hierarchy, get_hierarchy_from_instance
-from confluid.scopes import (
-    discover_dimensions,
-    normalize_active,
-    parse_scope_arg,
-    resolve_scopes,
-)
+from confluid.scopes import discover_dimensions, normalize_active, parse_scope_arg, resolve_scopes
 
 __all__ = [
     "configurable",

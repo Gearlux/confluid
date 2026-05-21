@@ -92,17 +92,13 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         return dumper.represent_mapping(f"!class:{name}", data.kwargs)
 
     # Objects materialized via Confluid but not @configurable — use stored origin metadata
-    if hasattr(data, "__confluid_class__") and not hasattr(
-        data.__class__, "__confluid_configurable__"
-    ):
+    if hasattr(data, "__confluid_class__") and not hasattr(data.__class__, "__confluid_configurable__"):
         target = data.__confluid_class__
         if isinstance(target, type):
             cls_name = f"{target.__module__}.{target.__qualname__}"
         else:
             cls_name = str(target)
-        return dumper.represent_mapping(
-            f"!class:{cls_name}()", data.__confluid_kwargs__
-        )
+        return dumper.represent_mapping(f"!class:{cls_name}()", data.__confluid_kwargs__)
 
     # Live @configurable instance → dump with () to indicate instant construction on reload
     cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
@@ -119,9 +115,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             if val is not None:
                 if isinstance(val, type):
                     if hasattr(val, "__confluid_configurable__"):
-                        val = (
-                            f"!class:{getattr(val, '__confluid_name__', val.__name__)}"
-                        )
+                        val = f"!class:{getattr(val, '__confluid_name__', val.__name__)}"
                     else:
                         val = f"{val.__module__}.{val.__name__}"
                 kwargs[p] = val
@@ -215,6 +209,4 @@ def dump(obj: Any) -> str:
                 _discover_and_register(val, visited)
 
     _discover_and_register(obj)
-    return yaml.dump(
-        obj, Dumper=_LocalDumper, default_flow_style=False, sort_keys=False
-    )
+    return yaml.dump(obj, Dumper=_LocalDumper, default_flow_style=False, sort_keys=False)

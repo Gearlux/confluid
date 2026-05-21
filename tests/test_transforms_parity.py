@@ -75,9 +75,7 @@ wrapper.delegate.noise_std: 0.9
 
 def test_mixed_class_and_name_scoping() -> None:
     """Verify ClassName.name.attribute priority."""
-    pipeline = Compose(
-        transforms=[TransformClass(name="noise1"), TransformClass(name="noise2")]
-    )
+    pipeline = Compose(transforms=[TransformClass(name="noise1"), TransformClass(name="noise2")])
 
     configure(
         pipeline,
