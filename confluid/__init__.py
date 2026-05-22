@@ -12,6 +12,7 @@ from confluid.fluid import Reference, ScopeBlock, flow, format_yaml_loc
 from confluid.lazy import Lazy, is_lazy_annotation, lazy_param_names
 from confluid.loader import load, load_config, materialize
 from confluid.merger import deep_merge, expand_dotted_keys
+from confluid.pydantic_export import confluid_class_of, lazy_param_names_of, to_pydantic
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
 from confluid.schema import get_hierarchy, get_hierarchy_from_instance
@@ -46,6 +47,9 @@ __all__ = [
     "lazy_param_names",
     "get_hierarchy",
     "get_hierarchy_from_instance",
+    "to_pydantic",
+    "confluid_class_of",
+    "lazy_param_names_of",
     "discover_dimensions",
     "normalize_active",
     "parse_scope_arg",

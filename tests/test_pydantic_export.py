@@ -1,0 +1,331 @@
+# mypy: disable-error-code="attr-defined,valid-type"
+"""Tests for ``confluid.to_pydantic``.
+
+Coverage targets:
+
+* Scalar fields with and without defaults
+* Optional / Union / Literal / List / Dict / Tuple annotations
+* Nested ``@configurable`` recursion produces nested pydantic models
+* Lists of ``@configurable`` produce ``List[NestedModel]``
+* ``@ignore_config``-marked attributes are skipped
+* Mutable defaults (list/dict) become ``default_factory``
+* ``_confluid_class`` attribute carries the correct dotted path
+* ``lru_cache`` returns the same model on repeated calls
+* ``Lazy[T]`` annotations are unwrapped to ``T`` and recorded
+* ``confluid_class_of`` and ``lazy_param_names_of`` helpers
+"""
+
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+
+import pytest
+from pydantic import BaseModel, ValidationError
+
+from confluid import configurable, confluid_class_of, get_registry, lazy_param_names_of, to_pydantic
+from confluid.lazy import Lazy
+from confluid.pydantic_export import _convert_annotation, _qualname
+
+
+@pytest.fixture(autouse=True)
+def _clear_registry_and_cache() -> None:
+    """Reset global state between tests so configurables don't leak."""
+    get_registry().clear()
+    to_pydantic.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Basic field types
+# ---------------------------------------------------------------------------
+
+
+def test_scalar_fields_with_defaults() -> None:
+    @configurable
+    class Optim:
+        def __init__(self, lr: float = 1e-3, weight_decay: float = 0.0) -> None:
+            self.lr = lr
+            self.weight_decay = weight_decay
+
+    Model = to_pydantic(Optim)
+    assert issubclass(Model, BaseModel)
+
+    instance = Model()  # both defaulted
+    assert instance.lr == 1e-3
+    assert instance.weight_decay == 0.0
+
+    overridden = Model(lr=5e-4)
+    assert overridden.lr == 5e-4
+
+
+def test_required_fields_have_no_default() -> None:
+    @configurable
+    class Dataset:
+        def __init__(self, repo_id: str, split: str = "train") -> None:
+            self.repo_id = repo_id
+            self.split = split
+
+    Model = to_pydantic(Dataset)
+    with pytest.raises(ValidationError):
+        Model()  # missing required repo_id
+    instance = Model(repo_id="foo/bar")
+    assert instance.repo_id == "foo/bar"
+    assert instance.split == "train"
+
+
+def test_extra_fields_forbidden() -> None:
+    @configurable
+    class Tiny:
+        def __init__(self, x: int = 0) -> None:
+            self.x = x
+
+    Model = to_pydantic(Tiny)
+    with pytest.raises(ValidationError):
+        Model(x=1, bogus="extra")
+
+
+# ---------------------------------------------------------------------------
+# Typing constructs
+# ---------------------------------------------------------------------------
+
+
+def test_optional_annotation() -> None:
+    @configurable
+    class Box:
+        def __init__(self, label: Optional[str] = None) -> None:
+            self.label = label
+
+    Model = to_pydantic(Box)
+    assert Model().label is None
+    assert Model(label="x").label == "x"
+
+
+def test_literal_annotation_constrains_values() -> None:
+    @configurable
+    class Split:
+        def __init__(self, split: Literal["train", "validation", "test"] = "train") -> None:
+            self.split = split
+
+    Model = to_pydantic(Split)
+    assert Model(split="train").split == "train"
+    with pytest.raises(ValidationError):
+        Model(split="bogus")  # type: ignore[arg-type]
+
+
+def test_union_annotation() -> None:
+    @configurable
+    class Either:
+        def __init__(self, value: Union[int, str] = 0) -> None:
+            self.value = value
+
+    Model = to_pydantic(Either)
+    assert Model(value=5).value == 5
+    assert Model(value="hi").value == "hi"
+
+
+def test_list_of_primitives() -> None:
+    @configurable
+    class Layers:
+        def __init__(self, sizes: List[int] = [16, 32]) -> None:
+            self.sizes = sizes
+
+    Model = to_pydantic(Layers)
+    instance = Model()
+    assert instance.sizes == [16, 32]
+    # Mutating one instance's default must not affect another (default_factory).
+    instance.sizes.append(64)
+    assert Model().sizes == [16, 32]
+
+
+def test_dict_of_primitives() -> None:
+    @configurable
+    class TagMap:
+        def __init__(self, tags: Dict[str, int] = {}) -> None:
+            self.tags = tags
+
+    Model = to_pydantic(TagMap)
+    instance = Model(tags={"a": 1, "b": 2})
+    assert instance.tags == {"a": 1, "b": 2}
+    assert Model().tags == {}
+
+
+def test_tuple_annotation() -> None:
+    @configurable
+    class Shape:
+        def __init__(self, size: Tuple[int, int] = (224, 224)) -> None:
+            self.size = size
+
+    Model = to_pydantic(Shape)
+    assert Model().size == (224, 224)
+    assert Model(size=(112, 112)).size == (112, 112)
+
+
+# ---------------------------------------------------------------------------
+# Nested @configurable recursion
+# ---------------------------------------------------------------------------
+
+
+def test_nested_configurable_becomes_nested_model() -> None:
+    @configurable
+    class Backbone:
+        def __init__(self, name: str = "resnet50", pretrained: bool = True) -> None:
+            self.name = name
+            self.pretrained = pretrained
+
+    @configurable
+    class Classifier:
+        def __init__(self, backbone: Backbone, num_classes: int = 10) -> None:
+            self.backbone = backbone
+            self.num_classes = num_classes
+
+    OuterModel = to_pydantic(Classifier)
+    BackboneModel = to_pydantic(Backbone)
+
+    # Nested type is the generated Backbone model — same identity (lru_cache).
+    field_type = OuterModel.model_fields["backbone"].annotation
+    assert field_type is BackboneModel
+
+    instance = OuterModel(backbone=BackboneModel(name="vit_base"), num_classes=37)
+    assert instance.backbone.name == "vit_base"
+    assert instance.num_classes == 37
+
+
+def test_list_of_configurable_becomes_list_of_model() -> None:
+    @configurable
+    class Callback:
+        def __init__(self, name: str = "default") -> None:
+            self.name = name
+
+    @configurable
+    class Trainer:
+        def __init__(self, callbacks: List[Callback] = []) -> None:
+            self.callbacks = callbacks
+
+    TrainerModel = to_pydantic(Trainer)
+    CallbackModel = to_pydantic(Callback)
+
+    field_type = TrainerModel.model_fields["callbacks"].annotation
+    assert field_type == List[CallbackModel]
+
+    instance = TrainerModel(callbacks=[CallbackModel(name="ckpt"), CallbackModel(name="logger")])
+    assert [cb.name for cb in instance.callbacks] == ["ckpt", "logger"]
+
+
+# ---------------------------------------------------------------------------
+# Metadata and helpers
+# ---------------------------------------------------------------------------
+
+
+def test_confluid_class_attribute_holds_dotted_path() -> None:
+    @configurable
+    class Widget:
+        def __init__(self, x: int = 0) -> None:
+            self.x = x
+
+    Model = to_pydantic(Widget)
+    # The generated model's _confluid_class points back at the source class.
+    assert Model._confluid_class == _qualname(Widget)  # type: ignore[attr-defined]
+    assert confluid_class_of(Model) == _qualname(Widget)
+    assert confluid_class_of(Model()) == _qualname(Widget)
+
+
+def test_confluid_class_of_returns_none_for_unrelated_types() -> None:
+    assert confluid_class_of(int) is None
+    assert confluid_class_of("foo") is None
+    assert confluid_class_of(None) is None
+
+
+def test_lru_cache_returns_same_model() -> None:
+    @configurable
+    class Repeated:
+        def __init__(self, x: int = 0) -> None:
+            self.x = x
+
+    assert to_pydantic(Repeated) is to_pydantic(Repeated)
+
+
+def test_ignore_config_attributes_are_skipped() -> None:
+    from confluid import ignore_config
+
+    @configurable
+    class WithHidden:
+        def __init__(self, visible: int = 1, hidden: int = 2) -> None:
+            self.visible = visible
+            self._hidden = hidden
+
+        # ``@ignore_config`` marks the class-level ``hidden`` lookup so the
+        # pydantic generator skips the matching ``__init__`` param.
+        @ignore_config
+        def hidden(self) -> int:  # noqa: F811
+            return self._hidden
+
+    Model = to_pydantic(WithHidden)
+    assert "visible" in Model.model_fields
+    assert "hidden" not in Model.model_fields
+
+
+# ---------------------------------------------------------------------------
+# Lazy[T] support
+# ---------------------------------------------------------------------------
+
+
+def test_lazy_annotation_is_unwrapped_and_recorded() -> None:
+    @configurable
+    class HasOptim:
+        def __init__(self, optimizer: Lazy[Any] = None) -> None:
+            self.optimizer = optimizer
+
+    Model = to_pydantic(HasOptim)
+    # The Lazy wrapper is stripped from the field type (pydantic sees Any).
+    field = Model.model_fields["optimizer"]
+    # Any/None are both acceptable here; we just want no Annotated wrapper.
+    assert field.annotation in (Any, type(None), Optional[Any], Union[Any, None])
+    # The lazy marker is recorded on the generated model.
+    assert "optimizer" in lazy_param_names_of(Model)
+    assert "optimizer" in lazy_param_names_of(Model())
+
+
+def test_no_lazy_params_means_empty_set() -> None:
+    @configurable
+    class Plain:
+        def __init__(self, x: int = 0) -> None:
+            self.x = x
+
+    Model = to_pydantic(Plain)
+    assert lazy_param_names_of(Model) == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_class_without_init_produces_empty_model() -> None:
+    @configurable
+    class Marker:
+        pass
+
+    Model = to_pydantic(Marker)
+    assert Model.model_fields == {}
+    instance = Model()
+    assert confluid_class_of(instance) == _qualname(Marker)
+
+
+def test_non_class_argument_raises_type_error() -> None:
+    with pytest.raises(TypeError):
+        to_pydantic("not a class")  # type: ignore[arg-type]
+
+
+def test_third_party_class_without_configurable_marker_works() -> None:
+    """Auto-gen does not require the @configurable marker — useful for ad-hoc mirrors."""
+
+    class External:
+        def __init__(self, port: int = 8080) -> None:
+            self.port = port
+
+    Model = to_pydantic(External)
+    assert Model(port=9090).port == 9090
+
+
+def test_convert_annotation_handles_pep604_union() -> None:
+    """PEP 604 ``X | Y`` syntax should normalize to ``Union[X, Y]``."""
+    converted = _convert_annotation(int | str)  # type: ignore[operator]
+    # Union[int, str] equals int | str under typing.get_origin
+    assert converted == Union[int, str]
