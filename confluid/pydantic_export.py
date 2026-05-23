@@ -18,6 +18,7 @@ opinionated overlays for LLM-facing tool surfaces.
 
 from __future__ import annotations
 
+import collections.abc
 import inspect
 import types
 from functools import lru_cache
@@ -43,6 +44,26 @@ from confluid.lazy import is_lazy_annotation
 from confluid.schema import _parse_docstring
 
 _SKIP_PARAMS = {"self", "cls", "args", "kwargs"}
+
+# Abstract iterator/sequence types that pydantic insists on validating as
+# generators (wrapping inputs in ``ValidatorIterator``) — which strips the
+# original Python identity. For the confluid use case (passthrough
+# wrappers), we coerce these to ``Any`` so the original object survives
+# validation untouched.
+_ITER_TYPES_AS_ANY: Set[Any] = {
+    collections.abc.Iterable,
+    collections.abc.Iterator,
+    collections.abc.Generator,
+    collections.abc.AsyncIterable,
+    collections.abc.AsyncIterator,
+    collections.abc.AsyncGenerator,
+    collections.abc.Sequence,
+    collections.abc.Mapping,
+    collections.abc.MutableMapping,
+    collections.abc.MutableSequence,
+    collections.abc.Collection,
+    collections.abc.Container,
+}
 
 
 class _StrictConfigBase(BaseModel):
@@ -106,10 +127,17 @@ def _convert_annotation(anno: Any) -> Any:
     if origin is Literal:
         return anno
 
+    # Abstract iterable / sequence / mapping types: coerce to ``Any`` so
+    # pydantic doesn't wrap inputs in ``ValidatorIterator`` (which would
+    # strip the original Python object identity needed for shared-instance
+    # composition in downstream tools like navigaitor's serializer).
+    if origin in _ITER_TYPES_AS_ANY:
+        return Any
+
     raw_args = get_args(anno)
     new_args = tuple(_convert_annotation(a) for a in raw_args)
 
-    # Union / Optional / PEP 604 (X | Y)
+    # Union / Optional / PEP 604 (X | Y) — also coerce iterable members.
     if origin is Union or origin is types.UnionType:
         return Union[new_args]  # type: ignore[return-value]
 
