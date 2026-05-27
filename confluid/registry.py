@@ -11,17 +11,30 @@ class ConfluidRegistry:
     def __init__(self) -> None:
         self._classes: Dict[str, Type[Any]] = {}
         self._objects: Dict[str, Any] = {}
+        # Reverse index: category name → set of registered class names.
+        # ``None`` (i.e. classes without a category) is not stored, so a
+        # ``list_classes(category=None)`` call falls through to the full set.
+        self._by_category: Dict[str, Set[str]] = {}
 
-    def register_class(self, cls: Type[Any], name: Optional[str] = None) -> Type[Any]:
+    def register_class(
+        self,
+        cls: Type[Any],
+        name: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> Type[Any]:
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
         # Set markers for discovery
         try:
             setattr(cls, "__confluid_configurable__", True)
             setattr(cls, "__confluid_name__", cls_name)
+            if category is not None:
+                setattr(cls, "__confluid_category__", category)
         except (TypeError, AttributeError):
             # Built-in or immutable types don't allow attribute setting
             pass
+        if category is not None:
+            self._by_category.setdefault(category, set()).add(cls_name)
         return cls
 
     def get_class(self, name: str) -> Optional[Type[Any]]:
@@ -41,10 +54,22 @@ class ConfluidRegistry:
     def clear(self) -> None:
         self._classes.clear()
         self._objects.clear()
+        self._by_category.clear()
 
-    def list_classes(self) -> Set[str]:
-        """Return a set of all registered class names."""
-        return set(self._classes.keys())
+    def list_classes(self, category: Optional[str] = None) -> Set[str]:
+        """Return registered class names, optionally filtered by ``category``.
+
+        ``category=None`` (default) returns every registered name. A category
+        that no class has registered against returns the empty set rather
+        than raising — discovery callers can probe freely.
+        """
+        if category is None:
+            return set(self._classes.keys())
+        return set(self._by_category.get(category, set()))
+
+    def list_categories(self) -> Set[str]:
+        """Return the set of category names that have at least one registered class."""
+        return set(self._by_category.keys())
 
     def register_object(self, obj: Any, name: str) -> None:
         """Register an existing object instance."""

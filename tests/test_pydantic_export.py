@@ -178,13 +178,22 @@ def test_nested_configurable_becomes_nested_model() -> None:
     OuterModel = to_pydantic(Classifier)
     BackboneModel = to_pydantic(Backbone)
 
-    # Nested type is the generated Backbone model — same identity (lru_cache).
-    field_type = OuterModel.model_fields["backbone"].annotation
-    assert field_type is BackboneModel
+    # Nested type is ``Union[Backbone, BackboneModel]`` so the schema accepts
+    # both the live source-class instance (Python / YAML flow path) and the
+    # generated pydantic mirror (LLM / MCP composition path).
+    from typing import Union as _Union
+    from typing import get_args, get_origin
 
-    instance = OuterModel(backbone=BackboneModel(name="vit_base"), num_classes=37)
-    assert instance.backbone.name == "vit_base"
-    assert instance.num_classes == 37
+    field_type = OuterModel.model_fields["backbone"].annotation
+    assert get_origin(field_type) is _Union
+    assert set(get_args(field_type)) == {Backbone, BackboneModel}
+
+    # Both forms must construct cleanly.
+    via_model = OuterModel(backbone=BackboneModel(name="vit_base"), num_classes=37)
+    assert via_model.backbone.name == "vit_base"
+    via_instance = OuterModel(backbone=Backbone(name="vit_base"), num_classes=37)
+    assert via_instance.backbone.name == "vit_base"
+    assert via_model.num_classes == 37
 
 
 def test_list_of_configurable_becomes_list_of_model() -> None:
@@ -201,11 +210,21 @@ def test_list_of_configurable_becomes_list_of_model() -> None:
     TrainerModel = to_pydantic(Trainer)
     CallbackModel = to_pydantic(Callback)
 
-    field_type = TrainerModel.model_fields["callbacks"].annotation
-    assert field_type == List[CallbackModel]
+    # Element type is ``Union[Callback, CallbackModel]`` — see the nested
+    # @configurable test above for the rationale.
+    from typing import Union as _Union
+    from typing import get_args, get_origin
 
-    instance = TrainerModel(callbacks=[CallbackModel(name="ckpt"), CallbackModel(name="logger")])
-    assert [cb.name for cb in instance.callbacks] == ["ckpt", "logger"]
+    field_type = TrainerModel.model_fields["callbacks"].annotation
+    assert get_origin(field_type) is list
+    (elem_type,) = get_args(field_type)
+    assert get_origin(elem_type) is _Union
+    assert set(get_args(elem_type)) == {Callback, CallbackModel}
+
+    via_model = TrainerModel(callbacks=[CallbackModel(name="ckpt"), CallbackModel(name="logger")])
+    assert [cb.name for cb in via_model.callbacks] == ["ckpt", "logger"]
+    via_instance = TrainerModel(callbacks=[Callback(name="ckpt"), Callback(name="logger")])
+    assert [cb.name for cb in via_instance.callbacks] == ["ckpt", "logger"]
 
 
 # ---------------------------------------------------------------------------

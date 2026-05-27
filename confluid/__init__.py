@@ -17,6 +17,17 @@ from confluid.registry import get_registry
 from confluid.resolver import parse_value
 from confluid.schema import get_hierarchy, get_hierarchy_from_instance
 from confluid.scopes import discover_dimensions, normalize_active, parse_scope_arg, resolve_scopes
+from confluid.validation import (
+    ValidationMode,
+    ValidationPolicy,
+    get_policy,
+    override_init_mode,
+    reset_policy,
+    set_policy,
+    validate_kwargs,
+    validate_model,
+    validate_setattr,
+)
 
 __all__ = [
     "configurable",
@@ -54,4 +65,13 @@ __all__ = [
     "normalize_active",
     "parse_scope_arg",
     "resolve_scopes",
+    "ValidationMode",
+    "ValidationPolicy",
+    "get_policy",
+    "set_policy",
+    "reset_policy",
+    "override_init_mode",
+    "validate_kwargs",
+    "validate_setattr",
+    "validate_model",
 ]

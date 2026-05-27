@@ -120,7 +120,15 @@ def _convert_annotation(anno: Any) -> Any:
     origin = get_origin(anno)
     if origin is None:
         if _is_configurable(anno):
-            return to_pydantic(anno)
+            # Accept either the live instance of the source class (the form
+            # that flows through actual Python / YAML materialization) OR the
+            # generated pydantic mirror (the form an LLM/MCP layer composes).
+            # Without the union, the field would only accept the mirror — but
+            # at runtime ``ParentConfig(child=SimpleLeaf(...))`` is the legal
+            # call we must validate as-is. ``arbitrary_types_allowed=True`` on
+            # ``_StrictConfigBase`` makes the source-class branch isinstance-checked.
+            nested = to_pydantic(anno)
+            return Union[anno, nested]  # type: ignore[return-value]
         return anno
 
     # ``Literal[...]`` arguments are values, not types — don't recurse.
