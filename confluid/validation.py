@@ -159,12 +159,25 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
     * ``"warn"`` — log a warning and return so the wrapped ``__init__`` can
       proceed (it may still fail naturally on the bad value).
     * ``"off"`` — return immediately without building the schema.
+
+    Fluid markers (``Class``, ``Instance``, ``Reference``, ``Lazy``, …) in
+    ``kwargs`` represent deferred construction — the live object hasn't been
+    built yet, so the pydantic ``is_instance_of(<annotated_type>)`` check
+    would always fail. The contract is "validate post-flow": when the Fluid
+    materialises via :func:`confluid.flow`, its own ``@configurable``
+    ``__init__`` will fire and validate its own kwargs. Fields holding Fluid
+    markers are therefore excluded from this call; concrete fields are still
+    validated individually so a bad scalar (wrong type, out-of-range int)
+    next to a deferred sub-Class still raises here.
     """
     if mode == "off":
         return
 
     # Lazy import: ``pydantic_export`` pulls pydantic + inspect, which is
-    # heavier than this module needs to be eligible to import.
+    # heavier than this module needs to be eligible to import. ``Fluid`` is
+    # imported lazily too so this module stays importable before fluid.py is
+    # fully initialised (the loader → fluid → validation chain runs at startup).
+    from confluid.fluid import Fluid
     from confluid.pydantic_export import to_pydantic
 
     try:
@@ -174,8 +187,32 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
         # Python wrapper). Skip validation rather than blocking instantiation.
         return
 
+    # Split kwargs into "concrete" (eager pydantic check) and "deferred"
+    # (Fluid markers — skipped here, validated at flow time).
+    concrete = {k: v for k, v in kwargs.items() if not isinstance(v, Fluid)}
+    deferred_keys = set(kwargs) - set(concrete)
+
+    if not concrete:
+        # Whole call is deferred — nothing to check now. The flow() pass that
+        # materialises each Fluid will revalidate at that point.
+        return
+
     try:
-        model.model_validate(kwargs)
+        if not deferred_keys:
+            # Fast path: every kwarg is concrete, validate the whole model in
+            # one shot (catches model-level cross-field validators too).
+            model.model_validate(kwargs)
+        else:
+            # Mixed: validate concrete kwargs field-by-field so the
+            # deferred-Fluid fields don't trigger "is_instance_of" failures
+            # nor "field required" errors. ``validate_assignment`` checks one
+            # field against the model's schema; ``model_construct`` builds an
+            # un-validated stub instance to give it a target.
+            stub = model.model_construct()
+            for name, value in concrete.items():
+                if name not in model.model_fields:
+                    continue
+                model.__pydantic_validator__.validate_assignment(stub, name, value)
     except ValidationError as exc:
         if mode == "strict":
             raise

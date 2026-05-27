@@ -35,6 +35,36 @@ from confluid import (
     set_policy,
     to_pydantic,
 )
+from confluid.fluid import Class
+
+# ---------------------------------------------------------------------------
+# Module-scope @configurable fixtures for the Fluid-marker regression tests.
+#
+# These can't live inside the test function: ``typing.get_type_hints`` (used
+# by ``to_pydantic`` to resolve forward references) only sees names from
+# module globals. A function-local ``class _Leaf`` would silently drop its
+# annotation from the generated pydantic mirror, defeating the very
+# is_instance_of check the regression depends on.
+#
+# Re-decoration during the autouse fixture's ``to_pydantic.cache_clear()`` /
+# ``get_registry().clear()`` is harmless — the classes still carry their
+# ``__confluid_configurable__`` marker, and ``to_pydantic`` rebuilds the
+# schema on next call.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _FluidLeaf:
+    def __init__(self, count: int = 0, label: str = "") -> None:
+        self.count = count
+        self.label = label
+
+
+@configurable
+class _FluidParent:
+    def __init__(self, primary: _FluidLeaf, secondary: _FluidLeaf) -> None:
+        self.primary = primary
+        self.secondary = secondary
 
 
 @pytest.fixture(autouse=True)
@@ -385,3 +415,161 @@ def test_confluid_validation_exports_available() -> None:
         "validate_model",
     ):
         assert hasattr(confluid, name), f"missing export: {name}"
+
+
+# -------------------------------------------------------------------------
+# Fluid-marker kwargs — validation must skip deferred values
+# -------------------------------------------------------------------------
+#
+# Regression cluster for the bug discovered when a YAML config with a nested
+# ``!class:_Leaf`` flowed into a ``_Parent(@configurable)``. flow() passes the
+# inner ``Class`` marker through to ``_Parent(**ctor)`` so the wrapped __init__
+# can flow it lazily with runtime injection. The pydantic validator was
+# applying ``is_instance_of(_Leaf)`` to the Class marker and rejecting
+# instantiation outright — but Fluids are deferred-construction markers, not
+# bad values; the inner ``_Leaf.__init__`` (also @configurable) will validate
+# itself when the marker flows. validate_kwargs MUST therefore skip Fluid
+# kwargs while still checking concrete kwargs alongside them.
+
+
+def test_fluid_kwarg_skipped_in_strict() -> None:
+    """A deferred Class marker as a kwarg value must not trip strict validation.
+
+    Function-local classes work here because pydantic-lax-mode validation
+    of ``title: str`` doesn't depend on a forward-ref lookup. The
+    module-scope variant in :func:`test_fluid_kwarg_skipped_in_strict_module_scope`
+    covers the stricter ``is_instance_of(_Leaf)`` path.
+    """
+
+    @configurable
+    class _Leaf:
+        def __init__(self, count: int = 0) -> None:
+            self.count = count
+
+    @configurable
+    class _Parent:
+        def __init__(self, title: str, leaf: _Leaf) -> None:
+            self.title = title
+            self.leaf = leaf
+
+    set_policy(init="strict")
+    leaf_marker = Class(_Leaf, count=99)
+    # Pass the Class marker — pydantic's annotation would normally reject it
+    # if it were resolvable. validate_kwargs must skip Fluids regardless.
+    instance = _Parent(title="hello", leaf=leaf_marker)  # type: ignore[arg-type]
+    assert instance.title == "hello"
+    assert isinstance(instance.leaf, Class)  # still deferred
+
+
+def test_fluid_kwarg_alongside_bad_concrete_still_raises() -> None:
+    """Mixed bag: Fluid for one field, wrong-instance for another → the wrong-instance still raises.
+
+    Skipping Fluids must not cascade into skipping everything. A non-Fluid
+    kwarg whose value isn't an instance of the annotated class is the
+    concrete configuration error this validation layer exists to catch.
+
+    The fixtures live at module scope (see ``_FluidLeaf`` / ``_FluidParent``
+    above) because ``typing.get_type_hints`` — used by ``to_pydantic`` to
+    resolve forward references — only sees class names in module globals,
+    not in a test function's local scope. Locally-defined classes would
+    silently lose their ``_Leaf`` annotation and the strict
+    ``is_instance_of`` check we depend on for the regression wouldn't fire.
+    """
+    set_policy(init="strict")
+    secondary_marker = Class(_FluidLeaf, count=99)  # deferred — must be skipped
+    with pytest.raises(ValidationError):
+        _FluidParent(primary="not-a-leaf", secondary=secondary_marker)  # type: ignore[arg-type]
+
+
+def test_fluid_kwarg_skipped_in_strict_module_scope() -> None:
+    """Module-scope variant of test_fluid_kwarg_skipped_in_strict.
+
+    The earlier function-local version works because pydantic only enforces
+    its annotation when ``get_type_hints`` can resolve it. The module-scope
+    version exercises the path where the annotation IS resolved — i.e. the
+    pydantic ``is_instance_of`` check actively runs against the Fluid marker
+    and must be skipped by ``validate_kwargs``.
+    """
+    set_policy(init="strict")
+    leaf_marker = Class(_FluidLeaf, count=99)
+    instance = _FluidParent(primary=_FluidLeaf(count=1), secondary=leaf_marker)  # type: ignore[arg-type]
+    assert instance.primary.count == 1
+    assert isinstance(instance.secondary, Class)
+
+
+def test_fluid_kwarg_in_yaml_load_does_not_explode() -> None:
+    """End-to-end: YAML with a nested !class:_Leaf inside !class:_Parent loads cleanly.
+
+    Reproduces the exact failure mode the user saw running
+    ``liquifai/tests/test_help_with_config.py::test_liquify_and_show_end_to_end``
+    against confluid pre-fix.
+    """
+    import sys
+
+    # Confluid's `!class:` loader resolves classes via importable module
+    # paths. Alias the test module under a stable name so the YAML below can
+    # reference the module-scope _FluidLeaf / _FluidParent classes.
+    sys.modules["test_validation_fluid_module"] = sys.modules[__name__]
+    try:
+        yaml_text = """
+parent:
+  !class:test_validation_fluid_module._FluidParent
+  primary:
+    !class:test_validation_fluid_module._FluidLeaf
+    count: 1
+    label: "primary"
+  secondary:
+    !class:test_validation_fluid_module._FluidLeaf
+    count: 99
+    label: "secondary"
+"""
+        result = load(yaml_text)
+        # The single point of the regression: ``flow()`` must not crash with
+        # ``ValidationError: primary.is-instance[_FluidLeaf]`` (or the masked
+        # ``TypeError: ValidationError.__new__() missing 1 required positional
+        # argument: 'line_errors'``) just because the nested ``Class(_FluidLeaf, …)``
+        # markers haven't been materialised yet. ``@configurable`` targets keep
+        # nested Class kwargs deferred by design; the wrapped __init__ is
+        # responsible for flowing them lazily later. Asserting only that the
+        # outer flow() returns a live instance tests the bug without depending
+        # on whether the test's _FluidParent happens to flow its children eagerly.
+        parent = flow(result["parent"])
+        assert isinstance(parent, _FluidParent)
+    finally:
+        sys.modules.pop("test_validation_fluid_module", None)
+
+
+# -------------------------------------------------------------------------
+# fluid.flow() re-raise must tolerate ValidationError
+# -------------------------------------------------------------------------
+
+
+def test_flow_wraps_validation_error_in_runtime_error() -> None:
+    """flow() re-raises construction failures with a message that names the
+    target class. The naive ``raise type(exc)(msg) from exc`` pattern breaks
+    for pydantic's :class:`ValidationError` (whose ``__new__`` demands
+    ``line_errors``); the fallback must wrap it in a ``RuntimeError`` rather
+    than crashing with ``TypeError: __new__() missing 1 required positional argument``.
+    """
+    from confluid.fluid import Class
+
+    @configurable
+    class _StrictModel:
+        def __init__(self, count: int) -> None:
+            self.count = count
+
+    set_policy(init="strict")
+    marker = Class(_StrictModel, count="not-an-int")
+    # The raw underlying ValidationError can't be reconstructed from a string;
+    # the fallback path raises RuntimeError instead. Either way, the original
+    # ValidationError chains via __cause__ so the structured info isn't lost.
+    with pytest.raises((ValidationError, RuntimeError)) as info:
+        flow(marker)
+    # Whichever path fired, the original pydantic error must be one of:
+    #   - the exception itself (type-preserving path succeeded — modern pydantic)
+    #   - the .__cause__ (fallback wrapped it)
+    raised = info.value
+    chained = isinstance(raised, ValidationError) or isinstance(raised.__cause__, ValidationError)
+    assert (
+        chained
+    ), f"expected ValidationError in chain, got {type(raised).__name__} → {type(raised.__cause__).__name__}"
