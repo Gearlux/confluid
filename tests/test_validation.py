@@ -544,6 +544,53 @@ parent:
 # -------------------------------------------------------------------------
 
 
+@configurable
+class _StoreLeaf:
+    def __init__(self, name: str = "") -> None:
+        self.name = name
+
+
+@configurable
+class _StoreParent:
+    """List-of-stores receiver, like ``CompositeAnnotationStore(stores=[...])``."""
+
+    def __init__(self, stores: list) -> None:  # type: ignore[type-arg]
+        self.stores = stores
+
+
+@configurable
+class _MappingParent:
+    """Dict-of-stores receiver — the second container shape confluid YAMLs use."""
+
+    def __init__(self, stores: dict) -> None:  # type: ignore[type-arg]
+        self.stores = stores
+
+
+def test_fluid_nested_in_list_kwarg_is_skipped() -> None:
+    """Fluid markers inside a ``list`` value must defer validation of the whole field.
+
+    Regression: ``CompositeAnnotationStore(stores=[Class(_Store, ...)])`` —
+    the list itself is concrete, but the inner ``Class`` marker would trip
+    ``is_instance_of(_Store)`` on the per-element validator. The whole field
+    has to be treated as deferred.
+    """
+    set_policy(init="strict")
+    fluid_leaf = Class(_StoreLeaf, name="deferred")
+    instance = _StoreParent(stores=[fluid_leaf])
+    assert instance.stores == [fluid_leaf]
+
+
+def test_fluid_nested_in_dict_kwarg_is_skipped() -> None:
+    """Same as the list case, but for dict values — covers the
+    ``data={"train": Class(...), "val": Class(...)}`` shape used by
+    ultralytics-style trainer configs.
+    """
+    set_policy(init="strict")
+    fluid_leaf = Class(_StoreLeaf, name="deferred")
+    instance = _MappingParent(stores={"train": fluid_leaf})
+    assert instance.stores == {"train": fluid_leaf}
+
+
 def test_flow_wraps_validation_error_in_runtime_error() -> None:
     """flow() re-raises construction failures with a message that names the
     target class. The naive ``raise type(exc)(msg) from exc`` pattern breaks
