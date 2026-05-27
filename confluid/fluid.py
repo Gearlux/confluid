@@ -258,8 +258,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             params = set()
 
         ctor = {k: v for k, v in merged.items() if k in params} if params else merged
+        # YAML-driven materialization honours ``policy.yaml`` instead of
+        # ``policy.init`` so direct-Python instantiation and YAML loads can be
+        # tuned independently. The wrapped ``__init__`` reads ``policy.init``,
+        # so we temporarily swap it for the duration of this single call.
+        from confluid.validation import get_policy, override_init_mode
+
         try:
-            instance = target(**ctor)
+            with override_init_mode(get_policy().yaml):
+                instance = target(**ctor)
         except Exception as exc:
             target_name = getattr(target, "__name__", str(target))
             loc = format_yaml_loc(obj)

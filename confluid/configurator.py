@@ -121,6 +121,13 @@ def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: st
         ):
             _walk(current_val, resolved_val, context, prefix, set())
         else:
+            # Post-construction overrides honour the same per-field schema as
+            # the constructor — re-uses ``policy.init`` because configure()
+            # is the moral equivalent of "instantiate this attribute with
+            # this value", just performed after the parent object exists.
+            from confluid.validation import get_policy, validate_setattr
+
+            validate_setattr(cls, attr_name, resolved_val, get_policy().init)
             setattr(obj, attr_name, resolved_val)
 
 
