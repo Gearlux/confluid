@@ -271,7 +271,18 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
             target_name = getattr(target, "__name__", str(target))
             loc = format_yaml_loc(obj)
             location = f" at {loc}" if loc else ""
-            raise type(exc)(f"Failed to construct {target_name}{location}: {exc}") from exc
+            msg = f"Failed to construct {target_name}{location}: {exc}"
+            # Preserve the original exception class where the constructor is
+            # ``Class(msg)`` compatible (TypeError / ValueError / RuntimeError
+            # / KeyError, …). Some exception classes can't be rebuilt from a
+            # plain string — notably pydantic's ``ValidationError``, whose
+            # ``__new__`` demands ``line_errors``. Fall back to a plain
+            # ``RuntimeError`` that still chains the original via ``__cause__``
+            # so the structured info is one ``.__cause__`` away.
+            try:
+                raise type(exc)(msg) from exc
+            except TypeError:
+                raise RuntimeError(msg) from exc
 
         # Memoize so a second flow() of the same Instance marker returns this
         # exact object (see module docstring).
