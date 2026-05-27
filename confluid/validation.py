@@ -48,6 +48,28 @@ ValidationMode = Literal["strict", "warn", "off"]
 _VALID_MODES: frozenset[str] = frozenset(("strict", "warn", "off"))
 
 
+def _contains_fluid(value: Any, fluid_cls: type) -> bool:
+    """Recursively detect whether ``value`` (or any nested element of a
+    list / tuple / dict) is a :class:`~confluid.fluid.Fluid` marker.
+
+    Only descends into the three built-in container shapes that confluid's
+    YAML loader actually produces — that's enough to catch
+    ``stores=[Class(...)]`` (list-of-Fluids), ``data={"train": Class(...)}``
+    (dict-of-Fluids), and the various ``tuple``-typed kwargs marainer
+    pipelines use. Other custom containers fall back to "concrete" — they
+    don't appear in YAML-driven configurations.
+    """
+    if isinstance(value, fluid_cls):
+        return True
+    if isinstance(value, list):
+        return any(_contains_fluid(v, fluid_cls) for v in value)
+    if isinstance(value, tuple):
+        return any(_contains_fluid(v, fluid_cls) for v in value)
+    if isinstance(value, dict):
+        return any(_contains_fluid(v, fluid_cls) for v in value.values())
+    return False
+
+
 @dataclass(frozen=True)
 class ValidationPolicy:
     """Strict/warn/off knob per validation point.
@@ -169,6 +191,13 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
     markers are therefore excluded from this call; concrete fields are still
     validated individually so a bad scalar (wrong type, out-of-range int)
     next to a deferred sub-Class still raises here.
+
+    Fluid markers are detected recursively inside ``list`` / ``tuple`` /
+    ``dict`` containers — e.g. ``stores=[Class(_Store, …)]`` is a concrete
+    list value whose elements are deferred; pydantic would still reject the
+    inner ``Class`` marker as ``Input should be an instance of _Store``.
+    Any kwarg whose value contains a Fluid anywhere in its tree is treated
+    as deferred and skipped.
     """
     if mode == "off":
         return
@@ -188,8 +217,12 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
         return
 
     # Split kwargs into "concrete" (eager pydantic check) and "deferred"
-    # (Fluid markers — skipped here, validated at flow time).
-    concrete = {k: v for k, v in kwargs.items() if not isinstance(v, Fluid)}
+    # (Fluid markers — skipped here, validated at flow time). Containers
+    # holding Fluids count as deferred — a ``list[Store]`` populated with
+    # ``Class`` markers would otherwise trip ``is_instance_of(Store)`` on
+    # the inner element. See the regression cluster in
+    # ``tests/test_validation.py::test_fluid_kwarg_nested_in_list``.
+    concrete = {k: v for k, v in kwargs.items() if not _contains_fluid(v, Fluid)}
     deferred_keys = set(kwargs) - set(concrete)
 
     if not concrete:
