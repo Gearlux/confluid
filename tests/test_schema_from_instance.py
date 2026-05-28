@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import configurable, get_hierarchy_from_instance
+from confluid import configurable, get_hierarchy_from_instance, shortest_unique_paths
 
 
 @configurable
@@ -196,6 +196,106 @@ def test_primitive_root_returns_empty() -> None:
     assert get_hierarchy_from_instance(42) == {}
     assert get_hierarchy_from_instance("hello") == {}
     assert get_hierarchy_from_instance(None) == {}
+
+
+class TestShortestUniquePaths:
+    def test_empty_list(self) -> None:
+        assert shortest_unique_paths([]) == {}
+
+    def test_single_path_keeps_leaf(self) -> None:
+        result = shortest_unique_paths(["Root.child.leaf"])
+        assert result == {"Root.child.leaf": "leaf"}
+
+    def test_non_colliding_leaves_reduce_to_leaf(self) -> None:
+        paths = ["Root.a", "Root.b.c"]
+        result = shortest_unique_paths(paths)
+        assert result == {"Root.a": "a", "Root.b.c": "c"}
+
+    def test_colliding_leaves_extend_suffix(self) -> None:
+        paths = ["Root.optimizer.lr", "Root.scheduler.lr"]
+        result = shortest_unique_paths(paths)
+        # ``lr`` is ambiguous → use the parent segment
+        assert result == {"Root.optimizer.lr": "optimizer.lr", "Root.scheduler.lr": "scheduler.lr"}
+
+    def test_path_that_is_suffix_of_another_disambiguated(self) -> None:
+        paths = ["Node.name", "Node.b.name"]
+        result = shortest_unique_paths(paths)
+        # ``name`` matches both; ``b.name`` only matches the second; ``Node.name`` only matches the first.
+        assert result["Node.b.name"] == "b.name"
+        assert result["Node.name"] == "Node.name"
+
+    def test_unrelated_paths_each_unique(self) -> None:
+        paths = ["LightningTrainer.experiment_name", "LightningTrainer.run_name"]
+        result = shortest_unique_paths(paths)
+        assert result == {
+            "LightningTrainer.experiment_name": "experiment_name",
+            "LightningTrainer.run_name": "run_name",
+        }
+
+
+class NonConfigurableLeakyParent:
+    """Non-``@configurable`` parent whose ``__init__`` plants non-underscore attrs.
+
+    Mimics ``torch.nn.Module`` / ``pytorch_lightning.LightningModule``: when a
+    ``@configurable`` subclass calls ``super().__init__()``, these attributes
+    end up on every instance via ``vars()`` but are NOT part of the
+    configurable surface.
+    """
+
+    LEAKY_CLASS_CONSTANT = "noise"
+
+    def __init__(self) -> None:
+        self.parent_set = "should_not_leak"
+        self.training = True
+
+
+@configurable
+class ConfigurableChildOfLeakyParent(NonConfigurableLeakyParent):
+    """``@configurable`` subclass — ``ChildAttrs`` IS configurable surface, parent isn't."""
+
+    def __init__(self, child_attr: int = 7) -> None:
+        super().__init__()
+        self.child_attr = child_attr
+        self.child_post_init = "user_visible"
+
+
+def test_inherited_non_configurable_init_attrs_filtered() -> None:
+    """``parent_set`` / ``training`` set by non-``@configurable`` parent's ``__init__`` must NOT surface."""
+    obj = ConfigurableChildOfLeakyParent(child_attr=42)
+    h = get_hierarchy_from_instance(obj)
+    assert "ConfigurableChildOfLeakyParent.child_attr" in h
+    assert "ConfigurableChildOfLeakyParent.child_post_init" in h
+    # Anything from the leaky parent is suppressed
+    assert not any("parent_set" in path for path in h)
+    assert not any("training" in path for path in h)
+    assert not any("LEAKY_CLASS_CONSTANT" in path for path in h)
+
+
+@configurable
+class ConfigurableParent:
+    """``@configurable`` parent — its post-init attrs MUST surface in subclasses."""
+
+    def __init__(self, parent_param: int = 1) -> None:
+        self.parent_param = parent_param
+        self.parent_post_init = "should_surface"
+
+
+@configurable
+class ConfigurableChild(ConfigurableParent):
+    def __init__(self, parent_param: int = 1, child_param: str = "kid") -> None:
+        super().__init__(parent_param=parent_param)
+        self.child_param = child_param
+
+
+def test_configurable_parent_attrs_preserved() -> None:
+    """The MRO chain walks through ``@configurable`` ancestors — their setattrs stay visible."""
+    obj = ConfigurableChild(parent_param=99, child_param="hi")
+    h = get_hierarchy_from_instance(obj)
+    assert "ConfigurableChild.parent_param" in h
+    assert "ConfigurableChild.child_param" in h
+    assert "ConfigurableChild.parent_post_init" in h
+    _, val, _ = h["ConfigurableChild.parent_post_init"]
+    assert val == "should_surface"
 
 
 if __name__ == "__main__":
