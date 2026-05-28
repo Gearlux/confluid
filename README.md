@@ -85,6 +85,25 @@ state_yaml = dump(trainer)
 new_trainer = load(state_yaml)
 ```
 
+### Capturing the YAML include tree
+
+`load_config_with_paths(path)` returns both the loaded dict AND the ordered
+list of every YAML file that contributed to it — entrypoint first, then
+each transitively `include:`-d file in load order, deduplicated. Used by
+liquifai's CLI bootstrap so downstream tools (e.g. `marainer.trainer`)
+can log every config file as a reproducible run artifact.
+
+```python
+from confluid import load_config_with_paths
+
+data, paths = load_config_with_paths("experiment.yaml")
+# data:  the same dict load_config would return
+# paths: [PosixPath('.../experiment.yaml'), PosixPath('.../common.yaml'), ...]
+```
+
+Plain `load_config(path)` keeps its single-Dict return, so callers that
+don't care about the tree are unaffected.
+
 ## Validation
 
 Every `@configurable` class has its `__init__` wrapped at decoration time to validate kwargs against the auto-generated pydantic schema (`confluid.to_pydantic(cls)`). The validation fires at three points, each with its own strict / warn / off knob:

@@ -1,6 +1,6 @@
 import inspect
 import re
-from typing import Any, Dict, Tuple, get_type_hints
+from typing import Any, Dict, List, Tuple, get_type_hints
 
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
@@ -265,14 +265,22 @@ def _walk_instance(
         # enumerate post-construction setattr keys — per the one-level rule.
         return
 
-    # Post-construction keys: everything on the instance not in __init__
-    for attr_name, attr_value in vars(obj).items():
+    # Post-construction keys: ``vars(obj)`` filtered to drop attributes that
+    # non-``@configurable`` ancestors contributed (class annotations, class
+    # constants, ``__init__``-body setattrs). Keeps user-declared post-init
+    # setattrs (e.g. ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's
+    # body) AND post-construction setattrs done by Confluid's machinery or
+    # the user externally (the Enable wrapper's ``obj.visualize = True``
+    # pattern). See [confluid/confluid/loader.py:get_configurable_attrs].
+    from confluid.loader import get_configurable_attrs
+
+    declared_names = get_configurable_attrs(obj)
+    for attr_name in declared_names:
         if attr_name in ctor_param_names:
-            continue
-        if attr_name.startswith("_"):
             continue
         if attr_name.startswith("__confluid_"):
             continue
+        attr_value = getattr(obj, attr_name)
         path = f"{node_prefix}.{attr_name}"
         type_str = type(attr_value).__name__
         if _is_configurable_instance(attr_value):
@@ -315,6 +323,34 @@ def _is_non_configurable_instance(obj: Any) -> bool:
 def _configurable_class_name(cls: type) -> str:
     """Honour ``__confluid_name__`` when present, falling back to ``__name__``."""
     return getattr(cls, "__confluid_name__", cls.__name__)
+
+
+def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
+    """Map each dotted path to the shortest trailing suffix that uniquely identifies it.
+
+    For example, given ``["LightningTrainer.experiment_name",
+    "LightningTrainer.optimizer.AdamW.lr"]`` the result is
+    ``{"LightningTrainer.experiment_name": "experiment_name",
+    "LightningTrainer.optimizer.AdamW.lr": "lr"}`` because each leaf is unique.
+    When two paths share a leaf, the algorithm walks more of the path toward
+    the root until disambiguation is reached.
+
+    Used by display/logging layers (``liquifai.report.show_configuration``,
+    the marainer hyperparameter logger) that want to surface paths without
+    the noisy root-class prefix unless it is needed to tell two values apart.
+    """
+    display_map: Dict[str, str] = {}
+    for full_path in all_paths:
+        parts = full_path.split(".")
+        for i in range(1, len(parts) + 1):
+            suffix = ".".join(parts[-i:])
+            matches = [p for p in all_paths if p.endswith(f".{suffix}") or p == suffix]
+            if len(matches) == 1:
+                display_map[full_path] = suffix
+                break
+        else:
+            display_map[full_path] = full_path
+    return display_map
 
 
 def _parse_docstring(docstring: str) -> Dict[str, str]:

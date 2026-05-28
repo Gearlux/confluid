@@ -22,6 +22,20 @@ def get_active_context() -> Optional[Dict[str, Any]]:
     return getattr(_state, "context", None)
 
 
+def _record_loaded_path(path: Path) -> None:
+    """Append ``path`` to the active include-accumulator, if any.
+
+    Populated by :func:`load_config_with_paths` for the duration of one
+    load so callers can recover the ordered list of every YAML file
+    transitively read (entrypoint + recursive ``include:`` targets). The
+    accumulator lives on the existing thread-local so re-entrant loads on
+    different threads do not collide.
+    """
+    accum = getattr(_state, "include_accumulator", None)
+    if accum is not None:
+        accum.append(path)
+
+
 def _register_constructors() -> None:
     """Register YAML constructors for !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: tags."""
     from confluid.fluid import Class, Clone, Instance, Lazy, Reference, ScopeBlock
@@ -149,6 +163,7 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     if path in _included:
         raise ValueError(f"Circular include: {path}")
     _included.add(path)
+    _record_loaded_path(path)
 
     if not path.exists():
         raise FileNotFoundError(f"Not found: {path}")
@@ -168,6 +183,32 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     data = _process_imports(data)
     data = cast(Dict[str, Any], _process_includes_recursive(data, path, _included))
     return data
+
+
+def load_config_with_paths(path: Union[str, Path]) -> tuple[Dict[str, Any], List[Path]]:
+    """Load a YAML config and return ``(data, ordered_paths)``.
+
+    ``ordered_paths`` is the entrypoint followed by every transitively
+    ``include:``-d file in load order, deduplicated. Use this when a caller
+    needs to capture the full tree of YAML files that contributed to the
+    flowed config (e.g. logging the run's configuration as a reproducible
+    artifact). The thin wrapper preserves :func:`load_config`'s existing
+    public signature so callers that do not need the tree are unaffected.
+    """
+    accum: List[Path] = []
+    old = getattr(_state, "include_accumulator", None)
+    _state.include_accumulator = accum
+    try:
+        data = load_config(path)
+    finally:
+        _state.include_accumulator = old
+    seen: Set[Path] = set()
+    ordered: List[Path] = []
+    for p in accum:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return data, ordered
 
 
 def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -390,6 +431,68 @@ def _same_target(fluid_target: Any, cls: type) -> bool:
     return False
 
 
+def _ast_scan_init_setattrs(init_func: Any) -> Set[str]:
+    """Return non-underscore attribute names assigned via ``self.<name> = …`` or
+    ``setattr(self, "<name>", …)`` inside a single ``__init__`` function body.
+
+    Pure AST inspection — no class context required, so the same scan is reused
+    by both the MRO walker (:func:`_get_post_init_attrs`) and the
+    @configurable-chain walker (:func:`get_post_init_attrs_configurable_chain`).
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    names: Set[str] = set()
+    try:
+        source = inspect.getsource(init_func)
+    except (OSError, TypeError):
+        return names
+    try:
+        # ``textwrap.dedent`` preserves relative indentation (strips the
+        # common leading whitespace), so the method body still sits
+        # under its ``def`` header. ``inspect.cleandoc`` would flatten
+        # every line to column 0 and break the parse.
+        tree = ast.parse(textwrap.dedent(source))
+    except SyntaxError:
+        return names
+
+    for node in ast.walk(tree):
+        # Pattern 1: ``self.x = ...`` / ``self.x: T = ...`` / ``self.x += ...``
+        targets = (
+            [node.target]
+            if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            else node.targets if isinstance(node, ast.Assign) else []
+        )
+        for t in targets:
+            if (
+                isinstance(t, ast.Attribute)
+                and isinstance(t.value, ast.Name)
+                and t.value.id == "self"
+                and not t.attr.startswith("_")
+            ):
+                names.add(t.attr)
+
+        # Pattern 2: ``setattr(self, "x", ...)`` with a string literal name.
+        # Common when classes apply external config in a loop or use a
+        # helper to bulk-assign attributes. Non-literal names (variables,
+        # f-strings) stay invisible — we don't try to be clever.
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "setattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "self"
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+            and not node.args[1].value.startswith("_")
+        ):
+            names.add(node.args[1].value)
+
+    return names
+
+
 def _get_post_init_attrs(target: type) -> frozenset[str]:
     """Extract attribute names assigned in ``__init__`` bodies via AST.
 
@@ -404,10 +507,6 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
     ``loss_fn: !class:...`` flows into the Trainer without the user
     duplicating the key under the trainer block.
     """
-    import ast
-    import inspect
-    import textwrap
-
     cache_key = f"{target.__module__}.{target.__qualname__}"
     if cache_key in _post_init_attrs_cache:
         return _post_init_attrs_cache[cache_key]
@@ -425,54 +524,88 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
         init = klass.__dict__.get("__init__")
         if init is None:
             continue
-        try:
-            source = inspect.getsource(init)
-        except (OSError, TypeError):
-            continue
-        try:
-            # ``textwrap.dedent`` preserves relative indentation (strips the
-            # common leading whitespace), so the method body still sits
-            # under its ``def`` header. ``inspect.cleandoc`` would flatten
-            # every line to column 0 and break the parse.
-            tree = ast.parse(textwrap.dedent(source))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            # Pattern 1: ``self.x = ...`` / ``self.x: T = ...`` / ``self.x += ...``
-            targets = (
-                [node.target]
-                if isinstance(node, (ast.AnnAssign, ast.AugAssign))
-                else node.targets if isinstance(node, ast.Assign) else []
-            )
-            for t in targets:
-                if (
-                    isinstance(t, ast.Attribute)
-                    and isinstance(t.value, ast.Name)
-                    and t.value.id == "self"
-                    and not t.attr.startswith("_")
-                ):
-                    names.add(t.attr)
-
-            # Pattern 2: ``setattr(self, "x", ...)`` with a string literal name.
-            # Common when classes apply external config in a loop or use a
-            # helper to bulk-assign attributes. Non-literal names (variables,
-            # f-strings) stay invisible — we don't try to be clever.
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "setattr"
-                and len(node.args) >= 2
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == "self"
-                and isinstance(node.args[1], ast.Constant)
-                and isinstance(node.args[1].value, str)
-                and not node.args[1].value.startswith("_")
-            ):
-                names.add(node.args[1].value)
+        names.update(_ast_scan_init_setattrs(init))
 
     result = frozenset(names)
     _post_init_attrs_cache[cache_key] = result
     return result
+
+
+def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
+    """Non-underscore attribute names contributed by NON-``@configurable`` ancestors.
+
+    Returns the union, across every non-``@configurable`` class in ``cls.__mro__``
+    (excluding ``cls`` and ``object``), of:
+
+    * Names from ``__annotations__`` (e.g. ``training: bool`` annotated on
+      ``torch.nn.Module``'s class body — gets set instance-side via
+      ``super().__setattr__('training', True)`` which the AST scan can't see).
+    * Names from ``__dict__`` whose value is a non-callable, non-property
+      attribute (e.g. class-level constants like
+      ``CHECKPOINT_HYPER_PARAMS_KEY = "hyper_parameters"`` on
+      ``pytorch_lightning.LightningModule``).
+    * Names assigned via ``self.<name> = …``, ``self.<name>: T = …``, or
+      ``setattr(self, "<name>", …)`` in the class's ``__init__`` body
+      (e.g. ``self.prepare_data_per_node: bool = True`` in
+      ``pytorch_lightning.core.hooks.DataHooks.__init__``).
+
+    Used by parameter-discovery walkers to subtract parent-class contributions
+    from ``vars(obj)`` so the configurable surface reflects only what the
+    user (and Confluid's own broadcast machinery) put there.
+    """
+    cache_key = f"{cls.__module__}.{cls.__qualname__}#parent_blacklist"
+    if cache_key in _post_init_attrs_cache:
+        return _post_init_attrs_cache[cache_key]
+
+    blacklist: Set[str] = set()
+    try:
+        mro = cls.__mro__
+    except AttributeError:
+        _post_init_attrs_cache[cache_key] = frozenset()
+        return frozenset()
+
+    for klass in mro:
+        if klass is object or klass is cls:
+            continue
+        if getattr(klass, "__confluid_configurable__", False):
+            continue
+        for name in getattr(klass, "__annotations__", {}).keys():
+            if not name.startswith("_"):
+                blacklist.add(name)
+        for name, val in klass.__dict__.items():
+            if name.startswith("_"):
+                continue
+            if callable(val) or isinstance(val, property):
+                continue
+            blacklist.add(name)
+        init = klass.__dict__.get("__init__")
+        if init is not None:
+            blacklist.update(_ast_scan_init_setattrs(init))
+
+    result = frozenset(blacklist)
+    _post_init_attrs_cache[cache_key] = result
+    return result
+
+
+def get_configurable_attrs(obj: Any) -> frozenset[str]:
+    """Return non-underscore instance attributes of ``obj`` that belong to its ``@configurable`` surface.
+
+    Filters ``vars(obj)`` to exclude attributes contributed by non-``@configurable``
+    parent classes — their class annotations (``training: bool`` on
+    ``torch.nn.Module``), class-level constants
+    (``CHECKPOINT_HYPER_PARAMS_KEY`` on ``pytorch_lightning.LightningModule``),
+    and ``__init__``-body setattrs (``self.prepare_data_per_node: bool = True``
+    on ``pytorch_lightning.core.hooks.DataHooks``). Anything still present
+    after that subtraction is either a constructor parameter the user
+    declared, a post-construction setattr the user did themselves, or one
+    Confluid's broadcast/Enable machinery wrote on the instance.
+
+    See [confluid/confluid/loader.py:_get_parent_attr_blacklist] for the
+    blacklist construction.
+    """
+    cls = obj.__class__
+    blacklist = _get_parent_attr_blacklist(cls)
+    return frozenset(name for name in vars(obj).keys() if not name.startswith("_") and name not in blacklist)
 
 
 def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
