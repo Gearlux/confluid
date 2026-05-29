@@ -15,7 +15,7 @@ from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.pydantic_export import confluid_class_of, lazy_param_names_of, to_pydantic
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
-from confluid.schema import get_hierarchy, get_hierarchy_from_instance, shortest_unique_paths
+from confluid.schema import get_hierarchy, get_hierarchy_from_instance, parse_param_docs, shortest_unique_paths
 from confluid.scopes import discover_dimensions, normalize_active, parse_scope_arg, resolve_scopes
 from confluid.validation import (
     ValidationMode,
@@ -59,6 +59,7 @@ __all__ = [
     "lazy_param_names",
     "get_hierarchy",
     "get_hierarchy_from_instance",
+    "parse_param_docs",
     "shortest_unique_paths",
     "get_configurable_attrs",
     "to_pydantic",

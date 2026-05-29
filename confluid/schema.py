@@ -356,6 +356,12 @@ def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
 def _parse_docstring(docstring: str) -> Dict[str, str]:
     """
     Parse Google/NumPy style docstring to extract parameter help.
+
+    A parameter's description spans its continuation lines: it runs until the
+    next ``name:`` / ``name (type):`` entry, a blank line, or the end of the
+    string. The terminator deliberately uses ``\\Z`` (end of string), NOT ``$`` —
+    under ``re.MULTILINE`` ``$`` matches at the end of *every* physical line, which
+    would truncate every multi-line description to its first line.
     """
     param_docs: Dict[str, str] = {}
     if not docstring:
@@ -367,7 +373,7 @@ def _parse_docstring(docstring: str) -> Dict[str, str]:
 
     # Match "parameter (type): description" or "parameter: description"
     pattern = re.compile(
-        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|$)",
+        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|\Z)",
         re.MULTILINE | re.DOTALL,
     )
 
@@ -377,3 +383,31 @@ def _parse_docstring(docstring: str) -> Dict[str, str]:
         param_docs[name] = clean_desc
 
     return param_docs
+
+
+def parse_param_docs(obj: Any) -> Dict[str, str]:
+    """Return ``{param_name: help_text}`` from ``obj``'s docstring ``Args:`` section.
+
+    Resolves the docstring the same way :func:`confluid.to_pydantic` does — for a
+    class, its ``__init__`` docstring (falling back to the class docstring); for a
+    function or other callable, its own ``__doc__``. This is the single source of
+    per-parameter help reused across the workspace: navigaitor turns it into
+    pydantic ``Field(description=...)`` (via ``to_pydantic``) for the form-spec /
+    HTTP editor, and FluxStudio turns it into ComfyUI widget tooltips. Document a
+    constructor parameter once in the class's ``Args:`` block and it surfaces in
+    both GUIs.
+
+    Args:
+        obj: A class, function, or any object with a ``__doc__`` / ``__init__``.
+
+    Returns:
+        Mapping of parameter name to its parsed (whitespace-collapsed) help text.
+        Empty when there is no docstring or no recognizable ``Args:`` entries.
+    """
+    if isinstance(obj, type):
+        init = obj.__dict__.get("__init__") or getattr(obj, "__init__", None)
+        init_doc = getattr(init, "__doc__", None) if init is not object.__init__ else None
+        docstring = init_doc or obj.__doc__ or ""
+    else:
+        docstring = getattr(obj, "__doc__", "") or ""
+    return _parse_docstring(docstring)
