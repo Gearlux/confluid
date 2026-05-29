@@ -11,30 +11,50 @@ class ConfluidRegistry:
     def __init__(self) -> None:
         self._classes: Dict[str, Type[Any]] = {}
         self._objects: Dict[str, Any] = {}
-        # Reverse index: category name → set of registered class names.
-        # ``None`` (i.e. classes without a category) is not stored, so a
-        # ``list_classes(category=None)`` call falls through to the full set.
+        # Reverse indices: <value> → set of registered class names. Classes
+        # without the corresponding tag aren't stored, so a ``None`` filter
+        # falls through to the full set. ``task`` × ``role`` is the orthogonal
+        # decomposition of ``category`` — a class tagged ``task="classification"``
+        # + ``role="model"`` also derives ``category="classification_model"``.
         self._by_category: Dict[str, Set[str]] = {}
+        self._by_task: Dict[str, Set[str]] = {}
+        self._by_role: Dict[str, Set[str]] = {}
 
     def register_class(
         self,
         cls: Type[Any],
         name: Optional[str] = None,
         category: Optional[str] = None,
+        task: Optional[str] = None,
+        role: Optional[str] = None,
     ) -> Type[Any]:
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
+        # Fall back to any tags already on the class — this keeps a re-register
+        # (e.g. navigaitor's snapshot restore, which only forwards ``category``)
+        # from dropping ``task`` / ``role`` set by the original ``@configurable``.
+        category = category if category is not None else getattr(cls, "__confluid_category__", None)
+        task = task if task is not None else getattr(cls, "__confluid_task__", None)
+        role = role if role is not None else getattr(cls, "__confluid_role__", None)
         # Set markers for discovery
         try:
             setattr(cls, "__confluid_configurable__", True)
             setattr(cls, "__confluid_name__", cls_name)
             if category is not None:
                 setattr(cls, "__confluid_category__", category)
+            if task is not None:
+                setattr(cls, "__confluid_task__", task)
+            if role is not None:
+                setattr(cls, "__confluid_role__", role)
         except (TypeError, AttributeError):
             # Built-in or immutable types don't allow attribute setting
             pass
         if category is not None:
             self._by_category.setdefault(category, set()).add(cls_name)
+        if task is not None:
+            self._by_task.setdefault(task, set()).add(cls_name)
+        if role is not None:
+            self._by_role.setdefault(role, set()).add(cls_name)
         return cls
 
     def get_class(self, name: str) -> Optional[Type[Any]]:
@@ -55,21 +75,44 @@ class ConfluidRegistry:
         self._classes.clear()
         self._objects.clear()
         self._by_category.clear()
+        self._by_task.clear()
+        self._by_role.clear()
 
-    def list_classes(self, category: Optional[str] = None) -> Set[str]:
-        """Return registered class names, optionally filtered by ``category``.
+    def list_classes(
+        self,
+        category: Optional[str] = None,
+        task: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> Set[str]:
+        """Return registered class names, optionally filtered by ``category`` / ``task`` / ``role``.
 
-        ``category=None`` (default) returns every registered name. A category
-        that no class has registered against returns the empty set rather
-        than raising — discovery callers can probe freely.
+        All filters are ``None`` by default (returns every registered name).
+        When several are given they INTERSECT (e.g. ``task="classification",
+        role="model"`` returns only classification models — equivalent to
+        ``category="classification_model"``). A filter no class matches returns
+        the empty set rather than raising, so discovery callers can probe freely.
         """
-        if category is None:
+        result: Optional[Set[str]] = None
+        for index, value in ((self._by_category, category), (self._by_task, task), (self._by_role, role)):
+            if value is None:
+                continue
+            names = set(index.get(value, set()))
+            result = names if result is None else (result & names)
+        if result is None:
             return set(self._classes.keys())
-        return set(self._by_category.get(category, set()))
+        return result
 
     def list_categories(self) -> Set[str]:
         """Return the set of category names that have at least one registered class."""
         return set(self._by_category.keys())
+
+    def list_tasks(self) -> Set[str]:
+        """Return the set of task names that have at least one registered class."""
+        return set(self._by_task.keys())
+
+    def list_roles(self) -> Set[str]:
+        """Return the set of role names that have at least one registered class."""
+        return set(self._by_role.keys())
 
     def register_object(self, obj: Any, name: str) -> None:
         """Register an existing object instance."""

@@ -17,6 +17,8 @@ def configurable(
     *,
     name: Optional[str] = None,
     category: Optional[str] = None,
+    task: Optional[str] = None,
+    role: Optional[str] = None,
     validate: bool = True,
 ) -> Callable[[C], C]: ...
 
@@ -26,6 +28,8 @@ def configurable(
     *,
     name: Optional[str] = None,
     category: Optional[str] = None,
+    task: Optional[str] = None,
+    role: Optional[str] = None,
     validate: bool = True,
 ) -> Union[C, Callable[[C], C]]:
     """Mark a class as confluid-configurable and register it.
@@ -37,6 +41,14 @@ def configurable(
             ``"model"``, ``"trainer"``). Surfaces via
             :meth:`ConfluidRegistry.list_classes` and navigaitor's
             ``list_configurable_classes(category=...)`` MCP tool.
+        task: Optional ML task this class belongs to (``"classification"`` /
+            ``"segmentation"`` / ``"detection"``). With ``role`` it is the
+            orthogonal decomposition of ``category``: passing both also derives
+            ``category=f"{task}_{role}"`` so existing category-based discovery
+            keeps working, while ``list_classes(task=..., role=...)`` enables
+            navigaitor's scan-and-generate task surfaces.
+        role: Optional slot role this class fills for its task (``"model"`` /
+            ``"loss"`` / ``"dataset"`` / ``"metric"`` / ``"trainer"``).
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
             active :class:`confluid.validation.ValidationPolicy`. Set to
@@ -44,17 +56,25 @@ def configurable(
             or where pydantic introspection would be wasteful (e.g. classes
             stored only as type references).
     """
+    # ``task`` + ``role`` derive ``category`` when an explicit one isn't given,
+    # so a single tag feeds both the orthogonal (task/role) and legacy
+    # (category) discovery paths.
+    effective_category = category or (f"{task}_{role}" if task and role else None)
 
     def decorator(c: C) -> C:
         # Mark the class with metadata
         setattr(c, "__confluid_configurable__", True)
         if name:
             setattr(c, "__confluid_name__", name)
-        if category:
-            setattr(c, "__confluid_category__", category)
+        if effective_category:
+            setattr(c, "__confluid_category__", effective_category)
+        if task:
+            setattr(c, "__confluid_task__", task)
+        if role:
+            setattr(c, "__confluid_role__", role)
 
         # Register in global registry
-        get_registry().register_class(c, name=name, category=category)
+        get_registry().register_class(c, name=name, category=effective_category, task=task, role=role)
 
         if validate:
             _wrap_init_with_validation(c)
@@ -65,16 +85,26 @@ def configurable(
     return decorator(cls)
 
 
-def register(cls: Type[Any], *, name: Optional[str] = None, category: Optional[str] = None) -> Type[Any]:
+def register(
+    cls: Type[Any],
+    *,
+    name: Optional[str] = None,
+    category: Optional[str] = None,
+    task: Optional[str] = None,
+    role: Optional[str] = None,
+) -> Type[Any]:
     """Register a class (e.g., from a third-party library) as configurable.
 
     Args:
         cls: The class to register.
         name: Optional override for the registration name.
         category: Optional discovery taxonomy bucket.
+        task: Optional ML task (see :func:`configurable`).
+        role: Optional slot role (see :func:`configurable`).
     """
+    effective_category = category or (f"{task}_{role}" if task and role else None)
     # We don't modify third-party classes, just register them
-    get_registry().register_class(cls, name=name, category=category)
+    get_registry().register_class(cls, name=name, category=effective_category, task=task, role=role)
     return cls
 
 
