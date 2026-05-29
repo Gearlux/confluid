@@ -92,6 +92,22 @@ def _qualname(cls: type) -> str:
     return f"{module}.{name}"
 
 
+# Top-level module names whose types pydantic can't emit a JSON Schema for
+# (e.g. ``torch.Tensor``, ``numpy.ndarray``). Such params are coerced to ``Any``
+# so a generated config stays JSON-schema-able for the MCP / form-spec surface —
+# this is what lets a third-party class like ``torch.nn.CrossEntropyLoss``
+# (``weight: Optional[Tensor]``) be ``register``-ed and surfaced without a wrapper.
+_OPAQUE_TOP_MODULES = frozenset({"torch", "numpy"})
+
+
+def _is_opaque_type(anno: Any) -> bool:
+    """True for a concrete type pydantic cannot JSON-schema (Tensor / ndarray / …)."""
+    if not isinstance(anno, type):
+        return False
+    module = getattr(anno, "__module__", "") or ""
+    return module.split(".", 1)[0] in _OPAQUE_TOP_MODULES
+
+
 def _unwrap_annotated(anno: Any) -> Any:
     """Strip ``Annotated[X, ...]`` wrappers (incl. ``Lazy[X]``) down to ``X``.
 
@@ -129,6 +145,11 @@ def _convert_annotation(anno: Any) -> Any:
             # ``_StrictConfigBase`` makes the source-class branch isinstance-checked.
             nested = to_pydantic(anno)
             return Union[anno, nested]  # type: ignore[return-value]
+        if _is_opaque_type(anno):
+            # Tensor / ndarray / etc. — keep the generated model JSON-schema-able
+            # (see _OPAQUE_TOP_MODULES). The value still validates loosely; the
+            # source class enforces the real type at construction.
+            return Any
         return anno
 
     # ``Literal[...]`` arguments are values, not types — don't recurse.
@@ -171,8 +192,25 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
 
     Handles required vs. defaulted fields and converts mutable defaults
     (``list``/``dict``/``set``) into ``default_factory`` to satisfy pydantic.
+
+    Preserves ``Annotated[T, Field(...)]`` metadata (pydantic constraints like
+    ``gt`` / ``le`` / ``Literal`` refinements a source class declares on its
+    ``__init__`` params) so code-side tightening survives into the generated
+    schema — while still converting the INNER type so nested ``@configurable``
+    detection works. Confluid's own ``Lazy`` marker is dropped (it's recorded
+    separately via ``_confluid_lazy_params``).
     """
-    converted_type = _convert_annotation(anno)
+    from confluid.lazy import _LAZY_MARKER
+
+    metadata: Tuple[Any, ...] = ()
+    inner = anno
+    while get_origin(inner) is Annotated:
+        args = get_args(inner)
+        inner = args[0]
+        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m == _LAZY_MARKER))
+
+    converted_inner = _convert_annotation(inner)
+    converted_type = Annotated[(converted_inner, *metadata)] if metadata else converted_inner
     desc_kw: Dict[str, Any] = {"description": description} if description else {}
 
     if param.default is inspect.Parameter.empty:
