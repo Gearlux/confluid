@@ -8,6 +8,7 @@
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) part of your configurable graph.
 - **Smart Reference Resolution:** Uses `!ref:` syntax for cross-config references and `${}` for environment variables.
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
+- **Docstring-Derived Parameter Help:** `to_pydantic` parses each class's Google/NumPy-style `Args:` block into pydantic `Field(description=...)`; `parse_param_docs(cls_or_fn)` exposes the same `{param: help}` mapping directly, so downstream GUIs (navigaitor's form-spec, FluxStudio's node tooltips) document a constructor argument once, at the source.
 - **Flat-View Ordered Matching:** When a class materializes, the visible context is the document minus the descent path; matching scalars are applied in YAML document order with **last-write-wins** semantics. Explicit kwargs are not privileged — every source (own kwargs, sibling broadcasts, class-name blocks) takes its slot at its document position.
 
 > **Scopes:** Conditional overlays use explicit YAML tags — `!scope:debug`, `!scope:task=classification` (or equivalently `!scope:task(classification)`), and the `!notscope:…` negative twins. Activate via `confluid.load(path, scopes=["debug", "task=classification"])` or, in liquifai-built CLIs, via `--scope debug` / `--scope task=classification` / `--task classification`. See the [Scopes](#scopes) section below.
