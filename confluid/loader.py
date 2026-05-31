@@ -9,7 +9,7 @@ import yaml
 from logflow import get_logger
 
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.resolver import Resolver
+from confluid.resolver import Resolver, parse_value
 from confluid.scopes import normalize_active, resolve_scopes
 
 logger = get_logger("confluid.loader")
@@ -41,12 +41,22 @@ def _register_constructors() -> None:
     from confluid.fluid import Class, Clone, Instance, Lazy, Reference, ScopeBlock
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
+        """Parse inline ``key=value`` pairs from a ``Name(...)`` tag suffix.
+
+        Each value is coerced to its native Python type via ``parse_value``
+        (``"7"`` → ``7``, ``"0.01"`` → ``0.01``, ``"true"`` → ``True``), so the
+        unquoted tag form matches the quoted-string form's coercion instead of
+        silently storing raw strings. A nested ``!ref:`` / ``${ENV}`` cannot
+        appear in this position — YAML forbids a second tag on one node, so the
+        scanner rejects it — use the quoted-string form or a mapping body when
+        you need those.
+        """
         kwargs: dict[str, Any] = {}
         if args_str and args_str.strip():
             for pair in args_str.split(","):
                 if "=" in pair:
                     k, v = pair.split("=", 1)
-                    kwargs[k.strip()] = v.strip()
+                    kwargs[k.strip()] = parse_value(v.strip())
         return kwargs
 
     def _stamp(fl: Any, loader: yaml.SafeLoader, node: yaml.nodes.Node) -> Any:
@@ -68,13 +78,18 @@ def _register_constructors() -> None:
         instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
         factory = Instance if instant else Class
         name = instant.group(1) if instant else tag_suffix
+        inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
 
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return _stamp(factory(name, **mapping), loader, node)
+            # Merge inline ``(k=v)`` kwargs with the mapping body instead of
+            # discarding the inline ones. Block-body keys win on conflict —
+            # they sit later in document order, matching the flat-view
+            # last-write-wins rule.
+            return _stamp(factory(name, **{**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(factory(name, **_parse_inline_kwargs(instant.group(2))), loader, node)
+            return _stamp(factory(name, **inline), loader, node)
 
         return _stamp(Class(tag_suffix), loader, node)
 
@@ -87,16 +102,18 @@ def _register_constructors() -> None:
     def lazy_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         # Mirror class_constructor's grammar so users can write either
         # ``!lazy:Adam`` (bare), ``!lazy:Adam(lr=1e-3)`` (inline kwargs),
-        # or ``!lazy:Adam`` with a YAML mapping body for the kwargs.
+        # or ``!lazy:Adam`` with a YAML mapping body for the kwargs. Inline
+        # values are coerced and merged with the body exactly as for !class:.
         instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
         name = instant.group(1) if instant else tag_suffix
+        inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
 
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return _stamp(Lazy(name, **mapping), loader, node)
+            return _stamp(Lazy(name, **{**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(Lazy(name, **_parse_inline_kwargs(instant.group(2))), loader, node)
+            return _stamp(Lazy(name, **inline), loader, node)
 
         return _stamp(Lazy(tag_suffix), loader, node)
 
@@ -1013,7 +1030,20 @@ def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
     obj = None
     if obj_path in context:
         raw = context[obj_path]
-        obj = _flow(raw) if isinstance(raw, Fluid) else raw
+        if isinstance(raw, Fluid):
+            # Reuse the SINGLE materialized instance rather than re-flowing the raw marker.
+            # ``_flow_recursive`` records ``flow_memo[id(raw_marker)] = resolved_marker`` and the
+            # instance memo then caches ``flow(resolved_marker)`` as one live object. Flowing the
+            # RAW marker here would miss the instance memo (it keys on the resolved marker) and
+            # rebuild the whole sub-tree — so ``!ref:my_split.train`` + ``!ref:my_split.val`` would
+            # each construct a fresh ``my_split`` (and reload its source, e.g. a HuggingFaceSource).
+            # Mapping raw → resolved first makes the dotted ref share the top-level instance.
+            flow_memo = getattr(_state, "flow_memo", None)
+            if flow_memo is not None:
+                raw = flow_memo.get(id(raw), raw)
+            obj = _flow(raw)
+        else:
+            obj = raw
     else:
         # Fallback: try to import obj_path as a module or resolve as a class
         try:

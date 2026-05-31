@@ -164,7 +164,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
     compat_result = yaml.safe_load("!class Model(x=1)")
     assert isinstance(compat_result, Instance)
     assert compat_result.target == "Model"
-    assert compat_result.kwargs["x"] == "1"
+    assert compat_result.kwargs["x"] == 1  # inline scalars are coerced (parse_value)
     # Legacy !class tag also returns Class object
     legacy_result = yaml.safe_load("!class Model")
     assert isinstance(legacy_result, Class)

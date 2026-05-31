@@ -10,7 +10,7 @@ to the outer Flux itself but ALSO to every inner Flux nested deep inside
 a sibling wrapper class (``JointFlux``), even though those inner Fluxes'
 YAML blocks set no ``ops:`` at all. The leak made the supposedly-empty
 inner Flux op chains carry the full ``[LoadIQForWindowOp,
-ComputeSpectrogramOp, ...]`` list, which then ran on every sample
+SpectrogramOp, ...]`` list, which then ran on every sample
 emitted by the inner sources — turning what should have been an ~85ms
 JSON walk into a 2½-minute eager iteration of the entire heavy op chain
 on the main thread.

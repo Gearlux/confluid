@@ -17,6 +17,7 @@ def configurable(
     *,
     name: Optional[str] = None,
     category: Optional[str] = None,
+    group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
     validate: bool = True,
@@ -28,6 +29,7 @@ def configurable(
     *,
     name: Optional[str] = None,
     category: Optional[str] = None,
+    group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
     validate: bool = True,
@@ -41,6 +43,13 @@ def configurable(
             ``"model"``, ``"trainer"``). Surfaces via
             :meth:`ConfluidRegistry.list_classes` and navigaitor's
             ``list_configurable_classes(category=...)`` MCP tool.
+        group: Optional free-form, path-like sub-grouping WITHIN a category
+            (e.g. ``"numpy"``, ``"fft/numpy"``, ``"segmentation"``). Unlike
+            ``category`` / ``task`` / ``role`` (which gate *what* is offered),
+            ``group`` only organises presentation: FluxStudio nests a node's
+            palette folder as ``<Package>/<Category>/<group>``. It is NOT part
+            of the discovery contract — an absent group simply means the node
+            sits directly under ``<Package>/<Category>``.
         task: Optional ML task this class belongs to (``"classification"`` /
             ``"segmentation"`` / ``"detection"``). With ``role`` it is the
             orthogonal decomposition of ``category``: passing both also derives
@@ -68,13 +77,15 @@ def configurable(
             setattr(c, "__confluid_name__", name)
         if effective_category:
             setattr(c, "__confluid_category__", effective_category)
+        if group:
+            setattr(c, "__confluid_group__", group)
         if task:
             setattr(c, "__confluid_task__", task)
         if role:
             setattr(c, "__confluid_role__", role)
 
         # Register in global registry
-        get_registry().register_class(c, name=name, category=effective_category, task=task, role=role)
+        get_registry().register_class(c, name=name, category=effective_category, group=group, task=task, role=role)
 
         if validate:
             _wrap_init_with_validation(c)
@@ -90,6 +101,7 @@ def register(
     *,
     name: Optional[str] = None,
     category: Optional[str] = None,
+    group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
 ) -> Type[Any]:
@@ -99,12 +111,13 @@ def register(
         cls: The class to register.
         name: Optional override for the registration name.
         category: Optional discovery taxonomy bucket.
+        group: Optional path-like presentation sub-grouping (see :func:`configurable`).
         task: Optional ML task (see :func:`configurable`).
         role: Optional slot role (see :func:`configurable`).
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
     # We don't modify third-party classes, just register them
-    get_registry().register_class(cls, name=name, category=effective_category, task=task, role=role)
+    get_registry().register_class(cls, name=name, category=effective_category, group=group, task=task, role=role)
     return cls
 
 
