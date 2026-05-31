@@ -325,7 +325,7 @@ def test_lazy_inline_kwargs_form() -> None:
     yaml_text = "opt: !lazy:tests.test_broadcast_robustness._Adam(lr=0.001)\n"
     loaded = load(yaml_text, flow=False)
     assert isinstance(loaded["opt"], LazyClass)
-    assert loaded["opt"].kwargs == {"lr": "0.001"}  # inline values are strings
+    assert loaded["opt"].kwargs == {"lr": 0.001}  # inline scalars are coerced (parse_value)
 
 
 # ---------------------------------------------------------------------------

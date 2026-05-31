@@ -171,6 +171,47 @@ def test_ref_does_not_re_instantiate_even_with_many_aliases() -> None:
         assert result[f"alias{i}"] is result["root"]
 
 
+def test_dotted_attribute_ref_reuses_single_instance() -> None:
+    """``!ref:obj.attr`` must resolve against the SAME materialized ``obj`` as the top-level key.
+
+    Regression: the dotted-ref used to re-flow the RAW marker (missing the instance memo, which
+    keys on the *resolved* marker), building a SECOND ``obj`` and re-running its constructor — so a
+    splitter referenced via ``.train`` / ``.val`` reloaded its upstream source. ``_resolve_dotted_ref``
+    now maps the raw marker through ``flow_memo`` first, so every attribute-ref shares the one live
+    instance the memo caches (one construction → one load).
+    """
+
+    @configurable
+    class Loader:
+        instantiations = 0
+
+        def __init__(self, size: int = 3) -> None:
+            Loader.instantiations += 1
+            self.size = size
+
+        @property
+        def head(self) -> str:
+            return f"head-of-{self.size}"
+
+        @property
+        def tail(self) -> str:
+            return f"tail-of-{self.size}"
+
+    yaml_str = """
+loader: !class:Loader()
+  size: 5
+a: !ref:loader.head
+b: !ref:loader.tail
+"""
+    result: Any = load(yaml_str)
+
+    assert Loader.instantiations == 1, "dotted-ref re-flowed a duplicate instance (extra load)"
+    assert result["a"] == "head-of-5"
+    assert result["b"] == "tail-of-5"
+    # The attribute-refs resolved off the SAME instance as the top-level key.
+    assert result["a"] == result["loader"].head
+
+
 def test_ref_inside_list_shares_instance() -> None:
     """!ref: inside a YAML list must resolve to the same Instance marker as the source.
 

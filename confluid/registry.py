@@ -17,6 +17,7 @@ class ConfluidRegistry:
         # decomposition of ``category`` — a class tagged ``task="classification"``
         # + ``role="model"`` also derives ``category="classification_model"``.
         self._by_category: Dict[str, Set[str]] = {}
+        self._by_group: Dict[str, Set[str]] = {}
         self._by_task: Dict[str, Set[str]] = {}
         self._by_role: Dict[str, Set[str]] = {}
 
@@ -25,6 +26,7 @@ class ConfluidRegistry:
         cls: Type[Any],
         name: Optional[str] = None,
         category: Optional[str] = None,
+        group: Optional[str] = None,
         task: Optional[str] = None,
         role: Optional[str] = None,
     ) -> Type[Any]:
@@ -32,8 +34,9 @@ class ConfluidRegistry:
         self._classes[cls_name] = cls
         # Fall back to any tags already on the class — this keeps a re-register
         # (e.g. navigaitor's snapshot restore, which only forwards ``category``)
-        # from dropping ``task`` / ``role`` set by the original ``@configurable``.
+        # from dropping ``group`` / ``task`` / ``role`` set by the original ``@configurable``.
         category = category if category is not None else getattr(cls, "__confluid_category__", None)
+        group = group if group is not None else getattr(cls, "__confluid_group__", None)
         task = task if task is not None else getattr(cls, "__confluid_task__", None)
         role = role if role is not None else getattr(cls, "__confluid_role__", None)
         # Set markers for discovery
@@ -42,6 +45,8 @@ class ConfluidRegistry:
             setattr(cls, "__confluid_name__", cls_name)
             if category is not None:
                 setattr(cls, "__confluid_category__", category)
+            if group is not None:
+                setattr(cls, "__confluid_group__", group)
             if task is not None:
                 setattr(cls, "__confluid_task__", task)
             if role is not None:
@@ -51,6 +56,8 @@ class ConfluidRegistry:
             pass
         if category is not None:
             self._by_category.setdefault(category, set()).add(cls_name)
+        if group is not None:
+            self._by_group.setdefault(group, set()).add(cls_name)
         if task is not None:
             self._by_task.setdefault(task, set()).add(cls_name)
         if role is not None:
@@ -75,16 +82,18 @@ class ConfluidRegistry:
         self._classes.clear()
         self._objects.clear()
         self._by_category.clear()
+        self._by_group.clear()
         self._by_task.clear()
         self._by_role.clear()
 
     def list_classes(
         self,
         category: Optional[str] = None,
+        group: Optional[str] = None,
         task: Optional[str] = None,
         role: Optional[str] = None,
     ) -> Set[str]:
-        """Return registered class names, optionally filtered by ``category`` / ``task`` / ``role``.
+        """Return registered class names, optionally filtered by ``category`` / ``group`` / ``task`` / ``role``.
 
         All filters are ``None`` by default (returns every registered name).
         When several are given they INTERSECT (e.g. ``task="classification",
@@ -93,7 +102,12 @@ class ConfluidRegistry:
         the empty set rather than raising, so discovery callers can probe freely.
         """
         result: Optional[Set[str]] = None
-        for index, value in ((self._by_category, category), (self._by_task, task), (self._by_role, role)):
+        for index, value in (
+            (self._by_category, category),
+            (self._by_group, group),
+            (self._by_task, task),
+            (self._by_role, role),
+        ):
             if value is None:
                 continue
             names = set(index.get(value, set()))
@@ -105,6 +119,10 @@ class ConfluidRegistry:
     def list_categories(self) -> Set[str]:
         """Return the set of category names that have at least one registered class."""
         return set(self._by_category.keys())
+
+    def list_groups(self) -> Set[str]:
+        """Return the set of group names that have at least one registered class."""
+        return set(self._by_group.keys())
 
     def list_tasks(self) -> Set[str]:
         """Return the set of task names that have at least one registered class."""

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from confluid import load_config
+from confluid import configurable, get_registry, load, load_config
 
 
 def test_load_config_valid(tmp_path: Path) -> None:
@@ -77,3 +77,175 @@ def test_load_config_root_level_class(tmp_path: Path) -> None:
     assert data.target == "Model"
     assert data.kwargs["layers"] == 10
     assert data.kwargs["activation"] == "relu"
+
+
+# ---------------------------------------------------------------------------
+# `!class:` eager-vs-deferred grammar (README §"Tags & Deferred Initialization")
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _GrammarModel:
+    """Tiny configurable target for the `!class:` form tests below."""
+
+    def __init__(self, layers: int = 3) -> None:
+        self.layers = layers
+
+
+@pytest.fixture
+def _register_grammar_model() -> None:
+    """Register ``_GrammarModel`` under the short name the YAML snippets use.
+
+    Mirrors the registry-cleanup discipline in the other test modules — the
+    global registry is shared, so each form test re-registers its target.
+    """
+    get_registry().register_class(_GrammarModel, name="Model")
+
+
+def _parse_tags(text: str) -> dict:
+    """Parse a YAML string through the same constructors ``load_config`` registers,
+    WITHOUT materializing — so the raw ``Class`` / ``Instance`` Fluids are visible."""
+    from typing import cast
+
+    import yaml
+
+    from confluid.loader import _register_constructors
+
+    _register_constructors()
+    return cast(dict, yaml.safe_load(text))
+
+
+def test_class_form_bare_parses_to_deferred_class() -> None:
+    """``!class:Model`` (no parens) parses to a deferred ``Class`` — never built."""
+    from confluid.fluid import Class
+
+    data = _parse_tags("m: !class:Model\n")
+    assert isinstance(data["m"], Class)
+    assert data["m"].kwargs == {}
+
+
+def test_class_form_bare_with_body_keeps_deferred_with_kwargs() -> None:
+    """A bare ``!class:Model`` plus a mapping body stays deferred but captures kwargs."""
+    from confluid.fluid import Class
+
+    data = _parse_tags("m: !class:Model\n  layers: 9\n")
+    assert isinstance(data["m"], Class)
+    assert data["m"].kwargs["layers"] == 9
+
+
+def test_class_form_empty_parens_parses_to_instance() -> None:
+    """``!class:Model()`` (empty parens) parses to an eager ``Instance``."""
+    from confluid.fluid import Instance
+
+    data = _parse_tags("m: !class:Model()\n")
+    assert isinstance(data["m"], Instance)
+
+
+def test_class_form_inline_kwargs_parses_to_instance() -> None:
+    """``!class:Model(layers=7)`` parses to an eager ``Instance`` carrying coerced kwargs."""
+    from confluid.fluid import Instance
+
+    data = _parse_tags("m: !class:Model(layers=7)\n")
+    assert isinstance(data["m"], Instance)
+    # Inline values are coerced to native types at parse time (parse_value).
+    assert data["m"].kwargs["layers"] == 7
+    assert isinstance(data["m"].kwargs["layers"], int)
+
+
+def test_class_form_bare_stays_deferred_after_load(_register_grammar_model: None) -> None:
+    """``load()`` leaves a bare ``!class:`` deferred (the receiver flows it)."""
+    from confluid.fluid import Class
+
+    assert isinstance(load("m: !class:Model\n")["m"], Class)
+
+
+def test_class_form_empty_parens_is_built_by_load(_register_grammar_model: None) -> None:
+    """``load()`` eagerly materializes ``!class:Model()`` into a live instance."""
+    built = load("m: !class:Model()\n")["m"]
+    assert isinstance(built, _GrammarModel)
+    assert built.layers == 3
+
+
+def test_class_form_unquoted_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
+    """Unquoted ``!class:Model(layers=7)`` coerces inline scalars to native types.
+
+    The YAML-tag constructor runs each inline ``key=value`` through ``parse_value``,
+    so ``"7"`` becomes ``int`` 7 — matching the quoted-string form. (A nested
+    ``!ref:`` / ``${ENV}`` still can't appear unquoted; use the quoted form or a
+    block body for those.)
+    """
+    built = load("m: !class:Model(layers=7)\n")["m"]
+    assert isinstance(built, _GrammarModel)
+    assert built.layers == 7
+    assert isinstance(built.layers, int)
+
+
+def test_class_form_unquoted_inline_kwargs_coerce_float_bool_none() -> None:
+    """Inline coercion covers floats, bools and null — not just ints.
+
+    (Multi-arg unquoted tags must be space-free: YAML ends a tag at whitespace.)
+    """
+    data = _parse_tags("m: !class:Model(a=0.01,b=true,c=null)\n")
+    assert data["m"].kwargs == {"a": 0.01, "b": True, "c": None}
+
+
+def test_class_form_quoted_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
+    """Quoted ``"!class:Model(layers=7)"`` is resolved through the resolver, which
+    coerces inline scalars to the declared type (``parse_value``: ``"7"`` → ``7``)."""
+    built = load('m: "!class:Model(layers=7)"\n')["m"]
+    assert isinstance(built, _GrammarModel)
+    assert built.layers == 7  # coerced str→int by the resolver path
+
+
+def test_class_form_quoted_inline_ref_is_resolved(_register_grammar_model: None) -> None:
+    """A nested ``!ref:`` works only in the QUOTED form (the README's Adam example).
+
+    YAML forbids two tags on one node, so ``!class:Model(layers=!ref:n)`` cannot be
+    written unquoted — the value must be a quoted string the resolver then parses.
+    """
+    built = load('n: 10\nm: "!class:Model(layers=!ref:n)"\n')["m"]
+    assert built.layers == 10
+
+
+def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None) -> None:
+    """Inline ``(k=v)`` kwargs MERGE with a mapping body (no longer discarded).
+
+    An inline key absent from the body survives; on a key present in both, the
+    block body wins (it sits later in document order — last-write-wins).
+    """
+    # Inline width=7 has no body entry → survives. Inline layers=99 is overridden
+    # by the body's layers=3.
+    built = _parse_tags("m: !class:Model(layers=99,extra=7)\n  layers: 3\n")["m"]
+    from confluid.fluid import Instance
+
+    assert isinstance(built, Instance)
+    assert built.kwargs["layers"] == 3  # block body wins on conflict
+    assert built.kwargs["extra"] == 7  # inline-only key is preserved, not discarded
+
+
+def test_lazy_tag_stays_deferred_with_any_grammar(_register_grammar_model: None) -> None:
+    """``!lazy:`` always produces a deferred ``Lazy`` — parens or not, block or not."""
+    from confluid.fluid import Lazy
+
+    assert isinstance(load("m: !lazy:Model\n")["m"], Lazy)
+    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], Lazy)
+    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], Lazy)
+
+
+def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
+    """``!lazy:`` coerces inline scalars and merges them with a block body, exactly
+    like ``!class:`` — only the deferral differs."""
+    inline = load("m: !lazy:Model(layers=5)\n")["m"]
+    assert inline.kwargs["layers"] == 5  # coerced to int
+    assert isinstance(inline.kwargs["layers"], int)
+    block = load("m: !lazy:Model\n  layers: 5\n")["m"]
+    assert block.kwargs["layers"] == 5  # native int
+    merged = load("m: !lazy:Model(layers=99,extra=5)\n  layers: 3\n")["m"]
+    assert merged.kwargs == {"layers": 3, "extra": 5}  # block wins; inline-only kept
+
+
+def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> None:
+    """The quote-the-tag trick is ``!class:`` / ``!ref:`` only — a quoted ``!lazy:``
+    stays a plain string and is NEVER turned into a ``Lazy``."""
+    value = load('m: "!lazy:Model(layers=5)"\n')["m"]
+    assert value == "!lazy:Model(layers=5)"  # untouched string
