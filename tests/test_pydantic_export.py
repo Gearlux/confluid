@@ -348,3 +348,57 @@ def test_convert_annotation_handles_pep604_union() -> None:
     converted = _convert_annotation(int | str)  # type: ignore[operator]
     # Union[int, str] equals int | str under typing.get_origin
     assert converted == Union[int, str]
+
+
+# ---------------------------------------------------------------------------
+# Post-init body slots (minimal-ctor / post-construction pattern)
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _TrainerLike:
+    """Module-level so ``inspect.getsource`` can read the ``__init__`` body."""
+
+    def __init__(self, model: Any, train_set: Any, run_name: str = "train") -> None:
+        self.model = model
+        self.train_set = train_set
+        self.optimizer: Any = None  # post-init body slot, not a ctor param
+        self.batch_size: int = 32  # annotated body slot
+        self._private = 1  # underscore -> never surfaced
+
+
+@configurable
+class _SubTrainer(_TrainerLike):
+    def __init__(self, model: Any, train_set: Any) -> None:
+        super().__init__(model, train_set)
+        self.extra_knob: Any = None
+
+
+def test_to_pydantic_surfaces_post_init_body_slots() -> None:
+    """Body-attribute config slots appear as OPTIONAL fields (default None)."""
+    model = to_pydantic(_TrainerLike)
+    assert {"model", "train_set", "run_name", "optimizer", "batch_size"} <= set(model.model_fields)
+    assert "_private" not in model.model_fields
+    # Required ctor params stay required; body slots are optional.
+    inst = model(model=object(), train_set=[])
+    assert inst.optimizer is None
+    assert inst.batch_size is None
+
+
+def test_to_pydantic_body_slots_inherited_across_configurable_chain() -> None:
+    """A subclass's generated model carries both its own and the parent's body slots."""
+    model = to_pydantic(_SubTrainer)
+    assert {"optimizer", "batch_size", "extra_knob"} <= set(model.model_fields)
+
+
+def test_to_pydantic_signature_param_wins_over_body_slot() -> None:
+    """When a name is both a ctor param and a body setattr, the param spec wins."""
+
+    @configurable
+    class _C:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr  # also assigned in body — must not become optional/None
+
+    model = to_pydantic(_C)
+    # The ctor param default (0.1) is preserved, not overwritten by the body None.
+    assert model().lr == 0.1

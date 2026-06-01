@@ -20,6 +20,7 @@ def configurable(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    lazy: bool = False,
     validate: bool = True,
 ) -> Callable[[C], C]: ...
 
@@ -32,6 +33,7 @@ def configurable(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    lazy: bool = False,
     validate: bool = True,
 ) -> Union[C, Callable[[C], C]]:
     """Mark a class as confluid-configurable and register it.
@@ -58,6 +60,13 @@ def configurable(
             navigaitor's scan-and-generate task surfaces.
         role: Optional slot role this class fills for its task (``"model"`` /
             ``"loss"`` / ``"dataset"`` / ``"metric"`` / ``"trainer"``).
+        lazy: When ``True``, stamp ``__confluid_lazy__`` on the class. Marks a
+            class whose constructed value should stay **deferred** — a
+            runtime-injection slot (e.g. an optimizer needing ``params=`` or a
+            DataLoader needing ``dataset=``). Consumers that compose configs read
+            it to emit a ``LazyClass`` (deferred) rather than a live instance —
+            notably FluxStudio's object nodes, which feed a runnable's deferred
+            body slots. Independent of ``category``/``task``/``role``.
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
             active :class:`confluid.validation.ValidationPolicy`. Set to
@@ -83,9 +92,13 @@ def configurable(
             setattr(c, "__confluid_task__", task)
         if role:
             setattr(c, "__confluid_role__", role)
+        if lazy:
+            setattr(c, "__confluid_lazy__", True)
 
         # Register in global registry
-        get_registry().register_class(c, name=name, category=effective_category, group=group, task=task, role=role)
+        get_registry().register_class(
+            c, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy
+        )
 
         if validate:
             _wrap_init_with_validation(c)
@@ -104,6 +117,7 @@ def register(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    lazy: bool = False,
 ) -> Type[Any]:
     """Register a class (e.g., from a third-party library) as configurable.
 
@@ -114,10 +128,17 @@ def register(
         group: Optional path-like presentation sub-grouping (see :func:`configurable`).
         task: Optional ML task (see :func:`configurable`).
         role: Optional slot role (see :func:`configurable`).
+        lazy: When ``True``, stamp ``__confluid_lazy__`` — the constructed value
+            should stay deferred (a runtime-injection slot like a torch optimizer
+            needing ``params=`` / a DataLoader needing ``dataset=``). See
+            :func:`configurable`.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
-    # We don't modify third-party classes, just register them
-    get_registry().register_class(cls, name=name, category=effective_category, group=group, task=task, role=role)
+    # ``register_class`` stamps the discovery markers (incl. ``__confluid_lazy__``)
+    # on the class — it tolerates immutable built-ins via try/except.
+    get_registry().register_class(
+        cls, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy
+    )
     return cls
 
 

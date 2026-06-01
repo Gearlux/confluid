@@ -1,7 +1,10 @@
+import logging
 from copy import copy
 from typing import Any, Optional, Tuple, Type, Union
 
 from confluid.registry import get_registry, resolve_class
+
+_logger = logging.getLogger(__name__)
 
 YamlLoc = Tuple[Optional[str], int, int]
 """``(filename or None, line, column)`` — 1-based YAML source location."""
@@ -142,14 +145,16 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     if not isinstance(obj, (Fluid, str, type, dict)):
         return obj
 
-    # 1b. Lazy stays deferred unless the caller supplies runtime kwargs.
-    # Declaring an optimizer in YAML as ``!lazy:Adam(lr=0.01)`` lets the
-    # surrounding broadcast pass merge in any matching scalars, but
-    # the actual ``Adam(...)`` construction is postponed until domain code
-    # calls ``flow(value, params=model.parameters())`` with the missing
-    # runtime-injected arguments.
-    if isinstance(obj, Lazy) and not runtime_kwargs:
-        return obj
+    # 1b. An EXPLICIT ``flow(lazy)`` call builds the Lazy — even with no runtime
+    # kwargs. A ``Lazy`` defers construction past the AUTO-flow walkers
+    # (``_deep_flow`` and ``materialize``'s recursive descent, which both skip it
+    # without calling ``flow()``); a deliberate ``flow()`` by domain code is a
+    # "build this now" request. The runtime-injection case still works because
+    # the missing args are passed as ``runtime_kwargs`` (e.g.
+    # ``flow(self.optimizer, params=model.parameters())``); a slot needing no
+    # runtime args (e.g. a deferred ``lightning`` Trainer) is built by a bare
+    # ``flow(self.lightning)``. So there is NO early return here — a ``Lazy`` (a
+    # ``Class`` subclass) falls through to the Class instantiation path below.
 
     # 2. Resolve context from the global active context
     context = get_active_context()
@@ -191,6 +196,13 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         broadcast_ctx = context or merged
 
         def _resolve_value(v: Any, *, eager_classes: bool = False) -> Any:
+            # A ``Lazy`` (a ``Class`` subclass) is a runtime-injection point: keep
+            # it deferred through materialization regardless of ``eager_classes``.
+            # An explicit ``flow()`` by domain code builds it later (see note 1b);
+            # the auto-flow walkers here must never instantiate it. This guard
+            # precedes the ``Class`` branch because ``isinstance(Lazy, Class)``.
+            if isinstance(v, Lazy):
+                return v
             if isinstance(v, Instance):
                 return flow(v)
             if isinstance(v, Class):
@@ -313,8 +325,41 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                     # injection channel, so a deferred marker here would just
                     # pollute a slot typed as the real dependency (and e.g.
                     # ``nn.Module.__setattr__`` would outright reject it).
-                    if isinstance(v, Fluid):
-                        v = flow(v)
+                    #
+                    # EXCEPTION — a ``Lazy`` (``!lazy:``) stays deferred: it is a
+                    # deliberate runtime-injection point (e.g. a trainer's
+                    # ``optimizer`` / ``train_loader`` body slot needing
+                    # ``params=`` / ``dataset=`` at run time, or a ``lightning``
+                    # slot the trainer flows itself after pre-flow wiring). The
+                    # owning class flows it when ready. (Since ``flow(lazy)`` now
+                    # builds — note 1b — we must NOT funnel it through ``flow``
+                    # here, or the runtime-injected slot would build too early.)
+                    if isinstance(v, Fluid) and not isinstance(v, Lazy):
+                        # Misconfiguration guard: if the slot's OWN default is a
+                        # ``Lazy`` (a deferred runtime-injection slot, e.g. the
+                        # body default ``self.optimizer = LazyClass(...)``), a
+                        # supplied deferred ``Class`` (``!class:`` no-parens) would
+                        # be eagerly built here and break the slot (an optimizer
+                        # built with no ``params``). Inherit the slot's laziness —
+                        # defer the supplied value too — and warn the operator to
+                        # wire it ``!lazy:``. (An ``Instance``, ``!class:Foo()``,
+                        # is a deliberate eager request and is NOT auto-deferred.)
+                        # Read the slot's current default from ``__dict__`` (where
+                        # body-assigned slots live) — never ``getattr``, which would
+                        # execute a property getter (e.g. ``LightningModule.trainer``
+                        # raises when unattached) and crash here.
+                        existing = instance.__dict__.get(k)
+                        if type(v) is Class and isinstance(existing, Lazy):
+                            _logger.warning(
+                                "Config slot %r on %s received a '!class:' value but the slot is a "
+                                "deferred (lazy) runtime-injection slot; treating it as '!lazy:'. "
+                                "Wire it '!lazy:' in YAML to make the intent explicit and silence this.",
+                                k,
+                                getattr(target, "__name__", target),
+                            )
+                            v = Lazy(v.target, **v.kwargs)
+                        else:
+                            v = flow(v)
                     setattr(instance, k, v)
                     extra_keys.append(k)
             try:
