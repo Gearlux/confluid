@@ -98,3 +98,46 @@ def test_lazy_param_does_not_leak_marker_and_is_recorded() -> None:
     # The lazy marker is recorded separately, not left as schema metadata.
     assert "opt" in model.model_fields
     assert "opt" in getattr(model, "_confluid_lazy_params", frozenset())
+
+
+# --------------------------------------------------------------------------- #
+# lazy mark (__confluid_lazy__)
+# --------------------------------------------------------------------------- #
+
+
+def test_configurable_lazy_sets_marker() -> None:
+    @configurable(category="optimizer", lazy=True)
+    class Opt:
+        pass
+
+    assert getattr(Opt, "__confluid_lazy__") is True
+
+
+def test_configurable_lazy_defaults_false_no_marker() -> None:
+    @configurable(category="op")
+    class Op:
+        pass
+
+    assert getattr(Op, "__confluid_lazy__", False) is False
+
+
+def test_register_lazy_sets_marker_on_third_party_class() -> None:
+    from confluid import register
+
+    class _ThirdParty:
+        pass
+
+    register(_ThirdParty, category="loader", lazy=True)
+    assert getattr(_ThirdParty, "__confluid_lazy__") is True
+
+
+def test_lazy_marker_survives_reregister_without_lazy() -> None:
+    """A re-register that doesn't forward ``lazy`` must not drop the marker."""
+
+    @configurable(category="optimizer", lazy=True)
+    class Opt:
+        pass
+
+    # Mirror navigaitor's snapshot-restore path (only forwards category).
+    get_registry().register_class(Opt, category="optimizer")
+    assert getattr(Opt, "__confluid_lazy__") is True

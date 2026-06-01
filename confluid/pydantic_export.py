@@ -224,6 +224,169 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     return converted_type, Field(default=default, **desc_kw)
 
 
+def _ast_init_setattr_annotations(init_func: Any) -> Dict[str, Any]:
+    """Return ``{attr_name: annotation_node_or_None}`` for ``self.<name>[: T] = …``
+    assignments in a single ``__init__`` body (pure AST; no class context).
+
+    Mirrors :func:`confluid.loader._ast_scan_init_setattrs` but additionally
+    captures the *annotation expression* of an ``AnnAssign`` (``self.x: T = …``)
+    so :func:`to_pydantic` can type a post-init body slot. A plain ``Assign``
+    (``self.x = …``, no annotation) maps to ``None`` → typed ``Any``.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    found: Dict[str, Any] = {}
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(init_func)))
+    except (OSError, TypeError, SyntaxError):
+        return found
+
+    def _record(target: Any, annotation: Any) -> None:
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+            and not target.attr.startswith("_")
+        ):
+            found.setdefault(target.attr, annotation)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign):
+            _record(node.target, node.annotation)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                _record(t, None)
+    return found
+
+
+def _ast_init_lazy_setattrs(init_func: Any) -> Set[str]:
+    """Return body-slot names whose RHS is a ``LazyClass(...)`` / ``Lazy(...)`` call.
+
+    ``self.optimizer: Any = LazyClass(torch.optim.Adam, lr=1e-3)`` marks
+    ``optimizer`` as a **deferred (lazy) slot** — the same role a ``Lazy[T]``
+    constructor-param annotation plays, but expressed as a body attribute under
+    the minimal-ctor pattern. Recorded in ``_confluid_lazy_params`` so the
+    serializer emits ``!lazy:`` (not ``!class:``) for whatever fills the slot —
+    which is what keeps a runtime-injected slot (optimizer / loader / a trainer's
+    lightning) from being eagerly materialized on assignment.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    names: Set[str] = set()
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(init_func)))
+    except (OSError, TypeError, SyntaxError):
+        return names
+
+    def _is_lazy_call(value: Any) -> bool:
+        if not isinstance(value, ast.Call):
+            return False
+        func = value.func
+        name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
+        return name in ("LazyClass", "Lazy")
+
+    def _record(target: Any, value: Any) -> None:
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+            and not target.attr.startswith("_")
+            and _is_lazy_call(value)
+        ):
+            names.add(target.attr)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            _record(node.target, node.value)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                _record(t, node.value)
+    return names
+
+
+def _post_init_lazy_slots(cls: type) -> Set[str]:
+    """Names of ``@configurable``-chain body slots whose default is a ``LazyClass(...)``."""
+    lazy: Set[str] = set()
+    for klass in cls.__mro__:
+        if klass is object or not getattr(klass, "__confluid_configurable__", False):
+            continue
+        init = klass.__dict__.get("__init__")
+        if init is not None:
+            lazy |= _ast_init_lazy_setattrs(init)
+    return lazy
+
+
+def _resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
+    """Best-effort resolve an AST annotation node to a runtime type, else ``Any``.
+
+    Evaluates the unparsed expression against the defining function's module
+    globals plus ``typing``. Any failure (forward ref, unimportable name, exotic
+    expression) falls back to ``Any`` — a post-init slot is always surfaced; only
+    its precision degrades.
+    """
+    if annotation is None:
+        return Any
+    import ast
+    import typing as _typing
+
+    try:
+        src = ast.unparse(annotation)
+        scope: Dict[str, Any] = {**vars(_typing), **getattr(init_func, "__globals__", {})}
+        return eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
+    except Exception:
+        return Any
+
+
+def _post_init_field_specs(
+    cls: type, signature_params: Set[str], param_docs: Dict[str, str]
+) -> Dict[str, Tuple[Any, Any]]:
+    """Build pydantic field specs for ``@configurable``-chain post-init body slots.
+
+    Walks ``cls.__mro__`` (most-derived first) over the ``@configurable`` classes
+    only — so ``nn.Module`` / ``LightningModule`` internal ``self.x`` assignments
+    are never pulled in — collecting every ``self.<name>[: T] = …`` attribute that
+    is NOT already a constructor parameter. Each becomes an OPTIONAL field
+    (``default=None``): these slots carry their own in-class default and are
+    reconfigured post-construction (YAML / broadcasting / a subclass), so a config
+    may omit them. This keeps body-attribute config slots — a trainer's
+    ``optimizer`` / ``train_loader`` / ``lightning`` / ``*_metrics`` — visible to
+    ``to_pydantic`` (navigaitor form-spec, MCP schemas, FluxStudio widgets) even
+    though they aren't constructor parameters.
+    """
+    from confluid.loader import _ast_scan_init_setattrs
+
+    specs: Dict[str, Tuple[Any, Any]] = {}
+    seen: Set[str] = set(signature_params) | _SKIP_PARAMS
+    for klass in cls.__mro__:
+        if klass is object or not getattr(klass, "__confluid_configurable__", False):
+            continue
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        names = _ast_scan_init_setattrs(init)
+        annotations = _ast_init_setattr_annotations(init)
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            member = getattr(cls, name, None)
+            if isinstance(member, property) and member.fset is None:
+                continue  # read-only derived property — not a config knob
+            if getattr(member, "__confluid_ignore__", False):
+                continue
+            resolved = _resolve_ast_annotation(annotations.get(name), init)
+            converted = _convert_annotation(resolved)
+            desc_kw: Dict[str, Any] = {"description": param_docs[name]} if param_docs.get(name) else {}
+            # Optional (default None): the class supplies its own default and the
+            # slot is reconfigured post-construction, so a config may omit it.
+            specs[name] = (Union[converted, None], Field(default=None, **desc_kw))
+    return specs
+
+
 @lru_cache(maxsize=None)
 def to_pydantic(cls: type) -> Type[BaseModel]:
     """Return a pydantic ``BaseModel`` subclass mirroring ``cls.__init__``.
@@ -295,6 +458,15 @@ def to_pydantic(cls: type) -> Type[BaseModel]:
         anno = hints.get(param_name, Any)
         fields[param_name] = _field_for_param(param, anno, param_docs.get(param_name, ""))
 
+    # Also surface post-init body slots (``self.optimizer = LazyClass(...)`` etc.)
+    # that aren't constructor parameters — the minimal-ctor / post-construction
+    # pattern keeps configurable slots in the ``__init__`` body, and they must
+    # still be enumerable by the form-spec / MCP / FluxStudio surfaces. Signature
+    # params already in ``fields`` win (never overwritten).
+    signature_params = set(fields)
+    for name, spec in _post_init_field_specs(cls, signature_params, param_docs).items():
+        fields.setdefault(name, spec)
+
     # ``create_model`` accepts arbitrary kwargs as field definitions, so we
     # unpack ``fields`` alongside the dunder kwargs. The cast keeps mypy from
     # treating the unpack as a single dict positional.
@@ -312,8 +484,14 @@ def to_pydantic(cls: type) -> Type[BaseModel]:
         model.__doc__ = cls.__doc__
 
     # Preserve the lazy-param marker set for downstream consumers (the
-    # serializer can emit `!lazy:` instead of `!class:` for these params).
+    # serializer emits `!lazy:` instead of `!class:` for these params). Two
+    # sources: ``Lazy[T]``-annotated constructor params, AND body slots whose
+    # default is a ``LazyClass(...)`` (the minimal-ctor pattern — e.g. a
+    # trainer's ``optimizer`` / ``*_loader`` / ``lightning`` body slots). The
+    # latter keeps a runtime-injected slot from being serialized as ``!class:``
+    # (which confluid would eagerly flow on assignment and crash).
     lazy_params = {name for name, anno in hints.items() if name not in _SKIP_PARAMS and is_lazy_annotation(anno)}
+    lazy_params |= _post_init_lazy_slots(cls)
     if lazy_params:
         model._confluid_lazy_params = frozenset(lazy_params)  # type: ignore[attr-defined]
 

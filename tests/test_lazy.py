@@ -78,3 +78,131 @@ def test_lazy_alias_with_typing_any() -> None:
 def test_is_lazy_annotation_handles_arbitrary_input(hint: Any) -> None:
     """Helper must not raise on weird input — just return False."""
     assert is_lazy_annotation(hint) is False
+
+
+# ---------------------------------------------------------------------------
+# flow(lazy) semantics: an explicit flow() builds a Lazy (even with no runtime
+# kwargs), while the auto-flow walkers (materialize / deep-flow) keep it deferred.
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_flow_of_lazy_builds_without_runtime_kwargs() -> None:
+    """A deliberate ``flow(lazy)`` call materializes it — no runtime kwargs needed.
+
+    This is the contract a trainer relies on for a deferred slot that needs no
+    runtime injection (e.g. ``flow(self.lightning)`` building a Trainer).
+    """
+    from confluid import LazyClass, flow
+
+    class _Plain:
+        def __init__(self, a: int = 1, b: int = 2) -> None:
+            self.a = a
+            self.b = b
+
+    built = flow(LazyClass(_Plain, a=7))
+    assert isinstance(built, _Plain)
+    assert built.a == 7 and built.b == 2
+
+
+def test_explicit_flow_of_lazy_merges_runtime_kwargs() -> None:
+    """Runtime kwargs still merge (and win) when flowing a Lazy — the optimizer pattern."""
+    from confluid import LazyClass, flow
+
+    class _Opt:
+        def __init__(self, params: Any, lr: float = 0.0) -> None:
+            self.params = params
+            self.lr = lr
+
+    built = flow(LazyClass(_Opt, lr=0.01), params=[1, 2, 3])
+    assert isinstance(built, _Opt)
+    assert built.params == [1, 2, 3] and built.lr == 0.01
+
+
+def test_materialize_keeps_lazy_post_init_attr_deferred() -> None:
+    """A ``!lazy:`` value landing on a post-init (non-ctor) attribute stays a Lazy.
+
+    Without this, confluid's eager post-init attr flow would try to build a
+    runtime-injection slot (e.g. an optimizer) before its args exist and crash.
+    """
+    import sys
+    import types
+
+    from confluid import LazyClass, configurable, flow, load
+
+    mod = types.ModuleType("_lazy_postinit_probe")
+
+    @configurable
+    class _Trainerish:
+        def __init__(self, name: str = "x") -> None:
+            self.name = name
+            self.optimizer: Any = None  # post-init slot, not a ctor param
+
+    mod._Trainerish = _Trainerish  # type: ignore[attr-defined]
+    sys.modules["_lazy_postinit_probe"] = mod
+    try:
+        trainer = flow(
+            load(
+                "t: !class:_lazy_postinit_probe._Trainerish\n"
+                "  name: t\n"
+                "  optimizer: !lazy:_lazy_postinit_probe._Trainerish\n"
+                "    name: inner\n"
+            )["t"]
+        )
+        assert isinstance(trainer.optimizer, LazyClass)
+        # The owning code flows it explicitly when ready.
+        assert isinstance(flow(trainer.optimizer), _Trainerish)
+    finally:
+        del sys.modules["_lazy_postinit_probe"]
+
+
+def test_class_into_lazy_default_slot_is_deferred_with_warning(caplog: Any) -> None:
+    """A ``!class:`` value landing in a slot whose own default is ``Lazy`` is
+    auto-deferred (kept ``!lazy:``) with a warning — not eagerly built.
+
+    Guards the minimal-ctor footgun: a deferred ``Class`` (``!class:`` no parens)
+    wired into a runtime-injection body slot (e.g. ``optimizer``) would otherwise
+    be eagerly materialized on assignment and crash (``Adam()`` with no params).
+    """
+    import logging
+    import sys
+    import types
+
+    from confluid import LazyClass, configurable, flow, load
+
+    mod = types.ModuleType("_lazy_slot_probe")
+
+    @configurable
+    class _Needsy:
+        def __init__(self, required: Any = None, lr: float = 0.0) -> None:
+            if required is None:
+                raise ValueError("required")  # mimics SGD needing params
+            self.required = required
+            self.lr = lr
+
+    @configurable
+    class _Owner:
+        def __init__(self, name: str = "x") -> None:
+            self.name = name
+            self.optimizer: Any = LazyClass(_Needsy, lr=0.01)  # deferred slot
+
+    mod._Needsy = _Needsy  # type: ignore[attr-defined]
+    mod._Owner = _Owner  # type: ignore[attr-defined]
+    sys.modules["_lazy_slot_probe"] = mod
+    try:
+        with caplog.at_level(logging.WARNING, logger="confluid.fluid"):
+            owner = flow(
+                load(
+                    "o: !class:_lazy_slot_probe._Owner\n"
+                    "  name: t\n"
+                    "  optimizer: !class:_lazy_slot_probe._Needsy\n"  # !class: footgun
+                    "    lr: 0.05\n"
+                )["o"]
+            )
+        # Auto-deferred — not eagerly built — and a warning was emitted.
+        assert isinstance(owner.optimizer, LazyClass)
+        assert any("deferred (lazy)" in r.message for r in caplog.records)
+        # The owning code injects the runtime arg and builds it.
+        built = flow(owner.optimizer, required=[1])
+        assert isinstance(built, _Needsy) and built.lr == 0.05
+    finally:
+        del sys.modules["_lazy_slot_probe"]

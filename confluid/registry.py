@@ -29,6 +29,7 @@ class ConfluidRegistry:
         group: Optional[str] = None,
         task: Optional[str] = None,
         role: Optional[str] = None,
+        lazy: bool = False,
     ) -> Type[Any]:
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
@@ -39,6 +40,7 @@ class ConfluidRegistry:
         group = group if group is not None else getattr(cls, "__confluid_group__", None)
         task = task if task is not None else getattr(cls, "__confluid_task__", None)
         role = role if role is not None else getattr(cls, "__confluid_role__", None)
+        lazy = lazy or bool(getattr(cls, "__confluid_lazy__", False))
         # Set markers for discovery
         try:
             setattr(cls, "__confluid_configurable__", True)
@@ -51,6 +53,13 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_task__", task)
             if role is not None:
                 setattr(cls, "__confluid_role__", role)
+            if lazy:
+                # A "lazy" class is one whose constructed value should stay
+                # deferred (a LazyClass / runtime-injected slot — e.g. an
+                # optimizer needing ``params``). Consumers (FluxStudio object
+                # nodes) read this to emit a deferred ``LazyClass`` instead of a
+                # live instance.
+                setattr(cls, "__confluid_lazy__", True)
         except (TypeError, AttributeError):
             # Built-in or immutable types don't allow attribute setting
             pass
