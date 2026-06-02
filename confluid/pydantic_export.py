@@ -320,12 +320,31 @@ def _post_init_lazy_slots(cls: type) -> Set[str]:
     return lazy
 
 
+def _contains_forwardref(anno: Any) -> bool:
+    """True when ``anno`` is — or nests — an unresolved ``typing.ForwardRef``.
+
+    A string forward reference (``self.child: Optional["Node"] = …``) evaluates
+    to ``Optional[ForwardRef('Node')]`` rather than raising, because the string
+    inside the subscript is captured verbatim, not looked up. If the referent
+    isn't a module global (e.g. a class defined inside a function), pydantic
+    can't resolve it and ``create_model`` yields a "not fully defined" model
+    whose ``model_validate`` raises ``PydanticUserError``. Detecting the marker
+    lets us degrade such slots to ``Any`` (the documented fallback).
+    """
+    import typing
+
+    if isinstance(anno, typing.ForwardRef):
+        return True
+    return any(_contains_forwardref(arg) for arg in get_args(anno))
+
+
 def _resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
     """Best-effort resolve an AST annotation node to a runtime type, else ``Any``.
 
     Evaluates the unparsed expression against the defining function's module
-    globals plus ``typing``. Any failure (forward ref, unimportable name, exotic
-    expression) falls back to ``Any`` — a post-init slot is always surfaced; only
+    globals plus ``typing``. Any failure (unimportable name, exotic expression)
+    — or a resulting annotation that still carries an unresolved forward
+    reference — falls back to ``Any``: a post-init slot is always surfaced; only
     its precision degrades.
     """
     if annotation is None:
@@ -336,9 +355,12 @@ def _resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
     try:
         src = ast.unparse(annotation)
         scope: Dict[str, Any] = {**vars(_typing), **getattr(init_func, "__globals__", {})}
-        return eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
+        resolved = eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
     except Exception:
         return Any
+    # A string forward ref evals to a ForwardRef instead of raising; pydantic
+    # would build a model it can't finish (see _contains_forwardref). Degrade.
+    return Any if _contains_forwardref(resolved) else resolved
 
 
 def _post_init_field_specs(

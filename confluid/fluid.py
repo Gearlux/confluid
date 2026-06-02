@@ -498,3 +498,18 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         return flow(resolved, **runtime_kwargs)
 
     return obj
+
+
+def cast(obj: Any, cls: Type[T], **runtime_kwargs: Any) -> T:
+    """Ensure an object is 'Solid' by flowing it if it is a Fluid.
+
+    Acts as both a runtime materializer (flow) and a static type cast.
+
+    Args:
+        obj: The object to cast (can be a Fluid or a live instance).
+        cls: The target class for type hinting.
+        **runtime_kwargs: Optional kwargs to pass to flow() if obj is a Fluid.
+    """
+    from typing import cast as typing_cast
+
+    return typing_cast(Any, flow(obj, **runtime_kwargs))  # type: ignore[no-any-return]

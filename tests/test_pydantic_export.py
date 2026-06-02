@@ -402,3 +402,23 @@ def test_to_pydantic_signature_param_wins_over_body_slot() -> None:
     model = to_pydantic(_C)
     # The ctor param default (0.1) is preserved, not overwritten by the body None.
     assert model().lr == 0.1
+
+
+def test_to_pydantic_self_referential_body_slot_degrades_to_any() -> None:
+    """A self-referential forward-ref body slot must not leave the model 'not fully defined'.
+
+    ``self.child: Optional["Node"] = None`` evaluates to a ForwardRef whose
+    referent (a function-local class) pydantic cannot resolve. The slot must
+    degrade to ``Any`` so ``model_validate`` works instead of raising
+    ``PydanticUserError: NodeConfig is not fully defined``.
+    """
+
+    @configurable
+    class Node:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.child: Optional["Node"] = None  # noqa: F821 — self-ref forward ref
+
+    model = to_pydantic(Node)
+    # Validates cleanly — no unresolved forward ref leaking into the schema.
+    model.model_validate({"name": "a"})
