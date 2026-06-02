@@ -21,6 +21,9 @@ dependencies = [
     "pyyaml>=6.0",
     "log-flow>=0.1.0",
     "python-dotenv>=1.0.0",
+    # PEP 696 TypeVar(default=...) for the generic Lazy[T] fluid (fluid.py); the
+    # stdlib typing gained `default` only in 3.13, py-floor is 3.12 so use the backport.
+    "typing-extensions>=4.6.0",
 ]
 requires-python = ">=3.12"
 
