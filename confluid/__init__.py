@@ -8,7 +8,7 @@ from confluid.dumper import dump
 from confluid.env import load_workspace_env
 from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
-from confluid.fluid import Reference, ScopeBlock, flow, format_yaml_loc
+from confluid.fluid import Reference, ScopeBlock, cast, flow, format_yaml_loc
 from confluid.lazy import Lazy, is_lazy_annotation, lazy_param_names
 from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize
 from confluid.merger import deep_merge, expand_dotted_keys
@@ -52,6 +52,7 @@ __all__ = [
     "Reference",
     "ScopeBlock",
     "flow",
+    "cast",
     "format_yaml_loc",
     "Lazy",
     "LazyClass",
