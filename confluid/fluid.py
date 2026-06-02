@@ -1,6 +1,8 @@
 import logging
 from copy import copy
-from typing import Any, Optional, Tuple, Type, Union
+from typing import Any, Generic, Optional, Tuple, Type, Union
+
+from typing_extensions import TypeVar
 
 from confluid.registry import get_registry, resolve_class
 
@@ -8,6 +10,13 @@ _logger = logging.getLogger(__name__)
 
 YamlLoc = Tuple[Optional[str], int, int]
 """``(filename or None, line, column)`` — 1-based YAML source location."""
+
+T = TypeVar("T", default=Any)
+"""Phantom type parameter for ``Lazy[T]`` — the eventual flow()'d target type.
+
+Defaults to ``Any`` (PEP 696) so a bare ``LazyClass(Foo)`` infers ``Lazy[Any]``
+(not ``Lazy[Never]``) and needs no annotation, while ``LazyClass[Metric]`` stays
+available to document intent."""
 
 
 class Fluid:
@@ -105,8 +114,16 @@ class ScopeBlock:
         return f"{tag}:{suffix} {self.contents!r}"
 
 
-class Lazy(Class):
+class Lazy(Class, Generic[T]):
     """Class fluid that stays deferred through ``materialize()`` / deep-flow.
+
+    Optionally **parameterized** as ``Lazy[T]`` (e.g. ``LazyClass[Metric]``) to
+    document the type the deferred template builds once ``flow()``'d. ``T`` is a
+    *phantom* parameter — it is never bound from the ``target`` argument (the
+    ctor still accepts any ``Type | str``), so ``LazyClass(MulticlassAccuracy)``
+    stays ``Lazy[Any]`` and the subscript is purely an intent annotation for
+    type-checkers / readers. Mirrors the Python-side ``confluid.Lazy[T]``
+    *annotation* alias (``Annotated[T, _LAZY_MARKER]``) at the fluid layer.
 
     Behaves identically to :class:`Class` for the purposes of broadcasting:
     a ``Lazy`` value receives broadcast kwargs from its surrounding context
@@ -137,6 +154,12 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     Within a ``materialize()`` pass, the same ``Instance`` marker (reached
     directly or via ``!ref:``) produces a single live object — subsequent
     ``flow()`` calls on the same marker return the cached instance.
+
+    **Auto-solidification:** After instantiation, if the returned object has a
+    ``solidify()`` method, it is called automatically. This enables lazy
+    initialization patterns where an object defers materialization of internal
+    state until after construction is complete. Domain code does not need to
+    manually trigger solidification — ``flow(model)`` handles it transparently.
     """
     from confluid.loader import _state, get_active_context, materialize
     from confluid.resolver import Resolver
@@ -399,6 +422,15 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
                             setattr(instance, param_name, resolved)
                         except (AttributeError, TypeError):
                             pass  # Read-only property or __slots__
+
+        # Auto-solidify post-flow: if the instance has a solidify() method,
+        # call it to finalize any lazy initialization (e.g., lazy model backbones
+        # that build their parameters only on first forward / solidify()).
+        # This ensures that self.parameters() is populated for downstream code
+        # (e.g., optimizers needing model.parameters()).
+        solidify = getattr(instance, "solidify", None)
+        if callable(solidify):
+            solidify()
 
         return instance
 
