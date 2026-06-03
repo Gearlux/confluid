@@ -145,7 +145,7 @@ class Lazy(Class, Generic[T]):
         super().__init__(target, **kwargs)
 
 
-def flow(obj: Any, **runtime_kwargs: Any) -> Any:
+def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     """Instantiate a deferred object (Class, Reference, marker dict) into a live instance.
 
     Idempotent: already-live objects are returned unchanged.
@@ -160,9 +160,26 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
     initialization patterns where an object defers materialization of internal
     state until after construction is complete. Domain code does not need to
     manually trigger solidification — ``flow(model)`` handles it transparently.
+
+    Pass ``solidify=False`` to SUPPRESS that post-flow ``solidify()`` for this
+    whole subtree — for static introspection that must build the object cheaply
+    without paying for the expensive finalize (e.g. a model backbone). The
+    suppression rides a thread-local flag, so every nested ``flow()`` inherits
+    it; ``materialize(..., solidify=False)`` uses the same channel.
     """
     from confluid.loader import _state, get_active_context, materialize
     from confluid.resolver import Resolver
+
+    # Solidify suppression: re-enter with the ambient flag set so the whole
+    # subtree (every nested flow()) skips the expensive solidify() hook. Restored
+    # afterwards so a later non-suppressed flow() in the same thread is unaffected.
+    if not solidify:
+        prev_suppress = getattr(_state, "suppress_solidify", False)
+        _state.suppress_solidify = True
+        try:
+            return flow(obj, **runtime_kwargs)
+        finally:
+            _state.suppress_solidify = prev_suppress
 
     # 1. Idempotency — already-live objects pass through
     if not isinstance(obj, (Fluid, str, type, dict)):
@@ -427,10 +444,13 @@ def flow(obj: Any, **runtime_kwargs: Any) -> Any:
         # call it to finalize any lazy initialization (e.g., lazy model backbones
         # that build their parameters only on first forward / solidify()).
         # This ensures that self.parameters() is populated for downstream code
-        # (e.g., optimizers needing model.parameters()).
-        solidify = getattr(instance, "solidify", None)
-        if callable(solidify):
-            solidify()
+        # (e.g., optimizers needing model.parameters()). SKIPPED under solidify
+        # suppression (flow(solidify=False) / materialize(solidify=False)), so a
+        # config can be introspected without paying for the expensive finalize.
+        if not getattr(_state, "suppress_solidify", False):
+            solidify_method = getattr(instance, "solidify", None)
+            if callable(solidify_method):
+                solidify_method()
 
         return instance
 

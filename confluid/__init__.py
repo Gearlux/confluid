@@ -10,7 +10,7 @@ from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
 from confluid.fluid import Reference, ScopeBlock, cast, flow, format_yaml_loc
 from confluid.lazy import Lazy, is_lazy_annotation, lazy_param_names
-from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize
+from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize, resolve
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.pydantic_export import confluid_class_of, lazy_param_names_of, to_pydantic
 from confluid.registry import get_registry
@@ -39,6 +39,7 @@ __all__ = [
     "load_config",
     "load_config_with_paths",
     "materialize",
+    "resolve",
     "deep_merge",
     "expand_dotted_keys",
     "parse_value",
