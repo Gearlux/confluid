@@ -292,6 +292,7 @@ def load(
     flow: bool = True,
     context: Optional[Dict[str, Any]] = None,
     scopes: Optional[List[str]] = None,
+    solidify: bool = True,
 ) -> Any:
     """Load and (optionally) materialize a config.
 
@@ -331,7 +332,7 @@ def load(
             # Route through materialize() so inner !ref: targets (dotted imports
             # like `posixpath.join`, cross-kwarg references) get resolved
             # against the Fluid's own kwargs. A raw _deep_flow skips that pass.
-            return materialize(data, context=context)
+            return materialize(data, context=context, solidify=solidify)
         return data
 
     if not isinstance(data, dict):
@@ -346,16 +347,23 @@ def load(
     if not flow:
         return data
 
-    return materialize(data, context=context or data)
+    return materialize(data, context=context or data, solidify=solidify)
 
 
-def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
+def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
     """Resolve config data and instantiate all Class objects recursively.
 
     Within a single materialize pass, identical raw markers (reached directly
     or via ``!ref:``) produce a single flowed ``Instance`` object, which is
     materialized into a single live instance. ``!clone:`` opts out of this
     sharing with an explicit deepcopy.
+
+    ``solidify=False`` suppresses the post-flow ``solidify()`` hook for every
+    object built in this pass (see :func:`confluid.fluid.flow`) — for static
+    introspection that needs live objects but must NOT pay for the expensive
+    finalize (e.g. building a model backbone). The objects are still fully
+    constructed (``__init__`` only stores values per the zero-arg / lazy-init
+    convention), just not solidified.
     """
     _acceptable_keys_cache.clear()
     _post_init_attrs_cache.clear()
@@ -365,12 +373,60 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None) -> Any:
     old_ctx = getattr(_state, "context", None)
     old_flow_memo = getattr(_state, "flow_memo", None)
     old_instance_memo = getattr(_state, "instance_memo", None)
+    old_suppress = getattr(_state, "suppress_solidify", None)
     _state.context = context
     _state.flow_memo = {}
     _state.instance_memo = {}
+    _state.suppress_solidify = not solidify
     try:
         result = _flow_recursive(data, parent_context=context)
         return _deep_flow(result)
+    finally:
+        _state.context = old_ctx
+        _state.flow_memo = old_flow_memo
+        _state.instance_memo = old_instance_memo
+        _state.suppress_solidify = old_suppress
+
+
+def resolve(
+    data: Any,
+    *,
+    context: Optional[Dict[str, Any]] = None,
+    scopes: Optional[List[str]] = None,
+) -> Any:
+    """Broadcast-resolve a config to a Fluid marker graph WITHOUT instantiating.
+
+    Like :func:`materialize`, but stops before ``_deep_flow``: it parses,
+    resolves scopes/includes, applies broadcasting and ``!ref:`` resolution
+    (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
+    ``!ref:`` is one object reached twice), and returns the resulting
+    ``Instance`` / ``Lazy`` / ``Class`` markers with their broadcast siblings
+    merged into ``.kwargs`` — WITHOUT constructing any live object.
+
+    Use for static structural introspection of a config (e.g. FluxStudio's
+    YAML→graph import) when even side-effect-free construction is undesirable.
+    ``materialize(data, solidify=False)`` is the instantiate-but-cheap
+    counterpart; prefer it unless you specifically need un-built markers.
+
+    Caveat: a *dotted* ``!ref:a.b`` (attribute/method access) still instantiates
+    its target subtree to read the attribute — plain whole-object ``!ref:name``
+    stays a marker.
+    """
+    prepared = load(data, flow=False, context=context, scopes=scopes)
+    ctx = context if context is not None else (prepared if isinstance(prepared, dict) else None)
+    if ctx:
+        ctx = expand_dotted_keys(ctx)
+    _acceptable_keys_cache.clear()
+    _post_init_attrs_cache.clear()
+    _param_kind_cache.clear()
+    old_ctx = getattr(_state, "context", None)
+    old_flow_memo = getattr(_state, "flow_memo", None)
+    old_instance_memo = getattr(_state, "instance_memo", None)
+    _state.context = ctx
+    _state.flow_memo = {}
+    _state.instance_memo = {}
+    try:
+        return _flow_recursive(prepared, parent_context=ctx)
     finally:
         _state.context = old_ctx
         _state.flow_memo = old_flow_memo
