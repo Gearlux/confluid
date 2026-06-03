@@ -163,6 +163,17 @@ def _convert_annotation(anno: Any) -> Any:
     if origin in _ITER_TYPES_AS_ANY:
         return Any
 
+    # A parameterized generic whose ORIGIN is an opaque (torch/numpy) type —
+    # e.g. ``Dataset[Any]`` (origin ``torch.utils.data.Dataset``) — has nothing
+    # pydantic can JSON-schema, exactly like a bare opaque type. Coerce to ``Any``
+    # so it validates loosely (the source class enforces the real type at
+    # construction), consistent with the bare-opaque branch in the ``origin is None``
+    # case above. Without this a narrowed ``Union[Dataset[Any], Fluid]`` slot would
+    # reject the legitimate config / live-instance forms a ``Union[Module, Fluid]``
+    # slot accepts (``Module`` is bare → already coerced; ``Dataset[Any]`` is not).
+    if _is_opaque_type(origin):
+        return Any
+
     raw_args = get_args(anno)
     new_args = tuple(_convert_annotation(a) for a in raw_args)
 
@@ -197,17 +208,20 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     ``gt`` / ``le`` / ``Literal`` refinements a source class declares on its
     ``__init__`` params) so code-side tightening survives into the generated
     schema — while still converting the INNER type so nested ``@configurable``
-    detection works. Confluid's own ``Lazy`` marker is dropped (it's recorded
-    separately via ``_confluid_lazy_params``).
+    detection works. Confluid's own ``Lazy`` / ``Mandatory`` markers are dropped
+    (``Lazy`` is recorded separately via ``_confluid_lazy_params``; ``Mandatory``
+    via :func:`confluid.input_specs`) so neither leaks into the JSON Schema.
     """
     from confluid.lazy import _LAZY_MARKER
+    from confluid.mandatory import _MANDATORY_MARKER
 
+    internal_markers = {_LAZY_MARKER, _MANDATORY_MARKER}
     metadata: Tuple[Any, ...] = ()
     inner = anno
     while get_origin(inner) is Annotated:
         args = get_args(inner)
         inner = args[0]
-        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m == _LAZY_MARKER))
+        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m in internal_markers))
 
     converted_inner = _convert_annotation(inner)
     converted_type = Annotated[(converted_inner, *metadata)] if metadata else converted_inner

@@ -10,6 +10,7 @@
 - **Deferred Initialization:** A node is built eagerly (`!class:Model()`) or left as a deferred recipe (`!class:Model`); `!lazy:` keeps a node deferred until you `flow()` it with runtime-injected arguments (e.g. an optimizer needing `params=model.parameters()`). See [Tags & Deferred Initialization](#tags--deferred-initialization).
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
 - **Docstring-Derived Parameter Help:** `to_pydantic` parses each class's Google/NumPy-style `Args:` block into pydantic `Field(description=...)`; `parse_param_docs(cls_or_fn)` exposes the same `{param: help}` mapping directly, so downstream GUIs (navigaitor's form-spec, FluxStudio's node tooltips) document a constructor argument once, at the source.
+- **I/O Contract:** `@output` marks a `@property` as a Runnable's output (a trainer's trained model) and `Mandatory[T]` flags an input as required even when defaulted; `output_specs(cls)` / `input_specs(cls)` expose the contract so FluxStudio sockets, navigaitor's form-spec, and MCP schemas read it from one source. See [I/O Contract](#io-contract-output-properties--mandatoryt-inputs).
 - **Flat-View Ordered Matching:** When a class materializes, the visible context is the document minus the descent path; matching scalars are applied in YAML document order with **last-write-wins** semantics. Explicit kwargs are not privileged — every source (own kwargs, sibling broadcasts, class-name blocks) takes its slot at its document position.
 
 > **Scopes:** Conditional overlays use explicit YAML tags — `!scope:debug`, `!scope:task=classification` (or equivalently `!scope:task(classification)`), and the `!notscope:…` negative twins. Activate via `confluid.load(path, scopes=["debug", "task=classification"])` or, in liquifai-built CLIs, via `--scope debug` / `--scope task=classification` / `--task classification`. See the [Scopes](#scopes) section below.
@@ -364,6 +365,55 @@ class Trainer:
 `Lazy[T]` reads as plain `T` to type-checkers; the marker is runtime-only and is
 discovered via `lazy_param_names(cls)`. It is the Python-annotation twin of the
 YAML `!lazy:` tag: **the tag defers a *value*, the annotation defers a *slot*.**
+
+## I/O Contract: `@output` properties & `Mandatory[T]` inputs
+
+A *Runnable* class (a trainer/evaluator — anything whose product is consumed
+downstream) declares an explicit **I/O contract** that GUIs and agents read from
+one source: which `@property` getters are its **outputs**, and which inputs are
+**mandatory** vs **nullable**. FluxStudio (output sockets + required vs optional
+input sockets), navigaitor's `get_node_form_spec`, and MCP schemas all consume it.
+
+```python
+import torch.nn as nn
+from typing import Any, Optional, Union
+from confluid import Mandatory, configurable, output, input_specs, output_specs
+
+@configurable
+class Trainer:
+    def __init__(
+        self,
+        model: Mandatory[Union[nn.Module, Any]],   # mandatory input (must be wired)
+        num_classes: Optional[int] = None,          # nullable / optional
+    ) -> None:
+        self.model = model
+        self.num_classes = num_classes
+
+    @property
+    @output                                         # NOTE: @output UNDER @property
+    def trained_model(self) -> nn.Module:
+        """The trained model produced by run()."""
+        return self.model
+
+output_specs(Trainer)   # [{'name': 'trained_model', 'type': 'Module', 'description': '...'}]
+input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False, ...},
+                        #  {'name': 'num_classes', 'required': False, 'nullable': True, ...}]
+```
+
+* **`@output`** (mirrors `@ignore_config`) marks a read-only `@property` getter as
+  a declared output. Apply it **under** `@property` so it stamps the getter, not
+  the `property` object. Because the property is read-only/derived, it is already
+  excluded from `to_pydantic` — it never becomes a config knob and round-trips
+  cleanly. `output_specs(cls)` enumerates them (MRO-walked; subclass override wins).
+* **`Mandatory[T]`** (an `Annotated` marker, mirroring `Lazy[T]`; named to avoid
+  `typing.Required` confusion) flags an input mandatory **even when it carries a
+  default** for zero-arg construction — the structural signal (no default /
+  non-`Optional`) already implies mandatory, but the marker restores the contract
+  when the **Zero-Arg Construction** mandate forces a default onto a genuinely
+  required class/`Fluid` slot. `input_specs(cls)` reports `{required, nullable}`
+  per param (`required = no-default OR Mandatory`). The marker is stripped by
+  `to_pydantic`, so it never leaks into the JSON Schema, and composes with
+  `Lazy` (`Mandatory[Lazy[T]]`).
 
 ### `!ref:` vs `!clone:` — shared instance vs. deep copy
 

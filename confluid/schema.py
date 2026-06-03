@@ -1,6 +1,7 @@
 import inspect
 import re
-from typing import Any, Dict, List, Tuple, get_type_hints
+import types
+from typing import Annotated, Any, Dict, List, Set, Tuple, TypedDict, Union, get_args, get_origin, get_type_hints
 
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
@@ -411,3 +412,130 @@ def parse_param_docs(obj: Any) -> Dict[str, str]:
     else:
         docstring = getattr(obj, "__doc__", "") or ""
     return _parse_docstring(docstring)
+
+
+class OutputSpec(TypedDict):
+    """One declared OUTPUT of a Runnable class (an ``@output`` property)."""
+
+    name: str
+    type: str  # return-annotation type_str (``getattr(t, "__name__", str(t))``)
+    description: str  # first line of the property docstring
+
+
+class InputSpec(TypedDict):
+    """One constructor INPUT with its mandatory / nullable contract."""
+
+    name: str
+    type: str
+    required: bool  # no default  OR  declared ``Mandatory[...]``
+    nullable: bool  # type admits ``None`` (``Optional[T]`` / ``T | None``)
+
+
+def _strip_annotated(anno: Any) -> Any:
+    """Peel ``Annotated[T, ...]`` layers down to the inner type ``T``."""
+    while get_origin(anno) is Annotated:
+        anno = get_args(anno)[0]
+    return anno
+
+
+def _is_nullable_annotation(anno: Any) -> bool:
+    """True iff ``anno`` (Annotated-stripped) admits ``None`` — ``Optional[T]`` / ``T | None``."""
+    inner = _strip_annotated(anno)
+    if get_origin(inner) in (Union, getattr(types, "UnionType", ())):
+        return type(None) in get_args(inner)
+    return inner is type(None)
+
+
+def output_specs(cls: type) -> List[OutputSpec]:
+    """Enumerate a class's declared OUTPUT properties (``@output`` under ``@property``).
+
+    Walks ``cls.__mro__`` (most-derived first, de-duplicated by name so a subclass
+    override wins) for ``property`` members whose getter carries the
+    ``__confluid_output__`` marker set by :func:`confluid.output`. For each, the
+    getter's return annotation and the first docstring line describe the output.
+
+    This is the I/O-contract OUTPUT surface: FluxStudio runnable nodes append these
+    as output sockets and navigaitor's form-spec surfaces them. An ``@output``
+    property is read-only/derived, so it never appears as a config field.
+
+    Args:
+        cls: Any class (typically a ``@configurable`` Runnable such as a trainer).
+
+    Returns:
+        A list of ``{name, type, description}`` dicts, empty when none are declared.
+    """
+    specs: List[OutputSpec] = []
+    seen: Set[str] = set()
+    for klass in getattr(cls, "__mro__", (cls,)):
+        for name, member in vars(klass).items():
+            if name in seen or not isinstance(member, property):
+                continue
+            fget = member.fget
+            if fget is None or not getattr(fget, "__confluid_output__", False):
+                continue
+            seen.add(name)
+            try:
+                ret = get_type_hints(fget).get("return", Any)
+            except Exception:
+                ret = Any
+            type_str = getattr(ret, "__name__", str(ret))
+            doc = (getattr(fget, "__doc__", "") or "").strip().split("\n", 1)[0]
+            specs.append(OutputSpec(name=name, type=type_str, description=doc))
+    return specs
+
+
+def input_specs(cls: type) -> List[InputSpec]:
+    """Enumerate a class's constructor inputs with their MANDATORY / NULLABLE contract.
+
+    For each ``__init__`` parameter (skipping ``self`` / ``cls`` / ``*args`` /
+    ``**kwargs``) reports:
+
+    * ``required`` — True when the parameter has no default OR is annotated
+      :data:`confluid.Mandatory` ``[T]`` (the explicit marker that flags a
+      defaulted-for-zero-arg slot as still-mandatory); and
+    * ``nullable`` — True when the (Annotated-stripped) type admits ``None``
+      (``Optional[T]`` / ``T | None``).
+
+    This is the I/O-contract INPUT surface consumed by FluxStudio (required vs
+    optional sockets) and navigaitor's form-spec.
+
+    Args:
+        cls: Any class (typically a ``@configurable`` Runnable).
+
+    Returns:
+        A list of ``{name, type, required, nullable}`` dicts in signature order.
+    """
+    from confluid.mandatory import is_mandatory_annotation
+
+    # Reach __init__ via getattr (mirrors lazy_param_names) — a direct ``cls.__init__`` trips mypy's
+    # "accessing __init__ on an instance is unsound" check.
+    init = getattr(cls, "__init__", None)
+    if init is None:
+        return []
+    try:
+        sig = inspect.signature(init)
+    except (TypeError, ValueError):
+        return []
+    try:
+        hints = get_type_hints(init, include_extras=True)
+    except Exception:
+        hints = {}
+
+    specs: List[InputSpec] = []
+    for pname, param in sig.parameters.items():
+        if pname in ("self", "cls") or param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        if pname in hints:
+            anno: Any = hints[pname]
+        elif param.annotation is not inspect.Parameter.empty:
+            anno = param.annotation
+        else:
+            anno = Any
+        stripped = _strip_annotated(anno)
+        type_str = getattr(stripped, "__name__", str(stripped))
+        required = param.default is inspect.Parameter.empty or is_mandatory_annotation(anno)
+        specs.append(InputSpec(name=pname, type=type_str, required=required, nullable=_is_nullable_annotation(anno)))
+    return specs
