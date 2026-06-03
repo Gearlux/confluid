@@ -154,6 +154,27 @@ def readonly_config(func: T) -> T:
     return func
 
 
+def output(func: T) -> T:
+    """Mark a read-only ``@property`` getter as a declared OUTPUT of a Runnable class.
+
+    Apply UNDER ``@property`` so it decorates the underlying getter (``fget``),
+    NOT the ``property`` object::
+
+        @property
+        @output
+        def trained_model(self) -> nn.Module: ...
+
+    Consumers (FluxStudio runnable nodes, navigaitor's form-spec) read
+    :func:`confluid.output_specs` to expose these as node OUTPUT sockets. An
+    ``@output`` property is read-only / derived, so it is already excluded from
+    config introspection (``to_pydantic`` skips setter-less properties) — it never
+    becomes a config knob and round-trips cleanly. The complement on the INPUT
+    side is :data:`confluid.Mandatory`; together they define the I/O contract.
+    """
+    setattr(func, "__confluid_output__", True)
+    return func
+
+
 def _wrap_init_with_validation(cls: Type[Any]) -> None:
     """Wrap ``cls.__init__`` so each call validates its kwargs.
 

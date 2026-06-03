@@ -15,7 +15,7 @@ Coverage targets:
 * ``confluid_class_of`` and ``lazy_param_names_of`` helpers
 """
 
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, Generic, List, Literal, Optional, Tuple, TypeVar, Union, get_args
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -348,6 +348,37 @@ def test_convert_annotation_handles_pep604_union() -> None:
     converted = _convert_annotation(int | str)  # type: ignore[operator]
     # Union[int, str] equals int | str under typing.get_origin
     assert converted == Union[int, str]
+
+
+def test_convert_annotation_coerces_parameterized_opaque_generic_to_any() -> None:
+    """A parameterized generic whose ORIGIN is an opaque (torch/numpy) type —
+    e.g. ``Dataset[Any]`` (origin ``torch.utils.data.Dataset``) — must coerce to
+    ``Any``, symmetric with a BARE opaque type (``Module`` / ``Tensor``, handled in
+    the ``origin is None`` branch).
+
+    Regression pin: a narrowed ``Union[Dataset[Any], Fluid]`` slot must stay as
+    permissive as ``Union[Module, Fluid]``. Before the fix the parameterized
+    generic skipped ``_is_opaque_type`` and was rebuilt as a strict ``Dataset[Any]``
+    isinstance arm, so it rejected the config / live-instance forms the ``Module``
+    slot accepted — which broke navigaitor's typed-composition escape hatch. Uses a
+    stand-in tagged with a ``torch`` ``__module__`` so the confluid suite stays
+    torch-free.
+    """
+    T = TypeVar("T")
+
+    class _OpaqueDataset(Generic[T]):
+        pass
+
+    _OpaqueDataset.__module__ = "torch.utils.data._stub"  # make _is_opaque_type fire
+
+    # Symmetry: the bare class is already coerced; its parameterized generic must be too.
+    assert _convert_annotation(_OpaqueDataset) is Any
+    assert _convert_annotation(_OpaqueDataset[Any]) is Any
+    # Inside the narrowed-slot ``Union`` shape, the opaque arm collapses to ``Any`` —
+    # so no strict isinstance arm survives to reject an arbitrary config.
+    converted = _convert_annotation(Union[_OpaqueDataset[Any], int])
+    assert Any in get_args(converted)
+    assert _OpaqueDataset not in get_args(converted)
 
 
 # ---------------------------------------------------------------------------
