@@ -237,6 +237,20 @@ identical and are *not* the same thing:
 deferred stub; `!class:Model()` is a live instance. Everything else follows from
 that one bit.
 
+**The target may be any callable, not just a class.** A `!class:` / `!lazy:`
+target resolves to any callable — a class OR a plain builder/factory **function**
+(e.g. `!lazy:torchvision.models.detection.fasterrcnn_resnet50_fpn`,
+`!class:timm.create_model`). `flow()` introspects the callable's own signature,
+so both its stored kwargs and any runtime-injected kwargs are passed through
+(runtime wins) — e.g. `flow(deferred_builder, num_classes=37)` calls
+`builder(..., num_classes=37)`. This is what lets a trainer flow a `!lazy:`
+model builder with a dataset-derived dimension and no wrapper class. **`to_pydantic`
+is callable-aware too** — it generates a config schema from a builder function's
+own signature, so a `register`-ed function (e.g. `register(fasterrcnn_resnet50_fpn,
+task="detection", role="model")`) surfaces in navigaitor's form-spec / MCP schemas
+and FluxStudio's node palette exactly like a class (un-JSON-schemable param types —
+e.g. torchvision's `Weights` enums or a `Callable[...]` arg — degrade to `Any`).
+
 ```yaml
 # Deferred — the receiving object gets a Class stub and builds it itself,
 # after broadcasting has filled in matching scalars.

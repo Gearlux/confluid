@@ -3,7 +3,7 @@ import re
 import threading
 from copy import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Union, cast
 
 import yaml
 from logflow import get_logger
@@ -470,7 +470,7 @@ _post_init_attrs_cache: Dict[str, frozenset[str]] = {}
 _param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
 
 
-def _same_target(fluid_target: Any, cls: type) -> bool:
+def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
     """True if ``fluid_target`` resolves to the same class object as ``cls``.
 
     Identity-only comparison: two classes that share a short name across

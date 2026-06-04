@@ -19,12 +19,14 @@ opinionated overlays for LLM-facing tool surfaces.
 from __future__ import annotations
 
 import collections.abc
+import enum
 import inspect
 import types
 from functools import lru_cache
 from typing import (
     Annotated,
     Any,
+    Callable,
     Dict,
     FrozenSet,
     List,
@@ -83,8 +85,8 @@ def _is_configurable(obj: Any) -> bool:
     return isinstance(obj, type) and bool(getattr(obj, "__confluid_configurable__", False))
 
 
-def _qualname(cls: type) -> str:
-    """Return the dotted importable path of ``cls`` suitable for ``!class:`` tags."""
+def _qualname(cls: Callable[..., Any]) -> str:
+    """Return the dotted importable path of ``cls`` (a class OR a builder function) for tags."""
     module = getattr(cls, "__module__", None)
     name = getattr(cls, "__qualname__", None) or cls.__name__
     if module is None or module in ("builtins", "__main__"):
@@ -101,11 +103,22 @@ _OPAQUE_TOP_MODULES = frozenset({"torch", "numpy"})
 
 
 def _is_opaque_type(anno: Any) -> bool:
-    """True for a concrete type pydantic cannot JSON-schema (Tensor / ndarray / …)."""
+    """True for a concrete type pydantic cannot JSON-schema (Tensor / ndarray / non-primitive Enum / …)."""
     if not isinstance(anno, type):
         return False
     module = getattr(anno, "__module__", "") or ""
-    return module.split(".", 1)[0] in _OPAQUE_TOP_MODULES
+    if module.split(".", 1)[0] in _OPAQUE_TOP_MODULES:
+        return True
+    # An Enum whose member VALUES are not JSON primitives (the canonical case:
+    # torchvision's ``*_Weights`` enums, whose values are ``Weights`` dataclasses
+    # carrying a ``type``) builds a valid pydantic CORE schema — so the config
+    # validates — but blows up in ``model_json_schema()`` ("Unable to serialize
+    # unknown type: <class 'type'>"), which the navigaitor form-spec / MCP surface
+    # calls. Coerce such enums to ``Any`` (a free-text widget — torchvision accepts
+    # the "DEFAULT" string alias anyway); a plain str/int Enum stays enumerable.
+    if issubclass(anno, enum.Enum):
+        return not all(isinstance(m.value, (str, int, float, bool, type(None))) for m in anno)
+    return False
 
 
 def _unwrap_annotated(anno: Any) -> Any:
@@ -155,6 +168,14 @@ def _convert_annotation(anno: Any) -> Any:
     # ``Literal[...]`` arguments are values, not types — don't recurse.
     if origin is Literal:
         return anno
+
+    # A ``Callable[...]`` param (e.g. ssdlite320's ``norm_layer:
+    # Optional[Callable[..., nn.Module]]``) has no JSON-Schema representation —
+    # pydantic builds a CallableSchema for the core (so the config still
+    # validates) but ``model_json_schema()`` raises "Cannot generate a JsonSchema
+    # for core_schema.CallableSchema". Coerce to ``Any`` like the opaque leaves.
+    if origin is collections.abc.Callable:
+        return Any
 
     # Abstract iterable / sequence / mapping types: coerce to ``Any`` so
     # pydantic doesn't wrap inputs in ``ValidatorIterator`` (which would
@@ -424,7 +445,7 @@ def _post_init_field_specs(
 
 
 @lru_cache(maxsize=None)
-def to_pydantic(cls: type) -> Type[BaseModel]:
+def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     """Return a pydantic ``BaseModel`` subclass mirroring ``cls.__init__``.
 
     Each call with the same ``cls`` returns the same model (cached). Nested
@@ -461,22 +482,36 @@ def to_pydantic(cls: type) -> Type[BaseModel]:
         TypeError: If ``cls`` is not a class or its ``__init__`` is not
             inspectable (e.g. C extension types without Python wrappers).
     """
-    if not isinstance(cls, type):
-        raise TypeError(f"to_pydantic(cls) expected a class, got {type(cls).__name__}")
+    if not callable(cls):
+        raise TypeError(f"to_pydantic(cls) expected a class or callable, got {type(cls).__name__}")
 
-    init = cls.__dict__.get("__init__") or cls.__init__  # type: ignore[misc]
-    if init is object.__init__:
-        # Classes that don't override __init__ have no configurable params.
-        sig = inspect.Signature(parameters=[])
-        hints: Dict[str, Any] = {}
-        docstring = cls.__doc__ or ""
+    # A target may be a class OR a plain builder/factory FUNCTION (e.g. a torchvision
+    # detection builder ``fasterrcnn_resnet50_fpn``) — mirroring flow()/resolve_class's
+    # callable-target support (confluid AGENTS "A Target May Be ANY Callable"). For a
+    # class we introspect ``__init__``; for a function the callable's OWN signature.
+    # A function has no ``__init__`` body, so the post-init body-slot scan is skipped.
+    is_class = isinstance(cls, type)
+    if is_class:
+        init = cls.__dict__.get("__init__") or cls.__init__  # type: ignore[misc]
+        if init is object.__init__:
+            # Classes that don't override __init__ have no configurable params.
+            sig = inspect.Signature(parameters=[])
+            hints: Dict[str, Any] = {}
+            docstring = cls.__doc__ or ""
+        else:
+            try:
+                sig = inspect.signature(init)
+                hints = get_type_hints(init, include_extras=True)
+            except (TypeError, ValueError, NameError) as exc:
+                raise TypeError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
+            docstring = init.__doc__ or cls.__doc__ or ""
     else:
         try:
-            sig = inspect.signature(init)
-            hints = get_type_hints(init, include_extras=True)
+            sig = inspect.signature(cls)
+            hints = get_type_hints(cls, include_extras=True)
         except (TypeError, ValueError, NameError) as exc:
-            raise TypeError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
-        docstring = init.__doc__ or cls.__doc__ or ""
+            raise TypeError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
+        docstring = cls.__doc__ or ""
 
     param_docs = _parse_docstring(docstring)
     fields: Dict[str, Tuple[Any, Any]] = {}
@@ -500,8 +535,9 @@ def to_pydantic(cls: type) -> Type[BaseModel]:
     # still be enumerable by the form-spec / MCP / FluxStudio surfaces. Signature
     # params already in ``fields`` win (never overwritten).
     signature_params = set(fields)
-    for name, spec in _post_init_field_specs(cls, signature_params, param_docs).items():
-        fields.setdefault(name, spec)
+    if isinstance(cls, type):  # post-init body-slot scan walks ``cls.__mro__`` (classes only)
+        for name, spec in _post_init_field_specs(cls, signature_params, param_docs).items():
+            fields.setdefault(name, spec)
 
     # ``create_model`` accepts arbitrary kwargs as field definitions, so we
     # unpack ``fields`` alongside the dunder kwargs. The cast keeps mypy from
@@ -527,7 +563,8 @@ def to_pydantic(cls: type) -> Type[BaseModel]:
     # latter keeps a runtime-injected slot from being serialized as ``!class:``
     # (which confluid would eagerly flow on assignment and crash).
     lazy_params = {name for name, anno in hints.items() if name not in _SKIP_PARAMS and is_lazy_annotation(anno)}
-    lazy_params |= _post_init_lazy_slots(cls)
+    if isinstance(cls, type):  # body-slot lazy scan walks ``cls.__mro__`` (classes only)
+        lazy_params |= _post_init_lazy_slots(cls)
     if lazy_params:
         model._confluid_lazy_params = frozenset(lazy_params)  # type: ignore[attr-defined]
 

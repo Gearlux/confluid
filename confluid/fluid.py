@@ -1,6 +1,6 @@
 import logging
 from copy import copy
-from typing import Any, Generic, Optional, Tuple, Type, Union
+from typing import Any, Callable, Generic, Optional, Tuple, Type, Union
 
 from typing_extensions import TypeVar
 
@@ -54,14 +54,14 @@ def format_yaml_loc(obj: Any) -> str:
 class Class(Fluid):
     """Deferred class initializer. Stays deferred until explicitly flow()'d."""
 
-    def __init__(self, target: Union[Type[Any], str], **kwargs: Any) -> None:
+    def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
         super().__init__(target, **kwargs)
 
 
 class Instance(Fluid):
     """Instant class initializer. Materialized immediately by materialize()/flow()."""
 
-    def __init__(self, target: Union[Type[Any], str], **kwargs: Any) -> None:
+    def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
         super().__init__(target, **kwargs)
 
 
@@ -141,7 +141,7 @@ class Lazy(Class, Generic[T]):
     at the YAML layer.
     """
 
-    def __init__(self, target: Union[Type[Any], str], **kwargs: Any) -> None:
+    def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
         super().__init__(target, **kwargs)
 
 
@@ -299,12 +299,22 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
 
         merged = {k: _resolve_value(v, eager_classes=not is_configurable_target) for k, v in merged.items()}
 
-        # Instantiate: constructor params go to __init__, rest set as attributes
+        # Instantiate: constructor params go to the call, the rest are set as
+        # attributes. Introspect the TARGET'S OWN signature — for a class, its
+        # ``__init__`` (minus self/cls); for a plain callable (a builder FUNCTION
+        # like torchvision's ``fasterrcnn_resnet50_fpn``), the callable itself.
+        # Using ``target.__init__`` for a function resolves ``object.__init__`` →
+        # ``(*args, **kwargs)``, so the kwarg filter below would keep only keys
+        # named ``args``/``kwargs`` — dropping EVERY real kwarg (stored or
+        # runtime-injected) and silently building the function's defaults.
         try:
-            init_method = getattr(target, "__init__", None)
-            if init_method is None:
-                return obj
-            sig = inspect.signature(init_method)
+            if inspect.isclass(target):
+                init_method = getattr(target, "__init__", None)
+                if init_method is None:
+                    return obj
+                sig = inspect.signature(init_method)
+            else:
+                sig = inspect.signature(target)
             params = {p for p in sig.parameters if p not in ("self", "cls")}
         except (ValueError, TypeError):
             params = set()
@@ -413,7 +423,13 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
         # ctor parameter). This lets users keep @configurable signatures clean
         # without sacrificing broadcast reach.
         seen: set[str] = set()
-        for attr_name, attr_val in list(vars(instance).items()):
+        # A callable target may return a ``__dict__``-less object (a dict /
+        # primitive / ``__slots__``-only instance — e.g. a builder function that
+        # returns a plain config dict). Such instances have no mutable attribute
+        # namespace to broadcast Fluids into, so skip this step rather than let
+        # ``vars()`` raise.
+        instance_vars = getattr(instance, "__dict__", None)
+        for attr_name, attr_val in list(instance_vars.items()) if instance_vars else []:
             if attr_name.startswith("__confluid_"):
                 continue
             if not isinstance(attr_val, Fluid):

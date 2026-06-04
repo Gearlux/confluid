@@ -1,6 +1,6 @@
 import importlib
 import logging
-from typing import Any, Dict, Optional, Set, Type, Union
+from typing import Any, Callable, Dict, Optional, Set, Type, Union, cast
 
 logger = logging.getLogger(__name__)
 
@@ -159,13 +159,22 @@ def get_registry() -> ConfluidRegistry:
     return _registry
 
 
-def resolve_class(name: Union[str, type]) -> Optional[type]:
-    """Resolve a class name to an actual Python type.
+def resolve_class(name: Union[str, type]) -> Optional[Callable[..., Any]]:
+    """Resolve a name to a Python **callable** target (a class OR a plain function).
 
     Resolution order:
     1. If already a type, return as-is.
     2. Registry lookup by name.
-    3. Module path import (e.g., "torch.optim.Adam").
+    3. Module path import (e.g., ``"torch.optim.Adam"`` — a class — or
+       ``"torchvision.models.detection.fasterrcnn_resnet50_fpn"`` — a builder
+       *function*).
+
+    A ``!class:`` / ``!lazy:`` target may be any callable, not just a class:
+    factory/builder functions (torchvision's ``fasterrcnn_resnet50_fpn``,
+    ``timm.create_model``, …) are first-class targets. The module-path branch
+    therefore accepts any **callable** attribute (class or function), not only
+    ``isinstance(_, type)``. (``flow()`` then builds it by introspecting the
+    callable's own signature — see :func:`confluid.fluid.flow`.)
     """
     if isinstance(name, type):
         return name
@@ -183,9 +192,10 @@ def resolve_class(name: Union[str, type]) -> Optional[type]:
         module_path, class_attr = name.rsplit(".", 1)
         try:
             module = importlib.import_module(module_path)
-            cls = getattr(module, class_attr)
-            if isinstance(cls, type):
-                return cls
+            attr = getattr(module, class_attr)
+            # Accept any callable target — a class OR a plain builder function.
+            if isinstance(attr, type) or callable(attr):
+                return cast(Callable[..., Any], attr)
         except (ImportError, AttributeError) as e:
             logger.debug(f"Failed to resolve '{name}' via module path: {e}")
 
