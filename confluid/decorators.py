@@ -22,6 +22,7 @@ def configurable(
     role: Optional[str] = None,
     lazy: bool = False,
     validate: bool = True,
+    random: bool = False,
 ) -> Callable[[C], C]: ...
 
 
@@ -35,6 +36,7 @@ def configurable(
     role: Optional[str] = None,
     lazy: bool = False,
     validate: bool = True,
+    random: bool = False,
 ) -> Union[C, Callable[[C], C]]:
     """Mark a class as confluid-configurable and register it.
 
@@ -67,6 +69,11 @@ def configurable(
             it to emit a ``LazyClass`` (deferred) rather than a live instance —
             notably FluxStudio's object nodes, which feed a runnable's deferred
             body slots. Independent of ``category``/``task``/``role``.
+        random: When ``True``, stamp ``__confluid_random__`` on the class.
+            Marks a class whose output is non-deterministic (e.g. stochastic
+            augmentation ops). FluxStudio uses this to inject ``IS_CHANGED``
+            on the generated ComfyUI node so downstream nodes (Preview Image,
+            etc.) always re-execute rather than serving a cached output.
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
             active :class:`confluid.validation.ValidationPolicy`. Set to
@@ -94,6 +101,8 @@ def configurable(
             setattr(c, "__confluid_role__", role)
         if lazy:
             setattr(c, "__confluid_lazy__", True)
+        if random:
+            setattr(c, "__confluid_random__", True)
 
         # Register in global registry
         get_registry().register_class(

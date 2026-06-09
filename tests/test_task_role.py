@@ -141,3 +141,24 @@ def test_lazy_marker_survives_reregister_without_lazy() -> None:
     # Mirror navigaitor's snapshot-restore path (only forwards category).
     get_registry().register_class(Opt, category="optimizer")
     assert getattr(Opt, "__confluid_lazy__") is True
+
+
+# --------------------------------------------------------------------------- #
+# random mark (__confluid_random__)
+# --------------------------------------------------------------------------- #
+
+
+def test_configurable_random_flag_sets_attribute() -> None:
+    @configurable(category="op", random=True)
+    class StochasticOp:
+        pass
+
+    assert getattr(StochasticOp, "__confluid_random__") is True
+
+
+def test_configurable_default_has_no_random_attribute() -> None:
+    @configurable(category="op")
+    class DeterministicOp:
+        pass
+
+    assert getattr(DeterministicOp, "__confluid_random__", False) is False
