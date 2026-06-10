@@ -23,6 +23,8 @@ def configurable(
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
+    strict_typing: bool = False,
+    display_name: Optional[str] = None,
 ) -> Callable[[C], C]: ...
 
 
@@ -37,6 +39,8 @@ def configurable(
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
+    strict_typing: bool = False,
+    display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
     """Mark a class as confluid-configurable and register it.
 
@@ -74,6 +78,15 @@ def configurable(
             augmentation ops). FluxStudio uses this to inject ``IS_CHANGED``
             on the generated ComfyUI node so downstream nodes (Preview Image,
             etc.) always re-execute rather than serving a cached output.
+        strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
+            the class. FluxStudio uses this to render ``Union[int, str]``
+            constructor params as two optional sockets — ``{name}_samples``
+            (INT, full range) and ``{name}_duration`` (STRING) — instead of
+            the default single STRING widget. Whichever socket is
+            connected/filled wins; if neither, the constructor default applies.
+        display_name: Optional human-readable label for UI surfaces (e.g.
+            FluxStudio palette). Stamped as ``__confluid_display_name__``.
+            Falls back to the class name when absent.
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
             active :class:`confluid.validation.ValidationPolicy`. Set to
@@ -103,6 +116,10 @@ def configurable(
             setattr(c, "__confluid_lazy__", True)
         if random:
             setattr(c, "__confluid_random__", True)
+        if strict_typing:
+            setattr(c, "__confluid_strict_typing__", True)
+        if display_name:
+            setattr(c, "__confluid_display_name__", display_name)
 
         # Register in global registry
         get_registry().register_class(
