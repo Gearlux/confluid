@@ -26,6 +26,34 @@ def test_load_config_not_found() -> None:
         load_config("non_existent.yaml")
 
 
+def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> None:
+    """A YAML kwarg literally named ``target`` must not collide with the marker ctors.
+
+    The Fluid constructors' own first parameter is ``target`` — building a marker via
+    ``Instance(name, **mapping)`` raised ``got multiple values for argument 'target'``
+    whenever a config carried a ``target:`` kwarg (e.g. dataflux ``ConfigureOp.target``).
+    The loader assigns kwargs post-construction instead.
+    """
+
+    @configurable
+    class _Configurish:
+        def __init__(self, target: object = None, param: str = "") -> None:
+            self.target = target
+            self.param = param
+
+    yaml_file = tmp_path / "target_kwarg.yaml"
+    yaml_file.write_text(
+        "wrapper: !class:_Configurish()\n"
+        "  param: low_level\n"
+        "  target: !class:_Configurish()\n"
+        "    param: inner\n"
+    )
+    data = load(yaml_file)
+    wrapper = data["wrapper"]
+    assert isinstance(wrapper, _Configurish) and wrapper.param == "low_level"
+    assert isinstance(wrapper.target, _Configurish) and wrapper.target.param == "inner"
+
+
 def test_load_config_with_import() -> None:
     import tempfile
 
