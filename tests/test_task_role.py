@@ -162,3 +162,32 @@ def test_configurable_default_has_no_random_attribute() -> None:
         pass
 
     assert getattr(DeterministicOp, "__confluid_random__", False) is False
+
+
+# --------------------------------------------------------------------------- #
+# constant mark (__confluid_constant__)
+# --------------------------------------------------------------------------- #
+
+
+def test_configurable_constant_flag_sets_attribute() -> None:
+    @configurable(category="op", constant=True)
+    class PureConfig:
+        pass
+
+    assert getattr(PureConfig, "__confluid_constant__") is True
+
+
+def test_configurable_default_has_no_constant_attribute() -> None:
+    @configurable(category="op")
+    class OrdinaryOp:
+        pass
+
+    assert getattr(OrdinaryOp, "__confluid_constant__", False) is False
+
+
+def test_configurable_constant_and_random_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="contradictory"):
+
+        @configurable(category="op", constant=True, random=True)
+        class Impossible:
+            pass

@@ -23,6 +23,7 @@ def configurable(
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
+    constant: bool = False,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Callable[[C], C]: ...
@@ -39,6 +40,7 @@ def configurable(
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
+    constant: bool = False,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
@@ -78,6 +80,14 @@ def configurable(
             augmentation ops). FluxStudio uses this to inject ``IS_CHANGED``
             on the generated ComfyUI node so downstream nodes (Preview Image,
             etc.) always re-execute rather than serving a cached output.
+        constant: When ``True``, stamp ``__confluid_constant__`` on the class.
+            Marks a class whose instances (and declared ``@output`` properties)
+            are a PURE function of the constructor config — no I/O, no sample
+            input, no hidden state. Exporters may fold/hoist such a value
+            producer into a static config: FluxStudio's ops-export hoists a
+            constant value node as a top-level ``!class:`` entry and rewires
+            its consumers via dotted ``!ref:<name>.<output>`` instead of
+            dropping the wired values. Mutually exclusive with ``random``.
         strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
             the class. FluxStudio uses this to render ``Union[int, str]``
             constructor params as two optional sockets — ``{name}_samples``
@@ -94,6 +104,12 @@ def configurable(
             or where pydantic introspection would be wasteful (e.g. classes
             stored only as type references).
     """
+    if constant and random:
+        raise ValueError(
+            "configurable(): 'constant=True' and 'random=True' are contradictory — "
+            "a constant's outputs are a pure function of its config, a random class's are not."
+        )
+
     # ``task`` + ``role`` derive ``category`` when an explicit one isn't given,
     # so a single tag feeds both the orthogonal (task/role) and legacy
     # (category) discovery paths.
@@ -116,6 +132,8 @@ def configurable(
             setattr(c, "__confluid_lazy__", True)
         if random:
             setattr(c, "__confluid_random__", True)
+        if constant:
+            setattr(c, "__confluid_constant__", True)
         if strict_typing:
             setattr(c, "__confluid_strict_typing__", True)
         if display_name:

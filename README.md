@@ -520,6 +520,18 @@ class RealFftOp: ...
 
 `group` sets `__confluid_group__`, indexes in the registry (`get_registry().list_classes(group="numpy")`, `list_groups()`), and is otherwise inert — an absent group simply leaves the node directly under `<Package>/<Category>`. It is NOT part of the discovery contract.
 
+**Behavioral marks** — two mutually exclusive stamp-only flags (no registry index; consumers read the class attribute):
+
+```python
+@configurable(category="op", random=True)     # __confluid_random__: non-deterministic output
+class AWGNOp: ...                             # FluxStudio re-executes its node on every run
+
+@configurable(category="op", constant=True)   # __confluid_constant__: outputs are a PURE
+class ImpairmentsTxConfig: ...                # function of the constructor config
+```
+
+`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no sample input, no hidden state. Exporters use it to fold a value-producer node into a static config: FluxStudio's ops-export hoists the node as a top-level `!class:` entry and rewires consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ValueError`.
+
 ## Scopes
 
 Conditional config blocks live at an arbitrary key whose value carries a
