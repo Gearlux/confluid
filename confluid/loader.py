@@ -71,6 +71,18 @@ def _register_constructors() -> None:
         fl._yaml_loc = (filename, mark.line + 1, mark.column + 1)
         return fl
 
+    def _make_fluid(factory: Any, name: str, kwargs: dict[str, Any]) -> Any:
+        """Build a Fluid marker with its kwargs assigned POST-construction.
+
+        ``factory(name, **kwargs)`` collides when a YAML kwarg is literally named
+        ``target`` (the marker ctor's own first parameter — e.g. dataflux
+        ``ConfigureOp.target``). The marker stores ``self.kwargs = kwargs`` verbatim,
+        so the post-construction update is exactly equivalent and collision-proof.
+        """
+        fluid = factory(name)
+        fluid.kwargs.update(kwargs)
+        return fluid
+
     def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         return _stamp(Reference(tag_suffix), loader, node)
 
@@ -86,17 +98,17 @@ def _register_constructors() -> None:
             # discarding the inline ones. Block-body keys win on conflict —
             # they sit later in document order, matching the flat-view
             # last-write-wins rule.
-            return _stamp(factory(name, **{**inline, **mapping}), loader, node)
+            return _stamp(_make_fluid(factory, name, {**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(factory(name, **inline), loader, node)
+            return _stamp(_make_fluid(factory, name, inline), loader, node)
 
         return _stamp(Class(tag_suffix), loader, node)
 
     def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return _stamp(Clone(tag_suffix, **mapping), loader, node)
+            return _stamp(_make_fluid(Clone, tag_suffix, mapping), loader, node)
         return _stamp(Clone(tag_suffix), loader, node)
 
     def lazy_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
@@ -110,10 +122,10 @@ def _register_constructors() -> None:
 
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return _stamp(Lazy(name, **{**inline, **mapping}), loader, node)
+            return _stamp(_make_fluid(Lazy, name, {**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(Lazy(name, **inline), loader, node)
+            return _stamp(_make_fluid(Lazy, name, inline), loader, node)
 
         return _stamp(Lazy(tag_suffix), loader, node)
 
