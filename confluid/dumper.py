@@ -103,7 +103,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # Live @configurable instance → dump with () to indicate instant construction on reload
     cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
     try:
-        sig = inspect.signature(data.__class__.__init__)
+        sig = inspect.signature(data.__class__)
         params = [p for p in sig.parameters if p not in ("self", "cls")]
     except (ValueError, TypeError):
         params = []
@@ -182,7 +182,7 @@ def dump(obj: Any) -> str:
             # Traverse constructor params
             param_set: set[str] = set()
             try:
-                sig = inspect.signature(target.__class__.__init__)
+                sig = inspect.signature(target.__class__)
                 for p in sig.parameters:
                     param_set.add(p)
                     if hasattr(target, p):
@@ -201,7 +201,7 @@ def dump(obj: Any) -> str:
             if hasattr(target, "__confluid_kwargs__"):
                 for v in target.__confluid_kwargs__.values():
                     _discover_and_register(v, visited)
-        elif isinstance(target, list):
+        elif isinstance(target, (list, tuple)):
             for item in target:
                 _discover_and_register(item, visited)
         elif isinstance(target, dict):
