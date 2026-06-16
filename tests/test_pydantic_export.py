@@ -453,3 +453,88 @@ def test_to_pydantic_self_referential_body_slot_degrades_to_any() -> None:
     model = to_pydantic(Node)
     # Validates cleanly — no unresolved forward ref leaking into the schema.
     model.model_validate({"name": "a"})
+
+
+def test_to_pydantic_scalar_range_mark_validates_and_bounds_schema() -> None:
+    """A PEP-593 range mark on a scalar param validates the value and lands in the
+    JSON schema (minimum/maximum) — the workspace range-mark convention."""
+    from typing import Annotated
+
+    import pydantic
+    from annotated_types import Interval
+
+    @configurable
+    class _Op:
+        def __init__(self, noise_power_db: Annotated[float, Interval(ge=-200.0, le=50.0)] = -30.0) -> None:
+            self.noise_power_db = noise_power_db
+
+    model = to_pydantic(_Op)
+    assert model(noise_power_db=-120.0).noise_power_db == -120.0
+    schema = model.model_json_schema()["properties"]["noise_power_db"]
+    assert schema["minimum"] == -200.0 and schema["maximum"] == 50.0
+    try:
+        model(noise_power_db=-500.0)
+        raise AssertionError("out-of-range value must be rejected")
+    except pydantic.ValidationError:
+        pass
+
+
+def test_to_pydantic_container_range_mark_relocates_to_elements() -> None:
+    """An outer range mark on a (min, max) container — the convention FluxStudio's
+    widget bounds read — must NOT be applied to the tuple VALUE (pydantic raises
+    ``TypeError: Unable to apply constraint`` on first validation); it relocates
+    element-wise, validating each endpoint and bounding the schema prefixItems."""
+    from typing import Annotated, Tuple
+
+    import pydantic
+    from annotated_types import Interval
+
+    @configurable
+    class _Op:
+        def __init__(self, power_range: Annotated[Tuple[float, float], Interval(ge=0.0)] = (0.01, 10.0)) -> None:
+            self.power_range = power_range
+
+    model = to_pydantic(_Op)
+    assert model(power_range=(0.5, 2.0)).power_range == (0.5, 2.0)  # the pre-fix crash path
+    schema = model.model_json_schema()["properties"]["power_range"]
+    assert [item.get("minimum") for item in schema["prefixItems"]] == [0.0, 0.0]
+    try:
+        model(power_range=(-1.0, 2.0))
+        raise AssertionError("negative element must be rejected by the relocated mark")
+    except pydantic.ValidationError:
+        pass
+
+
+def test_to_pydantic_variadic_tuple_range_mark_skips_ellipsis() -> None:
+    """``Annotated[Tuple[float, ...], Interval(...)]`` marks the element type and
+    leaves the Ellipsis untouched."""
+    from typing import Annotated, Tuple
+
+    import pydantic
+    from annotated_types import Interval
+
+    @configurable
+    class _Op:
+        def __init__(self, levels: Annotated[Tuple[float, ...], Interval(ge=0.0)] = (1.0,)) -> None:
+            self.levels = levels
+
+    model = to_pydantic(_Op)
+    assert model(levels=(1.0, 2.0, 3.0)).levels == (1.0, 2.0, 3.0)
+    try:
+        model(levels=(1.0, -2.0))
+        raise AssertionError("negative element must be rejected")
+    except pydantic.ValidationError:
+        pass
+
+
+def test_to_pydantic_non_range_metadata_on_container_left_untouched() -> None:
+    """Only range marks relocate — other Annotated metadata on a container stays put."""
+    from typing import Annotated, Tuple
+
+    @configurable
+    class _Op:
+        def __init__(self, pair: Annotated[Tuple[float, float], "doc-tag"] = (1.0, 2.0)) -> None:
+            self.pair = pair
+
+    model = to_pydantic(_Op)
+    assert model(pair=(3.0, 4.0)).pair == (3.0, 4.0)
