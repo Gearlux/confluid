@@ -40,12 +40,21 @@ from typing import (
     get_type_hints,
 )
 
+from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from confluid.lazy import is_lazy_annotation
 from confluid.schema import _parse_docstring
 
 _SKIP_PARAMS = {"self", "cls", "args", "kwargs"}
+
+# Numeric range marks (PEP-593 ``annotated_types``) the workspace convention puts
+# on the OUTER annotation of a ``(min, max)`` container param — see
+# ``_spread_range_marks_into_container``.
+_RANGE_MARK_TYPES: Tuple[type, ...] = (Interval, Ge, Gt, Le, Lt)
+
+# Container origins whose numeric elements a relocated range mark applies to.
+_RANGE_CONTAINER_ORIGINS: Set[Any] = {tuple, list, set, frozenset}
 
 # Abstract iterator/sequence types that pydantic insists on validating as
 # generators (wrapping inputs in ``ValidatorIterator``) — which strips the
@@ -219,6 +228,41 @@ def _convert_annotation(anno: Any) -> Any:
         return anno  # punt: leave the original annotation intact
 
 
+def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) -> Tuple[Any, Tuple[Any, ...]]:
+    """Relocate numeric range marks from a container annotation onto its numeric elements.
+
+    The workspace range-mark convention allows marking a ``(min, max)`` container
+    param on the OUTER annotation — ``Annotated[Tuple[float, float], Interval(ge=0.0)]``
+    (waivefront-torchsig's ``WattRange``/``DbRange``) — because that is where
+    FluxStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
+    Pydantic, however, applies ``annotated_types`` constraints to the field VALUE:
+    ``(0.0, 30.0) >= 0.0`` raises ``TypeError: Unable to apply constraint 'ge'`` the
+    first time the kwarg is actually validated. Relocating the marks element-wise
+    (``Tuple[Annotated[float, Interval(ge=0.0)], ...]``) keeps the one-mark
+    convention AND a validating model, and the JSON schema carries the bounds per
+    element (``prefixItems[].minimum``) instead of an inapplicable array constraint.
+
+    Marks on a non-container (scalar) annotation, and non-range metadata on a
+    container, are returned untouched.
+    """
+    range_marks = tuple(m for m in metadata if isinstance(m, _RANGE_MARK_TYPES))
+    if not range_marks or get_origin(inner) not in _RANGE_CONTAINER_ORIGINS:
+        return inner, metadata
+
+    def _mark(arg: Any) -> Any:
+        return Annotated[(arg, *range_marks)] if arg in (int, float) else arg
+
+    args = get_args(inner)
+    new_args = tuple(a if a is Ellipsis else _mark(a) for a in args)
+    if new_args == args:
+        return inner, metadata
+
+    generic: Any = {tuple: Tuple, list: List, set: Set, frozenset: FrozenSet}[get_origin(inner)]
+    new_inner = generic[new_args[0]] if len(new_args) == 1 else generic[new_args]
+    remaining = tuple(m for m in metadata if m not in range_marks)
+    return new_inner, remaining
+
+
 def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> Tuple[Any, Any]:
     """Build a ``(type, FieldInfo)`` tuple for ``pydantic.create_model``.
 
@@ -245,6 +289,7 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
         metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m in internal_markers))
 
     converted_inner = _convert_annotation(inner)
+    converted_inner, metadata = _spread_range_marks_into_container(converted_inner, metadata)
     converted_type = Annotated[(converted_inner, *metadata)] if metadata else converted_inner
     desc_kw: Dict[str, Any] = {"description": description} if description else {}
 

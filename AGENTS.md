@@ -36,3 +36,18 @@
 - **Round-Trip Tests:** Every new feature MUST include a test that dumps and reloads the configured object graph.
 - **Registry Cleanup:** Tests MUST use `setup_registry()` fixtures to clear global state between runs.
 - **Line Length:** 120 characters (Black, isort, flake8).
+
+- **Range Marks on Containers Relocate Element-Wise in `to_pydantic`:** The
+  workspace range-mark convention puts `annotated_types` marks on the OUTER
+  annotation of a `(min, max)` container param —
+  `Annotated[Tuple[float, float], Interval(ge=0.0)]` — because that is where
+  FluxStudio's widget bounds read them. Pydantic, however, applies such
+  constraints to the field VALUE (`TypeError: Unable to apply constraint 'ge'`
+  on first validation), so `pydantic_export._spread_range_marks_into_container`
+  relocates `Interval`/`Ge`/`Gt`/`Le`/`Lt` marks onto the container's numeric
+  elements (Ellipsis skipped, non-numeric args untouched, non-range metadata
+  left in place) — the model validates per element and the JSON schema carries
+  `prefixItems[].minimum`/`maximum`. Scalar marks pass through verbatim. Pins:
+  `tests/test_pydantic_export.py::test_to_pydantic_container_range_mark_relocates_to_elements`
+  / `::test_to_pydantic_variadic_tuple_range_mark_skips_ellipsis` /
+  `::test_to_pydantic_scalar_range_mark_validates_and_bounds_schema`.
