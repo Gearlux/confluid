@@ -51,3 +51,24 @@
   `tests/test_pydantic_export.py::test_to_pydantic_container_range_mark_relocates_to_elements`
   / `::test_to_pydantic_variadic_tuple_range_mark_skips_ellipsis` /
   `::test_to_pydantic_scalar_range_mark_validates_and_bounds_schema`.
+
+- **`sanitize_schema` — the LLM-/Gemini-safe JSON-Schema downgrade (`llm_schema.py`):**
+  `to_pydantic` (and the FastMCP tool surface that introspects pydantic arg-models)
+  emits full JSON Schema — `$ref`/`$defs` per nested model, `anyOf` for
+  `Optional[...]`, `allOf`, `const`, `additionalProperties`, rich `format`s.
+  Anthropic tolerates that, but Google Gemini's function-calling Schema (the engine
+  behind the Antigravity CLI) is an OpenAPI-3.0 subset with **no `$ref` support** and
+  only narrow `anyOf` — so a typed `config:` tool whose schema is `{"$ref": …}` with
+  N `$defs` is uncallable there. `sanitize_schema(schema)` (exported from
+  `confluid`) rewrites a JSON-Schema dict into the subset both accept: **inline**
+  `$ref`/`$defs` (cycles truncated to a bare object), **flatten** `allOf`,
+  **collapse** nullable `anyOf` → `T` + `nullable`, `const`→`enum`, strip
+  unsupported keywords, drop non-allow-list `format`s, ensure every object/array
+  declares a `type`/`items`. It is **pure** (no input mutation, stdlib only) and
+  recurses **only subschema positions** — a `default` payload that is itself a dict
+  is copied verbatim, never rewritten. This lives in confluid because confluid is
+  the one place that already owns AI-facing schema introspection (`to_pydantic` /
+  `parse_param_docs`); every MCP server in the workspace (navigaitor, sairen)
+  applies it to its advertised tool schemas via a thin `FastMCP.list_tools`
+  override. It rewrites only the *advertised* schema — never the server-side
+  arg-model validation. Pins: `tests/test_llm_schema.py`.
