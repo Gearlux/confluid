@@ -10,6 +10,7 @@ from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
 from confluid.fluid import Reference, ScopeBlock, cast, flow, format_yaml_loc
 from confluid.lazy import Lazy, is_lazy_annotation, lazy_param_names
+from confluid.llm_schema import sanitize_schema
 from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize, resolve
 from confluid.mandatory import Mandatory, is_mandatory_annotation, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
@@ -98,4 +99,5 @@ __all__ = [
     "validate_kwargs",
     "validate_setattr",
     "validate_model",
+    "sanitize_schema",
 ]
