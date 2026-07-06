@@ -25,7 +25,7 @@ stripped at the end of resolution.
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from logflow import get_logger
+from loggair import get_logger
 
 from confluid.fluid import ScopeBlock
 

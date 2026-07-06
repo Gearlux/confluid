@@ -3,7 +3,7 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import yaml
-from logflow import get_logger
+from loggair import get_logger
 
 logger = get_logger("confluid.resolver")
 
