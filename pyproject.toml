@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0.0",
     "pyyaml>=6.0",
-    "log-flow>=0.1.0",
+    "loggair>=0.1.0",
     "python-dotenv>=1.0.0",
     # PEP 696 TypeVar(default=...) for the generic Lazy[T] fluid (fluid.py); the
     # stdlib typing gained `default` only in 3.13, py-floor is 3.12 so use the backport.
@@ -71,7 +71,7 @@ module = "yaml.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "logflow.*"
+module = "loggair.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

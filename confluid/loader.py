@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union, cast
 
 import yaml
-from logflow import get_logger
+from loggair import get_logger
 
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver, parse_value
