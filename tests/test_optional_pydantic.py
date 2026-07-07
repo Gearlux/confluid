@@ -39,7 +39,7 @@ def _run_without_pydantic(script: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_import_and_init_validation_degrades_to_off():
+def test_import_and_init_validation_degrades_to_off() -> None:
     """confluid imports without pydantic; @configurable init validation is skipped.
 
     ``lr="not-a-float"`` would raise a pydantic ValidationError under the
@@ -71,7 +71,7 @@ print("OK")
     assert result.stderr.count("confluid[pydantic]") == 1, result.stderr
 
 
-def test_configure_setattr_validation_degrades_to_off():
+def test_configure_setattr_validation_degrades_to_off() -> None:
     """Post-construction configure() applies values without pydantic checks."""
     result = _run_without_pydantic(
         """
@@ -94,7 +94,7 @@ print("OK")
     assert "OK" in result.stdout
 
 
-def test_schema_export_api_raises_with_install_hint():
+def test_schema_export_api_raises_with_install_hint() -> None:
     """confluid.to_pydantic (and friends) raise ImportError naming the extra."""
     result = _run_without_pydantic(
         """
@@ -114,7 +114,7 @@ print("OK")
     assert "OK" in result.stdout
 
 
-def test_lazy_exports_resolve_when_pydantic_present():
+def test_lazy_exports_resolve_when_pydantic_present() -> None:
     """With pydantic installed, the PEP 562 exports resolve to the real API."""
     import confluid
 

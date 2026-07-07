@@ -43,6 +43,7 @@ from typing import (
 from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from confluid.exceptions import IntrospectionError
 from confluid.lazy import is_lazy_annotation
 from confluid.schema import _parse_docstring
 
@@ -524,11 +525,12 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
         A new pydantic ``BaseModel`` subclass.
 
     Raises:
-        TypeError: If ``cls`` is not a class or its ``__init__`` is not
-            inspectable (e.g. C extension types without Python wrappers).
+        confluid.IntrospectionError: (a ``TypeError``) If ``cls`` is not a
+            class or its ``__init__`` is not inspectable (e.g. C extension
+            types without Python wrappers).
     """
     if not callable(cls):
-        raise TypeError(f"to_pydantic(cls) expected a class or callable, got {type(cls).__name__}")
+        raise IntrospectionError(f"to_pydantic(cls) expected a class or callable, got {type(cls).__name__}")
 
     # A target may be a class OR a plain builder/factory FUNCTION (e.g. a torchvision
     # detection builder ``fasterrcnn_resnet50_fpn``) — mirroring flow()/resolve_class's
@@ -548,14 +550,14 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
                 sig = inspect.signature(init)
                 hints = get_type_hints(init, include_extras=True)
             except (TypeError, ValueError, NameError) as exc:
-                raise TypeError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
+                raise IntrospectionError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
             docstring = init.__doc__ or cls.__doc__ or ""
     else:
         try:
             sig = inspect.signature(cls)
             hints = get_type_hints(cls, include_extras=True)
         except (TypeError, ValueError, NameError) as exc:
-            raise TypeError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
+            raise IntrospectionError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
         docstring = cls.__doc__ or ""
 
     param_docs = _parse_docstring(docstring)

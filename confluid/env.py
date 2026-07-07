@@ -13,6 +13,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from confluid.exceptions import WorkspaceEnvError
+
 
 def load_workspace_env(
     start: Path | None = None,
@@ -28,9 +30,9 @@ def load_workspace_env(
     ``require`` keys after validating they are set. Keys also listed in
     ``require_paths`` must additionally resolve to an existing path.
 
-    Raises ``RuntimeError`` with an actionable message when no ``.env``
-    is found, a required key is missing, or a path-typed value does not
-    exist on disk.
+    Raises :class:`confluid.WorkspaceEnvError` (a ``RuntimeError``) with an
+    actionable message when no ``.env`` is found, a required key is missing,
+    or a path-typed value does not exist on disk.
     """
     here = Path(start) if start is not None else Path.cwd()
     env_path: Path | None = None
@@ -41,15 +43,15 @@ def load_workspace_env(
             load_dotenv(env_path, override=override)
             break
     if env_path is None:
-        raise RuntimeError(f"No .env file found walking up from {here} -- create one at the workspace root.")
+        raise WorkspaceEnvError(f"No .env file found walking up from {here} -- create one at the workspace root.")
 
     resolved: dict[str, str] = {}
     for key in require:
         value = os.environ.get(key)
         if not value:
-            raise RuntimeError(f"{key} is not set -- add it to {env_path} (e.g. {key}=/Volumes/Store).")
+            raise WorkspaceEnvError(f"{key} is not set -- add it to {env_path} (e.g. {key}=/Volumes/Store).")
         if key in require_paths and not Path(value).exists():
-            raise RuntimeError(
+            raise WorkspaceEnvError(
                 f"{key}={value!r} does not exist on this machine -- mount the volume or update {env_path}."
             )
         resolved[key] = value

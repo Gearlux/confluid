@@ -2,6 +2,7 @@ import functools
 import inspect
 from typing import Any, Callable, Optional, Type, TypeVar, Union, overload
 
+from confluid.exceptions import ConfigurableDefinitionError
 from confluid.registry import get_registry
 
 T = TypeVar("T")
@@ -105,7 +106,7 @@ def configurable(
             stored only as type references).
     """
     if constant and random:
-        raise ValueError(
+        raise ConfigurableDefinitionError(
             "configurable(): 'constant=True' and 'random=True' are contradictory — "
             "a constant's outputs are a pure function of its config, a random class's are not."
         )
