@@ -460,6 +460,8 @@ Every `@configurable` class has its `__init__` wrapped at decoration time to val
 
 All three default to `"strict"` — pydantic `ValidationError` is raised. `"warn"` logs the error to `confluid.validation` and lets the call proceed. `"off"` skips validation entirely.
 
+**Pydantic is an optional dependency** (`pip install 'confluid[pydantic]'`). The core — loading, references, scopes, `flow()`, `configure()` — never needs it. Without the extra, every validation point degrades to `"off"` (a one-time log line records the downgrade) and the schema-export API (`to_pydantic`, `confluid_class_of`, `lazy_param_names_of`) raises `ImportError` naming the extra. Packages that rely on schema export or want validation enforced (navigaitor, fluxstudio, waivefront-helios) must depend on `confluid[pydantic]`.
+
 ```python
 from confluid import configurable, get_policy, set_policy
 

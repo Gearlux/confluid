@@ -1,6 +1,14 @@
 """
 Confluid: Modern, hierarchical configuration and dependency injection.
+
+The pydantic-powered schema-export API (``to_pydantic``, ``confluid_class_of``,
+``lazy_param_names_of``) is exposed lazily via :pep:`562` ``__getattr__`` so
+importing confluid never requires pydantic — it is the optional
+``confluid[pydantic]`` extra. Accessing those names without pydantic installed
+raises an ``ImportError`` naming the extra.
 """
+
+from typing import TYPE_CHECKING, Any
 
 from confluid.configurator import configure
 from confluid.decorators import configurable, ignore_config, output, readonly_config, register
@@ -14,7 +22,6 @@ from confluid.llm_schema import sanitize_schema
 from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize, resolve
 from confluid.mandatory import Mandatory, is_mandatory_annotation, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.pydantic_export import confluid_class_of, lazy_param_names_of, to_pydantic
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
 from confluid.schema import (
@@ -101,3 +108,25 @@ __all__ = [
     "validate_model",
     "sanitize_schema",
 ]
+
+if TYPE_CHECKING:
+    from confluid.pydantic_export import confluid_class_of, lazy_param_names_of, to_pydantic
+
+# Names served lazily from ``confluid.pydantic_export`` (requires the
+# ``confluid[pydantic]`` extra) — see the module docstring.
+_PYDANTIC_EXPORTS = ("to_pydantic", "confluid_class_of", "lazy_param_names_of")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _PYDANTIC_EXPORTS:
+        try:
+            from confluid import pydantic_export
+        except ModuleNotFoundError as exc:
+            if exc.name in ("pydantic", "annotated_types"):
+                raise ImportError(
+                    f"confluid.{name} requires pydantic, which is an optional dependency — "
+                    "install the extra: pip install 'confluid[pydantic]'"
+                ) from exc
+            raise
+        return getattr(pydantic_export, name)
+    raise AttributeError(f"module 'confluid' has no attribute {name!r}")
