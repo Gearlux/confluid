@@ -28,6 +28,11 @@ overridable via env vars at first :func:`get_policy` access:
 * ``CONFLUID_VALIDATE_INIT``
 * ``CONFLUID_VALIDATE_YAML``
 * ``CONFLUID_VALIDATE_TOOL``
+
+Pydantic is an OPTIONAL dependency (the ``confluid[pydantic]`` extra). When it
+is not installed, every validation point degrades to ``"off"`` — a one-time
+log line records the downgrade and all three ``validate_*`` functions return
+without checking anything.
 """
 
 from __future__ import annotations
@@ -36,11 +41,36 @@ import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Literal, Optional
 
-from pydantic import BaseModel, ValidationError
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+_pydantic_available: Optional[bool] = None
+
+
+def _have_pydantic() -> bool:
+    """True when pydantic is importable; logs a one-time notice when it is not.
+
+    Cached module-wide so the import is attempted (and the downgrade logged)
+    at most once per process.
+    """
+    global _pydantic_available
+    if _pydantic_available is None:
+        try:
+            import pydantic  # noqa: F401
+
+            _pydantic_available = True
+        except ImportError:
+            _pydantic_available = False
+            logger.warning(
+                "pydantic is not installed — confluid validation is disabled "
+                "(all validation points degrade to 'off'). "
+                "Install the extra to enable it: pip install 'confluid[pydantic]'"
+            )
+    return _pydantic_available
 
 
 ValidationMode = Literal["strict", "warn", "off"]
@@ -199,13 +229,15 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
     Any kwarg whose value contains a Fluid anywhere in its tree is treated
     as deferred and skipped.
     """
-    if mode == "off":
+    if mode == "off" or not _have_pydantic():
         return
 
     # Lazy import: ``pydantic_export`` pulls pydantic + inspect, which is
     # heavier than this module needs to be eligible to import. ``Fluid`` is
     # imported lazily too so this module stays importable before fluid.py is
     # fully initialised (the loader → fluid → validation chain runs at startup).
+    from pydantic import ValidationError
+
     from confluid.fluid import Fluid
     from confluid.pydantic_export import to_pydantic
 
@@ -261,8 +293,10 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     signature, e.g. ``@configurable`` classes that expose extra knobs as
     plain instance attributes).
     """
-    if mode == "off":
+    if mode == "off" or not _have_pydantic():
         return
+
+    from pydantic import ValidationError
 
     from confluid.pydantic_export import to_pydantic
 
@@ -289,8 +323,10 @@ def validate_model(model: BaseModel, mode: ValidationMode) -> None:
     to surface ``warn`` outcomes as structured warnings without raising. This
     helper redundantly re-validates so the same mode logic applies uniformly.
     """
-    if mode == "off":
+    if mode == "off" or not _have_pydantic():
         return
+
+    from pydantic import ValidationError
 
     try:
         type(model).model_validate(model.model_dump())
