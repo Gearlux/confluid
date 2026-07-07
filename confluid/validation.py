@@ -43,6 +43,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Dict, Iterator, Literal, Optional
 
+from confluid.exceptions import ValidationModeError
+
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
@@ -126,7 +128,7 @@ def _normalize_mode(value: str, *, env_var: str) -> ValidationMode:
     """
     lowered = value.strip().lower()
     if lowered not in _VALID_MODES:
-        raise ValueError(
+        raise ValidationModeError(
             f"{env_var}={value!r} is not a valid ValidationMode " f"(expected one of {sorted(_VALID_MODES)})"
         )
     return lowered  # type: ignore[return-value]

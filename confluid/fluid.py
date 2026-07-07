@@ -4,6 +4,7 @@ from typing import Any, Callable, Generic, Optional, Tuple, Type, Union
 
 from typing_extensions import TypeVar
 
+from confluid.exceptions import ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.registry import get_registry, resolve_class
 
 _logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
         if isinstance(target, str):
             resolved = resolve_class(target)
             if resolved is None:
-                raise ValueError(f"Cannot resolve class: {target}")
+                raise UnknownClassError(f"Cannot resolve class: {target}")
             target = resolved
 
         # kwargs already contain broadcasting (merged by _flow_recursive)
@@ -338,13 +339,14 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
             # ``Class(msg)`` compatible (TypeError / ValueError / RuntimeError
             # / KeyError, …). Some exception classes can't be rebuilt from a
             # plain string — notably pydantic's ``ValidationError``, whose
-            # ``__new__`` demands ``line_errors``. Fall back to a plain
-            # ``RuntimeError`` that still chains the original via ``__cause__``
-            # so the structured info is one ``.__cause__`` away.
+            # ``__new__`` demands ``line_errors``. Fall back to a
+            # ``ConstructionError`` (a ``RuntimeError``) that still chains the
+            # original via ``__cause__`` so the structured info is one
+            # ``.__cause__`` away.
             try:
                 raise type(exc)(msg) from exc
             except TypeError:
-                raise RuntimeError(msg) from exc
+                raise ConstructionError(msg) from exc
 
         # Memoize so a second flow() of the same Instance marker returns this
         # exact object (see module docstring).
@@ -496,7 +498,7 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
         resolved = resolver._resolve_ref(obj.target)
         if resolved is not None and resolved != f"!ref:{obj.target}":
             return flow(resolved, **runtime_kwargs)
-        raise ValueError(f"Cannot resolve Reference: {obj.target}")
+        raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
 
     # 5b. Clone objects — resolve reference then deepcopy
     if isinstance(obj, Clone):
@@ -516,7 +518,7 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
             if resolved is not None:
                 base_kwargs = {**obj.kwargs, **runtime_kwargs}
                 return resolved(**base_kwargs)
-            raise ValueError(f"Class '{target}' not found in registry.")
+            raise UnknownClassError(f"Class '{target}' not found in registry.")
         return flow(target, **{**obj.kwargs, **runtime_kwargs})
 
     # 7. Marker dictionaries (legacy format)

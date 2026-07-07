@@ -14,6 +14,20 @@ from confluid.configurator import configure
 from confluid.decorators import configurable, ignore_config, output, readonly_config, register
 from confluid.dumper import dump
 from confluid.env import load_workspace_env
+from confluid.exceptions import (
+    CircularIncludeError,
+    ConfigFileNotFoundError,
+    ConfigurableDefinitionError,
+    ConfigurationError,
+    ConfluidError,
+    ConstructionError,
+    IntrospectionError,
+    ReferenceResolutionError,
+    ScopeError,
+    UnknownClassError,
+    ValidationModeError,
+    WorkspaceEnvError,
+)
 from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
 from confluid.fluid import Reference, ScopeBlock, cast, flow, format_yaml_loc
@@ -48,6 +62,18 @@ from confluid.validation import (
 )
 
 __all__ = [
+    "ConfluidError",
+    "ConfigurationError",
+    "CircularIncludeError",
+    "ReferenceResolutionError",
+    "UnknownClassError",
+    "ConfigurableDefinitionError",
+    "ValidationModeError",
+    "ScopeError",
+    "ConfigFileNotFoundError",
+    "ConstructionError",
+    "WorkspaceEnvError",
+    "IntrospectionError",
     "configurable",
     "register",
     "ignore_config",

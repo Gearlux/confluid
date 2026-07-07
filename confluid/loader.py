@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union, cast
 import yaml
 from loggair import get_logger
 
+from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ReferenceResolutionError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver, parse_value
 from confluid.scopes import normalize_active, resolve_scopes
@@ -190,12 +191,12 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     if _included is None:
         _included = set()
     if path in _included:
-        raise ValueError(f"Circular include: {path}")
+        raise CircularIncludeError(f"Circular include: {path}")
     _included.add(path)
     _record_loaded_path(path)
 
     if not path.exists():
-        raise FileNotFoundError(f"Not found: {path}")
+        raise ConfigFileNotFoundError(f"Not found: {path}")
 
     _register_constructors()
     with open(path, "r") as f:
@@ -1233,7 +1234,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
 
                 loc = format_yaml_loc(data)
                 loc_str = f" at {loc}" if loc else ""
-                raise ValueError(
+                raise ReferenceResolutionError(
                     f"Self-referential !ref:{data.target}{loc_str}: the only "
                     f"{data.target!r} in scope is this reference itself. "
                     f"Define a top-level {data.target!r} key (e.g. "

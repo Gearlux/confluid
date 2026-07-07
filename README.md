@@ -533,7 +533,42 @@ class AWGNOp: ...                             # FluxStudio re-executes its node 
 class ImpairmentsTxConfig: ...                # function of the constructor config
 ```
 
-`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no sample input, no hidden state. Exporters use it to fold a value-producer node into a static config: FluxStudio's ops-export hoists the node as a top-level `!class:` entry and rewires consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ValueError`.
+`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no sample input, no hidden state. Exporters use it to fold a value-producer node into a static config: FluxStudio's ops-export hoists the node as a top-level `!class:` entry and rewires consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
+
+## Error Handling
+
+Every error Confluid raises is typed, rooted at `ConfluidError`, so callers can catch configuration failures distinctly:
+
+```python
+import confluid
+
+try:
+    app = confluid.load("config.yaml")
+except confluid.ConfigFileNotFoundError:
+    ...  # the config file (or an include) does not exist
+except confluid.ConfigurationError:
+    ...  # bad content: unknown !class:, unresolvable !ref:, circular include, ...
+except confluid.ConfluidError:
+    ...  # any other confluid-specific failure
+```
+
+Every concrete class **also inherits the builtin it replaces**, so pre-existing `except ValueError:` / `except FileNotFoundError:` code (and `pytest.raises(ValueError)` tests) keep working unchanged.
+
+| Exception | Also a | Raised when |
+|---|---|---|
+| `ConfigurationError` | `ValueError` | base for config-content errors (all six below) |
+| `CircularIncludeError` | `ValueError` | an `include:` chain revisits a file |
+| `ReferenceResolutionError` | `ValueError` | a `!ref:` cannot be resolved (unknown or self-referential) |
+| `UnknownClassError` | `ValueError` | a `!class:` target is neither registered nor importable |
+| `ConfigurableDefinitionError` | `ValueError` | a `@configurable` declaration is contradictory |
+| `ValidationModeError` | `ValueError` | a `CONFLUID_VALIDATE_*` env var holds an unknown mode |
+| `ScopeError` | `ValueError` | a scope alias chain is circular |
+| `ConfigFileNotFoundError` | `FileNotFoundError` | a config or included file is missing |
+| `ConstructionError` | `RuntimeError` | a target's constructor failed and the original exception class cannot be rebuilt (original chained via `__cause__`) |
+| `WorkspaceEnvError` | `RuntimeError` | no `.env` found / a required key is unset / a path-typed value is missing |
+| `IntrospectionError` | `TypeError` | a class or callable cannot be introspected for schema export |
+
+Note: a failing constructor normally re-raises with the **original** exception class (`Failed to construct X: ...`) — `ConstructionError` is only the fallback for exception classes that cannot be rebuilt from a plain message (e.g. pydantic's `ValidationError`).
 
 ## Scopes
 
