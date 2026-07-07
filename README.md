@@ -6,7 +6,7 @@
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) part of your configurable graph.
-- **Smart Reference Resolution:** Uses `!ref:` syntax for cross-config references (shared instance), `!clone:` for a deep copy, and `${}` for environment variables.
+- **Smart Reference Resolution:** Uses `!ref:` syntax for cross-config references (shared instance), `!clone:` for a deep copy, and `${...}` for string interpolation of environment variables (`${HOME}`) AND config keys (`${train.dataset}`).
 - **Deferred Initialization:** A node is built eagerly (`!class:Model()`) or left as a deferred recipe (`!class:Model`); `!lazy:` keeps a node deferred until you `flow()` it with runtime-injected arguments (e.g. an optimizer needing `params=model.parameters()`). See [Tags & Deferred Initialization](#tags--deferred-initialization).
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
 - **Docstring-Derived Parameter Help:** `to_pydantic` parses each class's Google/NumPy-style `Args:` block into pydantic `Field(description=...)`; `parse_param_docs(cls_or_fn)` exposes the same `{param: help}` mapping directly, so downstream GUIs (navigaitor's form-spec, FluxStudio's node tooltips) document a constructor argument once, at the source.
@@ -81,6 +81,26 @@ configure(trainer, config)
 print(trainer.lr) # 0.0001
 print(trainer.model.layers) # 10
 ```
+
+### `${...}` interpolation — env vars AND config keys
+
+A `${...}` placeholder in a string value is substituted at load time. The name decides the source:
+
+- **Plain name → environment variable** (the historical behaviour): `${HOME}`, `${PORT:8080}` (with an optional `:default`).
+- **Dotted / bracketed name → another config key**, resolved against the config tree with the same path machinery `!ref:` uses: `${train.dataset}`, `${items[0]}`, `${db.port:5432}`.
+
+```yaml
+train:
+  dataset: RFUAV
+  version: v3
+# Mix env + config keys in one string:
+data_dir: "${DATA_ROOT}/${train.dataset}/${train.version}/data"   # -> /store/RFUAV/v3/data
+epochs:   "${train.epochs}"                                        # whole match keeps the native int type
+```
+
+A whole-string match (`"${train.epochs}"`) returns the value with its real type; an embedded match substitutes `str(value)` (scalars only). Local (sibling) keys win over global, mirroring `!ref:`. On a miss the `:default` applies, else the literal `${...}` is left in place. Interpolation is a single pass, so a referenced key must already be a literal/scalar — for wiring a live object into another config slot, use `!ref:` instead.
+
+Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps meaning an environment variable — only names containing a `.` or `[` hit the config tree.
 
 ### 4. Dump and Reconstruct
 ```python

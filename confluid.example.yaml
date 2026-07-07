@@ -20,6 +20,17 @@ include:
 # Standard top-level settings and object configurations.
 base_lr: 0.001
 
+# String interpolation (${...}). The name decides the source:
+#   plain name              -> environment variable  (${HOME}, ${PORT:8080})
+#   dotted / bracketed name -> another CONFIG KEY     (${train.dataset}, ${items[0]})
+# A whole-string match keeps the value's native type; embedded matches
+# substitute str(value). On a miss the :default applies, else the literal
+# ${...} is left in place. (For wiring a live OBJECT into a slot, use !ref:.)
+train:
+  dataset: RFUAV
+  version: v3
+data_dir: "${HOME}/data/${train.dataset}/${train.version}"
+
 # Dotted Notation (Helios Style)
 # These are expanded into nested dicts: {"Model": {"layers": 3, "dropout": 0.1}}
 Model.layers: 3

@@ -16,6 +16,25 @@ _PathSegment = Tuple[str, Union[str, int]]
 _PATH_TOKEN_RE = re.compile(r"\.?(\w[\w-]*)|\[([^\[\]]+)\]")
 _INT_LITERAL_RE = re.compile(r"-?\d+")
 
+# ``${...}`` interpolation. The name group is deliberately wider than an env
+# identifier so a placeholder can ALSO carry a dotted / bracketed CONFIG-KEY
+# path (``${train.dataset}`` / ``${items[0]}``); the presence of a ``.`` or
+# ``[`` is what routes a placeholder to config-key lookup instead of
+# ``os.getenv``. A plain identifier stays an environment variable, so every
+# pre-existing ``${VAR}`` / ``${VAR:default}`` keeps its meaning.
+_INTERP_RE = re.compile(r"\$\{([\w.\[\]-]+)(?::([^}]+))?\}")
+
+
+def _is_config_path(name: str) -> bool:
+    """A ``${...}`` name is a config-key path (not an env var) iff it carries a
+    dotted key or a ``[...]`` index — an env var name never does."""
+    return "." in name or "[" in name
+
+
+def _is_scalar(value: Any) -> bool:
+    """Values safe to embed into a larger string during interpolation."""
+    return isinstance(value, (str, int, float, bool))
+
 
 def _parse_path_segments(path: str) -> Optional[List[_PathSegment]]:
     """Tokenize a reference path into a flat list of segments.
@@ -121,7 +140,7 @@ class Resolver:
         """
         # 1. Handle Strings (Interpolation and Tags)
         if isinstance(value, str):
-            value = self._interpolate(value)
+            value = self._interpolate(value, local_context)
             if not isinstance(value, str):
                 return value
 
@@ -255,27 +274,70 @@ class Resolver:
             return None
         return _walk_path_segments(segments, context, self._lookup_path)
 
-    def _interpolate(self, value: str) -> Any:
-        env_pattern = r"\$\{([\w_]+)(?::([^}]+))?\}"
+    def _interpolate(self, value: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
+        """Substitute ``${...}`` placeholders in a string.
 
-        def env_replacer(match: re.Match) -> str:
-            var_name = match.group(1)
-            default_val = match.group(2)
-            return os.getenv(var_name, default_val or match.group(0))
+        Two families share the ``${...}`` syntax, dispatched purely on the name:
 
-        if "${" in value:
-            match = re.fullmatch(env_pattern, value)
-            if match:
-                var_name = match.group(1)
-                default_val = match.group(2)
-                env_val = os.getenv(var_name)
-                if env_val is not None:
-                    return self._parse_primitive(env_val)
-                return self._parse_primitive(default_val) if default_val is not None else value
+        * ``${NAME}`` / ``${NAME:default}`` — an **environment variable**
+          (``os.getenv``), the historical behaviour. A plain identifier (no
+          ``.`` / ``[``) is always an env var.
+        * ``${a.b.c}`` / ``${items[0]}`` / ``${a.b:default}`` — a dotted or
+          bracketed **config-key path**, resolved against the config tree
+          (local context first, then global) with the same ``_lookup_path``
+          machinery ``!ref:`` uses. This lets a YAML string embed another
+          config value, e.g.
+          ``data_dir: "${DATA_ROOT}/${train.dataset}/${train.version}"``.
 
-            value = re.sub(env_pattern, env_replacer, value)
+        A whole-string match returns the resolved value with its native type;
+        an embedded match substitutes ``str(value)`` (scalars only — a
+        non-scalar target is left as the literal ``${...}``). On a miss the
+        ``:default`` is applied (parsed), else the literal ``${...}`` is left
+        in place. The referenced config value must already be a resolved
+        literal / scalar (interpolation is a single pass, like ``!ref:``).
+        """
+        if "${" not in value:
+            return value
 
-        return value
+        # Whole-string match — return the resolved value with its real type.
+        whole = _INTERP_RE.fullmatch(value)
+        if whole:
+            resolved, found = self._resolve_placeholder(whole.group(1), whole.group(2), local_context)
+            return resolved if found else value
+
+        # Embedded matches — substitute each occurrence as a string.
+        def replacer(match: "re.Match[str]") -> str:
+            resolved, found = self._resolve_placeholder(match.group(1), match.group(2), local_context)
+            if found and _is_scalar(resolved):
+                return str(resolved)
+            return match.group(0)  # miss / non-scalar → leave the literal ${...}
+
+        return _INTERP_RE.sub(replacer, value)
+
+    def _resolve_placeholder(
+        self, name: str, default_val: Optional[str], local_context: Optional[Dict[str, Any]]
+    ) -> Tuple[Any, bool]:
+        """Resolve one ``${...}`` placeholder to ``(value, found)``.
+
+        A config-key name (dotted / bracketed) is looked up in
+        ``local_context`` then ``self.context``; a plain name is an env var.
+        On a miss, ``default_val`` (if any) is parsed and returned; otherwise
+        ``(None, False)`` signals "leave the literal ``${...}`` in place". A
+        looked-up ``None`` is treated as a miss, matching ``_resolve_ref``.
+        """
+        if _is_config_path(name):
+            for ctx in (local_context, self.context):
+                if ctx:
+                    found = self._lookup_path(name, ctx)
+                    if found is not None:
+                        return found, True
+        else:
+            env_val = os.getenv(name)
+            if env_val is not None:
+                return self._parse_primitive(env_val), True
+        if default_val is not None:
+            return self._parse_primitive(default_val), True
+        return None, False
 
     def _parse_primitive(self, value: str) -> Any:
         """Convert string to appropriate Python primitive."""
