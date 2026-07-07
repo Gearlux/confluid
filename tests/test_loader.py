@@ -277,3 +277,16 @@ def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> Non
     stays a plain string and is NEVER turned into a ``Lazy``."""
     value = load('m: "!lazy:Model(layers=5)"\n')["m"]
     assert value == "!lazy:Model(layers=5)"  # untouched string
+
+
+def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${key.path}`` embeds another config value; ``${ENV}`` stays env-based."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    doc = (
+        "train:\n"
+        "  dataset: RFUAV\n"
+        "  version: v3\n"
+        'data_dir: "${CONFLUID_TEST_ROOT}/${train.dataset}/${train.version}/data"\n'
+    )
+    result = load(doc, flow=False)
+    assert result["data_dir"] == "/store/RFUAV/v3/data"
