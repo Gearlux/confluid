@@ -82,6 +82,17 @@ print(trainer.lr) # 0.0001
 print(trainer.model.layers) # 10
 ```
 
+`configure_from_file` collapses the load + apply into one call — handy when the config lives on disk:
+
+```python
+from confluid import configure_from_file
+
+# Equivalent to configure(trainer, config=load_config("experiment.yaml"))
+configure_from_file(trainer, path="experiment.yaml")
+```
+
+It reads the file via `load_config` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`.
+
 ### `${...}` interpolation — env vars AND config keys
 
 A `${...}` placeholder in a string value is substituted at load time. The name decides the source:

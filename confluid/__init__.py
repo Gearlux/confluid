@@ -10,7 +10,7 @@ raises an ``ImportError`` naming the extra.
 
 from typing import TYPE_CHECKING, Any
 
-from confluid.configurator import configure
+from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, readonly_config, register
 from confluid.dumper import dump
 from confluid.env import load_workspace_env
@@ -91,6 +91,7 @@ __all__ = [
     "dump",
     "load_workspace_env",
     "configure",
+    "configure_from_file",
     "Fluid",
     "Class",
     "Clone",
