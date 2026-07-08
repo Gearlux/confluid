@@ -1,5 +1,6 @@
 import inspect
-from typing import Any, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Union
 
 import yaml
 
@@ -29,6 +30,34 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
     visited: Set[int] = set()
     for instance in instances:
         _walk(instance, config, resolved_context, "", visited)
+
+
+def configure_from_file(*instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None) -> None:
+    """Load a YAML config file and apply it to existing instances in one call.
+
+    A convenience for the ``load_config`` + :func:`configure` two-step, so
+
+    >>> configure_from_file(trainer, path="experiment.yaml")   # doctest: +SKIP
+
+    is equivalent to ``configure(trainer, config=load_config("experiment.yaml"))``.
+    The file is read via :func:`confluid.load_config`, so recursive ``include:``
+    / ``import:`` directives and ``!class:`` / ``!ref:`` markers are honoured;
+    the loaded config is then walked and applied to each instance exactly as
+    :func:`configure` does (same matching, resolution, and per-field
+    validation). This is a wrapper only — it adds no behaviour beyond loading.
+
+    Args:
+        *instances: The already-constructed objects to configure in place.
+        path: Path to the YAML config file (``str`` or ``Path``).
+        context: Optional explicit resolution context for ``!ref:`` / ``${...}``
+            (defaults to the loaded config itself, mirroring :func:`configure`).
+
+    Raises:
+        confluid.ConfigFileNotFoundError: If ``path`` does not exist.
+    """
+    from confluid.loader import load_config
+
+    configure(*instances, config=load_config(path), context=context)
 
 
 def _walk(
