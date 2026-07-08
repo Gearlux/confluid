@@ -41,7 +41,7 @@ import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional
 
 from confluid.exceptions import ValidationModeError
 
@@ -201,8 +201,11 @@ def override_init_mode(mode: ValidationMode) -> Iterator[None]:
         _policy = previous
 
 
-def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> None:
-    """Validate constructor kwargs against ``to_pydantic(cls)`` under ``mode``.
+def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> None:
+    """Validate constructor / call kwargs against ``to_pydantic(cls)`` under ``mode``.
+
+    ``cls`` may be a class OR a callable (a ``@configurable`` builder function),
+    mirroring ``to_pydantic``'s callable-awareness.
 
     Builds (or reuses the cached) pydantic mirror of ``cls.__init__`` and
     runs ``Model.model_validate(kwargs)``. On failure:
