@@ -1,6 +1,6 @@
 import importlib
 import logging
-from typing import Any, Callable, Dict, Optional, Set, Type, Union, cast
+from typing import Any, Callable, Dict, Optional, Set, Union, cast
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +9,9 @@ class ConfluidRegistry:
     """Central registry for configurable classes and objects."""
 
     def __init__(self) -> None:
-        self._classes: Dict[str, Type[Any]] = {}
+        # Values are configurable CALLABLES — classes OR builder/factory
+        # functions (see the "A Target May Be ANY Callable" mandate).
+        self._classes: Dict[str, Callable[..., Any]] = {}
         self._objects: Dict[str, Any] = {}
         # Reverse indices: <value> → set of registered class names. Classes
         # without the corresponding tag aren't stored, so a ``None`` filter
@@ -23,14 +25,14 @@ class ConfluidRegistry:
 
     def register_class(
         self,
-        cls: Type[Any],
+        cls: Callable[..., Any],
         name: Optional[str] = None,
         category: Optional[str] = None,
         group: Optional[str] = None,
         task: Optional[str] = None,
         role: Optional[str] = None,
         lazy: bool = False,
-    ) -> Type[Any]:
+    ) -> Callable[..., Any]:
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
         # Fall back to any tags already on the class — this keeps a re-register
@@ -73,7 +75,7 @@ class ConfluidRegistry:
             self._by_role.setdefault(role, set()).add(cls_name)
         return cls
 
-    def get_class(self, name: str) -> Optional[Type[Any]]:
+    def get_class(self, name: str) -> Optional[Callable[..., Any]]:
         # Handle both name and type-to-name lookup
         if not isinstance(name, str):
             name = getattr(name, "__confluid_name__", getattr(name, "__name__", str(name)))

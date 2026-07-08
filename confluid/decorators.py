@@ -1,12 +1,16 @@
 import functools
 import inspect
-from typing import Any, Callable, Optional, Type, TypeVar, Union, overload
+from typing import Any, Callable, Optional, Type, TypeVar, Union, cast, overload
 
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.registry import get_registry
 
 T = TypeVar("T")
-C = TypeVar("C", bound=Type[Any])
+# ``C`` was ``bound=Type[Any]`` (class-only); now ``bound=Callable[..., Any]`` so
+# ``@configurable`` / ``register`` accept a class OR a plain builder/factory
+# function (both are callable), returning the same type. See the "A Target May
+# Be ANY Callable" mandate.
+C = TypeVar("C", bound=Callable[..., Any])
 
 
 @overload
@@ -45,10 +49,15 @@ def configurable(
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
-    """Mark a class as confluid-configurable and register it.
+    """Mark a class OR callable as confluid-configurable and register it.
+
+    Works on a class (its ``__init__`` is wrapped for validation) or on a
+    plain builder/factory **function** (the function's CALL is wrapped for
+    validation — the callable analogue). See the "A Target May Be ANY
+    Callable" mandate.
 
     Args:
-        cls: The class to decorate.
+        cls: The class or callable to decorate.
         name: Optional override for the registration name.
         category: Optional discovery taxonomy bucket (e.g. ``"loss"``,
             ``"model"``, ``"trainer"``). Surfaces via
@@ -117,7 +126,15 @@ def configurable(
     effective_category = category or (f"{task}_{role}" if task and role else None)
 
     def decorator(c: C) -> C:
-        # Mark the class with metadata
+        # A @configurable FUNCTION (not a class) gets its CALL validated by a
+        # functools.wraps wrapper — the callable analogue of the class
+        # __init__ wrap below. Markers + registration then land on the WRAPPER
+        # so it is the object resolve_class/flow build (YAML materialization of
+        # the function then validates under policy.yaml too).
+        if validate and not isinstance(c, type) and callable(c):
+            c = _wrap_callable_with_validation(c)
+
+        # Mark the class / callable with metadata
         setattr(c, "__confluid_configurable__", True)
         if name:
             setattr(c, "__confluid_name__", name)
@@ -145,7 +162,7 @@ def configurable(
             c, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy
         )
 
-        if validate:
+        if validate and isinstance(c, type):
             _wrap_init_with_validation(c)
         return c
 
@@ -155,7 +172,7 @@ def configurable(
 
 
 def register(
-    cls: Type[Any],
+    cls: C,
     *,
     name: Optional[str] = None,
     category: Optional[str] = None,
@@ -163,11 +180,16 @@ def register(
     task: Optional[str] = None,
     role: Optional[str] = None,
     lazy: bool = False,
-) -> Type[Any]:
-    """Register a class (e.g., from a third-party library) as configurable.
+) -> C:
+    """Register a class OR callable (e.g. a third-party class or builder function) as configurable.
+
+    Discovery-registration only — unlike :func:`configurable`, ``register`` does
+    NOT wrap validation (for either a class ``__init__`` or a callable's call);
+    it just stamps the discovery markers and indexes the name. Use it for
+    off-the-shelf classes / builder functions you don't own.
 
     Args:
-        cls: The class to register.
+        cls: The class or callable to register.
         name: Optional override for the registration name.
         category: Optional discovery taxonomy bucket.
         group: Optional path-like presentation sub-grouping (see :func:`configurable`).
@@ -218,6 +240,59 @@ def output(func: T) -> T:
     """
     setattr(func, "__confluid_output__", True)
     return func
+
+
+def _wrap_callable_with_validation(func: C) -> C:
+    """Wrap a ``@configurable`` FUNCTION so each CALL validates its kwargs.
+
+    The callable analogue of :func:`_wrap_init_with_validation` (no ``self``):
+    it binds the call's positional + keyword arguments to ``func``'s signature
+    and routes the resulting mapping through
+    :func:`confluid.validation.validate_kwargs` under the active
+    :attr:`ValidationPolicy.init` mode, then invokes ``func`` — STRICT raises
+    before the call, WARN logs and proceeds, OFF skips the check.
+
+    Returns a :func:`functools.wraps` wrapper (a NEW object) so the caller /
+    module name rebinds to the validated callable; signature, annotations and
+    ``__name__`` are preserved (``inspect.signature`` / ``get_type_hints``
+    follow ``__wrapped__``), so ``to_pydantic`` / ``resolve_class`` keep
+    working. A non-introspectable callable is returned unwrapped. Idempotent
+    via the ``__confluid_validated__`` marker.
+    """
+    if getattr(func, "__confluid_validated__", False):
+        return func
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        # Signature not introspectable — leave the callable alone.
+        return func
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Lazy import to avoid a hard dependency cycle at decorator-import time.
+        from confluid.validation import get_policy, validate_kwargs
+
+        mode = get_policy().init
+        if mode != "off":
+            try:
+                bound = sig.bind(*args, **kwargs)
+            except TypeError:
+                # ``sig.bind`` rejects unknown kwargs / missing required args
+                # before the call — surface that to pydantic so the user sees
+                # the structured ``extra="forbid"`` / required-field error.
+                validate_kwargs(func, kwargs, mode)
+            else:
+                cleaned = {
+                    param_name: value
+                    for param_name, value in bound.arguments.items()
+                    if sig.parameters[param_name].kind
+                    not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                }
+                validate_kwargs(func, cleaned, mode)
+        return func(*args, **kwargs)
+
+    setattr(wrapper, "__confluid_validated__", True)
+    return cast(C, wrapper)
 
 
 def _wrap_init_with_validation(cls: Type[Any]) -> None:

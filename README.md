@@ -5,7 +5,7 @@
 ## Key Features
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
-- **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) part of your configurable graph.
+- **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) — or plain builder **functions** — part of your configurable graph via `@configurable` / `register`.
 - **Smart Reference Resolution:** Uses `!ref:` syntax for cross-config references (shared instance), `!clone:` for a deep copy, and `${...}` for string interpolation of environment variables (`${HOME}`) AND config keys (`${train.dataset}`).
 - **Deferred Initialization:** A node is built eagerly (`!class:Model()`) or left as a deferred recipe (`!class:Model`); `!lazy:` keeps a node deferred until you `flow()` it with runtime-injected arguments (e.g. an optimizer needing `params=model.parameters()`). See [Tags & Deferred Initialization](#tags--deferred-initialization).
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
@@ -282,6 +282,23 @@ own signature, so a `register`-ed function (e.g. `register(fasterrcnn_resnet50_f
 task="detection", role="model")`) surfaces in navigaitor's form-spec / MCP schemas
 and FluxStudio's node palette exactly like a class (un-JSON-schemable param types —
 e.g. torchvision's `Weights` enums or a `Callable[...]` arg — degrade to `Any`).
+
+**You can also `@configurable` / `register` a FUNCTION directly**, not just a class:
+
+```python
+from confluid import configurable
+
+@configurable
+def build_model(num_classes: int = 10, backbone: str = "resnet18"):
+    return ...   # a plain builder function is now a first-class configurable target
+```
+
+A `@configurable` function has its **call** validated against its signature (the
+callable analogue of a class's `__init__` validation) — an unknown kwarg or a
+type-invalid value raises the same structured pydantic error, under the same
+`ValidationPolicy` (`@configurable(validate=False)` opts out). `register(fn, ...)`
+registers an off-the-shelf builder for discovery without wrapping validation, just
+as it does for a third-party class.
 
 ```yaml
 # Deferred — the receiving object gets a Class stub and builds it itself,
