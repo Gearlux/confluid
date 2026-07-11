@@ -49,6 +49,20 @@ All notable changes to confluid are documented here. The format follows
 - README documentation for `cast` (the typed materializer for static
   checkers), the `${...}` interpolation family, and loader-directive notes.
 
+### Changed (internal — no public API change)
+
+- **Module layering:** the materialization engine (`flow`/`cast`,
+  `materialize`/`resolve`, broadcasting, accept-lists, the `_state`
+  thread-local) moved to `confluid.engine`, breaking the old `fluid`↔`loader`
+  import cycle; `fluid` is now a pure marker-class leaf and `loader` is
+  YAML-only. Deep imports from `confluid.loader` / `confluid.fluid` keep
+  working via re-exports (PEP-562 for `fluid.flow`/`fluid.cast`).
+- **`flow()` decomposed** from one ~390-line function into a dispatcher +
+  named `_flow_*` phase helpers (behavior byte-identical).
+- **One AST scanner:** the three near-identical `__init__`-body scanners are
+  unified in stdlib-only `confluid.introspect` (`scan_init_body` + three
+  projections); the wraps-transparency dependency is now pinned by a test.
+
 ### Fixed
 
 - `configure()` no longer executes property getters, can set `None`, and

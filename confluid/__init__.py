@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
+from confluid.engine import cast, flow, get_configurable_attrs, materialize, resolve
 from confluid.exceptions import (
     CircularIncludeError,
     ConfigFileNotFoundError,
@@ -34,10 +35,10 @@ from confluid.exceptions import (
 )
 from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
-from confluid.fluid import Reference, cast, flow, format_yaml_loc
+from confluid.fluid import Reference, format_yaml_loc
 from confluid.lazy import Lazy, lazy_param_names
 from confluid.llm_schema import sanitize_schema
-from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize, resolve
+from confluid.loader import load, load_config, load_config_with_paths
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.registry import get_registry

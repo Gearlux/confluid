@@ -273,7 +273,7 @@ def _walk_instance(
     # body) AND post-construction setattrs done by Confluid's machinery or
     # the user externally (the Enable wrapper's ``obj.visualize = True``
     # pattern). See [confluid/confluid/loader.py:get_configurable_attrs].
-    from confluid.loader import get_configurable_attrs
+    from confluid.engine import get_configurable_attrs
 
     declared_names = get_configurable_attrs(obj)
     for attr_name in declared_names:
