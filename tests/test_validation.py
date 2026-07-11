@@ -402,19 +402,21 @@ def test_default_policy_strict_for_all_levels() -> None:
 
 
 def test_confluid_validation_exports_available() -> None:
-    """The new symbols are accessible from the top-level ``confluid`` package."""
+    """The user-facing policy knobs stay on the top-level ``confluid`` package;
+    the validation MACHINERY (``validate_kwargs``/``validate_setattr``/
+    ``override_init_mode``) is deliberately NOT re-exported (2026-07 API
+    pruning) — it lives in ``confluid.validation``."""
     for name in (
         "ValidationMode",
         "ValidationPolicy",
         "get_policy",
         "set_policy",
         "reset_policy",
-        "override_init_mode",
-        "validate_kwargs",
-        "validate_setattr",
         "validate_model",
     ):
         assert hasattr(confluid, name), f"missing export: {name}"
+    for internal in ("override_init_mode", "validate_kwargs", "validate_setattr"):
+        assert internal not in confluid.__all__, f"internal machinery re-exported: {internal}"
 
 
 # -------------------------------------------------------------------------

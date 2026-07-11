@@ -1,19 +1,23 @@
 """
 Confluid: Modern, hierarchical configuration and dependency injection.
 
-The pydantic-powered schema-export API (``to_pydantic``, ``confluid_class_of``,
-``lazy_param_names_of``) is exposed lazily via :pep:`562` ``__getattr__`` so
-importing confluid never requires pydantic — it is the optional
-``confluid[pydantic]`` extra. Accessing those names without pydantic installed
-raises an ``ImportError`` naming the extra.
+The pydantic-powered schema-export API (``to_pydantic``, ``confluid_class_of``)
+is exposed lazily via :pep:`562` ``__getattr__`` so importing confluid never
+requires pydantic — it is the optional ``confluid[pydantic]`` extra. Accessing
+those names without pydantic installed raises an ``ImportError`` naming the
+extra.
+
+``__all__`` is the CURATED public surface (pruned 2026-07): internal
+machinery (validation plumbing, scope resolution, annotation predicates,
+marker internals) stays importable from its home module but is deliberately
+not re-exported here.
 """
 
 from typing import TYPE_CHECKING, Any
 
 from confluid.configurator import configure, configure_from_file
-from confluid.decorators import configurable, ignore_config, output, readonly_config, register
+from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
-from confluid.env import load_workspace_env
 from confluid.exceptions import (
     CircularIncludeError,
     ConfigFileNotFoundError,
@@ -30,11 +34,11 @@ from confluid.exceptions import (
 )
 from confluid.fluid import Class, Clone, Fluid, Instance
 from confluid.fluid import Lazy as LazyClass
-from confluid.fluid import Reference, ScopeBlock, cast, flow, format_yaml_loc
-from confluid.lazy import Lazy, is_lazy_annotation, lazy_param_names
+from confluid.fluid import Reference, cast, flow, format_yaml_loc
+from confluid.lazy import Lazy, lazy_param_names
 from confluid.llm_schema import sanitize_schema
 from confluid.loader import get_configurable_attrs, load, load_config, load_config_with_paths, materialize, resolve
-from confluid.mandatory import Mandatory, is_mandatory_annotation, mandatory_param_names
+from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
@@ -48,18 +52,8 @@ from confluid.schema import (
     parse_param_docs,
     shortest_unique_paths,
 )
-from confluid.scopes import discover_dimensions, normalize_active, parse_scope_arg, resolve_scopes
-from confluid.validation import (
-    ValidationMode,
-    ValidationPolicy,
-    get_policy,
-    override_init_mode,
-    reset_policy,
-    set_policy,
-    validate_kwargs,
-    validate_model,
-    validate_setattr,
-)
+from confluid.scopes import discover_dimensions
+from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
 
 __all__ = [
     "ConfluidError",
@@ -77,7 +71,6 @@ __all__ = [
     "configurable",
     "register",
     "ignore_config",
-    "readonly_config",
     "output",
     "get_registry",
     "load",
@@ -89,7 +82,6 @@ __all__ = [
     "expand_dotted_keys",
     "parse_value",
     "dump",
-    "load_workspace_env",
     "configure",
     "configure_from_file",
     "Fluid",
@@ -97,16 +89,13 @@ __all__ = [
     "Clone",
     "Instance",
     "Reference",
-    "ScopeBlock",
     "flow",
     "cast",
     "format_yaml_loc",
     "Lazy",
     "LazyClass",
-    "is_lazy_annotation",
     "lazy_param_names",
     "Mandatory",
-    "is_mandatory_annotation",
     "mandatory_param_names",
     "get_hierarchy",
     "get_hierarchy_from_instance",
@@ -119,29 +108,22 @@ __all__ = [
     "get_configurable_attrs",
     "to_pydantic",
     "confluid_class_of",
-    "lazy_param_names_of",
     "discover_dimensions",
-    "normalize_active",
-    "parse_scope_arg",
-    "resolve_scopes",
     "ValidationMode",
     "ValidationPolicy",
     "get_policy",
     "set_policy",
     "reset_policy",
-    "override_init_mode",
-    "validate_kwargs",
-    "validate_setattr",
     "validate_model",
     "sanitize_schema",
 ]
 
 if TYPE_CHECKING:
-    from confluid.pydantic_export import confluid_class_of, lazy_param_names_of, to_pydantic
+    from confluid.pydantic_export import confluid_class_of, to_pydantic
 
 # Names served lazily from ``confluid.pydantic_export`` (requires the
 # ``confluid[pydantic]`` extra) — see the module docstring.
-_PYDANTIC_EXPORTS = ("to_pydantic", "confluid_class_of", "lazy_param_names_of")
+_PYDANTIC_EXPORTS = ("to_pydantic", "confluid_class_of")
 
 
 def __getattr__(name: str) -> Any:

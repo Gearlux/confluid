@@ -16,13 +16,13 @@ from confluid import (
     dump,
     get_registry,
     input_specs,
-    is_mandatory_annotation,
     load,
     mandatory_param_names,
     output,
     output_specs,
     to_pydantic,
 )
+from confluid.mandatory import is_mandatory_annotation
 
 
 @pytest.fixture(autouse=True)

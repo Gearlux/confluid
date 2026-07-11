@@ -215,12 +215,6 @@ def ignore_config(func: T) -> T:
     return func
 
 
-def readonly_config(func: T) -> T:
-    """Decorator to mark a property or attribute as read-only in configuration/overview."""
-    setattr(func, "__confluid_readonly__", True)
-    return func
-
-
 def output(func: T) -> T:
     """Mark a read-only ``@property`` getter as a declared OUTPUT of a Runnable class.
 
