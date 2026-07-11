@@ -372,7 +372,12 @@ class Resolver:
         if val is not None:
             return val
 
-        logger.warning(f"Failed to resolve reference: {ref_path}")
+        # Debug, not warning: this load-time pass legitimately misses refs that
+        # only resolve at flow time (attribute refs like ``!ref:split.train``,
+        # module-path refs) — a warning here is pure noise for valid configs.
+        # A ref that never resolves fails LOUDLY at flow() with a typed
+        # ReferenceResolutionError, which is the actionable signal.
+        logger.debug(f"Reference not resolvable at this stage (deferred to flow): {ref_path}")
         return f"!ref:{ref_path}"
 
     def _lookup_path(self, path: str, context: Dict[str, Any]) -> Any:

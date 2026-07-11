@@ -39,7 +39,7 @@
 
 ## Testing & Validation
 - **Round-Trip Tests:** Every new feature MUST include a test that dumps and reloads the configured object graph.
-- **Registry Cleanup:** Tests MUST use `setup_registry()` fixtures to clear global state between runs.
+- **Registry Isolation Is Automatic (`tests/conftest.py`):** An autouse fixture SNAPSHOTS the registry's backing indices before every test and RESTORES them afterwards — snapshot/restore, not `clear()`, so module-level `@configurable` registrations survive into each test while anything a test adds/removes is undone. Every test file therefore passes in ISOLATION and under pytest-randomly (verified: all 39 files standalone + repeated randomized full runs). Per-file `setup_registry()` clear fixtures remain valid (they run inside the snapshot window) — use one when a test needs an EMPTY registry, but never rely on ordering between files. The old `test_zz_*` run-last naming hack is gone (`test_all_gaps.py`); never reintroduce alphabetical-ordering tricks — fix the isolation instead.
 - **Line Length:** 120 characters (Black, isort, flake8).
 
 - **Range Marks on Containers Relocate Element-Wise in `to_pydantic`:** The
