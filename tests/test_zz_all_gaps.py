@@ -149,24 +149,23 @@ def test_dumper_coverage() -> None:
 
 
 def test_loader_coverage(tmp_path: Path) -> None:
-    from confluid.loader import _process_imports, _register_constructors
+    from confluid.loader import ConfluidLoader, _process_imports
 
-    _register_constructors()
     # 39: ScalarNode class tag — now returns Class object
-    result = yaml.safe_load("!class:Model")
+    result = yaml.load("!class:Model", Loader=ConfluidLoader)
     assert isinstance(result, Class)
     assert result.target == "Model"
     # 45: ref_compat
-    ref_result = yaml.safe_load("!ref r")
+    ref_result = yaml.load("!ref r", Loader=ConfluidLoader)
     assert isinstance(ref_result, Reference)
     assert ref_result.target == "r"
     # 48-61: class compat variants
-    compat_result = yaml.safe_load("!class Model(x=1)")
+    compat_result = yaml.load("!class Model(x=1)", Loader=ConfluidLoader)
     assert isinstance(compat_result, Instance)
     assert compat_result.target == "Model"
     assert compat_result.kwargs["x"] == 1  # inline scalars are coerced (parse_value)
     # Legacy !class tag also returns Class object
-    legacy_result = yaml.safe_load("!class Model")
+    legacy_result = yaml.load("!class Model", Loader=ConfluidLoader)
     assert isinstance(legacy_result, Class)
     assert legacy_result.target == "Model"
 
@@ -191,7 +190,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
     assert load(42) == 42
 
     # 224: flow_recursive ref
-    assert materialize({"_confluid_ref_": "v"}, context={"v": 10}) == 10
+    assert materialize(Reference("v"), context={"v": 10}) == 10
 
     # 218-219: global_settings not dict
     @configurable
@@ -199,7 +198,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
         def __init__(self, x: int = 1):
             self.x = x
 
-    assert materialize({"_confluid_class_": "G"}, context={"G": 42}).x == 1
+    assert materialize(Instance("G"), context={"G": 42}).x == 1
 
 
 # --- 6. parser.py ---
@@ -249,9 +248,11 @@ def test_resolver_coverage() -> None:
     assert r.resolve(None) is None
     # 31: recursion
     assert r.resolve("!ref:r") == {"b": 1}
-    # 49, 53: !class string
-    assert r.resolve("!class:M()") == {"_confluid_class_": "M"}
-    assert r.resolve("!class:M(x)") == {"_confluid_class_": "M"}
+    # 49, 53: !class string → eager Instance Fluids (a malformed arg is skipped)
+    m_eager = r.resolve("!class:M()")
+    assert isinstance(m_eager, Instance) and m_eager.target == "M" and m_eager.kwargs == {}
+    m_malformed = r.resolve("!class:M(x)")
+    assert isinstance(m_malformed, Instance) and m_malformed.target == "M" and m_malformed.kwargs == {}
     # 103-104, 109: lookup miss
     assert r._resolve_ref("m", local_context={"x": 1}) == "!ref:m"
     # 121, 124, 130-132: navigate miss
@@ -298,5 +299,7 @@ def test_flow_coverage() -> None:
         def __init__(self, x: int = 1) -> None:
             self.x = x
 
-    # flow marker dicts
-    assert flow({"_confluid_class_": "S", "x": 10}).x == 10
+    # flow an Instance marker (the marker-dict IR is gone — Fluids only)
+    s_marker = Instance("S")
+    s_marker.kwargs.update({"x": 10})
+    assert flow(s_marker).x == 10

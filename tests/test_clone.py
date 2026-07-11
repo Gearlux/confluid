@@ -3,13 +3,11 @@ from typing import Any
 import pytest
 
 from confluid import Clone, configurable, dump, flow, get_registry, load
-from confluid.loader import _register_constructors
 
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
     get_registry().clear()
-    _register_constructors()
 
 
 def test_clone_basic_deepcopy() -> None:

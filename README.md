@@ -231,6 +231,12 @@ a live **Solid** object. This two-stage lifecycle is what lets Confluid
 broadcast values into a node *before* it is built and inject runtime arguments
 *as* it is built.
 
+The tags are parsed only by confluid's own loader (a private `yaml.SafeLoader`
+subclass) — a plain `yaml.safe_load` elsewhere in your process does **not**
+recognize them and will raise on the unknown tag, exactly as it would without
+confluid installed. Always go through `confluid.load` / `load_config` to parse
+tagged documents.
+
 | Tag | Purpose | Produces |
 |---|---|---|
 | `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |

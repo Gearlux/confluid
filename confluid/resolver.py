@@ -75,10 +75,34 @@ def _parse_path_segments(path: str) -> Optional[List[_PathSegment]]:
     return segments
 
 
+def _materialize_cursor(value: Any) -> Any:
+    """Flow a Fluid cursor into its live object before attribute access.
+
+    Maps the raw marker through the active ``flow_memo`` first (the
+    thread-local shared-identity memo ``_flow_recursive`` populates) so a
+    dotted ref reuses the SINGLE materialized instance — ``!ref:split.train``
+    + ``!ref:split.val`` share one live ``split`` instead of each rebuilding
+    the whole subtree. Non-Fluid values pass through untouched.
+    """
+    from confluid.fluid import Fluid
+
+    if not isinstance(value, Fluid):
+        return value
+    from confluid.fluid import flow
+    from confluid.loader import _state
+
+    flow_memo = getattr(_state, "flow_memo", None)
+    if flow_memo is not None:
+        value = flow_memo.get(id(value), value)
+    return flow(value)
+
+
 def _walk_path_segments(
     segments: List[_PathSegment],
     context: Any,
     lookup_fn: Callable[[str, Dict[str, Any]], Any],
+    *,
+    getattr_fallback: bool = False,
 ) -> Any:
     """Walk pre-tokenized segments through nested dicts and lists.
 
@@ -88,6 +112,19 @@ def _walk_path_segments(
     decides the step semantics: ``int`` → list index, ``str``/``int``
     → dict key.
 
+    Two policies share this walker:
+
+    * **structural** (``getattr_fallback=False``, the default) — dicts and
+      lists only; the policy behind ``_lookup_path`` (string ``!ref:`` /
+      ``${...}`` interpolation / ``configure()``). A ``${train.split}`` can
+      never accidentally grab a ``str.split`` method.
+    * **object** (``getattr_fallback=True``) — a ``key`` segment on a
+      NON-container cursor falls back to ``getattr`` (Fluids are flowed via
+      :func:`_materialize_cursor` first). Dict-key/index lookup still wins
+      while the cursor IS a container — attribute access only starts once
+      the walk leaves structured data. This is the Reference-resolution
+      policy (:func:`resolve_reference_path`).
+
     Returns ``None`` when the walk can't proceed (key missing, index
     out of range, type mismatch), preserving the caller's
     "missing → None" contract.
@@ -95,8 +132,17 @@ def _walk_path_segments(
     current: Any = context
     for kind, val in segments:
         if kind == "key":
-            if isinstance(current, dict) and val in current:
-                current = current[val]
+            if isinstance(current, dict):
+                if val in current:
+                    current = current[val]
+                    continue
+                return None  # dict-key wins on dicts — never getattr into a dict
+            if getattr_fallback and not isinstance(current, (list, tuple)):
+                current = _materialize_cursor(current)
+                nxt = getattr(current, str(val), None)
+                if nxt is None:
+                    return None
+                current = nxt
                 continue
             return None
         if kind == "idx":
@@ -126,6 +172,102 @@ def _walk_path_segments(
                 return None
             return None
     return current
+
+
+_CALL_SUFFIX_RE = re.compile(r"^(.+)\.([\w-]+)\(\)$")
+
+
+def _import_base(obj_path: str) -> Any:
+    """Resolve an out-of-context base path: importable module first, else registry/class path."""
+    import importlib
+
+    try:
+        return importlib.import_module(obj_path)
+    except ImportError:
+        from confluid.registry import resolve_class
+
+        return resolve_class(obj_path)
+
+
+def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> Any:
+    """Resolve a dotted / bracketed ``!ref:`` path with OBJECT-access semantics.
+
+    The single rich resolver behind ``Reference`` resolution (used by
+    ``flow()`` and ``_flow_recursive`` after their exact-key probe). One
+    grammar covers everything the old per-module resolvers split between
+    them:
+
+    * ``obj.attr`` — attribute access on a (flowed) context object; the base
+      is materialized via :func:`_materialize_cursor`, so dotted refs share
+      the single live instance (``!ref:split.train`` / ``!ref:split.val``).
+    * ``a.b.c`` / ``packs[0].name`` / ``items[idx]`` — full multi-level
+      walks mixing dict keys, list indices, bracketed name-refs, and
+      attribute steps (:func:`_walk_path_segments` with the object policy).
+    * ``obj.method()`` — a trailing ``()`` CALLS the resolved final
+      attribute (zero-arg, re-invoked on every resolution — never memoized).
+    * ``package.module.attr`` — when the base is not in ``context``, it is
+      imported (``importlib``) or resolved via the class registry, e.g.
+      ``!ref:raidar.detection.detection_collate_fn``.
+
+    A literal context key containing dots (``"a.b"``) still wins over the
+    segment walk for its prefix, mirroring ``_lookup_path``'s
+    literal-key-first rule. Returns ``None`` when unresolvable — the caller
+    decides whether that leaves the ``Reference`` deferred or raises.
+    """
+    ctx = context or {}
+
+    call_match = _CALL_SUFFIX_RE.match(target)
+    if call_match:
+        base = _resolve_base_path(call_match.group(1), ctx)
+        if base is None:
+            return None
+        method = getattr(base, call_match.group(2), None)
+        if method is not None and callable(method):
+            return method()
+        return None
+
+    # Attribute form: literal-prefix probe first (grammar parity for context
+    # keys literally named "a.b"), then the rich segment walk, then import.
+    prefix, _, last = target.rpartition(".")
+    if prefix and prefix in ctx:
+        base = _materialize_cursor(ctx[prefix])
+        # Containers keep dict-key/index semantics (the walker's job) — never
+        # getattr into a dict/list, or ``cfg.items`` would silently resolve to
+        # the builtin ``dict.items`` method instead of missing.
+        if not isinstance(base, (dict, list, tuple)):
+            return getattr(base, last, None)
+
+    segments = _parse_path_segments(target)
+    if segments is not None:
+        lookup = Resolver(context=ctx)._lookup_path
+        # A PURELY structural path (dict keys / list indices only) is NOT this
+        # resolver's to take: the deferred-Reference machinery deliberately
+        # keeps it late-bound so post-load overrides (e.g. liquifai's
+        # ``--drone_index 8``) still flow through at final materialize time.
+        # Only when the structural walk misses do we retry with the OBJECT
+        # policy — i.e. the resolution genuinely required an attribute step.
+        if _walk_path_segments(segments, ctx, lookup) is None:
+            found = _walk_path_segments(segments, ctx, lookup, getattr_fallback=True)
+            if found is not None:
+                return found
+
+    if prefix:
+        base = _import_base(prefix)
+        if base is not None:
+            return getattr(base, last, None)
+    return None
+
+
+def _resolve_base_path(obj_path: str, ctx: Dict[str, Any]) -> Any:
+    """Resolve the base object of a ``.method()`` reference (context → walk → import)."""
+    if obj_path in ctx:
+        return _materialize_cursor(ctx[obj_path])
+    segments = _parse_path_segments(obj_path)
+    if segments is not None:
+        found = _walk_path_segments(segments, ctx, Resolver(context=ctx)._lookup_path, getattr_fallback=True)
+        if found is not None:
+            return _materialize_cursor(found)
+    return _import_base(obj_path)
 
 
 class Resolver:
@@ -179,27 +321,8 @@ class Resolver:
         if isinstance(value, (Class, Fluid)):
             return value
 
-        # 3. Handle Dictionary Markers
+        # 3. Handle Dictionaries — recurse, passing the current dict as local_context
         if isinstance(value, dict):
-            if "_confluid_ref_" in value:
-                ref_path = value["_confluid_ref_"]
-                # Try local context first, then global
-                res = self._resolve_ref(ref_path, local_context)
-
-                # Check for recursion (is the result another marker?)
-                if isinstance(res, (dict, str)):
-                    return self.resolve(res, local_context)
-
-                # MANDATE: Ensure the resolved value is correctly typed (YAML conversion)
-                if isinstance(res, str):
-                    return self._parse_primitive(res)
-                return res
-
-            if "_confluid_class_" in value:
-                # We don't resolve classes here; materialization handles them.
-                return value
-
-            # Recurse into normal dicts, passing the current dict as local_context
             return {k: self.resolve(v, local_context=value) for k, v in value.items()}
 
         # 4. Handle Lists
@@ -208,24 +331,31 @@ class Resolver:
 
         return value
 
-    def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Helper to parse 'ClassName(args)' into a marker dict."""
+    def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
+        """Parse a string ``'ClassName(args)'`` / ``'ClassName'`` into a Fluid marker.
+
+        ``Name(...)`` (with parens) is eager → :class:`Instance`; a bare
+        ``Name`` is deferred → :class:`Class` — the same eager-vs-deferred
+        rule as the ``!class:`` YAML tag. Kwargs are assigned
+        post-construction so a kwarg literally named ``target`` can't collide
+        with the Fluid ctor's own parameter.
+        """
+        from confluid.fluid import Class, Instance
+
         if "(" in content and content.endswith(")"):
             cls_name, args_str = content[:-1].split("(", 1)
-            kwargs = {}
+            fluid = Instance(cls_name)
             if args_str.strip():
                 for pair in args_str.split(","):
                     if "=" in pair:
                         k, v = pair.split("=", 1)
-                        k = k.strip()
-                        v = v.strip()
                         # Resolve and Parse the value!
-                        resolved_v = self.resolve(v, local_context)
+                        resolved_v = self.resolve(v.strip(), local_context)
                         if isinstance(resolved_v, str):
                             resolved_v = self._parse_primitive(resolved_v)
-                        kwargs[k] = resolved_v
-            return {"_confluid_class_": cls_name, **kwargs}
-        return {"_confluid_class_": content}
+                        fluid.kwargs[k.strip()] = resolved_v
+            return fluid
+        return Class(content)
 
     def _resolve_ref(self, ref_path: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
         """

@@ -131,16 +131,15 @@ def _register_grammar_model() -> None:
 
 
 def _parse_tags(text: str) -> dict:
-    """Parse a YAML string through the same constructors ``load_config`` registers,
+    """Parse a YAML string through ConfluidLoader (the tag-aware loader class),
     WITHOUT materializing — so the raw ``Class`` / ``Instance`` Fluids are visible."""
     from typing import cast
 
     import yaml
 
-    from confluid.loader import _register_constructors
+    from confluid.loader import ConfluidLoader
 
-    _register_constructors()
-    return cast(dict, yaml.safe_load(text))
+    return cast(dict, yaml.load(text, Loader=ConfluidLoader))
 
 
 def test_class_form_bare_parses_to_deferred_class() -> None:
@@ -277,6 +276,25 @@ def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> Non
     stays a plain string and is NEVER turned into a ``Lazy``."""
     value = load('m: "!lazy:Model(layers=5)"\n')["m"]
     assert value == "!lazy:Model(layers=5)"  # untouched string
+
+
+def test_global_safe_loader_stays_clean() -> None:
+    """Tags are registered on ConfluidLoader ONLY — plain ``yaml.safe_load``
+    must still REJECT confluid tags. Guards against re-polluting the global
+    ``yaml.SafeLoader``, which would hand Fluid markers to every other
+    yaml-consuming library in the process."""
+    import yaml
+
+    import confluid  # noqa: F401 — confluid fully imported, constructors registered
+
+    with pytest.raises(yaml.constructor.ConstructorError):
+        yaml.safe_load("m: !class:Model\n")
+    with pytest.raises(yaml.constructor.ConstructorError):
+        yaml.safe_load("r: !ref:base\n")
+    # ...while confluid's own entry point parses them fine.
+    from confluid.fluid import Class
+
+    assert isinstance(load("m: !class:Model\n", flow=False)["m"], Class)
 
 
 def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:

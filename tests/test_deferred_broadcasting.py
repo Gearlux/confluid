@@ -2,7 +2,17 @@ from typing import Any
 
 import pytest
 
-from confluid import Class, Reference, configurable, flow, get_registry, materialize
+from confluid import Class, Instance, Reference, configurable, flow, get_registry, materialize
+
+
+def _inst(target: str, /, **kwargs: Any) -> Instance:
+    """Build an Instance marker with kwargs assigned post-construction.
+
+    ``target`` is positional-only so test kwargs literally named ``name`` or
+    ``target`` can't collide with it."""
+    marker = Instance(target)
+    marker.kwargs.update(kwargs)
+    return marker
 
 
 @pytest.fixture(autouse=True)
@@ -50,11 +60,7 @@ def test_deferred_materialization_basic() -> None:
 def test_class_citizen_captures_broadcasting() -> None:
     """Context values apply when engine is explicitly specified in config."""
     config = {
-        "car": {
-            "_confluid_class_": "Car",
-            "color": "yellow",
-            "engine": {"_confluid_class_": "Engine"},
-        },
+        "car": _inst("Car", color="yellow", engine=_inst("Engine")),
         "power": 777,
     }
 
@@ -68,8 +74,8 @@ def test_class_citizen_captures_broadcasting() -> None:
 def test_reference_citizen() -> None:
     """Test that a Reference in config resolves during materialization."""
     config = {
-        "engine_template": {"_confluid_class_": "Engine", "power": 444},
-        "car": {"_confluid_class_": "Car", "engine": Reference("engine_template")},
+        "engine_template": _inst("Engine", power=444),
+        "car": _inst("Car", engine=Reference("engine_template")),
     }
 
     car = materialize(config["car"], context=config)
@@ -99,11 +105,7 @@ def test_ordered_broadcasting_from_root() -> None:
     rule is gone — every source is just ordered by its YAML position.)
     """
     config = {
-        "car": {
-            "_confluid_class_": "Car",
-            "color": "green",
-            "engine": {"_confluid_class_": "Engine", "power": 200},
-        },
+        "car": _inst("Car", color="green", engine=_inst("Engine", power=200)),
         "power": 999,  # Root broadcast — appears AFTER car in document order
     }
 
@@ -115,11 +117,7 @@ def test_ordered_broadcasting_from_root() -> None:
 
     # Without an explicit nested power, the broadcast still fills it in.
     config2 = {
-        "car": {
-            "_confluid_class_": "Car",
-            "color": "blue",
-            "engine": {"_confluid_class_": "Engine"},
-        },
+        "car": _inst("Car", color="blue", engine=_inst("Engine")),
         "power": 999,
     }
     car2 = materialize(config2["car"], context=config2)
@@ -129,7 +127,7 @@ def test_ordered_broadcasting_from_root() -> None:
 def test_path_based_fallback_resolution() -> None:
     """Test that Confluid can resolve classes by full module path if not in registry."""
     # Use JSONDecoder: standard library, pure python, standard init
-    marker = {"_confluid_class_": "json.JSONDecoder", "strict": False}
+    marker = _inst("json.JSONDecoder", strict=False)
 
     # This should trigger the fallback logic we added
     decoder = flow(marker)
@@ -139,15 +137,15 @@ def test_path_based_fallback_resolution() -> None:
     assert decoder.strict is False
 
 
-def test_deferred_marker_dictionary_flow() -> None:
-    """Test that a marker dictionary stored in an attribute is correctly flowed."""
-    config = {"engine": {"_confluid_class_": "Engine", "power": 123}}
+def test_deferred_instance_marker_flow() -> None:
+    """Test that a deferred Instance marker stored in an attribute is correctly flowed."""
+    config = {"engine": _inst("Engine", power=123)}
 
-    # Simulate an object created with a deferred marker dict
+    # Simulate an object created with a deferred Instance marker
     car = Car(engine=config["engine"])
-    assert isinstance(car.engine, dict)
+    assert isinstance(car.engine, Instance)
 
-    # flow() should recognize the marker dict and materialize it
+    # flow() should recognize the Instance marker and materialize it
     engine_instance = flow(car.engine)
     assert isinstance(engine_instance, Engine)
     assert engine_instance.power == 123
@@ -172,7 +170,7 @@ def test_broadcast_reaches_body_assigned_class_attribute() -> None:
     get_registry().register_class(BodyAssigned, name="BodyAssigned")
 
     config = {
-        "obj": {"_confluid_class_": "BodyAssigned", "color": "blue"},
+        "obj": _inst("BodyAssigned", color="blue"),
         "power": 321,  # Should reach BodyAssigned.nested (= Class(Engine))
     }
 
