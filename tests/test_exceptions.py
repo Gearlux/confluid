@@ -33,8 +33,8 @@ from confluid import (
     configurable,
     flow,
     get_registry,
-    load_workspace_env,
 )
+from confluid.env import load_workspace_env
 from confluid.scopes import _resolve_aliases
 from confluid.validation import _normalize_mode
 

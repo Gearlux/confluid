@@ -91,10 +91,12 @@ def test_override_flag_controls_existing_env(tmp_path: Path, monkeypatch: pytest
     assert load_workspace_env(start=tmp_path, override=True) == {"DATA_ROOT": str(new)}
 
 
-def test_reexport_from_top_level() -> None:
-    from confluid import load_workspace_env as top_level
+def test_not_reexported_from_top_level() -> None:
+    """``load_workspace_env`` is deliberately NOT on the curated top-level
+    surface (2026-07 API pruning) — import it from ``confluid.env``."""
+    import confluid
 
-    assert top_level is load_workspace_env
+    assert "load_workspace_env" not in confluid.__all__
 
 
 def test_default_start_uses_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

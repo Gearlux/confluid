@@ -4,7 +4,8 @@ from typing import Any
 
 import pytest
 
-from confluid import Lazy, configurable, is_lazy_annotation, lazy_param_names
+from confluid import Lazy, configurable, lazy_param_names
+from confluid.lazy import is_lazy_annotation
 
 
 def test_lazy_marker_metadata() -> None:

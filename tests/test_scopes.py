@@ -17,17 +17,9 @@ from typing import Any, Dict, cast
 import pytest
 
 import confluid
-from confluid import (
-    ScopeBlock,
-    configurable,
-    discover_dimensions,
-    get_registry,
-    load,
-    load_config,
-    normalize_active,
-    parse_scope_arg,
-    resolve_scopes,
-)
+from confluid import configurable, discover_dimensions, get_registry, load, load_config
+from confluid.fluid import ScopeBlock
+from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
 
 
 @pytest.fixture(autouse=True)

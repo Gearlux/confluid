@@ -100,7 +100,7 @@ def test_schema_export_api_raises_with_install_hint() -> None:
         """
 import confluid
 
-for name in ("to_pydantic", "confluid_class_of", "lazy_param_names_of"):
+for name in ("to_pydantic", "confluid_class_of"):
     try:
         getattr(confluid, name)
     except ImportError as exc:
@@ -115,12 +115,17 @@ print("OK")
 
 
 def test_lazy_exports_resolve_when_pydantic_present() -> None:
-    """With pydantic installed, the PEP 562 exports resolve to the real API."""
+    """With pydantic installed, the PEP 562 exports resolve to the real API.
+
+    ``lazy_param_names_of`` is no longer re-exported at the top level (2026-07
+    API pruning) — it lives in ``confluid.pydantic_export``.
+    """
     import confluid
+    from confluid.pydantic_export import lazy_param_names_of
 
     model_cls = confluid.to_pydantic(_Sample)
     assert confluid.confluid_class_of(model_cls) is not None
-    assert confluid.lazy_param_names_of(model_cls) == frozenset()
+    assert lazy_param_names_of(model_cls) == frozenset()
 
 
 class _Sample:

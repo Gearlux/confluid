@@ -20,9 +20,9 @@ from typing import Any, Dict, Generic, List, Literal, Optional, Tuple, TypeVar, 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from confluid import configurable, confluid_class_of, get_registry, lazy_param_names_of, to_pydantic
+from confluid import configurable, confluid_class_of, get_registry, to_pydantic
 from confluid.lazy import Lazy
-from confluid.pydantic_export import _convert_annotation, _qualname
+from confluid.pydantic_export import _convert_annotation, _qualname, lazy_param_names_of
 
 
 @pytest.fixture(autouse=True)
