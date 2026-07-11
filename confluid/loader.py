@@ -10,7 +10,7 @@ from loggair import get_logger
 
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ReferenceResolutionError
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.resolver import Resolver, parse_value
+from confluid.resolver import Resolver, parse_value, resolve_reference_path
 from confluid.scopes import normalize_active, resolve_scopes
 
 logger = get_logger("confluid.loader")
@@ -37,8 +37,22 @@ def _record_loaded_path(path: Path) -> None:
         accum.append(path)
 
 
+class ConfluidLoader(yaml.SafeLoader):
+    """SafeLoader subclass carrying confluid's tag constructors.
+
+    The constructors are registered on THIS class only (once, at module
+    import) — never on the global ``yaml.SafeLoader``. Registering on the
+    global class would make every ``yaml.safe_load`` call in the process
+    parse confluid tags, silently handing Fluid markers to unrelated
+    libraries instead of raising on the unknown tag.
+    """
+
+
 def _register_constructors() -> None:
-    """Register YAML constructors for !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: tags."""
+    """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
+
+    Invoked exactly once at module import (see the call below the definition).
+    """
     from confluid.fluid import Class, Clone, Instance, Lazy, Reference, ScopeBlock
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
@@ -160,12 +174,12 @@ def _register_constructors() -> None:
     def notscope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         return _build_scope(loader, tag_suffix, node, negate=True)
 
-    yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
-    yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
-    yaml.SafeLoader.add_multi_constructor("!clone:", clone_constructor)
-    yaml.SafeLoader.add_multi_constructor("!lazy:", lazy_constructor)
-    yaml.SafeLoader.add_multi_constructor("!scope:", scope_constructor)
-    yaml.SafeLoader.add_multi_constructor("!notscope:", notscope_constructor)
+    ConfluidLoader.add_multi_constructor("!ref:", ref_constructor)
+    ConfluidLoader.add_multi_constructor("!class:", class_constructor)
+    ConfluidLoader.add_multi_constructor("!clone:", clone_constructor)
+    ConfluidLoader.add_multi_constructor("!lazy:", lazy_constructor)
+    ConfluidLoader.add_multi_constructor("!scope:", scope_constructor)
+    ConfluidLoader.add_multi_constructor("!notscope:", notscope_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         return _stamp(Reference(loader.construct_scalar(node)), loader, node)
@@ -181,8 +195,13 @@ def _register_constructors() -> None:
             )
         return _stamp(Class(val), loader, node)
 
-    yaml.SafeLoader.add_constructor("!ref", ref_compat)
-    yaml.SafeLoader.add_constructor("!class", class_compat)
+    ConfluidLoader.add_constructor("!ref", ref_compat)
+    ConfluidLoader.add_constructor("!class", class_compat)
+
+
+# Register once at import — constructors live on ConfluidLoader for the
+# lifetime of the process; the global yaml.SafeLoader is never touched.
+_register_constructors()
 
 
 def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
@@ -198,9 +217,8 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     if not path.exists():
         raise ConfigFileNotFoundError(f"Not found: {path}")
 
-    _register_constructors()
     with open(path, "r") as f:
-        data = yaml.safe_load(f) or {}
+        data = yaml.load(f, Loader=ConfluidLoader) or {}
 
     # Root-level !class: documents parse to a Fluid. Imports/includes are
     # dict-only constructs, so skip them and just walk the Fluid's kwargs
@@ -315,14 +333,12 @@ def load(
     blocks tagged with ``!scope:…`` / ``!notscope:…`` in the YAML are resolved
     against this set before flow runs. See :mod:`confluid.scopes`.
     """
-    _register_constructors()
-
     if isinstance(data, (str, Path)):
         str_data = str(data)
         if "\n" not in str_data and ":" not in str_data and len(str_data) < 255 and Path(str_data).exists():
             data = load_config(data)
         else:
-            data = cast(Dict[str, Any], yaml.safe_load(str_data) or {})
+            data = cast(Dict[str, Any], yaml.load(str_data, Loader=ConfluidLoader) or {})
             data = _process_includes_recursive(data, Path.cwd() / "string.yaml", set())
 
     # Resolve scope blocks before anything else — they only carry until this
@@ -959,32 +975,34 @@ def _splice_kwargs_at_slot(
 
 
 def _prepare_kwargs(
-    marker_dict: Dict[str, Any],
+    cls_name: str,
+    own_kwargs: Dict[str, Any],
     parent_context: Dict[str, Any],
     target: Any = None,
     self_obj: Any = None,
 ) -> Dict[str, Any]:
     """Flat-view, document-order, last-write-wins kwarg assembly.
 
-    Walks ``parent_context`` in document order. The receiving class's own
-    ``marker_dict`` is unrolled at the position WHERE ``self_obj`` sits in
+    Walks ``parent_context`` in document order. The receiving Fluid's own
+    ``own_kwargs`` are unrolled at the position WHERE ``self_obj`` sits in
     ``parent_context`` (matched by Python identity); when ``self_obj`` is
-    not found, ``marker_dict`` is applied at the end. Class-name and
-    instance-name dict blocks (``Foo: {...}``) are unrolled inline at their
-    position. Scalar/Fluid values broadcast when the key matches the
-    receiving class's ``acceptable`` set.
+    not found, they are applied at the end. Class-name and instance-name
+    dict blocks (``Foo: {...}``) are unrolled inline at their position.
+    Scalar/Fluid values broadcast when the key matches the receiving
+    class's ``acceptable`` set.
 
     There is no "explicit kwargs > broadcast" priority — every source is
     ordered by its YAML position. Whichever assignment comes last wins.
 
-    ``target`` is an optional class object for parameter inspection (avoids
-    name collisions). ``self_obj`` is the Fluid (or marker dict) being
-    materialized — passed so we can locate its slot in ``parent_context``.
+    ``cls_name`` is the receiver's target name (used for class-name block
+    matching and accept-list lookup). ``target`` is an optional class object
+    for parameter inspection (avoids name collisions). ``self_obj`` is the
+    Fluid being materialized — passed so we can locate its slot in
+    ``parent_context``.
     """
-    cls_name = marker_dict.get("_confluid_class_", "")
     if cls_name.endswith("()"):
         cls_name = cls_name[:-2]
-    instance_name = marker_dict.get("name")
+    instance_name = own_kwargs.get("name")
 
     from confluid.fluid import Fluid
     from confluid.registry import resolve_class
@@ -1003,13 +1021,6 @@ def _prepare_kwargs(
                 return False
             return True
         if isinstance(v, dict):
-            # Marker dicts (``{"_confluid_class_": ...}``) are flowable
-            # values, treat them like Fluids — accept when the key is in
-            # the accept-list.
-            if "_confluid_class_" in v:
-                if acceptable is None or k not in acceptable:
-                    return False
-                return True
             # Plain dict — only broadcast IN when the target annotates the
             # param as a dict/mapping. Otherwise keep the legacy behavior
             # (recurse as a config sub-block, do NOT pull the dict in as
@@ -1025,19 +1036,13 @@ def _prepare_kwargs(
             return False
         return True
 
-    def _unroll_marker_dict(into: Dict[str, Any]) -> None:
-        # Keep ``_confluid_class_`` so callers can still pop it after this
-        # function returns; everything else lands at its document position.
-        for bk, bv in marker_dict.items():
-            into[bk] = bv
-
     merged: Dict[str, Any] = {}
     self_unrolled = False
 
     for k, v in parent_context.items():
-        # Receiving class's own marker — unroll its kwargs at this position.
+        # Receiving Fluid's own slot — unroll its kwargs at this position.
         if self_obj is not None and v is self_obj and not self_unrolled:
-            _unroll_marker_dict(merged)
+            merged.update(own_kwargs)
             self_unrolled = True
             continue
 
@@ -1057,85 +1062,9 @@ def _prepare_kwargs(
             merged[k] = v
 
     if not self_unrolled:
-        _unroll_marker_dict(merged)
-
-    # Recurse into nested marker dicts so their own contexts are prepared.
-    for k, v in list(merged.items()):
-        if isinstance(v, dict) and "_confluid_class_" in v:
-            merged[k] = _prepare_kwargs(v, merged, self_obj=v)
+        merged.update(own_kwargs)
 
     return merged
-
-
-def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
-    """Resolve a dotted reference path, supporting attribute access and method calls.
-
-    Handles patterns like:
-      - ``obj.attr`` — attribute access on a flowed object
-      - ``obj.method()`` — method call on a flowed object
-      - ``module.sub.func()`` — module-level function call (if not in context)
-
-    Returns None if the reference cannot be resolved.
-    """
-    import importlib
-    import re
-
-    from confluid.fluid import Fluid
-    from confluid.fluid import flow as _flow
-
-    # Detect method call suffix: "path.method()"
-    match = re.match(r"^(.+)\.([\w_]+)\(\)$", target)
-    if match:
-        obj_path, method_name = match.group(1), match.group(2)
-    else:
-        # Try plain dotted path: "path.attr"
-        parts = target.rsplit(".", 1)
-        if len(parts) == 2:
-            obj_path, method_name = parts[0], parts[1]
-        else:
-            return None
-
-    # Resolve the base object
-    obj = None
-    if obj_path in context:
-        raw = context[obj_path]
-        if isinstance(raw, Fluid):
-            # Reuse the SINGLE materialized instance rather than re-flowing the raw marker.
-            # ``_flow_recursive`` records ``flow_memo[id(raw_marker)] = resolved_marker`` and the
-            # instance memo then caches ``flow(resolved_marker)`` as one live object. Flowing the
-            # RAW marker here would miss the instance memo (it keys on the resolved marker) and
-            # rebuild the whole sub-tree — so ``!ref:my_split.train`` + ``!ref:my_split.val`` would
-            # each construct a fresh ``my_split`` (and reload its source, e.g. a HuggingFaceSource).
-            # Mapping raw → resolved first makes the dotted ref share the top-level instance.
-            flow_memo = getattr(_state, "flow_memo", None)
-            if flow_memo is not None:
-                raw = flow_memo.get(id(raw), raw)
-            obj = _flow(raw)
-        else:
-            obj = raw
-    else:
-        # Fallback: try to import obj_path as a module or resolve as a class
-        try:
-            obj = importlib.import_module(obj_path)
-        except ImportError:
-            # Maybe obj_path is "module.Class", try resolving it
-            from confluid.registry import resolve_class
-
-            obj = resolve_class(obj_path)
-
-    if obj is None:
-        return None
-
-    if match:
-        # Method/Function call
-        method = getattr(obj, method_name, None)
-        if method is not None and callable(method):
-            return method()
-    else:
-        # Plain dotted path — return attribute
-        return getattr(obj, method_name, None)
-
-    return None
 
 
 def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
@@ -1146,44 +1075,10 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     # live object is instantiated downstream.
     flow_memo: Optional[Dict[int, Any]] = getattr(_state, "flow_memo", None)
 
-    # 1. Marker dictionaries → Fluid citizens with broadcasting applied
+    # 1. Plain dictionaries — pass merged context down
     if isinstance(data, dict):
-        if "_confluid_class_" in data:
-            if flow_memo is not None and id(data) in flow_memo:
-                return flow_memo[id(data)]
-            raw_id = id(data)
-            self_obj = data
-            self_key = next((k for k, v in parent_context.items() if v is self_obj), None) if parent_context else None
-            if parent_context:
-                data = _prepare_kwargs(data, parent_context, self_obj=self_obj)
-            else:
-                data = dict(data)  # Don't mutate the original
-
-            cls_name = data.pop("_confluid_class_")
-            if cls_name.endswith("()"):
-                cls_name = cls_name[:-2]
-
-            # Child context: splice this class's prepared kwargs into the
-            # parent's ambient view at THIS class's slot, preserving document
-            # order. When this class isn't in parent_context (top-level call),
-            # append at end.
-            child_ctx = (
-                _splice_kwargs_at_slot(parent_context, self_key, data, receiver_cls=cls_name)
-                if parent_context is not None
-                else dict(data)
-            )
-            resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
-            result = Instance(cls_name, **resolved_kwargs)
-            if flow_memo is not None:
-                flow_memo[raw_id] = result
-            return result
-
-        if "_confluid_ref_" in data:
-            data = Reference(data["_confluid_ref_"])
-        else:
-            # Plain dict — pass merged context down
-            local_ctx = {**parent_context, **data} if parent_context else dict(data)
-            return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
+        local_ctx = {**parent_context, **data} if parent_context else dict(data)
+        return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
     if isinstance(data, (Class, Instance)):
@@ -1200,10 +1095,10 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                     getattr(data.target, "__name__", ""),
                 )
             )
-            synthetic = {**data.kwargs, "_confluid_class_": target_name}
             actual_target = data.target if isinstance(data.target, type) else None
-            merged_kwargs = _prepare_kwargs(synthetic, parent_context, target=actual_target, self_obj=data)
-            merged_kwargs.pop("_confluid_class_", None)
+            merged_kwargs = _prepare_kwargs(
+                target_name, data.kwargs, parent_context, target=actual_target, self_obj=data
+            )
         else:
             merged_kwargs = dict(data.kwargs)
 
@@ -1241,9 +1136,10 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                     f"`{data.target}: null`), or remove the kwarg."
                 )
             return _flow_recursive(resolved, parent_context=parent_context)
-        # Support dotted paths and method calls (e.g., "obj.method()")
+        # Support dotted paths and method calls (e.g., "obj.method()") via
+        # the unified rich resolver (attribute access, brackets, module import).
         if parent_context:
-            resolved = _resolve_dotted_ref(data.target, parent_context)
+            resolved = resolve_reference_path(data.target, parent_context)
             if resolved is not None:
                 return resolved
         return data

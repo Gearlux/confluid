@@ -475,8 +475,11 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     # 4. Bare type passed directly (e.g., flow(MyClass, x=1))
     if isinstance(obj, type):
         if get_registry().is_configurable(obj):
-            cls_name = getattr(obj, "__confluid_name__", obj.__name__)
-            marker = {"_confluid_class_": cls_name, **runtime_kwargs}
+            # Build an Instance marker (kwargs assigned post-construction so a
+            # runtime kwarg literally named ``target`` can't collide) and
+            # materialize it so broadcasting from ``context`` still applies.
+            marker = Instance(obj)
+            marker.kwargs.update(runtime_kwargs)
             return materialize(marker, context=context)
         else:
             return obj(**runtime_kwargs)
@@ -486,11 +489,11 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
         obj_context = context
         if obj_context and obj.target in obj_context:
             return flow(obj_context[obj.target], **runtime_kwargs)
-        # Try dotted path / method call resolution
+        # Try dotted path / method call resolution via the unified rich resolver
         if obj_context:
-            from confluid.loader import _resolve_dotted_ref
+            from confluid.resolver import resolve_reference_path
 
-            dotted = _resolve_dotted_ref(obj.target, obj_context)
+            dotted = resolve_reference_path(obj.target, obj_context)
             if dotted is not None:
                 return dotted
         # Fallback: try resolver for nested paths
@@ -521,13 +524,7 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
             raise UnknownClassError(f"Class '{target}' not found in registry.")
         return flow(target, **{**obj.kwargs, **runtime_kwargs})
 
-    # 7. Marker dictionaries (legacy format)
-    if isinstance(obj, dict) and ("_confluid_class_" in obj or "_confluid_ref_" in obj):
-        if "_confluid_class_" in obj and runtime_kwargs:
-            obj = {**obj, **runtime_kwargs}
-        return materialize(obj, context=context)
-
-    # 8. String tags ("!class:Name" or "!ref:path")
+    # 7. String tags ("!class:Name" or "!ref:path")
     if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
         resolver = Resolver(context=context)
         resolved = resolver.resolve(obj)

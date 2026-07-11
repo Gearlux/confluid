@@ -4,13 +4,11 @@ import pytest
 import yaml
 
 from confluid import configurable, dump, get_registry
-from confluid.loader import _register_constructors
 
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
     get_registry().clear()
-    _register_constructors()  # Ensure tags are readable in tests
 
 
 def test_basic_dump() -> None:

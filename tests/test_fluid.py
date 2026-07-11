@@ -1,7 +1,19 @@
+from typing import Any
+
 import pytest
 
 import confluid
-from confluid import configurable, flow, load, materialize
+from confluid import Instance, configurable, flow, load, materialize
+
+
+def _inst(target: str, /, **kwargs: Any) -> Instance:
+    """Build an Instance marker with kwargs assigned post-construction.
+
+    ``target`` is positional-only so test kwargs literally named ``name`` or
+    ``target`` can't collide with it."""
+    marker = Instance(target)
+    marker.kwargs.update(kwargs)
+    return marker
 
 
 @pytest.fixture(autouse=True)
@@ -38,12 +50,12 @@ def test_load_hierarchy() -> None:
         def __init__(self, layers: int = 3) -> None:
             self.layers = layers
 
-    # raw load returns dictionary markers in Dictionary-First pattern
+    # raw load keeps the plain hierarchy untouched
     data = {"Model": {"layers": 15}}
     config_data = load(data, flow=False)
 
-    # Explicit materialize to get the instance
-    instance = materialize({"_confluid_class_": "Model", **config_data["Model"]})
+    # Explicit materialize of an Instance marker built from the block
+    instance = materialize(_inst("Model", **config_data["Model"]))
     assert isinstance(instance, Model)
     assert instance.layers == 15
 
@@ -54,8 +66,8 @@ def test_materialize_shorthand() -> None:
         def __init__(self, val: int = 0) -> None:
             self.val = val
 
-    # materialize accepts flat markers
-    obj = materialize({"_confluid_class_": "Simple", "val": 42})
+    # materialize accepts Instance markers
+    obj = materialize(_inst("Simple", val=42))
     assert obj.val == 42
 
 
@@ -90,7 +102,7 @@ def test_flow_auto_solidify_via_materialize() -> None:
         def solidify(self) -> None:
             self.solidified = True
 
-    instance = materialize({"_confluid_class_": "Backbone", "width": 5})
+    instance = materialize(_inst("Backbone", width=5))
     assert instance.solidified is True
 
 

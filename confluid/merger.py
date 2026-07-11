@@ -24,28 +24,21 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _preserve_identity_copy(value: Any) -> Any:
-    """Deepcopy ordinary containers but preserve identity of live Fluid objects
-    AND class-marker dicts (any dict carrying ``_confluid_class_``).
+    """Deepcopy ordinary containers but preserve identity of live Fluid objects.
 
     Fluid markers (Class, Instance, Reference, Clone) represent *one* logical
     configuration citizen. Deep-copying them here would undo the Resolver's
     ``!ref:`` resolution, causing two references to the same Fluid to produce
     two separate live instances downstream. We keep identity intact and let
     ``!clone:`` opt into explicit deepcopy when independence is wanted.
-
-    Class-marker dicts (``{"_confluid_class_": ..., ...}``) get the same
-    treatment so that ``_prepare_kwargs``'s ``self_obj`` identity check can
-    locate the receiving marker's slot in its ambient context — without
-    that, dict-built markers fall back to "marker applied at end" and
-    silently restore the old "explicit kwargs win" priority.
+    (Identity is also what lets ``_prepare_kwargs``'s ``self_obj`` check
+    locate the receiving marker's slot in its ambient context.)
     """
     from confluid.fluid import Fluid
 
     if isinstance(value, Fluid):
         return value
     if isinstance(value, dict):
-        if "_confluid_class_" in value:
-            return value
         return {k: _preserve_identity_copy(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_preserve_identity_copy(item) for item in value]

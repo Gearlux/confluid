@@ -58,7 +58,18 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import configurable, get_registry, materialize
+from confluid import Instance, configurable, get_registry, materialize
+
+
+def _inst(target: str, /, **kwargs: Any) -> Instance:
+    """Build an Instance marker with kwargs assigned post-construction.
+
+    ``target`` is positional-only so test kwargs literally named ``name`` or
+    ``target`` can't collide with it."""
+    marker = Instance(target)
+    marker.kwargs.update(kwargs)
+    return marker
+
 
 # ---------------------------------------------------------------------------
 # Shared module-level fixtures.
@@ -120,17 +131,11 @@ def test_broadcast_reaches_same_class_descendants_through_wrapper() -> None:
     flipped to a passing test. Until then, this exists to nail the
     current behaviour so changes downstream don't quietly drift.
     """
-    config = {
-        "_confluid_class_": "_Outer",
-        "ops": ["heavy_a", "heavy_b"],
-        "source": {
-            "_confluid_class_": "_Wrapper",
-            "children": [
-                {"_confluid_class_": "_Outer"},
-                {"_confluid_class_": "_Outer"},
-            ],
-        },
-    }
+    config = _inst(
+        "_Outer",
+        ops=["heavy_a", "heavy_b"],
+        source=_inst("_Wrapper", children=[_inst("_Outer"), _inst("_Outer")]),
+    )
     root = materialize(config)
     assert isinstance(root, _Outer)
     assert root.ops == ["heavy_a", "heavy_b"]
@@ -154,17 +159,11 @@ def test_override_at_inner_stops_broadcast_for_that_inner() -> None:
     inherited broadcast. This is the workaround the waivefront-rfuav
     YAML uses today.
     """
-    config = {
-        "_confluid_class_": "_Outer",
-        "ops": ["heavy_a", "heavy_b"],
-        "source": {
-            "_confluid_class_": "_Wrapper",
-            "children": [
-                {"_confluid_class_": "_Outer", "ops": []},
-                {"_confluid_class_": "_Outer", "ops": []},
-            ],
-        },
-    }
+    config = _inst(
+        "_Outer",
+        ops=["heavy_a", "heavy_b"],
+        source=_inst("_Wrapper", children=[_inst("_Outer", ops=[]), _inst("_Outer", ops=[])]),
+    )
     root = materialize(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
@@ -173,17 +172,17 @@ def test_override_at_inner_stops_broadcast_for_that_inner() -> None:
 
 def test_inner_overrides_are_independent() -> None:
     """Pinning the override on one child must NOT affect its siblings."""
-    config = {
-        "_confluid_class_": "_Outer",
-        "ops": ["heavy_a", "heavy_b"],
-        "source": {
-            "_confluid_class_": "_Wrapper",
-            "children": [
-                {"_confluid_class_": "_Outer", "ops": []},
-                {"_confluid_class_": "_Outer"},  # no override
+    config = _inst(
+        "_Outer",
+        ops=["heavy_a", "heavy_b"],
+        source=_inst(
+            "_Wrapper",
+            children=[
+                _inst("_Outer", ops=[]),
+                _inst("_Outer"),  # no override
             ],
-        },
-    }
+        ),
+    )
     root = materialize(config)
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
@@ -211,18 +210,15 @@ def test_override_at_wrapper_should_shield_inner_classes() -> None:
     outer-level broadcast leaks straight through. This test fails red
     until the broadcaster honours kwargs set on configurable wrappers.
     """
-    config = {
-        "_confluid_class_": "_Outer",
-        "ops": ["heavy_a", "heavy_b"],
-        "source": {
-            "_confluid_class_": "_Wrapper",
-            "ops": [],  # wrapper-level shield; currently ignored
-            "children": [
-                {"_confluid_class_": "_Outer"},
-                {"_confluid_class_": "_Outer"},
-            ],
-        },
-    }
+    config = _inst(
+        "_Outer",
+        ops=["heavy_a", "heavy_b"],
+        source=_inst(
+            "_Wrapper",
+            ops=[],  # wrapper-level shield; currently ignored
+            children=[_inst("_Outer"), _inst("_Outer")],
+        ),
+    )
     root = materialize(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     # Desired (currently failing): wrapper-level `ops: []` blocks broadcast.

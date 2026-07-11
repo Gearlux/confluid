@@ -18,7 +18,12 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         return
 
     if isinstance(config, str) and (":" in config or "\n" in config):
-        config = yaml.safe_load(config)
+        # Parse with ConfluidLoader so tag-carrying strings (e.g. "!class:Model")
+        # construct Fluid markers. Plain yaml.safe_load would raise on the tags —
+        # the global SafeLoader deliberately knows nothing about them.
+        from confluid.loader import ConfluidLoader
+
+        config = yaml.load(config, Loader=ConfluidLoader)
 
     if not isinstance(config, dict):
         return
@@ -138,10 +143,13 @@ def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: st
 
             resolved_val = parse_value(resolved_val)
 
-        # Materialize marker dicts into live instances
-        if isinstance(resolved_val, dict) and "_confluid_class_" in resolved_val:
-            from confluid.fluid import flow as _flow
+        # Materialize class markers (e.g. a "!class:Model(...)" string value
+        # resolved to an Instance/Class Fluid) into live instances before
+        # setattr — the Fluid-object successor of the old marker-dict check.
+        from confluid.fluid import Class, Instance
+        from confluid.fluid import flow as _flow
 
+        if isinstance(resolved_val, (Class, Instance)):
             resolved_val = _flow(resolved_val)
 
         current_val = getattr(obj, attr_name, None)
@@ -194,16 +202,14 @@ def _match(
 
 
 def _deep_get(data: Dict[str, Any], path: str) -> Any:
-    """Get value from nested dict by dotted path."""
-    if path in data:
-        return data[path]
-    current: Any = data
-    for part in path.split("."):
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-        else:
-            return None
-    return current
+    """Get value from a nested dict by dotted / bracketed path.
+
+    Delegates to the shared STRUCTURAL path walker (``Resolver._lookup_path``
+    — literal-full-key first, then dict/list segment walk; never attribute
+    access), so ``configure()`` uses the same grammar as ``!ref:`` and
+    ``${...}`` instead of a third hand-rolled dotted-split.
+    """
+    return Resolver(context=data)._lookup_path(path, data)
 
 
 def _configurable_attrs(obj: Any) -> List[str]:

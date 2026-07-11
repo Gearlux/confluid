@@ -5,13 +5,11 @@ from typing import Any
 import pytest
 
 from confluid import configurable, get_registry, load
-from confluid.loader import _register_constructors
 
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
     get_registry().clear()
-    _register_constructors()
 
 
 def test_ref_method_call_basic() -> None:
@@ -128,3 +126,70 @@ val: !ref:cfg.name
 """
     result = load(yaml_str)
     assert result["val"] == "hello"
+
+
+# --- unified rich resolver (resolve_reference_path) pins ---------------------
+
+
+def test_resolve_reference_path_multi_level_attribute_walk() -> None:
+    """``a.b.c`` walks THROUGH object attributes (the old resolver only did
+    single-level ``<context-key>.<attr>``)."""
+
+    @configurable
+    class Inner:
+        def __init__(self, value: int = 7) -> None:
+            self.value = value
+
+    @configurable
+    class Holder:
+        def __init__(self, inner: object = None) -> None:
+            self.inner = inner
+
+    yaml_str = """
+holder: !class:Holder()
+  inner: !class:Inner()
+    value: 42
+deep: !ref:holder.inner.value
+"""
+    result = load(yaml_str)
+    assert result["deep"] == 42
+
+
+def test_resolve_reference_path_bracket_then_attribute() -> None:
+    """``packs[0].name`` mixes a list index with an attribute step."""
+
+    @configurable
+    class Pack:
+        def __init__(self, name: str = "") -> None:
+            self.name = name
+
+    yaml_str = """
+packs:
+  - !class:Pack()
+    name: alpha
+  - !class:Pack()
+    name: beta
+chosen: !ref:packs[1].name
+"""
+    result = load(yaml_str)
+    assert result["chosen"] == "beta"
+
+
+def test_resolve_reference_path_dict_key_wins_over_attribute() -> None:
+    """On a dict cursor the walk uses KEY lookup only — a same-named attribute
+    (e.g. ``dict.values``) is never reached, and a missing key is a miss."""
+    from confluid.resolver import resolve_reference_path
+
+    ctx = {"cfg": {"values": [1, 2, 3]}}
+    assert resolve_reference_path("cfg.items", ctx) is None  # dict.items NOT called
+
+
+def test_resolve_reference_path_pure_structural_stays_deferred() -> None:
+    """A purely structural path (dict/list only) returns None from the rich
+    resolver — the deferred-Reference machinery owns it (late-binding for
+    post-load overrides like ``--drone_index``)."""
+    from confluid.resolver import resolve_reference_path
+
+    ctx = {"labels": ["a", "b"], "idx": 1, "nested": {"x": 5}}
+    assert resolve_reference_path("labels[idx]", ctx) is None
+    assert resolve_reference_path("nested.x", ctx) is None

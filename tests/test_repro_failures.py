@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 
 import confluid
-from confluid import configurable, load, materialize
+from confluid import Instance, configurable, load, materialize
 
 
 @pytest.fixture(autouse=True)
@@ -40,13 +40,11 @@ def test_repro_dotted_override_into_tagged_class() -> None:
     resolved = load(config, flow=False)
 
     # 2. Materialize the processor
-    # We pass the block associated with the class name, injecting the marker
+    # We pass the block associated with the class name as an Instance marker
     processor_block = resolved.get("MockProcessor")
-    marker_dict = {
-        "_confluid_class_": "MockProcessor",
-        **(processor_block if isinstance(processor_block, dict) else {}),
-    }
-    instance = materialize(marker_dict)
+    marker = Instance("MockProcessor")
+    marker.kwargs.update(processor_block if isinstance(processor_block, dict) else {})
+    instance = materialize(marker)
 
     assert instance.flux.source.count == 5
 

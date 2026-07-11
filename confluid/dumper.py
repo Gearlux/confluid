@@ -14,7 +14,7 @@ class CompactDumper(yaml.SafeDumper):
 def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Emit a module-level function/builtin as ``!ref:module.qualname``.
 
-    The loader's ``_resolve_dotted_ref`` resolves this back to the live
+    The resolver's ``resolve_reference_path`` resolves this back to the live
     object via ``importlib.import_module`` + ``getattr``, so dump/load
     round-trips hold as long as the symbol stays importable at the same
     dotted path.

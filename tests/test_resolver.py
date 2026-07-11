@@ -35,29 +35,38 @@ def test_resolve_string_reference() -> None:
 
 
 def test_resolve_string_instantiation_marker() -> None:
-    """Verify that !class: strings are resolved into flat markers."""
+    """Verify that !class: strings are resolved into eager Instance Fluids."""
+    from confluid.fluid import Instance
+
     resolver = Resolver()
     marker = resolver.resolve("!class:Model(layers=10)")
-    assert isinstance(marker, dict)
-    assert marker["_confluid_class_"] == "Model"
-    assert marker["layers"] == 10
+    assert isinstance(marker, Instance)
+    assert marker.target == "Model"
+    assert marker.kwargs["layers"] == 10
 
 
 def test_recursive_string_instantiation_marker() -> None:
-    """Verify nested !class: and !ref: strings produce nested markers."""
+    """Verify nested !class: and !ref: strings produce nested Instance Fluids."""
+    from confluid.fluid import Instance
+
     resolver = Resolver(context={"global_lr": 0.5})
     marker = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
 
-    assert marker["_confluid_class_"] == "Trainer"
-    assert marker["lr"] == 0.5
-    assert marker["model"]["_confluid_class_"] == "Model"
-    assert marker["model"]["layers"] == 5
+    assert isinstance(marker, Instance)
+    assert marker.target == "Trainer"
+    assert marker.kwargs["lr"] == 0.5
+    assert isinstance(marker.kwargs["model"], Instance)
+    assert marker.kwargs["model"].target == "Model"
+    assert marker.kwargs["model"].kwargs["layers"] == 5
 
 
 def test_resolve_empty_instantiation_marker() -> None:
+    from confluid.fluid import Instance
+
     resolver = Resolver()
     marker = resolver.resolve("!class:Model()")
-    assert marker["_confluid_class_"] == "Model"
+    assert isinstance(marker, Instance)
+    assert marker.target == "Model"
 
 
 def test_resolve_dict_and_list_strings() -> None:
