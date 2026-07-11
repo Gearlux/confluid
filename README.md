@@ -93,6 +93,13 @@ configure_from_file(trainer, path="experiment.yaml")
 
 It reads the file via `load_config` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`.
 
+`configure` follows the same matching rule as YAML materialization — **document
+order, last write wins**: `ClassName:` / instance-name blocks unroll at their
+position, bare keys broadcast, and whichever assignment comes last in the
+document wins (no priority tiers). A `null` value is applied (`dropout: null`
+sets `None`), an unknown key inside a class block logs a warning instead of
+failing silently, and property getters are never executed during configuration.
+
 ### `${...}` interpolation — env vars AND config keys
 
 A `${...}` placeholder in a string value is substituted at load time. The name decides the source:
