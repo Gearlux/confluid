@@ -278,6 +278,24 @@ def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> Non
     assert value == "!lazy:Model(layers=5)"  # untouched string
 
 
+def test_import_key_warns_on_missing_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo'd ``import:`` module warns at load time (it used to fail silently
+    and only surface much later as "Cannot resolve class"). Loading still
+    succeeds — the module may be an optional dependency of a shared config."""
+    from types import SimpleNamespace
+
+    import confluid.loader as loader_module
+
+    warnings_seen: list[str] = []
+    monkeypatch.setattr(loader_module, "logger", SimpleNamespace(warning=lambda msg: warnings_seen.append(msg)))
+
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("import: [definitely_not_a_module_xyz]\nval: 1\n")
+    data = load_config(cfg)
+    assert data == {"val": 1}
+    assert any("definitely_not_a_module_xyz" in msg for msg in warnings_seen)
+
+
 def test_global_safe_loader_stays_clean() -> None:
     """Tags are registered on ConfluidLoader ONLY — plain ``yaml.safe_load``
     must still REJECT confluid tags. Guards against re-polluting the global

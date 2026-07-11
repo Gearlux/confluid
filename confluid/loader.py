@@ -268,8 +268,13 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
             for m in imports:
                 try:
                     importlib.import_module(m)
-                except ImportError:
-                    pass
+                except ImportError as exc:
+                    # Warn instead of raising: an ``import:`` module may be an
+                    # optional dependency of a shared/included config. But a
+                    # TYPO'd module previously failed silently here and only
+                    # surfaced much later as "Cannot resolve class: X" — the
+                    # warning names the real cause at the real moment.
+                    logger.warning(f"import: failed to import {m!r}: {exc}")
     return data
 
 
