@@ -1,18 +1,45 @@
-import inspect
+"""Post-construction configuration (``configure`` / ``configure_from_file``).
+
+Applies a config document to ALREADY-CONSTRUCTED object graphs, in place —
+the Post-Construction Paradigm. Matching follows confluid's ONE rule:
+**flat-view, document-order, last-write-wins** (the same rule the YAML
+materialization path applies via ``loader._prepare_kwargs``), scanned over
+live objects instead of Fluid markers:
+
+* a ``ClassName:`` / ``<instance-name>:`` dict block is unrolled inline at
+  its document position (a sub-block keyed by the instance name inside a
+  class block — the ``Cls.inst.attr`` form — unrolls inline too);
+* a bare non-dict key broadcasts into any object whose accept-list carries it;
+* whichever assignment comes LAST in document order wins — no priority tiers;
+* a dict-valued block entry addressing a configurable child recurses into it,
+  with the sub-block spliced into the child's visible view at its position;
+* block contents become ambient context for the object's subtree, mirroring
+  ``_splice_kwargs_at_slot`` in the loader.
+
+The object graph is walked via ``vars(obj)`` — property getters are NEVER
+executed. Unknown non-dict keys inside a block addressed to an object emit a
+warning (typo protection); a present key with value ``None`` SETS ``None``
+(presence is explicit in the scan, so ``dropout: null`` works).
+"""
+
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Optional, Set, Union
 
 import yaml
+from loggair import get_logger
 
 from confluid.merger import expand_dotted_keys
 from confluid.resolver import Resolver
+
+logger = get_logger("confluid.configurator")
 
 
 def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
     """Apply configuration to one or more existing object instances.
 
-    Recursively walks the object graph and sets attributes based on matching
-    class names, instance names, and dotted paths in the config.
+    Recursively walks the object graph and sets attributes by matching class
+    names, instance names, and broadcast keys — document order,
+    last-write-wins (see the module docstring for the full matching rule).
     """
     if config is None:
         return
@@ -34,7 +61,7 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
 
     visited: Set[int] = set()
     for instance in instances:
-        _walk(instance, config, resolved_context, "", visited)
+        _walk(instance, config, resolved_context, visited)
 
 
 def configure_from_file(*instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None) -> None:
@@ -67,12 +94,19 @@ def configure_from_file(*instances: Any, path: Union[str, Path], context: Option
 
 def _walk(
     obj: Any,
-    config: Dict[str, Any],
+    view: Dict[str, Any],
     context: Dict[str, Any],
-    prefix: str,
     visited: Set[int],
 ) -> None:
-    """Recursively traverse the object graph and apply matching configuration."""
+    """Traverse the object graph, configuring each configurable object from its view.
+
+    ``view`` is the object's *visible* config — the document with every
+    ancestor's addressed blocks spliced in at their positions (the live-object
+    mirror of the loader's flat-view context propagation). Recursion follows
+    ``vars(obj)`` (instance attributes only): property getters are never
+    executed, and derived/property-held state is by mandate recomputed, never
+    configured.
+    """
     if obj is None:
         return
 
@@ -87,151 +121,170 @@ def _walk(
 
     if isinstance(obj, (list, tuple)):
         for item in obj:
-            _walk(item, config, context, prefix, visited)
+            _walk(item, view, context, visited)
         return
 
     if isinstance(obj, dict):
         for v in obj.values():
-            _walk(v, config, context, prefix, visited)
+            _walk(v, view, context, visited)
         return
 
-    cls = obj.__class__
-    if getattr(cls, "__confluid_configurable__", False):
-        instance_name = getattr(obj, "name", None)
-        if isinstance(instance_name, str):
-            prefix = f"{prefix}.{instance_name}" if prefix else instance_name
-        _apply(obj, config, context, prefix)
+    child_view = view
+    if getattr(obj.__class__, "__confluid_configurable__", False):
+        child_view = _apply(obj, view, context, visited)
 
-    # Recurse into non-callable attributes
-    for attr_name in dir(obj):
-        if attr_name.startswith("_"):
-            continue
-        try:
-            attr_val = getattr(obj, attr_name)
+    # Recurse into instance attributes only (vars, not dir) — no getters fire.
+    # Scalars / __slots__ objects carry no __dict__ and simply end the walk.
+    obj_dict = getattr(obj, "__dict__", None)
+    if obj_dict:
+        for attr_val in list(obj_dict.values()):
             if not callable(attr_val):
-                _walk(attr_val, config, context, prefix, visited)
-        except Exception:
-            continue
+                _walk(attr_val, child_view, context, visited)
 
 
-def _apply(obj: Any, config: Dict[str, Any], context: Dict[str, Any], prefix: str) -> None:
-    """Apply matching config values to a single configurable object."""
+def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set[int]) -> Dict[str, Any]:
+    """Configure one object from its view; return the spliced view for its subtree.
+
+    Scans ``view`` in document order collecting assignments (last write wins),
+    dict-valued child recursions, and the subtree view. Assignment values are
+    resolved, string-coerced via ``parse_value``, ``Class``/``Instance``
+    markers flowed, then validated + setattr'd.
+    """
     cls = obj.__class__
     cls_name = getattr(cls, "__confluid_name__", cls.__name__)
     instance_name = getattr(obj, "name", None)
+    if not isinstance(instance_name, str):
+        instance_name = None
 
-    # Build scoped overlay: ClassName > instance_name > ClassName.instance_name
-    obj_config: Dict[str, Any] = {}
-    for key in [
-        cls_name,
-        instance_name,
-        f"{cls_name}.{instance_name}" if instance_name else None,
-    ]:
-        if key and key in config and isinstance(config[key], dict):
-            obj_config.update(config[key])
+    from confluid.loader import _get_acceptable_keys
 
+    acceptable = _get_acceptable_keys(cls)
+    own_attrs = {k for k in vars(obj) if not k.startswith("_")}
+
+    def _settable(key: str) -> bool:
+        member = getattr(cls, key, None)
+        if member is not None and getattr(member, "__confluid_ignore__", False):
+            return False
+        if isinstance(member, property) and member.fset is None:
+            return False
+        return acceptable is None or key in acceptable or key in own_attrs
+
+    def _is_configurable(value: Any) -> bool:
+        return getattr(getattr(value, "__class__", None), "__confluid_configurable__", False)
+
+    # Document-order scan: assignments overwrite (last write wins); dict-valued
+    # block entries addressing a configurable child become recursions; anything
+    # else dict-valued travels ambiently in the child view.
+    assignments: Dict[str, Any] = {}
+    recursions: Dict[str, Dict[str, Any]] = {}
+
+    def _consume_block(block: Dict[str, Any]) -> None:
+        for bk, bv in block.items():
+            if bk == instance_name and isinstance(bv, dict):
+                # ``Cls.inst.attr`` form — the instance-named sub-block nests
+                # inside the class block; unroll it inline (later → wins).
+                _consume_block(bv)
+                continue
+            if isinstance(bv, dict):
+                if _settable(bk):
+                    if _is_configurable(getattr(obj, bk, None)):
+                        recursions[bk] = bv
+                    else:
+                        assignments[bk] = bv  # a plain dict-typed attribute value
+                # else: a name-scoped block for a descendant — travels via the
+                # spliced child view; never a typo warning (dicts are blocks).
+                continue
+            if _settable(bk):
+                assignments[bk] = bv
+            else:
+                logger.warning(f"configure(): {cls_name} block has no attribute {bk!r} — ignored")
+
+    for k, v in view.items():
+        if k in (cls_name, instance_name) and isinstance(v, dict):
+            _consume_block(v)
+        elif not isinstance(v, dict) and _settable(k):
+            assignments[k] = v  # broadcast — dicts at the top level are blocks for others
+
+    _assign(obj, assignments, context)
+
+    # Splice this object's addressed blocks into the subtree view at their
+    # positions (the live-object analogue of ``_splice_kwargs_at_slot``), so
+    # descendants see block contents — incl. name-scoped sub-blocks — as
+    # ambient keys, preserving document order for last-write-wins downstream.
+    child_view = _spliced(view, cls_name, instance_name)
+
+    for attr_name, sub_block in recursions.items():
+        child = getattr(obj, attr_name, None)
+        if child is not None:
+            _walk(child, _spliced_at(child_view, attr_name, sub_block), context, visited)
+
+    return child_view
+
+
+def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> None:
+    """Resolve, coerce, materialize, validate, and setattr the merged assignments."""
+    from confluid.fluid import Class, Instance
+    from confluid.fluid import flow as _flow
+    from confluid.resolver import parse_value
+    from confluid.validation import get_policy, validate_setattr
+
+    cls = obj.__class__
     resolver = Resolver(context=context)
 
-    for attr_name in _configurable_attrs(obj):
-        val = _match(attr_name, cls_name, instance_name, config, obj_config, prefix)
-        if val is None:
-            continue
-
+    for attr_name, val in assignments.items():
         resolved_val = resolver.resolve(val)
         if isinstance(resolved_val, str):
-            from confluid.resolver import parse_value
-
             resolved_val = parse_value(resolved_val)
-
         # Materialize class markers (e.g. a "!class:Model(...)" string value
-        # resolved to an Instance/Class Fluid) into live instances before
-        # setattr — the Fluid-object successor of the old marker-dict check.
-        from confluid.fluid import Class, Instance
-        from confluid.fluid import flow as _flow
-
+        # resolved to an Instance/Class Fluid) into live instances before setattr.
         if isinstance(resolved_val, (Class, Instance)):
             resolved_val = _flow(resolved_val)
+        # Post-construction overrides honour the same per-field schema as the
+        # constructor — re-uses ``policy.init`` because configure() is the
+        # moral equivalent of "instantiate this attribute with this value",
+        # just performed after the parent object exists.
+        validate_setattr(cls, attr_name, resolved_val, get_policy().init)
+        setattr(obj, attr_name, resolved_val)
 
-        current_val = getattr(obj, attr_name, None)
-        if isinstance(resolved_val, dict) and hasattr(
-            getattr(current_val, "__class__", None), "__confluid_configurable__"
-        ):
-            _walk(current_val, resolved_val, context, prefix, set())
+
+def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) -> Dict[str, Any]:
+    """Return ``view`` with the object's addressed blocks unrolled at their positions."""
+    block_keys = {cls_name, instance_name} - {None}
+    if not any(k in view and isinstance(view[k], dict) for k in block_keys):
+        return view
+    out: Dict[str, Any] = {}
+    for k, v in view.items():
+        if k in block_keys and isinstance(v, dict):
+            _unroll_into(out, v, instance_name)
         else:
-            # Post-construction overrides honour the same per-field schema as
-            # the constructor — re-uses ``policy.init`` because configure()
-            # is the moral equivalent of "instantiate this attribute with
-            # this value", just performed after the parent object exists.
-            from confluid.validation import get_policy, validate_setattr
-
-            validate_setattr(cls, attr_name, resolved_val, get_policy().init)
-            setattr(obj, attr_name, resolved_val)
+            out[k] = v
+    return out
 
 
-def _match(
-    attr: str,
-    cls_name: str,
-    inst_name: Optional[str],
-    config: Dict[str, Any],
-    obj_config: Dict[str, Any],
-    prefix: str,
-) -> Any:
-    """Find the best matching config value for an attribute (priority order)."""
-    candidates = []
-    if prefix:
-        candidates.append(f"{prefix}.{attr}")
-    if inst_name:
-        candidates.append(f"{cls_name}.{inst_name}.{attr}")
-    candidates.append(f"{cls_name}.{attr}")
-    if inst_name:
-        candidates.append(f"{inst_name}.{attr}")
-
-    for path in candidates:
-        val = _deep_get(config, path)
-        if val is not None:
-            return val
-
-    if attr in obj_config:
-        return obj_config[attr]
-
-    # Broadcast: direct attribute in global config (non-dict only)
-    if attr in config and not isinstance(config[attr], dict):
-        return config[attr]
-
-    return None
+def _unroll_into(out: Dict[str, Any], block: Dict[str, Any], instance_name: Optional[str]) -> None:
+    """Unroll a block's entries into ``out`` in order, nesting through the inst sub-block."""
+    for bk, bv in block.items():
+        if bk == instance_name and isinstance(bv, dict):
+            _unroll_into(out, bv, instance_name)
+        else:
+            out[bk] = bv
 
 
-def _deep_get(data: Dict[str, Any], path: str) -> Any:
-    """Get value from a nested dict by dotted / bracketed path.
+def _spliced_at(view: Dict[str, Any], key: str, sub_block: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``view`` with ``sub_block``'s entries unrolled at ``key``'s position.
 
-    Delegates to the shared STRUCTURAL path walker (``Resolver._lookup_path``
-    — literal-full-key first, then dict/list segment walk; never attribute
-    access), so ``configure()`` uses the same grammar as ``!ref:`` and
-    ``${...}`` instead of a third hand-rolled dotted-split.
+    Used for child recursion: the sub-block addressed to the child replaces
+    the attr-keyed entry, so its values sit at the block's document position
+    (later than earlier broadcasts → they win for the child, as authored).
     """
-    return Resolver(context=data)._lookup_path(path, data)
-
-
-def _configurable_attrs(obj: Any) -> List[str]:
-    """Get configurable attribute names from an object."""
-    cls = obj.__class__
-    attrs: List[str] = []
-
-    try:
-        sig = inspect.signature(cls.__init__)
-        attrs.extend(p for p in sig.parameters if p not in ("self", "cls"))
-    except (ValueError, TypeError):
-        pass
-
-    for name in dir(obj):
-        if name.startswith("_") or callable(getattr(obj, name)):
-            continue
-        member = getattr(cls, name, None)
-        if member and getattr(member, "__confluid_ignore__", False):
-            continue
-        if isinstance(member, property) and member.fset is None:
-            continue
-        if name not in attrs:
-            attrs.append(name)
-
-    return attrs
+    out: Dict[str, Any] = {}
+    placed = False
+    for k, v in view.items():
+        if k == key and not placed:
+            out.update(sub_block)
+            placed = True
+        else:
+            out[k] = v
+    if not placed:
+        out.update(sub_block)
+    return out
