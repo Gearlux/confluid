@@ -88,8 +88,9 @@ def _materialize_cursor(value: Any) -> Any:
 
     if not isinstance(value, Fluid):
         return value
-    from confluid.fluid import flow
-    from confluid.loader import _state
+    # The sanctioned lazy seam: resolver is imported by engine at top level,
+    # so the reverse dependency (flow + the thread-local memo) is body-local.
+    from confluid.engine import _state, flow
 
     flow_memo = getattr(_state, "flow_memo", None)
     if flow_memo is not None:

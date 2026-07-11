@@ -44,6 +44,7 @@ from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from confluid.exceptions import IntrospectionError
+from confluid.introspect import init_lazy_setattr_names, scan_init_body
 from confluid.lazy import is_lazy_annotation
 from confluid.schema import _parse_docstring
 
@@ -305,99 +306,23 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     return converted_type, Field(default=default, **desc_kw)
 
 
-def _ast_init_setattr_annotations(init_func: Any) -> Dict[str, Any]:
-    """Return ``{attr_name: annotation_node_or_None}`` for ``self.<name>[: T] = …``
-    assignments in a single ``__init__`` body (pure AST; no class context).
-
-    Mirrors :func:`confluid.loader._ast_scan_init_setattrs` but additionally
-    captures the *annotation expression* of an ``AnnAssign`` (``self.x: T = …``)
-    so :func:`to_pydantic` can type a post-init body slot. A plain ``Assign``
-    (``self.x = …``, no annotation) maps to ``None`` → typed ``Any``.
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    found: Dict[str, Any] = {}
-    try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(init_func)))
-    except (OSError, TypeError, SyntaxError):
-        return found
-
-    def _record(target: Any, annotation: Any) -> None:
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and not target.attr.startswith("_")
-        ):
-            found.setdefault(target.attr, annotation)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign):
-            _record(node.target, node.annotation)
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                _record(t, None)
-    return found
-
-
-def _ast_init_lazy_setattrs(init_func: Any) -> Set[str]:
-    """Return body-slot names whose RHS is a ``LazyClass(...)`` / ``Lazy(...)`` call.
+def _post_init_lazy_slots(cls: type) -> Set[str]:
+    """Names of ``@configurable``-chain body slots whose default is a ``LazyClass(...)``.
 
     ``self.optimizer: Any = LazyClass(torch.optim.Adam, lr=1e-3)`` marks
     ``optimizer`` as a **deferred (lazy) slot** — the same role a ``Lazy[T]``
     constructor-param annotation plays, but expressed as a body attribute under
     the minimal-ctor pattern. Recorded in ``_confluid_lazy_params`` so the
-    serializer emits ``!lazy:`` (not ``!class:``) for whatever fills the slot —
-    which is what keeps a runtime-injected slot (optimizer / loader / a trainer's
-    lightning) from being eagerly materialized on assignment.
+    serializer emits ``!lazy:`` (not ``!class:``) for whatever fills the slot.
+    Scanning delegates to the shared :mod:`confluid.introspect`.
     """
-    import ast
-    import inspect
-    import textwrap
-
-    names: Set[str] = set()
-    try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(init_func)))
-    except (OSError, TypeError, SyntaxError):
-        return names
-
-    def _is_lazy_call(value: Any) -> bool:
-        if not isinstance(value, ast.Call):
-            return False
-        func = value.func
-        name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
-        return name in ("LazyClass", "Lazy")
-
-    def _record(target: Any, value: Any) -> None:
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and not target.attr.startswith("_")
-            and _is_lazy_call(value)
-        ):
-            names.add(target.attr)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign) and node.value is not None:
-            _record(node.target, node.value)
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                _record(t, node.value)
-    return names
-
-
-def _post_init_lazy_slots(cls: type) -> Set[str]:
-    """Names of ``@configurable``-chain body slots whose default is a ``LazyClass(...)``."""
     lazy: Set[str] = set()
     for klass in cls.__mro__:
         if klass is object or not getattr(klass, "__confluid_configurable__", False):
             continue
         init = klass.__dict__.get("__init__")
         if init is not None:
-            lazy |= _ast_init_lazy_setattrs(init)
+            lazy |= init_lazy_setattr_names(init)
     return lazy
 
 
@@ -460,8 +385,6 @@ def _post_init_field_specs(
     ``to_pydantic`` (navigaitor form-spec, MCP schemas, FluxStudio widgets) even
     though they aren't constructor parameters.
     """
-    from confluid.loader import _ast_scan_init_setattrs
-
     specs: Dict[str, Tuple[Any, Any]] = {}
     seen: Set[str] = set(signature_params) | _SKIP_PARAMS
     for klass in cls.__mro__:
@@ -470,8 +393,14 @@ def _post_init_field_specs(
         init = klass.__dict__.get("__init__")
         if init is None:
             continue
-        names = _ast_scan_init_setattrs(init)
-        annotations = _ast_init_setattr_annotations(init)
+        # ONE shared scan per __init__ (confluid.introspect), projected twice:
+        # every slot NAME (all kinds), and the assign/annassign annotation map.
+        body_slots = scan_init_body(init)
+        names = {slot.name for slot in body_slots}
+        annotations: Dict[str, Any] = {}
+        for slot in body_slots:
+            if slot.kind in ("assign", "annassign"):
+                annotations.setdefault(slot.name, slot.annotation)
         for name in names:
             if name in seen:
                 continue

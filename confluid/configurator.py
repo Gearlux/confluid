@@ -110,7 +110,7 @@ def _walk(
     if obj is None:
         return
 
-    from confluid.fluid import flow
+    from confluid.engine import flow
 
     obj = flow(obj)
 
@@ -156,7 +156,7 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     if not isinstance(instance_name, str):
         instance_name = None
 
-    from confluid.loader import _get_acceptable_keys
+    from confluid.engine import _get_acceptable_keys
 
     acceptable = _get_acceptable_keys(cls)
     own_attrs = {k for k in vars(obj) if not k.startswith("_")}
@@ -223,8 +223,8 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
 
 def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> None:
     """Resolve, coerce, materialize, validate, and setattr the merged assignments."""
+    from confluid.engine import flow as _flow
     from confluid.fluid import Class, Instance
-    from confluid.fluid import flow as _flow
     from confluid.resolver import parse_value
     from confluid.validation import get_policy, validate_setattr
 
