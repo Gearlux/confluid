@@ -158,6 +158,54 @@ LOGGAIR_CONSOLE_LEVEL=TRACE marainer train config/train.yaml
 # ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
 ```
 
+### Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
+
+Broadcasting discovers post-init body attributes (`self.loss_fn = …` inside
+`__init__`) by AST-scanning the constructor **source**. In compiled / frozen /
+zip deployments `inspect.getsource` fails, the scan is silently empty, and
+those slots vanish from the broadcast surface (confluid logs one warning per
+class when it can't scan an uncovered `@configurable` class).
+
+**The primary fix is the build-time bake step** — run the same scan while
+source still exists and ship the result:
+
+```bash
+# In the packaging pipeline, BEFORE freezing/zipping:
+confluid-bake mypackage otherpackage        # == python -m confluid.bake ...
+# writes mypackage/_confluid_baked.py (provenance-headed, deterministic)
+
+confluid-bake mypackage --check             # CI drift guard: exit 1 if stale
+```
+
+At runtime the engine unions three sources — `live scan ∪ declared ∪ baked` —
+consulting the baked table per MRO class only when the live scan finds nothing,
+so a dev checkout is always governed by fresh source and the baked table
+carries the load exactly where source is missing. Every class the package
+defines with its own `__init__` is baked (in-package base classes contribute
+through the MRO), and an empty entry means "scanned, no body slots" — it
+silences the warning.
+
+> **Frozen-bundler note (PyInstaller etc.):** the engine imports
+> `<pkg>._confluid_baked` lazily by dotted name, which static import tracers
+> don't see — add `--hidden-import mypkg._confluid_baked` or import it
+> explicitly from the package's `__init__`. Wheel/zip/pyc-only deployments
+> need nothing extra.
+
+The manual override for classes the bake can't reach (or third-party code you
+register) is an explicit declaration, likewise unioned with the scan:
+
+```python
+@configurable(broadcast_attrs=["loss_fn", "val_metrics"])
+class Trainer:
+    def __init__(self, model: str = "m"):
+        self.model = model
+        self.loss_fn = "ce"        # scanned in dev; declared for packaged mode
+        self.val_metrics = None
+```
+
+An explicit `broadcast_attrs=[]` declares "no post-init broadcast attrs" and
+silences the warning.
+
 ### Typed materialization for static checkers (`cast`)
 
 `flow(node)` returns `Any` — fine at runtime, opaque to mypy and your IDE.
@@ -710,6 +758,48 @@ trainer = load("experiment.yaml", scopes=["debug", "task=classification"])
 
 Liquifai apps wire `--scope NAME` / `--scope KEY=VAL` and per-dimension
 `--KEY VAL` flags automatically — see liquifai's docs.
+
+## Using confluid across threads & async
+
+The engine's materialization state (the active resolution context, the
+shared-instance memos, the `solidify` suppression flag) rides a
+`contextvars.ContextVar` — so it follows Python's standard context
+propagation rules:
+
+- **Inherited automatically**: asyncio tasks (`asyncio.create_task`) and
+  `asyncio.to_thread` workers see the caller's active context.
+- **NOT inherited**: a raw `threading.Thread` or `loop.run_in_executor`
+  worker starts with a clean context.
+
+To make a bare `flow()` resolve `!ref:`/broadcasts outside a
+`materialize()` pass — including on another thread — activate a context
+explicitly with the public `active_context`:
+
+```python
+from confluid import Reference, active_context, flow
+
+with active_context({"model": model}):
+    optimizer = flow(Reference("model.parameters()"))
+```
+
+For a raw thread or executor, either enter `active_context(...)` inside the
+worker function, or capture and run the caller's context:
+
+```python
+import contextvars, threading
+
+ctx = contextvars.copy_context()
+threading.Thread(target=lambda: ctx.run(work)).start()   # inherits the context
+
+# asyncio: prefer asyncio.to_thread(work) over loop.run_in_executor —
+# to_thread propagates contextvars, the raw executor does not.
+```
+
+`active_context` is nesting-safe (the previous state is restored on exit)
+and installs fresh instance-sharing memos, so dotted refs inside the block
+share one materialized instance. The mapping is used verbatim when it has
+no dotted keys (live objects keep their identity); dotted keys are expanded
+like `materialize` does.
 
 ## Installation
 ```bash

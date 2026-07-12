@@ -1,5 +1,6 @@
 import importlib
 import re
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union, cast
 
@@ -13,6 +14,10 @@ from confluid.scopes import normalize_active, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
+# Per-context include accumulator (a YAML-side concern — deliberately NOT on
+# the engine's _ENGINE_STATE): populated only inside load_config_with_paths.
+_INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
+
 
 def _record_loaded_path(path: Path) -> None:
     """Append ``path`` to the active include-accumulator, if any.
@@ -20,10 +25,10 @@ def _record_loaded_path(path: Path) -> None:
     Populated by :func:`load_config_with_paths` for the duration of one
     load so callers can recover the ordered list of every YAML file
     transitively read (entrypoint + recursive ``include:`` targets). The
-    accumulator lives on the existing thread-local so re-entrant loads on
-    different threads do not collide.
+    accumulator rides a ContextVar so re-entrant loads on different
+    threads/tasks do not collide.
     """
-    accum = getattr(_state, "include_accumulator", None)
+    accum = _INCLUDE_ACCUMULATOR.get()
     if accum is not None:
         accum.append(path)
 
@@ -235,12 +240,11 @@ def load_config_with_paths(path: Union[str, Path]) -> tuple[Dict[str, Any], List
     public signature so callers that do not need the tree are unaffected.
     """
     accum: List[Path] = []
-    old = getattr(_state, "include_accumulator", None)
-    _state.include_accumulator = accum
+    token = _INCLUDE_ACCUMULATOR.set(accum)
     try:
         data = load_config(path)
     finally:
-        _state.include_accumulator = old
+        _INCLUDE_ACCUMULATOR.reset(token)
     seen: Set[Path] = set()
     ordered: List[Path] = []
     for p in accum:
@@ -387,7 +391,6 @@ from confluid.engine import (  # noqa: F401,E402  (re-exports; placed after load
     _get_post_init_attrs,
     _prepare_kwargs,
     _same_target,
-    _state,
     get_active_context,
     get_configurable_attrs,
     materialize,

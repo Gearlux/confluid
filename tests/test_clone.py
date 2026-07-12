@@ -125,18 +125,14 @@ def test_clone_flow_directly() -> None:
         def __init__(self, value: int = 0) -> None:
             self.value = value
 
-    # Set up a context with a resolvable reference
-    from confluid.loader import _state
+    # Set up a context with a resolvable reference via the public API
+    from confluid import active_context
 
     item = Item(value=42)
-    old_ctx = getattr(_state, "context", None)
-    _state.context = {"thing": item}
-    try:
+    with active_context({"thing": item}):
         clone = Clone("thing")
         result = flow(clone)
         assert result.value == 42
         # Verify independence
         result.value = 100
         assert item.value == 42
-    finally:
-        _state.context = old_ctx

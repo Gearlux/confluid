@@ -32,11 +32,22 @@ read ``__code__`` directly. Pinned by
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import textwrap
 from typing import Any, Dict, Literal, NamedTuple, Optional, Set, Tuple
 
 SlotKind = Literal["assign", "annassign", "augassign", "setattr"]
+
+#: Basename of the generated per-package bake table module (``confluid.bake``
+#: writes ``<package>/_confluid_baked.py``; :func:`baked_init_attrs` imports it).
+BAKED_MODULE_BASENAME = "_confluid_baked"
+
+# Per TOP-LEVEL package: the imported ``BROADCAST_ATTRS`` table, or ``None``
+# when the package ships no bake module. Import results are stable for the
+# process lifetime, so this cache is never cleared (unlike the engine's
+# per-materialize-pass attr caches).
+_baked_tables: Dict[str, Optional[Dict[str, Tuple[str, ...]]]] = {}
 
 
 class BodySlot(NamedTuple):
@@ -46,6 +57,63 @@ class BodySlot(NamedTuple):
     kind: SlotKind
     annotation: Optional[ast.AST]  # AnnAssign annotation node, else None
     value: Optional[ast.AST]  # assigned-value node, else None
+
+
+def init_source_available(init_func: Any) -> bool:
+    """True when ``inspect.getsource`` can read this ``__init__``'s source.
+
+    :func:`scan_init_body` returns ``()`` indistinguishably for "no source"
+    (compiled / frozen / zip-imported deployments, where ``getsource`` raises
+    ``OSError``/``TypeError``) and "genuinely empty body". This probe separates
+    the two so the broadcasting engine can warn loudly when post-init body
+    attributes are INVISIBLE (dev-vs-packaged behavioral divergence) instead of
+    silently dropping them — the escape hatch is
+    ``@configurable(broadcast_attrs=[...])``.
+
+    Like the scanners below, this sees through ``functools.wraps`` wrappers
+    (``getsource`` follows ``__wrapped__``), so probing the validation-wrapped
+    ``__init__`` reports on the ORIGINAL constructor's source.
+    """
+    try:
+        inspect.getsource(init_func)
+    except (OSError, TypeError):
+        return False
+    return True
+
+
+def baked_init_attrs(klass: Any) -> Optional[Tuple[str, ...]]:
+    """Build-time-scanned ``__init__`` body-slot names for ``klass``, if baked.
+
+    ``confluid.bake`` runs the SAME AST scan as :func:`scan_init_body` at BUILD
+    time (while source still exists) and writes the results into a generated
+    ``<top_package>/_confluid_baked.py`` module. This looks the class up in
+    that table: returns the baked name tuple (possibly empty — an empty entry
+    means "scanned at build time, no body slots"), or ``None`` when the class
+    is not covered (no bake module, or the class isn't in it).
+
+    The bake module is imported lazily by dotted name. NOTE for frozen-app
+    bundlers that trace imports statically (PyInstaller): a dynamic import is
+    invisible to the tracer — declare ``<pkg>._confluid_baked`` as a hidden
+    import or import it explicitly from the package's ``__init__``.
+    """
+    module = getattr(klass, "__module__", None)
+    qualname = getattr(klass, "__qualname__", None)
+    if not module or not qualname:
+        return None
+    top = module.split(".", 1)[0]
+    if top not in _baked_tables:
+        try:
+            baked_module = importlib.import_module(f"{top}.{BAKED_MODULE_BASENAME}")
+        except ImportError:
+            _baked_tables[top] = None
+        else:
+            table = getattr(baked_module, "BROADCAST_ATTRS", None)
+            _baked_tables[top] = table if isinstance(table, dict) else None
+    table = _baked_tables[top]
+    if table is None:
+        return None
+    entry = table.get(f"{module}.{qualname}")
+    return tuple(entry) if entry is not None else None
 
 
 def scan_init_body(init_func: Any) -> Tuple[BodySlot, ...]:
