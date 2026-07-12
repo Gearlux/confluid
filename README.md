@@ -131,6 +131,33 @@ state_yaml = dump(trainer)
 new_trainer = load(state_yaml)
 ```
 
+### Opting out of broadcasting
+
+Broadcasting matches by name alone, which can bite very generic parameter
+names. Two opt-outs exist — both block only BARE top-level keys; addressed
+`ClassName:` blocks and `configure()` always keep working:
+
+```python
+from confluid import NoBroadcast, configurable
+
+@configurable
+class Transform:
+    def __init__(self, name: NoBroadcast[str] = "t", strength: float = 1.0):
+        self.name = name          # a top-level ``name:`` key no longer lands here
+        self.strength = strength  # still broadcastable
+
+@configurable(broadcast=False)     # class-level: NO bare key ever lands
+class Reporter:
+    def __init__(self, path: str = "out"): ...
+```
+
+To see exactly what broadcast where, enable trace logging:
+
+```bash
+LOGGAIR_CONSOLE_LEVEL=TRACE marainer train config/train.yaml
+# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
+```
+
 ### Typed materialization for static checkers (`cast`)
 
 `flow(node)` returns `Any` — fine at runtime, opaque to mypy and your IDE.

@@ -156,10 +156,11 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     if not isinstance(instance_name, str):
         instance_name = None
 
-    from confluid.engine import _get_acceptable_keys
+    from confluid.engine import _broadcast_blocked_keys, _get_acceptable_keys
 
     acceptable = _get_acceptable_keys(cls)
     own_attrs = {k for k in vars(obj) if not k.startswith("_")}
+    broadcast_blocked = _broadcast_blocked_keys(cls)
 
     def _settable(key: str) -> bool:
         member = getattr(cls, key, None)
@@ -195,6 +196,7 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
                 # spliced child view; never a typo warning (dicts are blocks).
                 continue
             if _settable(bk):
+                logger.trace(f"configure: {bk!r} -> {cls_name} (block)")
                 assignments[bk] = bv
             else:
                 logger.warning(f"configure(): {cls_name} block has no attribute {bk!r} — ignored")
@@ -202,7 +204,13 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     for k, v in view.items():
         if k in (cls_name, instance_name) and isinstance(v, dict):
             _consume_block(v)
-        elif not isinstance(v, dict) and _settable(k):
+        elif (
+            not isinstance(v, dict)
+            and broadcast_blocked is not None  # None = class-level broadcast opt-out
+            and k not in broadcast_blocked  # NoBroadcast[...] params never take bare keys
+            and _settable(k)
+        ):
+            logger.trace(f"configure: {k!r} -> {cls_name} (bare)")
             assignments[k] = v  # broadcast — dicts at the top level are blocks for others
 
     _assign(obj, assignments, context)

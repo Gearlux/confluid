@@ -1,9 +1,6 @@
-import logging
 from typing import Any, Callable, Generic, Optional, Tuple, Union
 
 from typing_extensions import TypeVar
-
-_logger = logging.getLogger(__name__)
 
 YamlLoc = Tuple[Optional[str], int, int]
 """``(filename or None, line, column)`` — 1-based YAML source location."""

@@ -34,6 +34,14 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- Broadcast opt-out: `NoBroadcast[T]` (param-level Annotated marker) and
+  `@configurable(broadcast=False)` (class-level) — bare top-level keys no
+  longer land on opted-out targets; addressed `ClassName:` blocks and
+  `configure()` are unaffected. Marker stripped from generated schemas.
+- Broadcast trace diagnostics: every accepted broadcast/block-unroll logs
+  `broadcast: <key> -> <Class> (<origin>)` at TRACE
+  (`LOGGAIR_CONSOLE_LEVEL=TRACE` to see them).
+
 - Typed exception hierarchy (`confluid.exceptions`, root `ConfluidError`);
   every class dual-inherits the builtin it replaces, so existing
   `except ValueError:` call sites keep working.
@@ -50,6 +58,9 @@ All notable changes to confluid are documented here. The format follows
   checkers), the `${...}` interpolation family, and loader-directive notes.
 
 ### Changed (internal — no public API change)
+
+- Logging is loggair-only (the stdlib/loggair split is gone); `%`-style log
+  args converted to f-strings (loguru drops printf args silently).
 
 - **Module layering:** the materialization engine (`flow`/`cast`,
   `materialize`/`resolve`, broadcasting, accept-lists, the `_state`

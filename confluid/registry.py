@@ -1,8 +1,9 @@
 import importlib
-import logging
 from typing import Any, Callable, Dict, Optional, Set, Union, cast
 
-logger = logging.getLogger(__name__)
+from loggair import get_logger
+
+logger = get_logger("confluid.registry")
 
 
 class ConfluidRegistry:

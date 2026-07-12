@@ -41,6 +41,7 @@ from confluid.llm_schema import sanitize_schema
 from confluid.loader import load, load_config, load_config_with_paths
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
+from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
 from confluid.registry import get_registry
 from confluid.resolver import parse_value
 from confluid.schema import (
@@ -98,6 +99,8 @@ __all__ = [
     "lazy_param_names",
     "Mandatory",
     "mandatory_param_names",
+    "NoBroadcast",
+    "no_broadcast_param_names",
     "get_hierarchy",
     "get_hierarchy_from_instance",
     "input_specs",

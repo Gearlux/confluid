@@ -16,7 +16,6 @@ Coverage targets:
 
 from __future__ import annotations
 
-import logging
 from typing import Iterator, Optional
 
 import pytest
@@ -109,7 +108,26 @@ def test_strict_init_accepts_valid_kwargs() -> None:
     assert inst.s == "hello"
 
 
-def test_warn_init_logs_and_proceeds(caplog: pytest.LogCaptureFixture) -> None:
+def _capture_validation_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Patch the validation module logger with a collecting stub.
+
+    loggair does not propagate into stdlib logging, so pytest's ``caplog``
+    cannot capture it — the module logger is patched directly instead (the
+    same pattern as test_configurator's typo-warning test). Asserting on the
+    returned list covers positive AND negative cases without the false-green
+    risk of an empty ``caplog.records``.
+    """
+    from types import SimpleNamespace
+
+    import confluid.validation as validation_module
+
+    seen: list[str] = []
+    monkeypatch.setattr(validation_module, "logger", SimpleNamespace(warning=lambda msg: seen.append(msg)))
+    return seen
+
+
+def test_warn_init_logs_and_proceeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_validation_warnings(monkeypatch)
     set_policy(init="warn")
 
     @configurable
@@ -118,13 +136,14 @@ def test_warn_init_logs_and_proceeds(caplog: pytest.LogCaptureFixture) -> None:
             # Coerce so the body doesn't itself raise on the bad value.
             self.n = n
 
-    with caplog.at_level(logging.WARNING, logger="confluid.validation"):
-        inst = C(n="not an int")
+    inst = C(n="not an int")
     assert inst.n == "not an int"  # body ran, body just accepted the value
-    assert any("invalid configuration" in rec.message for rec in caplog.records)
+    assert any("invalid configuration" in msg for msg in seen)
+    assert any("C" in msg for msg in seen)  # the class name survives the f-string conversion
 
 
-def test_off_init_skips_validation(caplog: pytest.LogCaptureFixture) -> None:
+def test_off_init_skips_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_validation_warnings(monkeypatch)
     set_policy(init="off")
 
     @configurable
@@ -132,10 +151,9 @@ def test_off_init_skips_validation(caplog: pytest.LogCaptureFixture) -> None:
         def __init__(self, n: int = 0) -> None:
             self.n = n
 
-    with caplog.at_level(logging.WARNING, logger="confluid.validation"):
-        inst = C(n="not an int")
+    inst = C(n="not an int")
     assert inst.n == "not an int"
-    assert not caplog.records  # no warning emitted under "off"
+    assert seen == []  # no warning emitted under "off" (stub-based — no caplog false green)
 
 
 def test_extra_kwarg_rejected_in_strict() -> None:
@@ -214,7 +232,8 @@ def test_configure_setattr_strict_raises() -> None:
         configure(inst, config={"C": {"n": "not an int"}})
 
 
-def test_configure_setattr_warn_proceeds(caplog: pytest.LogCaptureFixture) -> None:
+def test_configure_setattr_warn_proceeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_validation_warnings(monkeypatch)
     set_policy(init="warn")
 
     @configurable
@@ -223,10 +242,9 @@ def test_configure_setattr_warn_proceeds(caplog: pytest.LogCaptureFixture) -> No
             self.n = n
 
     inst = C(n=1)
-    with caplog.at_level(logging.WARNING, logger="confluid.validation"):
-        configure(inst, config={"C": {"n": "not an int"}})
+    configure(inst, config={"C": {"n": "not an int"}})
     assert inst.n == "not an int"
-    assert any("invalid value" in rec.message for rec in caplog.records)
+    assert any("invalid value" in msg for msg in seen)
 
 
 def test_configure_unknown_attr_silent() -> None:
@@ -269,7 +287,8 @@ obj: !class:YamlValidatedClass
     assert "YamlValidatedClass" in str(excinfo.value) or "validation" in str(excinfo.value).lower()
 
 
-def test_yaml_warn_logs_but_proceeds(caplog: pytest.LogCaptureFixture) -> None:
+def test_yaml_warn_logs_but_proceeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_validation_warnings(monkeypatch)
     set_policy(init="off", yaml="warn")
 
     @configurable(name="YamlWarnClass")
@@ -282,15 +301,15 @@ obj: !class:YamlWarnClass
   n: not_an_int
 """
     loaded = load(yaml_doc)
-    with caplog.at_level(logging.WARNING, logger="confluid.validation"):
-        result = flow(loaded["obj"])
+    result = flow(loaded["obj"])
     # WARN allows the constructor to run; the bad value flows through.
     assert result.n == "not_an_int"
-    assert any("invalid configuration" in rec.message for rec in caplog.records)
+    assert any("invalid configuration" in msg for msg in seen)
 
 
-def test_yaml_off_skips_validation_even_when_init_strict(caplog: pytest.LogCaptureFixture) -> None:
+def test_yaml_off_skips_validation_even_when_init_strict(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inverse asymmetry: yaml='off' wins over init='strict' inside flow()."""
+    seen = _capture_validation_warnings(monkeypatch)
     set_policy(init="strict", yaml="off")
 
     @configurable(name="YamlOffClass")
@@ -303,10 +322,9 @@ obj: !class:YamlOffClass
   n: not_an_int
 """
     loaded = load(yaml_doc)
-    with caplog.at_level(logging.WARNING, logger="confluid.validation"):
-        result = flow(loaded["obj"])
+    result = flow(loaded["obj"])
     assert result.n == "not_an_int"
-    assert not caplog.records
+    assert seen == []  # stub-based negative assertion — no caplog false green
 
 
 # ---------------------------------------------------------------------------
