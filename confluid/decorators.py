@@ -1,6 +1,6 @@
 import functools
 import inspect
-from typing import Any, Callable, Optional, Type, TypeVar, Union, cast, overload
+from typing import Any, Callable, Optional, Sequence, Type, TypeVar, Union, cast, overload
 
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.registry import get_registry
@@ -30,6 +30,7 @@ def configurable(
     random: bool = False,
     constant: bool = False,
     broadcast: bool = True,
+    broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Callable[[C], C]: ...
@@ -48,6 +49,7 @@ def configurable(
     random: bool = False,
     constant: bool = False,
     broadcast: bool = True,
+    broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
@@ -106,6 +108,18 @@ def configurable(
             ``ClassName:`` / instance-name blocks and ``configure()`` still set
             attributes normally. The param-level counterpart is the
             ``NoBroadcast[T]`` annotation (``confluid.no_broadcast``).
+        broadcast_attrs: Optional explicit declaration of post-init
+            ``__init__``-body attribute names that must stay broadcastable.
+            Stamped as ``__confluid_broadcast_attrs__`` (a tuple) and UNIONED
+            with the AST-scanned body-slot names by the broadcasting engine —
+            declaring can never LOSE scanned attrs. In dev checkouts the scan
+            already finds every ``self.x = …`` slot, so the declaration is
+            redundant; in compiled/frozen/zip deployments ``inspect.getsource``
+            fails and the scan is EMPTY — there the declaration is the ONLY way
+            post-init attrs remain broadcast targets (the engine warns once per
+            class when it can't scan an undeclared ``@configurable`` class).
+            An explicit empty sequence (``broadcast_attrs=[]``) declares "no
+            post-init broadcast attrs" and silences that warning.
         strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
             the class. FluxStudio uses this to render ``Union[int, str]``
             constructor params as two optional sockets — ``{name}_samples``
@@ -142,37 +156,22 @@ def configurable(
         if validate and not isinstance(c, type) and callable(c):
             c = _wrap_callable_with_validation(c)
 
-        # Mark the class / callable with metadata
-        setattr(c, "__confluid_configurable__", True)
-        if name:
-            setattr(c, "__confluid_name__", name)
-        if effective_category:
-            setattr(c, "__confluid_category__", effective_category)
-        if group:
-            setattr(c, "__confluid_group__", group)
-        if task:
-            setattr(c, "__confluid_task__", task)
-        if role:
-            setattr(c, "__confluid_role__", role)
-        if lazy:
-            setattr(c, "__confluid_lazy__", True)
-        if random:
-            setattr(c, "__confluid_random__", True)
-        if constant:
-            setattr(c, "__confluid_constant__", True)
-        if not broadcast:
-            # Stamp-only mark (like random/constant): instances of this class
-            # never receive BARE-key broadcasts; addressed ClassName:/instance
-            # blocks and configure() still set attributes normally.
-            setattr(c, "__confluid_no_broadcast__", True)
-        if strict_typing:
-            setattr(c, "__confluid_strict_typing__", True)
-        if display_name:
-            setattr(c, "__confluid_display_name__", display_name)
-
-        # Register in global registry
+        # Register + stamp: the registry is the SINGLE stamping authority for
+        # every __confluid_*__ mark (see register_class's docstring).
         get_registry().register_class(
-            c, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy
+            c,
+            name=name,
+            category=effective_category,
+            group=group,
+            task=task,
+            role=role,
+            lazy=lazy,
+            random=random,
+            constant=constant,
+            strict_typing=strict_typing,
+            display_name=display_name,
+            no_broadcast=not broadcast,
+            broadcast_attrs=broadcast_attrs,
         )
 
         if validate and isinstance(c, type):

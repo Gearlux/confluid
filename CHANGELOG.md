@@ -34,6 +34,13 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- `active_context(ctx)` — public contextmanager activating a resolution
+  context for bare `flow()` calls outside a `materialize()` pass (the
+  semantics liquifai used to hand-roll by reaching into engine internals;
+  its `_confluid_active_context` now delegates here). The mapping is used
+  verbatim when it has no dotted keys (live objects keep identity); dotted
+  keys are expanded like `materialize`. See README "Using confluid across
+  threads & async".
 - Broadcast opt-out: `NoBroadcast[T]` (param-level Annotated marker) and
   `@configurable(broadcast=False)` (class-level) — bare top-level keys no
   longer land on opted-out targets; addressed `ClassName:` blocks and
@@ -41,6 +48,24 @@ All notable changes to confluid are documented here. The format follows
 - Broadcast trace diagnostics: every accepted broadcast/block-unroll logs
   `broadcast: <key> -> <Class> (<origin>)` at TRACE
   (`LOGGAIR_CONSOLE_LEVEL=TRACE` to see them).
+- `confluid-bake <package>` (also `python -m confluid.bake`) — build-time AST
+  bake for compiled/frozen/zip deployments: runs the same `__init__` body-slot
+  scan the engine uses at runtime, while source still exists, and emits a
+  generated `<package>/_confluid_baked.py` table (provenance-headed,
+  deterministic; every class the package defines with its own `__init__`,
+  in-package MRO bases included). The engine unions it in per MRO class when
+  the live scan finds nothing (`scan ∪ declared ∪ baked` — fresh source always
+  governs dev), so broadcasting keeps seeing post-init attrs where
+  `inspect.getsource` fails. `--check` is the CI drift guard (exit 1 on a
+  stale table). PyInstaller-style tracers need `<pkg>._confluid_baked` as a
+  hidden import (lazy dotted import).
+- `@configurable(broadcast_attrs=[...])` — explicit declaration of post-init
+  `__init__`-body broadcast attrs (stamped `__confluid_broadcast_attrs__`,
+  UNIONED with the AST scan), the manual override for classes the bake step
+  can't reach. The engine warns once per class when it can't scan a
+  `@configurable` class covered by neither mechanism
+  (`confluid.introspect.init_source_available` is the new probe distinguishing
+  "no source" from "no assignments").
 
 - Typed exception hierarchy (`confluid.exceptions`, root `ConfluidError`);
   every class dual-inherits the builtin it replaces, so existing
@@ -63,11 +88,28 @@ All notable changes to confluid are documented here. The format follows
   args converted to f-strings (loguru drops printf args silently).
 
 - **Module layering:** the materialization engine (`flow`/`cast`,
-  `materialize`/`resolve`, broadcasting, accept-lists, the `_state`
-  thread-local) moved to `confluid.engine`, breaking the old `fluid`↔`loader`
+  `materialize`/`resolve`, broadcasting, accept-lists, the engine state)
+  moved to `confluid.engine`, breaking the old `fluid`↔`loader`
   import cycle; `fluid` is now a pure marker-class leaf and `loader` is
   YAML-only. Deep imports from `confluid.loader` / `confluid.fluid` keep
   working via re-exports (PEP-562 for `fluid.flow`/`fluid.cast`).
+- **Engine state migrated from `threading.local` to a `contextvars.ContextVar`**
+  (a frozen `_EngineState` dataclass, set/reset by token): an active
+  materialization context now propagates into asyncio tasks and
+  `asyncio.to_thread` workers (previously `!ref:` resolution silently failed
+  inside an event-loop task). A raw `Thread`/`run_in_executor` still needs
+  `contextvars.copy_context().run(...)` or `active_context` in the worker.
+  The loader's include-accumulator moved to its own ContextVar; the private
+  `_state` re-export from `confluid.loader` is gone. Downstream boundary
+  fixes shipped in the same change: navigaitor's in-process trainer uses
+  `asyncio.to_thread`, fluxstudio's run-worker thread runs under
+  `copy_context()`.
+- **Stamping single source of truth:** `registry.register_class` stamps every
+  `__confluid_*__` mark (widened with `random`/`constant`/`strict_typing`/
+  `display_name`/`no_broadcast`/`broadcast_attrs`, each with the
+  existing-mark fallback), and `@configurable` delegates its whole mark set —
+  a `register_class`-ed third-party class can now carry every mark, and a
+  partial re-register never drops marks.
 - **`flow()` decomposed** from one ~390-line function into a dispatcher +
   named `_flow_*` phase helpers (behavior byte-identical).
 - **One AST scanner:** the three near-identical `__init__`-body scanners are

@@ -46,6 +46,12 @@ dev = [
     "pytest-cov>=4.0.0,<7.0.0",
 ]
 
+[project.scripts]
+# Build-time bake of __init__ body-slot names into <package>/_confluid_baked.py so
+# broadcasting keeps seeing post-init attrs in compiled/frozen/zip deployments where
+# inspect.getsource fails (see confluid/bake.py; `confluid-bake <pkg>` == `python -m confluid.bake <pkg>`).
+confluid-bake = "confluid.bake:main"
+
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"
 Repository = "https://github.com/Gearlux/confluid.git"

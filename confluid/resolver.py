@@ -79,7 +79,7 @@ def _materialize_cursor(value: Any) -> Any:
     """Flow a Fluid cursor into its live object before attribute access.
 
     Maps the raw marker through the active ``flow_memo`` first (the
-    thread-local shared-identity memo ``_flow_recursive`` populates) so a
+    per-context shared-identity memo ``_flow_recursive`` populates) so a
     dotted ref reuses the SINGLE materialized instance — ``!ref:split.train``
     + ``!ref:split.val`` share one live ``split`` instead of each rebuilding
     the whole subtree. Non-Fluid values pass through untouched.
@@ -89,10 +89,10 @@ def _materialize_cursor(value: Any) -> Any:
     if not isinstance(value, Fluid):
         return value
     # The sanctioned lazy seam: resolver is imported by engine at top level,
-    # so the reverse dependency (flow + the thread-local memo) is body-local.
-    from confluid.engine import _state, flow
+    # so the reverse dependency (flow + the engine-state memo) is body-local.
+    from confluid.engine import _ENGINE_STATE, flow
 
-    flow_memo = getattr(_state, "flow_memo", None)
+    flow_memo = _ENGINE_STATE.get().flow_memo
     if flow_memo is not None:
         value = flow_memo.get(id(value), value)
     return flow(value)

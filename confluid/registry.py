@@ -1,5 +1,5 @@
 import importlib
-from typing import Any, Callable, Dict, Optional, Set, Union, cast
+from typing import Any, Callable, Dict, Optional, Sequence, Set, Tuple, Union, cast
 
 from loggair import get_logger
 
@@ -33,7 +33,24 @@ class ConfluidRegistry:
         task: Optional[str] = None,
         role: Optional[str] = None,
         lazy: bool = False,
+        random: bool = False,
+        constant: bool = False,
+        strict_typing: bool = False,
+        display_name: Optional[str] = None,
+        no_broadcast: bool = False,
+        broadcast_attrs: Optional[Sequence[str]] = None,
     ) -> Callable[..., Any]:
+        """Register ``cls`` and stamp its ``__confluid_*__`` marks — the ONE stamping authority.
+
+        ``@configurable`` delegates every mark here (single source of truth);
+        ``register()`` forwards only the discovery subset, and a direct call
+        (e.g. navigaitor's snapshot restore) may forward as little as
+        ``name``/``category`` — each mark falls back to the class's EXISTING
+        mark when the argument is unset, so a partial re-register never drops
+        tags stamped earlier. ``random``/``constant``/``strict_typing``/
+        ``display_name``/``no_broadcast``/``broadcast_attrs`` are stamp-only
+        (no reverse index).
+        """
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
         # Fall back to any tags already on the class — this keeps a re-register
@@ -44,6 +61,18 @@ class ConfluidRegistry:
         task = task if task is not None else getattr(cls, "__confluid_task__", None)
         role = role if role is not None else getattr(cls, "__confluid_role__", None)
         lazy = lazy or bool(getattr(cls, "__confluid_lazy__", False))
+        random = random or bool(getattr(cls, "__confluid_random__", False))
+        constant = constant or bool(getattr(cls, "__confluid_constant__", False))
+        strict_typing = strict_typing or bool(getattr(cls, "__confluid_strict_typing__", False))
+        display_name = display_name if display_name is not None else getattr(cls, "__confluid_display_name__", None)
+        no_broadcast = no_broadcast or bool(getattr(cls, "__confluid_no_broadcast__", False))
+        # ``()`` is a DELIBERATE declaration ("no post-init broadcast attrs"),
+        # distinct from ``None`` (undeclared) — so the fallback tests ``is not None``.
+        effective_broadcast_attrs: Optional[Tuple[str, ...]] = (
+            tuple(broadcast_attrs)
+            if broadcast_attrs is not None
+            else getattr(cls, "__confluid_broadcast_attrs__", None)
+        )
         # Set markers for discovery
         try:
             setattr(cls, "__confluid_configurable__", True)
@@ -63,6 +92,18 @@ class ConfluidRegistry:
                 # nodes) read this to emit a deferred ``LazyClass`` instead of a
                 # live instance.
                 setattr(cls, "__confluid_lazy__", True)
+            if random:
+                setattr(cls, "__confluid_random__", True)
+            if constant:
+                setattr(cls, "__confluid_constant__", True)
+            if strict_typing:
+                setattr(cls, "__confluid_strict_typing__", True)
+            if display_name is not None:
+                setattr(cls, "__confluid_display_name__", display_name)
+            if no_broadcast:
+                setattr(cls, "__confluid_no_broadcast__", True)
+            if effective_broadcast_attrs is not None:
+                setattr(cls, "__confluid_broadcast_attrs__", effective_broadcast_attrs)
         except (TypeError, AttributeError):
             # Built-in or immutable types don't allow attribute setting
             pass

@@ -6,42 +6,92 @@ cycle. The layering is now one-directional:
     ``fluid`` (marker data classes, LEAF)
         ↑
     ``engine`` (this module: flow/cast, materialize/resolve, _flow_recursive,
-                broadcasting/_prepare_kwargs, accept-lists, the ``_state``
-                thread-local)
+                broadcasting/_prepare_kwargs, accept-lists, the ``_ENGINE_STATE``
+                ContextVar + the public ``active_context()``)
         ↑
     ``loader`` (YAML parsing: ConfluidLoader, load/load_config, includes,
                 imports, scopes glue)
 
 Two deliberate lazy seams remain (both documented at the site):
 ``resolve()`` body-imports ``loader.load`` (str/Path convenience), and
-``resolver._materialize_cursor`` body-imports this module (``_state``/``flow``).
+``resolver._materialize_cursor`` body-imports this module (``_ENGINE_STATE``/``flow``).
 
 ``confluid.loader`` re-exports the moved names for backward compatibility —
 new code should import from here.
 """
 
 import inspect
-import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import copy
-from typing import Any, Callable, Dict, List, Optional, Set, Type
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Type
 
 from loggair import get_logger
 
 from confluid.exceptions import ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.fluid import Class, Clone, Fluid, Instance, Lazy, Reference, T, format_yaml_loc
-from confluid.introspect import init_setattr_names
+from confluid.introspect import baked_init_attrs, init_setattr_names, init_source_available
 from confluid.merger import expand_dotted_keys
 from confluid.registry import get_registry, resolve_class
 from confluid.resolver import Resolver, resolve_reference_path
 
 logger = get_logger("confluid.engine")
 
-# Thread-local storage for materialization context
-_state = threading.local()
+
+@dataclass(frozen=True)
+class _EngineState:
+    """Immutable per-context engine state (one ContextVar, set/reset by token).
+
+    A ``contextvars.ContextVar`` — not ``threading.local()`` — so an active
+    materialization context is inherited by asyncio tasks and by
+    ``asyncio.to_thread`` workers (a ``threading.local`` silently dropped it,
+    making ``!ref:`` resolution fail inside an event-loop task). A raw
+    ``Thread`` / ``run_in_executor`` still does NOT inherit contextvars — see
+    :func:`active_context` for the boundary contract.
+    """
+
+    context: Optional[Dict[str, Any]] = None
+    flow_memo: Optional[Dict[int, Any]] = None
+    instance_memo: Optional[Dict[int, Any]] = None
+    suppress_solidify: bool = False
+
+
+_ENGINE_STATE: ContextVar[_EngineState] = ContextVar("confluid_engine_state", default=_EngineState())
 
 
 def get_active_context() -> Optional[Dict[str, Any]]:
-    return getattr(_state, "context", None)
+    return _ENGINE_STATE.get().context
+
+
+@contextmanager
+def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
+    """Activate ``context`` for bare ``flow()`` calls inside the block.
+
+    The public way to make ``!ref:``/broadcast resolution work for ``flow()``
+    calls made OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a
+    deferred ``Lazy`` slot later, on another thread). Fresh flow/instance memos
+    are installed so dotted refs share one instance within the block; the
+    previous state is restored on exit (nesting-safe).
+
+    The mapping is activated VERBATIM when it has no dotted keys — live
+    instances in the context keep their identity (``flow(Reference("x")) is
+    ctx["x"]``). A context WITH dotted keys is expanded like ``materialize``
+    does (``expand_dotted_keys`` deep-copies non-Fluid leaves, so prefer
+    pre-nested dicts when identity of live values matters).
+
+    Thread/async boundary contract: the state rides a ``contextvars.ContextVar``,
+    so it IS inherited by asyncio tasks and ``asyncio.to_thread`` workers. It is
+    NOT inherited by a raw ``threading.Thread`` or ``loop.run_in_executor`` —
+    either wrap the target with ``contextvars.copy_context().run(...)`` or enter
+    ``active_context(...)`` inside the worker itself.
+    """
+    ctx = expand_dotted_keys(context) if context and any("." in k for k in context) else context
+    token = _ENGINE_STATE.set(_EngineState(context=ctx, flow_memo={}, instance_memo={}))
+    try:
+        yield
+    finally:
+        _ENGINE_STATE.reset(token)
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
@@ -64,22 +114,14 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     _param_kind_cache.clear()
     if context:
         context = expand_dotted_keys(context)
-    old_ctx = getattr(_state, "context", None)
-    old_flow_memo = getattr(_state, "flow_memo", None)
-    old_instance_memo = getattr(_state, "instance_memo", None)
-    old_suppress = getattr(_state, "suppress_solidify", None)
-    _state.context = context
-    _state.flow_memo = {}
-    _state.instance_memo = {}
-    _state.suppress_solidify = not solidify
+    token = _ENGINE_STATE.set(
+        _EngineState(context=context, flow_memo={}, instance_memo={}, suppress_solidify=not solidify)
+    )
     try:
         result = _flow_recursive(data, parent_context=context)
         return _deep_flow(result)
     finally:
-        _state.context = old_ctx
-        _state.flow_memo = old_flow_memo
-        _state.instance_memo = old_instance_memo
-        _state.suppress_solidify = old_suppress
+        _ENGINE_STATE.reset(token)
 
 
 def resolve(
@@ -118,18 +160,13 @@ def resolve(
     _acceptable_keys_cache.clear()
     _post_init_attrs_cache.clear()
     _param_kind_cache.clear()
-    old_ctx = getattr(_state, "context", None)
-    old_flow_memo = getattr(_state, "flow_memo", None)
-    old_instance_memo = getattr(_state, "instance_memo", None)
-    _state.context = ctx
-    _state.flow_memo = {}
-    _state.instance_memo = {}
+    # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
+    # untouched — resolve() never managed that flag (it builds no objects).
+    token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}))
     try:
         return _flow_recursive(prepared, parent_context=ctx)
     finally:
-        _state.context = old_ctx
-        _state.flow_memo = old_flow_memo
-        _state.instance_memo = old_instance_memo
+        _ENGINE_STATE.reset(token)
 
 
 def _deep_flow(data: Any) -> Any:
@@ -166,6 +203,11 @@ _post_init_attrs_cache: Dict[str, frozenset[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
 # as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
 _param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
+# Classes already warned about an unscannable ``__init__`` (compiled/frozen —
+# see :func:`_warn_if_init_unscannable`). Deliberately NOT cleared by
+# materialize/resolve: those clear the attr caches once per pass, which would
+# re-fire the warning on every config load. One warning per class per process.
+_warned_unscannable_inits: Set[str] = set()
 
 
 def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
@@ -218,12 +260,18 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
     if cache_key in _post_init_attrs_cache:
         return _post_init_attrs_cache[cache_key]
 
-    names: Set[str] = set()
+    # Declared escape hatch: ``@configurable(broadcast_attrs=[...])``. UNIONED
+    # with the scanned names, never a replacement — declaring can't lose scanned
+    # attrs (redundant in dev checkouts, load-bearing in compiled/frozen
+    # deployments where ``inspect.getsource`` fails and the scan is empty).
+    declared = getattr(target, "__confluid_broadcast_attrs__", None)
+    names: Set[str] = set(declared or ())
     try:
         mro = target.__mro__
     except AttributeError:
-        _post_init_attrs_cache[cache_key] = frozenset()
-        return frozenset()
+        result = frozenset(names)
+        _post_init_attrs_cache[cache_key] = result
+        return result
 
     for klass in mro:
         if klass is object:
@@ -231,11 +279,50 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
         init = klass.__dict__.get("__init__")
         if init is None:
             continue
-        names.update(init_setattr_names(init))
+        scanned = init_setattr_names(init)
+        names.update(scanned)
+        if not scanned:
+            # Source unavailable (compiled/frozen) or a genuinely empty body:
+            # fall back to the build-time bake table (``python -m confluid.bake``,
+            # emitted while source still existed). An empty-body class bakes an
+            # empty entry, so the union is a no-op for it. Applies per MRO
+            # class, so baked in-package base classes contribute too.
+            names.update(baked_init_attrs(klass) or ())
+
+    if declared is None:
+        _warn_if_init_unscannable(target, cache_key)
 
     result = frozenset(names)
     _post_init_attrs_cache[cache_key] = result
     return result
+
+
+def _warn_if_init_unscannable(target: type, cache_key: str) -> None:
+    """Warn ONCE per class when the TARGET's own ``__init__`` can't be AST-scanned.
+
+    In compiled / frozen / zip deployments ``inspect.getsource`` raises, the
+    body scan silently returns empty, and post-init broadcast attrs vanish —
+    a dev-vs-packaged behavioral divergence with no other diagnostic. Fires
+    only for the target's OWN ``__init__`` (from ``target.__dict__``) on a
+    ``@configurable`` class with no ``broadcast_attrs`` declaration AND no
+    build-time bake-table entry (``confluid.bake``); MRO parents with
+    unreadable source stay silent (builtins are normal).
+    """
+    if cache_key in _warned_unscannable_inits:
+        return
+    if not getattr(target, "__confluid_configurable__", False):
+        return
+    own_init = target.__dict__.get("__init__")
+    if own_init is None or init_source_available(own_init):
+        return
+    if baked_init_attrs(target) is not None:
+        return  # covered by a build-time bake table — packaged mode is healthy
+    _warned_unscannable_inits.add(cache_key)
+    logger.warning(
+        f"cannot scan __init__ body of {cache_key} (source unavailable — compiled/frozen?): "
+        f"post-init broadcast attrs are invisible; run 'confluid-bake <package>' at build time "
+        f"or declare @configurable(broadcast_attrs=[...])"
+    )
 
 
 def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
@@ -689,7 +776,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     # Shared-identity memo: ensures the same raw marker (reached directly or via
     # !ref:) always flows to the same Instance/Class marker object, so a single
     # live object is instantiated downstream.
-    flow_memo: Optional[Dict[int, Any]] = getattr(_state, "flow_memo", None)
+    flow_memo: Optional[Dict[int, Any]] = _ENGINE_STATE.get().flow_memo
 
     # 1. Plain dictionaries — pass merged context down
     if isinstance(data, dict):
@@ -809,14 +896,13 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     """
     # Solidify suppression: re-enter with the ambient flag set so the whole
     # subtree (every nested flow()) skips the expensive solidify() hook. Restored
-    # afterwards so a later non-suppressed flow() in the same thread is unaffected.
+    # afterwards so a later non-suppressed flow() in the same context is unaffected.
     if not solidify:
-        prev_suppress = getattr(_state, "suppress_solidify", False)
-        _state.suppress_solidify = True
+        token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), suppress_solidify=True))
         try:
             return flow(obj, **runtime_kwargs)
         finally:
-            _state.suppress_solidify = prev_suppress
+            _ENGINE_STATE.reset(token)
 
     # Idempotency — already-live objects pass through.
     if not isinstance(obj, (Fluid, str, type, dict)):
@@ -838,7 +924,7 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     # Instance memoization — only within an active materialize() pass and only
     # when no runtime kwargs override the stored ones (overrides must yield a
     # fresh object).
-    instance_memo = getattr(_state, "instance_memo", None)
+    instance_memo = _ENGINE_STATE.get().instance_memo
     if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
         cached = instance_memo.get(id(obj))
         if cached is not None:
@@ -1172,7 +1258,7 @@ def _maybe_solidify(instance: Any) -> None:
     ``self.parameters()`` is populated for optimizers). Skipped under
     ``flow(solidify=False)`` / ``materialize(solidify=False)``.
     """
-    if not getattr(_state, "suppress_solidify", False):
+    if not _ENGINE_STATE.get().suppress_solidify:
         solidify_method = getattr(instance, "solidify", None)
         if callable(solidify_method):
             solidify_method()
