@@ -29,6 +29,7 @@ def configurable(
     validate: bool = True,
     random: bool = False,
     constant: bool = False,
+    broadcast: bool = True,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Callable[[C], C]: ...
@@ -46,6 +47,7 @@ def configurable(
     validate: bool = True,
     random: bool = False,
     constant: bool = False,
+    broadcast: bool = True,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
@@ -98,6 +100,12 @@ def configurable(
             constant value node as a top-level ``!class:`` entry and rewires
             its consumers via dotted ``!ref:<name>.<output>`` instead of
             dropping the wired values. Mutually exclusive with ``random``.
+        broadcast: When ``False``, stamp ``__confluid_no_broadcast__`` on the
+            class: instances never receive BARE-key broadcasts (a top-level
+            ``name:``-style key matching by name alone). Addressed
+            ``ClassName:`` / instance-name blocks and ``configure()`` still set
+            attributes normally. The param-level counterpart is the
+            ``NoBroadcast[T]`` annotation (``confluid.no_broadcast``).
         strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
             the class. FluxStudio uses this to render ``Union[int, str]``
             constructor params as two optional sockets — ``{name}_samples``
@@ -152,6 +160,11 @@ def configurable(
             setattr(c, "__confluid_random__", True)
         if constant:
             setattr(c, "__confluid_constant__", True)
+        if not broadcast:
+            # Stamp-only mark (like random/constant): instances of this class
+            # never receive BARE-key broadcasts; addressed ClassName:/instance
+            # blocks and configure() still set attributes normally.
+            setattr(c, "__confluid_no_broadcast__", True)
         if strict_typing:
             setattr(c, "__confluid_strict_typing__", True)
         if display_name:

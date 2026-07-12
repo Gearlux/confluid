@@ -21,10 +21,11 @@ new code should import from here.
 """
 
 import inspect
-import logging
 import threading
 from copy import copy
 from typing import Any, Callable, Dict, List, Optional, Set, Type
+
+from loggair import get_logger
 
 from confluid.exceptions import ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.fluid import Class, Clone, Fluid, Instance, Lazy, Reference, T, format_yaml_loc
@@ -33,7 +34,7 @@ from confluid.merger import expand_dotted_keys
 from confluid.registry import get_registry, resolve_class
 from confluid.resolver import Resolver, resolve_reference_path
 
-_logger = logging.getLogger(__name__)
+logger = get_logger("confluid.engine")
 
 # Thread-local storage for materialization context
 _state = threading.local()
@@ -571,6 +572,24 @@ def _splice_kwargs_at_slot(
     return out
 
 
+def _broadcast_blocked_keys(target_cls: Any) -> Optional[frozenset[str]]:
+    """Bare-broadcast exclusion set for a receiver, or ``None`` for block-everything.
+
+    ``None`` ⇒ the class carries ``@configurable(broadcast=False)`` — NO bare
+    key may land. Otherwise the (possibly empty) set of ``NoBroadcast[...]``
+    parameter names. Addressed ``ClassName:``/instance blocks and
+    ``configure()`` blocks are NEVER gated by this — the accept-list stays the
+    single settability authority; this is a broadcast-only overlay.
+    """
+    if target_cls is None:
+        return frozenset()
+    if getattr(target_cls, "__confluid_no_broadcast__", False):
+        return None
+    from confluid.no_broadcast import no_broadcast_param_names
+
+    return no_broadcast_param_names(target_cls)
+
+
 def _prepare_kwargs(
     cls_name: str,
     own_kwargs: Dict[str, Any],
@@ -604,6 +623,7 @@ def _prepare_kwargs(
     acceptable = _get_acceptable_keys(target or cls_name)
     target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
     param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
+    broadcast_blocked = _broadcast_blocked_keys(target_cls)
 
     def _accepts(k: str, v: Any) -> bool:
         if isinstance(v, Fluid):
@@ -648,11 +668,15 @@ def _prepare_kwargs(
         if k in (cls_name, instance_name) and isinstance(v, dict):
             for bk, bv in v.items():
                 if _accepts(bk, bv):
+                    logger.trace(f"broadcast: {bk!r} -> {cls_name} (block {k!r})")
                     merged[bk] = bv
             continue
 
-        # Plain broadcast.
-        if _accepts(k, v):
+        # Plain broadcast — the only path the NoBroadcast opt-out gates:
+        # addressed blocks above always work. ``blocked is None`` means the
+        # class opted out entirely (@configurable(broadcast=False)).
+        if broadcast_blocked is not None and k not in broadcast_blocked and _accepts(k, v):
+            logger.trace(f"broadcast: {k!r} -> {cls_name} (bare)")
             merged[k] = v
 
     if not self_unrolled:
@@ -936,9 +960,12 @@ def _resolve_kwarg_value(
         inner_target_cls = (
             v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
         )
+        inner_blocked = _broadcast_blocked_keys(inner_target_cls)
         for bk, bv in broadcast_ctx.items():
             if bk in broadcasted or isinstance(bv, (dict, list)):
                 continue
+            if inner_blocked is None or bk in inner_blocked:
+                continue  # NoBroadcast param / broadcast=False class — bare keys never land
             if isinstance(bv, Fluid):
                 # Fluids only broadcast through an explicit accepted
                 # key — never via the **kwargs catchall (which would
@@ -955,6 +982,7 @@ def _resolve_kwarg_value(
                         continue
             elif acceptable is not None and bk not in acceptable:
                 continue
+            logger.trace(f"broadcast: {bk!r} -> {getattr(inner_target_cls, '__name__', v.target)} (nested-class)")
             broadcasted[bk] = bv
         v_copy = copy(v)
         v_copy.kwargs = broadcasted
@@ -1073,12 +1101,11 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], p
             if isinstance(v, Fluid) and not isinstance(v, Lazy):
                 existing = instance.__dict__.get(k)
                 if type(v) is Class and isinstance(existing, Lazy):
-                    _logger.warning(
-                        "Config slot %r on %s received a '!class:' value but the slot is a "
-                        "deferred (lazy) runtime-injection slot; treating it as '!lazy:'. "
-                        "Wire it '!lazy:' in YAML to make the intent explicit and silence this.",
-                        k,
-                        getattr(target, "__name__", target),
+                    logger.warning(
+                        f"Config slot {k!r} on {getattr(target, '__name__', target)} received a "
+                        "'!class:' value but the slot is a deferred (lazy) runtime-injection slot; "
+                        "treating it as '!lazy:'. Wire it '!lazy:' in YAML to make the intent "
+                        "explicit and silence this."
                     )
                     v = Lazy(v.target, **v.kwargs)
                 else:

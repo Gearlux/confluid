@@ -156,19 +156,26 @@ def test_materialize_keeps_lazy_post_init_attr_deferred() -> None:
         del sys.modules["_lazy_postinit_probe"]
 
 
-def test_class_into_lazy_default_slot_is_deferred_with_warning(caplog: Any) -> None:
+def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any) -> None:
     """A ``!class:`` value landing in a slot whose own default is ``Lazy`` is
     auto-deferred (kept ``!lazy:``) with a warning — not eagerly built.
 
     Guards the minimal-ctor footgun: a deferred ``Class`` (``!class:`` no parens)
     wired into a runtime-injection body slot (e.g. ``optimizer``) would otherwise
     be eagerly materialized on assignment and crash (``Adam()`` with no params).
+
+    The warning is asserted by patching the ENGINE module logger directly —
+    loggair does not propagate into stdlib logging, so ``caplog`` cannot see it.
     """
-    import logging
     import sys
     import types
+    from types import SimpleNamespace
 
+    import confluid.engine as engine_module
     from confluid import LazyClass, configurable, flow, load
+
+    warnings_seen: list[str] = []
+    monkeypatch.setattr(engine_module, "logger", SimpleNamespace(warning=lambda msg: warnings_seen.append(msg)))
 
     mod = types.ModuleType("_lazy_slot_probe")
 
@@ -190,18 +197,17 @@ def test_class_into_lazy_default_slot_is_deferred_with_warning(caplog: Any) -> N
     mod._Owner = _Owner  # type: ignore[attr-defined]
     sys.modules["_lazy_slot_probe"] = mod
     try:
-        with caplog.at_level(logging.WARNING, logger="confluid.fluid"):
-            owner = flow(
-                load(
-                    "o: !class:_lazy_slot_probe._Owner\n"
-                    "  name: t\n"
-                    "  optimizer: !class:_lazy_slot_probe._Needsy\n"  # !class: footgun
-                    "    lr: 0.05\n"
-                )["o"]
-            )
+        owner = flow(
+            load(
+                "o: !class:_lazy_slot_probe._Owner\n"
+                "  name: t\n"
+                "  optimizer: !class:_lazy_slot_probe._Needsy\n"  # !class: footgun
+                "    lr: 0.05\n"
+            )["o"]
+        )
         # Auto-deferred — not eagerly built — and a warning was emitted.
         assert isinstance(owner.optimizer, LazyClass)
-        assert any("deferred (lazy)" in r.message for r in caplog.records)
+        assert any("deferred (lazy)" in msg for msg in warnings_seen)
         # The owning code injects the runtime arg and builds it.
         built = flow(owner.optimizer, required=[1])
         assert isinstance(built, _Needsy) and built.lr == 0.05

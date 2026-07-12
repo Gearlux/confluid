@@ -37,7 +37,6 @@ without checking anything.
 
 from __future__ import annotations
 
-import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -48,7 +47,9 @@ from confluid.exceptions import ValidationModeError
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
+from loggair import get_logger
+
+logger = get_logger("confluid.validation")
 
 _pydantic_available: Optional[bool] = None
 
@@ -286,7 +287,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning("%s: invalid configuration\n%s", cls.__name__, exc)
+        logger.warning(f"{cls.__name__}: invalid configuration\n{exc}")
 
 
 def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> None:
@@ -318,7 +319,7 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning("%s.%s: invalid value\n%s", cls.__name__, name, exc)
+        logger.warning(f"{cls.__name__}.{name}: invalid value\n{exc}")
 
 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:
@@ -338,7 +339,7 @@ def validate_model(model: BaseModel, mode: ValidationMode) -> None:
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning("%s: invalid configuration\n%s", type(model).__name__, exc)
+        logger.warning(f"{type(model).__name__}: invalid configuration\n{exc}")
 
 
 __all__ = [
