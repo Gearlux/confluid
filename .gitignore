@@ -53,3 +53,4 @@ coverage-confluid/
 lightning_logs/
 logs/
 *.log
+/pyrightconfig.json
