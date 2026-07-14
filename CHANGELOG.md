@@ -34,6 +34,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **Eager (plain-constructor) classes are first-class.** `dump()` now
+  round-trips a class whose constructor transforms its params instead of
+  storing them verbatim: the bound constructor kwargs are captured at
+  construction (`__confluid_kwargs__` — stamped by the engine on the YAML
+  path and by the `@configurable` validation wrap on direct Python
+  construction, even with validation `off`), and the dumper prefers the live
+  same-named attribute with the captured kwarg as fallback. New
+  `@configurable(eager=True)` / `register(..., eager=True)` stamp-only mark
+  (`__confluid_eager__`): `configure()` warns when setting a constructor-param
+  attribute on an eager instance post-construction (`__init__` work will not
+  re-run — derived state may be stale; the value is still applied). See
+  `docs/eager-classes.md`.
 - `active_context(ctx)` — public contextmanager activating a resolution
   context for bare `flow()` calls outside a `materialize()` pass (the
   semantics liquifai used to hand-roll by reaching into engine internals;
@@ -118,6 +130,10 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- `dump()` no longer silently drops a constructor param explicitly holding
+  `None`: it now dumps `param: null` unless the param's default is also
+  `None` (where the omission is lossless). The old unconditional skip made a
+  reload silently restore the non-`None` default.
 - `configure()` no longer executes property getters, can set `None`, and
   warns on typo'd block keys.
 - Order-dependent test failures caused by global YAML-loader mutation.

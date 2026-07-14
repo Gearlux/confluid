@@ -3,6 +3,7 @@
 **Confluid** is a modern, hierarchical configuration and dependency injection framework for Python, built for researchers and engineers who need modularity and 100% reproducibility in their experiment pipelines.
 
 ## Key Features
+- **Works with plain Python classes:** Required constructor params and real work in `__init__` are fully supported for load/flow/dump — the lazy/zero-arg class-design convention is optional.
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) — or plain builder **functions** — part of your configurable graph via `@configurable` / `register`.
@@ -23,7 +24,8 @@ Each topic has its own guide, and every guide has a runnable companion script in
 | [Tags & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/tags.md) | The six YAML tags, Fluid→Solid lifecycle, `!class:` eager-vs-deferred, `!lazy:` + `flow()`, `!ref:` vs `!clone:` | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Interpolation & Config Files](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md) | `${ENV}` + `${config.key}` interpolation, capturing the `include:` tree | `interpolation_includes.py` |
-| [Class Design](https://github.com/Gearlux/confluid/blob/main/docs/class-design.md) | Lazy init & zero-arg construction — the four rules every `@configurable` class follows | `ml_pipeline.py` et al. |
+| [Class Design](https://github.com/Gearlux/confluid/blob/main/docs/class-design.md) | Lazy init & zero-arg construction — the four-rule convention for reconfigurable classes | `ml_pipeline.py` et al. |
+| [Eager Classes](https://github.com/Gearlux/confluid/blob/main/docs/eager-classes.md) | Plain constructors — required params, work in `__init__`, full dump round-trip via captured kwargs, the `eager=True` staleness warning | `eager_classes.py` |
 | [I/O Contract](https://github.com/Gearlux/confluid/blob/main/docs/io-contract.md) | `@output` properties, `Mandatory[T]` inputs, `output_specs` / `input_specs` | `io_contract.py` |
 | [Validation](https://github.com/Gearlux/confluid/blob/main/docs/validation.md) | The three strict/warn/off validation points, `Annotated[..., Field(...)]` constraints, `validate=False` | `validation.py` |
 | [Discovery](https://github.com/Gearlux/confluid/blob/main/docs/discovery.md) | `category` / `group` tags, behavioral marks (`random` / `constant`), docstring-derived help | `discovery.py` |

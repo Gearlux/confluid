@@ -1,6 +1,6 @@
 import functools
 import inspect
-from typing import Any, Callable, Optional, Sequence, Type, TypeVar, Union, cast, overload
+from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar, Union, cast, overload
 
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.registry import get_registry
@@ -29,6 +29,7 @@ def configurable(
     validate: bool = True,
     random: bool = False,
     constant: bool = False,
+    eager: bool = False,
     broadcast: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
@@ -48,6 +49,7 @@ def configurable(
     validate: bool = True,
     random: bool = False,
     constant: bool = False,
+    eager: bool = False,
     broadcast: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
@@ -102,6 +104,16 @@ def configurable(
             constant value node as a top-level ``!class:`` entry and rewires
             its consumers via dotted ``!ref:<name>.<output>`` instead of
             dropping the wired values. Mutually exclusive with ``random``.
+        eager: When ``True``, stamp ``__confluid_eager__`` on the class.
+            Declares that the constructor does REAL WORK from its params
+            (a plain/normal Python class, deliberately outside the
+            lazy-init/zero-arg convention). Its runtime reader is the
+            ``configure()`` staleness warning: setting a constructor-param
+            attribute on an eager instance post-construction warns that the
+            ``__init__`` work will NOT re-run (derived state may be stale).
+            Body attributes stay freely reconfigurable, silently. Orthogonal
+            to ``random``/``constant``; does not gate dump round-trip (ctor
+            kwargs are captured universally).
         broadcast: When ``False``, stamp ``__confluid_no_broadcast__`` on the
             class: instances never receive BARE-key broadcasts (a top-level
             ``name:``-style key matching by name alone). Addressed
@@ -168,6 +180,7 @@ def configurable(
             lazy=lazy,
             random=random,
             constant=constant,
+            eager=eager,
             strict_typing=strict_typing,
             display_name=display_name,
             no_broadcast=not broadcast,
@@ -192,6 +205,7 @@ def register(
     task: Optional[str] = None,
     role: Optional[str] = None,
     lazy: bool = False,
+    eager: bool = False,
 ) -> C:
     """Register a class OR callable (e.g. a third-party class or builder function) as configurable.
 
@@ -211,12 +225,15 @@ def register(
             should stay deferred (a runtime-injection slot like a torch optimizer
             needing ``params=`` / a DataLoader needing ``dataset=``). See
             :func:`configurable`.
+        eager: When ``True``, stamp ``__confluid_eager__`` — the constructor
+            does real work from its params (a plain Python class). Enables the
+            ``configure()`` staleness warning. See :func:`configurable`.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
     # ``register_class`` stamps the discovery markers (incl. ``__confluid_lazy__``)
     # on the class — it tolerates immutable built-ins via try/except.
     get_registry().register_class(
-        cls, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy
+        cls, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy, eager=eager
     )
     return cls
 
@@ -302,7 +319,7 @@ def _wrap_callable_with_validation(func: C) -> C:
 
 
 def _wrap_init_with_validation(cls: Type[Any]) -> None:
-    """Wrap ``cls.__init__`` so each call validates its kwargs.
+    """Wrap ``cls.__init__`` so each call validates AND captures its kwargs.
 
     The wrapped ``__init__`` binds the call's positional and keyword
     arguments to the original signature, then routes the resulting mapping
@@ -310,6 +327,19 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
     :attr:`ValidationPolicy.init` mode. The original ``__init__`` runs
     afterwards regardless of the validation outcome — STRICT raises before
     the call, WARN logs and proceeds, OFF skips the check entirely.
+
+    After the original ``__init__`` returns, the bound named kwargs (the
+    explicitly-passed params only — no defaults applied, positionals
+    normalized to names, ``*args``/``**kwargs`` bundles dropped) are stamped
+    on the instance as ``__confluid_kwargs__``. This is what lets ``dump()``
+    round-trip an EAGER class whose constructor transforms its params instead
+    of storing them verbatim as same-named attributes (the dumper prefers the
+    live attribute and falls back to this capture). Notes: the capture runs
+    even when validation mode is ``off``; values are held BY REFERENCE for
+    the instance lifetime (the same lifetime a param-storing class gives
+    them); ``__slots__``/frozen instances that reject the setattr degrade
+    gracefully to the live-attribute dump heuristic; on the YAML path the
+    engine re-stamps with the resolved ctor dict afterwards (last write wins).
 
     Idempotent: if ``cls.__init__`` is already wrapped (marker attribute
     set), this is a no-op so re-decorating a class doesn't double-wrap.
@@ -334,28 +364,42 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
         from confluid.validation import get_policy, validate_kwargs
 
         mode = get_policy().init
-        if mode != "off":
-            try:
-                bound = sig.bind(self, *args, **kwargs)
-            except TypeError:
-                # ``sig.bind`` rejects unknown kwargs and missing required
-                # positionals before the call reaches the body. Surface that
-                # to pydantic so the user sees the structured ``extra="forbid"``
-                # / required-field error from the schema — much more legible
-                # than Python's native TypeError.
+        cleaned: Optional[Dict[str, Any]] = None
+        # The bind runs regardless of validation mode — the capture below
+        # needs it even when validation is off.
+        try:
+            bound = sig.bind(self, *args, **kwargs)
+        except TypeError:
+            # ``sig.bind`` rejects unknown kwargs and missing required
+            # positionals before the call reaches the body. Surface that
+            # to pydantic so the user sees the structured ``extra="forbid"``
+            # / required-field error from the schema — much more legible
+            # than Python's native TypeError. (No capture — the call below
+            # is about to fail with the same TypeError anyway.)
+            if mode != "off":
                 validate_kwargs(cls, kwargs, mode)
-            else:
-                params = {k: v for k, v in bound.arguments.items() if k not in ("self", "cls")}
-                # Drop *args / **kwargs bundles — pydantic schema covers
-                # named parameters only.
-                cleaned = {
-                    name: value
-                    for name, value in params.items()
-                    if sig.parameters[name].kind
-                    not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-                }
+        else:
+            params = {k: v for k, v in bound.arguments.items() if k not in ("self", "cls")}
+            # Drop *args / **kwargs bundles — pydantic schema covers
+            # named parameters only.
+            cleaned = {
+                name: value
+                for name, value in params.items()
+                if sig.parameters[name].kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            }
+            if mode != "off":
                 validate_kwargs(cls, cleaned, mode)
         original_init(self, *args, **kwargs)
+        if cleaned is not None:
+            # Capture the explicitly-passed ctor kwargs so dump() can
+            # round-trip an eager class (see the function docstring). Stamped
+            # AFTER the original __init__ so a same-named assignment in the
+            # body can't clobber it, and so in a configurable-subclass chain
+            # the most-derived wrapper stamps last and wins.
+            try:
+                self.__confluid_kwargs__ = cleaned
+            except (TypeError, AttributeError):
+                pass  # __slots__/frozen instances reject arbitrary attrs
 
     setattr(wrapper, "__confluid_validated__", True)
     try:

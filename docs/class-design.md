@@ -1,7 +1,13 @@
 # Class Design: Lazy Init & Zero-Arg Construction
 
-Confluid configures objects **after** they are built, so every `@configurable` class is designed
-to be cheap and side-effect-free to construct, then configured. Four rules:
+The four rules below are the **convention** that unlocks confluid's post-construction machinery —
+`configure()` reconfiguration that never goes stale, cheap structure introspection, and tools that
+build objects incrementally with partial arguments. They are *not* a prerequisite for using
+confluid: a plain Python class (required params, real work in `__init__`) loads, flows, and dumps
+first-class — see [Eager Classes](eager-classes.md) for that mode and its trade-offs.
+
+When your objects are configured **after** they are built, design them cheap and side-effect-free
+to construct. Four rules:
 
 1. **Lazy constructor — no functional work.** `__init__` only *stores* values. No I/O, network,
    file reads, dataset/model materialization, or heavy compute. Real work is deferred to a property
