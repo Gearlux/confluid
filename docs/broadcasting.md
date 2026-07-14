@@ -90,6 +90,12 @@ LOGGAIR_CONSOLE_LEVEL=TRACE python train.py config/train.yaml
 # ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (block 'trainer')
 ```
 
+For a structured, assertable version of the same information — every applied
+key with its receiver and origin, plus failed and unused keys — see
+[Configuration Reports](report.md): `configure()` returns a
+`ConfigurationReport`, and `collect_report()` collects one across a
+`load()` / `materialize()` pass.
+
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 
 Broadcasting discovers post-init body attributes (`self.loss_fn = …` inside

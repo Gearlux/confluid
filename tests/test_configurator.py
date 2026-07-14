@@ -12,6 +12,8 @@ def setup_registry() -> None:
 
 
 def test_post_construction_configure() -> None:
+    from confluid import ConfigurationReport
+
     @configurable
     class Model:
         def __init__(self, layers: int = 3, lr: float = 0.01):
@@ -21,11 +23,12 @@ def test_post_construction_configure() -> None:
     model = Model()
     assert model.layers == 3
 
-    # Configure existing instance
-    configure(model, config={"Model": {"layers": 50, "lr": 0.001}})
+    # Configure existing instance; the call returns the ConfigurationReport.
+    report = configure(model, config={"Model": {"layers": 50, "lr": 0.001}})
 
     assert model.layers == 50
     assert model.lr == 0.001
+    assert isinstance(report, ConfigurationReport)
 
 
 def test_type_coercion() -> None:

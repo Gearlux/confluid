@@ -23,6 +23,7 @@ Each topic has its own guide, and every guide has a runnable companion script in
 |---|---|---|
 | [Tags & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/tags.md) | The six YAML tags, Fluid→Solid lifecycle, `!class:` eager-vs-deferred, `!lazy:` + `flow()`, `!ref:` vs `!clone:` | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
+| [Configuration Reports](https://github.com/Gearlux/confluid/blob/main/docs/report.md) | `ConfigurationReport` — applied/failed/unused override keys; `configure()`'s return value, the `collect_report()` context manager for `load()`/`materialize()`/`flow()` | `report.py` |
 | [Interpolation & Config Files](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md) | `${ENV}` + `${config.key}` interpolation, capturing the `include:` tree | `interpolation_includes.py` |
 | [Class Design](https://github.com/Gearlux/confluid/blob/main/docs/class-design.md) | Lazy init & zero-arg construction — the four-rule convention for reconfigurable classes | `ml_pipeline.py` et al. |
 | [Eager Classes](https://github.com/Gearlux/confluid/blob/main/docs/eager-classes.md) | Plain constructors — required params, work in `__init__`, full dump round-trip via captured kwargs, the `capture=False` opt-out, the `eager=True` staleness warning | `eager_classes.py` |
@@ -93,12 +94,13 @@ from confluid import load_config, configure
 model = Model()
 trainer = Trainer(model=model)
 
-# Apply configuration
+# Apply configuration — returns a ConfigurationReport (applied/failed/unused keys)
 config = load_config("experiment.yaml")
-configure(trainer, config)
+report = configure(trainer, config=config)
 
 print(trainer.lr) # 0.0001
 print(trainer.model.layers) # 10
+print(report.summary()) # e.g. "2 applied, 0 failed, 0 unused"
 ```
 
 `configure_from_file` collapses the load + apply into one call — handy when the config lives on disk:

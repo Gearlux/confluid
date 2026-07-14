@@ -8,6 +8,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **Configuration reports — applied / failed / unused override tracking.**
+  `configure()` / `configure_from_file()` now return a `ConfigurationReport`
+  (previously `None`): one `applied` record per attribute per object (the
+  final last-write-wins assignment, with receiver label and origin — bare,
+  named block, glob, addressed recursion, nested-class), `failed` keys
+  (unknown attributes inside a matched block; per-field validation failures,
+  with strict mode recording before re-raising and warn mode recording with
+  the value still applied), and `unused` top-level document keys that
+  matched nothing across the whole pass (glob blocks tracked per leaf, e.g.
+  `**.lr`; one aggregate DEBUG summary per pass). The YAML materialization
+  path reports too via the new `collect_report()` context manager — a
+  nested `configure()` adopts the ambient report, so a load-then-configure
+  pass aggregates into one report. Zero-cost when no report is active. See
+  `docs/report.md`.
 - **`capture=False` opt-out for the ctor-kwargs capture.**
   `@configurable(capture=False)` (also on `register()`) stamps
   `__confluid_no_capture__` and disables the `__confluid_kwargs__` capture on
