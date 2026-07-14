@@ -108,7 +108,7 @@ def test_load_config_root_level_class(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# `!class:` eager-vs-deferred grammar (README §"Tags & Deferred Initialization")
+# `!class:` eager-vs-deferred grammar (docs/tags.md)
 # ---------------------------------------------------------------------------
 
 
@@ -225,7 +225,7 @@ def test_class_form_quoted_inline_kwargs_are_coerced(_register_grammar_model: No
 
 
 def test_class_form_quoted_inline_ref_is_resolved(_register_grammar_model: None) -> None:
-    """A nested ``!ref:`` works only in the QUOTED form (the README's Adam example).
+    """A nested ``!ref:`` works only in the QUOTED form (the Adam example in docs/tags.md).
 
     YAML forbids two tags on one node, so ``!class:Model(layers=!ref:n)`` cannot be
     written unquoted — the value must be a quoted string the resolver then parses.
