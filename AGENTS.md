@@ -80,3 +80,7 @@
   applies it to its advertised tool schemas via a thin `FastMCP.list_tools`
   override. It rewrites only the *advertised* schema — never the server-side
   arg-model validation. Pins: `tests/test_llm_schema.py`.
+
+## Releasing to PyPI
+
+Tag-driven: bump `version` in `pyproject.toml`, then `git tag v<version> && git push origin v<version>` — `.github/workflows/release.yml` builds, verifies (twine strict + a clean-venv wheel smoke test run from a neutral cwd, since the repo root would shadow the installed package), and publishes via PyPI Trusted Publishing (OIDC `pypi` environment; one-time pending-publisher setup documented in the workflow header). Publish ORDER across the trio: loggair → confluid → liquifai (each depends on the previous being on PyPI). Once published, this is a PUBLISHED project per the workspace mandate: feature/fix PRs go on THIS repo (`main ← dev/main`), never bundled into taidal workspace PRs.

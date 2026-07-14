@@ -803,6 +803,13 @@ like `materialize` does.
 
 ## Installation
 ```bash
+pip install confluid                     # from PyPI
+pip install "confluid[pydantic]"    # + pydantic-powered schema export & validation
+```
+
+Or straight from GitHub:
+
+```bash
 pip install git+https://github.com/Gearlux/confluid.git@main
 ```
 
