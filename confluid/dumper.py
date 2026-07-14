@@ -98,7 +98,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             cls_name = f"{target.__module__}.{target.__qualname__}"
         else:
             cls_name = str(target)
-        return dumper.represent_mapping(f"!class:{cls_name}()", data.__confluid_kwargs__)
+        return dumper.represent_mapping(f"!class:{cls_name}()", getattr(data, "__confluid_kwargs__", {}))
 
     # Live @configurable instance → dump with () to indicate instant construction on reload
     cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)

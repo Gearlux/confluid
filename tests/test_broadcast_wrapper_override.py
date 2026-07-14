@@ -1,4 +1,4 @@
-"""Pins broadcast-override propagation through *non-target* wrapper classes.
+"""Pins the exact-scoping of a marker's own kwargs through wrapper classes.
 
 Origin of these tests
 =====================
@@ -9,49 +9,37 @@ the ``ops`` kwarg set on the outer ``Flux`` was being broadcast not only
 to the outer Flux itself but ALSO to every inner Flux nested deep inside
 a sibling wrapper class (``JointFlux``), even though those inner Fluxes'
 YAML blocks set no ``ops:`` at all. The leak made the supposedly-empty
-inner Flux op chains carry the full ``[LoadIQForWindowOp,
-SpectrogramOp, ...]`` list, which then ran on every sample
-emitted by the inner sources — turning what should have been an ~85ms
-JSON walk into a 2½-minute eager iteration of the entire heavy op chain
-on the main thread.
+inner Flux op chains carry the full heavy op list, turning an ~85ms JSON
+walk into a 2½-minute eager iteration on the main thread.
 
 That shape — outer-Class with kwarg X → wrapper-Class without kwarg X →
 inner-Classes that ALSO take kwarg X — is the abstract case pinned here.
 
-What this module tests
-======================
+What this module tests (2026-07 exact-scoping semantics)
+========================================================
 
-Three positive baselines (today's behaviour, must not regress):
+Addressed keys are EXACT: a marker's own kwargs configure that marker
+only and never cascade to descendants. The old leak is fixed by design:
 
-1. ``test_broadcast_reaches_same_class_descendants_through_wrapper``
-   Establishes that the broadcast leak actually happens through a
-   wrapper class — sanity check + reproduction of the observed bug.
+1. ``test_own_kwargs_do_not_cascade_through_wrapper``
+   The original leak reproduction, inverted: the outer ``ops`` stays on
+   the outer node; the inner same-class children keep their defaults.
 
-2. ``test_override_at_inner_stops_broadcast_for_that_inner``
-   Confirms the workaround: pinning ``ops: []`` on each inner Class
-   blocks the broadcast for that specific inner. This is what the
-   waivefront-rfuav YAML now does.
+2. ``test_glob_restores_the_old_cascade_deliberately``
+   The declare-once opt-in: ``'**'`` glob kwargs (``outer.**.ops``)
+   reproduce the old reach — outer AND every accepting descendant.
 
-3. ``test_inner_overrides_are_independent``
-   Pinning the override on only ONE of several inner siblings must
-   leave the others still receiving the broadcast — overrides are
-   per-instance, not per-list.
+3. ``test_inner_overrides_beat_the_glob_cascade``
+   With a ``'**'`` cascade active, pinning ``ops: []`` on one inner
+   Class shields that instance only — overrides are per-instance, and
+   its sibling still receives the glob value (own kwargs unroll at the
+   inner slot, later in document order than the outer glob).
 
-One xfail (desired but currently unsupported behaviour):
-
-4. ``test_override_at_wrapper_should_shield_inner_classes``
-   The user's intuition: putting ``ops: []`` on the wrapper class
-   (even though that wrapper doesn't itself accept ``ops``) should
-   shield ALL of its inner descendants from the outer-level broadcast.
-   This currently does NOT work — Confluid's broadcaster ignores the
-   wrapper-level override because the wrapper class's accept-list
-   doesn't include ``ops``, so the broadcast skips through it and
-   reaches the inner Classes directly.
-
-The xfail keeps the test green today but flips to a regular pass once
-Confluid honours wrapper-level overrides — making this file the natural
-home of a future "wrapper kwarg shadows the broadcast for descendants"
-feature.
+4. ``test_override_at_wrapper_shields_inner_classes``
+   A kwarg set on a wrapper block (even though the wrapper doesn't
+   accept it) shields the wrapper's subtree from an outer ``'**'``
+   cascade — the wrapper's own kwargs win the slot in the spliced child
+   view (see ``_splice_kwargs_at_slot``'s collision rules).
 """
 
 from typing import Any, List, Optional
@@ -95,10 +83,7 @@ class _Outer:
 @configurable
 class _Wrapper:
     """Stand-in for ``dataflux.core.JointFlux``: holds a list of children
-    but does NOT itself take an ``ops`` kwarg. Its accept-list therefore
-    excludes ``ops`` — and that exclusion is what causes the broadcaster
-    to skip the wrapper and propagate the outer-level ``ops`` straight
-    into the wrapper's children.
+    but does NOT itself take an ``ops`` kwarg.
     """
 
     def __init__(self, children: Optional[List[Any]] = None) -> None:
@@ -114,22 +99,15 @@ def _register_classes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1. Baseline: broadcast leaks through a wrapper class to same-class descendants.
+# 1. Own kwargs are exact: no cascade through a wrapper class.
 # ---------------------------------------------------------------------------
 
 
-def test_broadcast_reaches_same_class_descendants_through_wrapper() -> None:
-    """Repro of the leak observed in ``train_yolo26_ultralytics.yaml``:
-
-    Setting ``ops`` on the outer ``_Outer`` propagates through the
-    intermediate ``_Wrapper`` (which has no ``ops`` kwarg) and lands on
-    the inner ``_Outer`` children — even though neither child sets
-    ``ops:`` in its own block.
-
-    If this test ever STOPS asserting the leak, the regression we hunted
-    for two days has finally been fixed and the xfail below can be
-    flipped to a passing test. Until then, this exists to nail the
-    current behaviour so changes downstream don't quietly drift.
+def test_own_kwargs_do_not_cascade_through_wrapper() -> None:
+    """The original leak, fixed by design: setting ``ops`` on the outer
+    ``_Outer`` configures the outer node ONLY. The intermediate ``_Wrapper``
+    and the inner same-class children are untouched — an addressed kwarg
+    never becomes ambient context for the subtree.
     """
     config = _inst(
         "_Outer",
@@ -140,41 +118,39 @@ def test_broadcast_reaches_same_class_descendants_through_wrapper() -> None:
     assert isinstance(root, _Outer)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert isinstance(root.source, _Wrapper)
-    # The leak: inner _Outer children inherit the outer's ops list, even
-    # though their YAML blocks don't set `ops:` themselves.
     assert isinstance(root.source.children[0], _Outer)
     assert isinstance(root.source.children[1], _Outer)
-    assert root.source.children[0].ops == ["heavy_a", "heavy_b"]
-    assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
-
-
-# ---------------------------------------------------------------------------
-# 2. Override at the inner level: workaround used in waivefront-rfuav YAML.
-# ---------------------------------------------------------------------------
-
-
-def test_override_at_inner_stops_broadcast_for_that_inner() -> None:
-    """Setting ``ops: []`` directly on each inner ``_Outer`` blocks the
-    broadcast from reaching them — the explicit value wins over the
-    inherited broadcast. This is the workaround the waivefront-rfuav
-    YAML uses today.
-    """
-    config = _inst(
-        "_Outer",
-        ops=["heavy_a", "heavy_b"],
-        source=_inst("_Wrapper", children=[_inst("_Outer", ops=[]), _inst("_Outer", ops=[])]),
-    )
-    root = materialize(config)
-    assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == []
 
 
-def test_inner_overrides_are_independent() -> None:
-    """Pinning the override on one child must NOT affect its siblings."""
+# ---------------------------------------------------------------------------
+# 2. The '**' glob is the declare-once opt-in for the old reach.
+# ---------------------------------------------------------------------------
+
+
+def test_glob_restores_the_old_cascade_deliberately() -> None:
+    """``'**': {ops: …}`` on the outer marker (the ``outer.**.ops`` dotted
+    form) applies to the outer node itself (zero levels) AND floats to every
+    accepting descendant — the pre-2026-07 cascade, now explicit."""
     config = _inst(
         "_Outer",
-        ops=["heavy_a", "heavy_b"],
+        source=_inst("_Wrapper", children=[_inst("_Outer"), _inst("_Outer")]),
+        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
+    )
+    root = materialize(config)
+    assert root.ops == ["heavy_a", "heavy_b"]
+    assert root.source.children[0].ops == ["heavy_a", "heavy_b"]
+    assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
+    # Routing metadata never leaks onto instances.
+    assert not hasattr(root, "**")
+
+
+def test_inner_overrides_beat_the_glob_cascade() -> None:
+    """Pinning ``ops: []`` on one inner Class shields that instance from an
+    active ``'**'`` cascade; its sibling still receives the glob value."""
+    config = _inst(
+        "_Outer",
         source=_inst(
             "_Wrapper",
             children=[
@@ -182,45 +158,42 @@ def test_inner_overrides_are_independent() -> None:
                 _inst("_Outer"),  # no override
             ],
         ),
+        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
     root = materialize(config)
+    assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
 
 
 # ---------------------------------------------------------------------------
-# 3. xfail: wrapper-level override SHOULD shield its children.
+# 3. Wrapper-level override shields its subtree from a glob cascade.
 # ---------------------------------------------------------------------------
 
 
-def test_override_at_wrapper_should_shield_inner_classes() -> None:
-    """A kwarg set on a ``@configurable`` wrapper block MUST shield that
-    wrapper's same-class descendants from an ancestor-level broadcast.
+def test_override_at_wrapper_shields_inner_classes() -> None:
+    """A kwarg set on a ``@configurable`` wrapper block shields that
+    wrapper's same-class descendants from an ancestor-level ``'**'``
+    cascade.
 
     The wrapper class itself does not need ``ops`` in its ``__init__``
-    accept-list — declaring ``ops: []`` (or any value) on the wrapper's
-    YAML block is a statement about what the WRAPPER'S SUBTREE looks
-    like, not about the wrapper instance's own attributes. The
-    broadcaster must treat the wrapper-block kwarg as a sibling
-    broadcast scoped to that subtree, shadowing the outer broadcast for
-    everything beneath it.
-
-    Today's confluid behaviour silently drops the wrapper-level kwarg
-    because the wrapper's accept-list excludes ``ops``, so the
-    outer-level broadcast leaks straight through. This test fails red
-    until the broadcaster honours kwargs set on configurable wrappers.
+    accept-list — declaring ``ops: []`` on the wrapper's block is a
+    statement about the WRAPPER'S SUBTREE: the wrapper's own kwarg wins the
+    slot in the spliced child view (it is not a typed param of the wrapper,
+    so the splice collision rule lets it shadow the outer broadcast), and as
+    an EXACT own kwarg it does not itself cascade — so the inner children
+    fall back to their defaults.
     """
     config = _inst(
         "_Outer",
-        ops=["heavy_a", "heavy_b"],
         source=_inst(
             "_Wrapper",
-            ops=[],  # wrapper-level shield; currently ignored
+            ops=[],  # wrapper-level shield
             children=[_inst("_Outer"), _inst("_Outer")],
         ),
+        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
     root = materialize(config)
     assert root.ops == ["heavy_a", "heavy_b"]
-    # Desired (currently failing): wrapper-level `ops: []` blocks broadcast.
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == []

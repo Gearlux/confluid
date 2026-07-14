@@ -33,6 +33,13 @@ data_dir: "${HOME}/data/${train.dataset}/${train.version}"
 
 # Dotted Notation (Helios Style)
 # These are expanded into nested dicts: {"Model": {"layers": 3, "dropout": 0.1}}
+# Addressed keys are EXACT: they configure the matched node only, never its
+# descendants. A bare key (like base_lr above, if a class accepted it) is the
+# opposite — it broadcasts tree-wide. Glob wildcards opt back into cascade:
+#   Trainer.*.lr: 0.001     -> Trainer's DIRECT children only
+#   Trainer.**.lr: 0.001    -> Trainer AND all its descendants (declare-once)
+# ('*' = exactly one level, '**' = zero or more; quote a key that STARTS with
+# '*', e.g. '**.lr': 0.001 — a bare * opens a YAML alias.)
 Model.layers: 3
 Model.dropout: 0.1
 

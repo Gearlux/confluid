@@ -194,6 +194,48 @@ def test_configurable_constant_and_random_are_mutually_exclusive() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# capture opt-out mark (__confluid_no_capture__)
+# --------------------------------------------------------------------------- #
+
+
+def test_configurable_capture_false_sets_attribute() -> None:
+    @configurable(category="op", capture=False)
+    class HeavyArgsOp:
+        pass
+
+    assert getattr(HeavyArgsOp, "__confluid_no_capture__") is True
+
+
+def test_configurable_default_has_no_capture_attribute() -> None:
+    @configurable(category="op")
+    class CapturedOp:
+        pass
+
+    assert getattr(CapturedOp, "__confluid_no_capture__", False) is False
+
+
+def test_register_capture_false_stamps_mark() -> None:
+    """register() forwards the opt-out — third-party classes with heavy ctor args."""
+    from confluid import register
+
+    class ThirdPartyHeavy:
+        pass
+
+    register(ThirdPartyHeavy, category="op", capture=False)
+    assert getattr(ThirdPartyHeavy, "__confluid_no_capture__") is True
+
+
+def test_capture_mark_survives_partial_reregister() -> None:
+    @configurable(category="op", capture=False)
+    class NoCapMark:
+        pass
+
+    # Mirror navigaitor's snapshot-restore path (only forwards name/category).
+    get_registry().register_class(NoCapMark, name="NoCapMark", category="op")
+    assert getattr(NoCapMark, "__confluid_no_capture__") is True
+
+
+# --------------------------------------------------------------------------- #
 # register_class is the ONE stamping authority (Part 4 pins)
 # --------------------------------------------------------------------------- #
 
@@ -210,6 +252,7 @@ _ALL_MARKS = (
     "__confluid_strict_typing__",
     "__confluid_display_name__",
     "__confluid_no_broadcast__",
+    "__confluid_no_capture__",
 )
 
 
@@ -222,7 +265,9 @@ def test_reregister_with_only_category_preserves_stamp_only_marks() -> None:
     snapshot-restore shape — name + category only) must not drop the
     stamp-only marks set by the original ``@configurable``."""
 
-    @configurable(category="op", random=True, broadcast=False, strict_typing=True, display_name="Fancy Op")
+    @configurable(
+        category="op", random=True, broadcast=False, capture=False, strict_typing=True, display_name="Fancy Op"
+    )
     class R:
         pass
 
@@ -230,6 +275,7 @@ def test_reregister_with_only_category_preserves_stamp_only_marks() -> None:
 
     assert getattr(R, "__confluid_random__") is True
     assert getattr(R, "__confluid_no_broadcast__") is True
+    assert getattr(R, "__confluid_no_capture__") is True
     assert getattr(R, "__confluid_strict_typing__") is True
     assert getattr(R, "__confluid_display_name__") == "Fancy Op"
 

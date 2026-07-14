@@ -4,6 +4,48 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
+## [Unreleased]
+
+### Added
+
+- **`capture=False` opt-out for the ctor-kwargs capture.**
+  `@configurable(capture=False)` (also on `register()`) stamps
+  `__confluid_no_capture__` and disables the `__confluid_kwargs__` capture on
+  both paths — the validation wrap at direct Python construction and the
+  engine stamp on the YAML flow path (which then also skips
+  `__confluid_class__`). For classes whose constructor arguments are heavy,
+  disposable objects that `__init__` transforms: without the opt-out the
+  capture keeps them alive by reference for the instance lifetime. Trade-off:
+  `dump()` omits transformed params (reload restores their defaults; a
+  transformed required param makes the dump non-reloadable). See
+  `docs/eager-classes.md` → "Opting out".
+- **Performance baseline example.** `examples/performance.py` times the
+  parse / `materialize` / `resolve` / `configure` phases over a synthetic
+  ~2,500-marker tree so the scoped-broadcasting context-view overhead can be
+  watched across engine changes; `CONFLUID_BENCH_PROFILE=1` adds a cProfile
+  breakdown. Print-only — no timing assertions in CI. See
+  `docs/performance.md`.
+
+### Breaking
+
+- **Scoped broadcasting — addressed keys are exact, cascade is opt-in.**
+  A bare top-level key still broadcasts tree-wide (it is an implicit
+  `**.key`), but an ADDRESSED key — dotted `trainer.lr: 0.001`, the nested
+  block `trainer: {lr: 0.001}`, or a marker's own kwargs — now configures
+  the matched node ONLY and no longer cascades to the node's descendants.
+  Glob wildcards opt back into the cascade: `*` matches exactly one nesting
+  level (`trainer.*.lr` = direct children), `**` matches zero or more
+  (`trainer.**.lr` = trainer AND all its descendants — the declare-once
+  form; quote keys that start with `*` in YAML). The first named path
+  segment floats (`trainer.lr` ≡ `**.trainer.lr`, the classic block reach);
+  segments after the first are strict one-level hops. Glob-delivered keys
+  honour the `NoBroadcast[T]` / `@configurable(broadcast=False)` opt-outs
+  like bare keys; exact addressed keys bypass them. Document-order
+  last-write-wins remains the only priority rule — no specificity tiers.
+  `configure()` follows the same rule over live objects. Configs that
+  relied on a block's values reaching the addressed node's descendants must
+  add a `'**'` segment (`trainer.**.lr`). See `docs/broadcasting.md`.
+
 ## [0.2.0] — 2026-07-11
 
 ### Breaking

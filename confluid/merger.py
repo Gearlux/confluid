@@ -49,6 +49,14 @@ def expand_dotted_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Expand flat dictionary with dotted keys into a nested dictionary.
     Ensures that existing keys are NOT shadowed but merged.
+
+    Glob segments (``'*'`` / ``'**'``) are ordinary path parts here —
+    ``trainer.**.lr: v`` nests to ``{trainer: {'**': {lr: v}}}`` and the
+    broadcast layer (``engine._prepare_kwargs`` / ``configurator._apply``)
+    interprets the literal block names. Only the document's TOP-LEVEL keys
+    are expanded; dotted keys inside nested blocks are expanded lazily at
+    block-consumption time by ``engine._expand_block_keys`` (which, unlike
+    this function, never deep-copies values).
     """
     # 1. Start with all non-dotted keys
     result = {k: _preserve_identity_copy(v) for k, v in data.items() if "." not in k}

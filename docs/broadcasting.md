@@ -3,28 +3,69 @@
 Confluid **broadcasts** bare top-level YAML keys into every configurable node
 whose constructor (or `__init__`-body attribute set) accepts a parameter of that
 name — the mechanism that lets one flat `batch_size: 64` land on every loader in
-the graph without addressing each one.
+the graph without addressing each one. **Addressed keys are exact**: a dotted
+`trainer.lr: 0.001` (or the equivalent nested block `trainer: {lr: 0.001}`)
+configures the matched node only — it never cascades to the node's
+descendants. Cascade is opt-in via glob wildcards.
+
+## Bare, addressed, glob — the scoping model
+
+Every config key is a **path**; the final segment is the parameter name:
+
+| Spelling | Reaches |
+|---|---|
+| `lr: 0.001` (bare) | every accepting node in the tree — an implicit `**.lr` |
+| `trainer.lr: 0.001` | the node named `trainer` only (class name or instance `name`) |
+| `trainer: {lr: 0.001}` | identical to the dotted form — one rule, two spellings |
+| `trainer.*.lr: 0.001` | trainer's **direct children** only (`*` = exactly one level) |
+| `trainer.**.lr: 0.001` | trainer **and** all its descendants (`**` = zero or more levels) |
+
+Details that make the grammar predictable:
+
+* **The first named segment floats** — `trainer.lr` matches a node named
+  `trainer` anywhere in the tree (the classic top-level-block reach), i.e.
+  `trainer.lr` ≡ `**.trainer.lr`. Segments **after** the first are strict
+  one-level hops: `trainer.opt.lr` addresses a *direct* child of trainer
+  named `opt`; use `trainer.**.opt.lr` to float `opt` at any depth.
+* Segment matching is by **class name or instance `name`**; containers
+  (lists, plain grouping dicts) are transparent — one level = one object
+  nesting hop.
+* All three spellings converge inside blocks too: `trainer: {'**.lr': 1}` ≡
+  `trainer: {'**': {lr: 1}}` ≡ `trainer.**.lr: 1`. **YAML quoting caveat:**
+  a key starting with `*` must be quoted (`'**.lr':`, `'**':`) because a bare
+  `*` opens a YAML alias — the top-level dotted form `trainer.**.lr:` needs
+  no quotes.
+* A marker's **own kwargs follow the same rule** — they configure that marker
+  only. A kwarg set on a wrapper block that the wrapper itself does not
+  accept *shields* the wrapper's subtree from an outer `'**'` cascade
+  (the value overrides the rider's entry for that subtree).
+* Glob-delivered keys (`*`/`**`) are cascade keys: they honour the
+  NoBroadcast opt-outs below exactly like bare keys. Exact addressed keys
+  bypass the opt-outs, like blocks always did.
 
 ## The one rule: document order, last write wins
 
 When a class materializes, the visible context is the document minus the descent
 path; matching scalars are applied in **YAML document order** with
 **last-write-wins** semantics. Explicit kwargs are not privileged — every source
-(own kwargs, sibling broadcasts, class-name blocks) takes its slot at its
-document position.
+(own kwargs, bare broadcasts, glob riders, class-name blocks) takes its slot at
+its document position. There are **no specificity tiers**: an exact
+`trainer.lr` earlier in the document loses to a later `**.lr`, and vice versa.
 
 `configure()` (post-construction configuration of live objects) follows the
 same matching rule: `ClassName:` / instance-name blocks unroll at their
-position, bare keys broadcast, and whichever assignment comes last in the
-document wins (no priority tiers). A `null` value is applied (`dropout: null`
-sets `None`), an unknown key inside a class block logs a warning instead of
-failing silently, and property getters are never executed during configuration.
+position, bare keys broadcast, globs opt back in, and whichever assignment
+comes last in the document wins (no priority tiers). A `null` value is applied
+(`dropout: null` sets `None`), an unknown key inside a class block logs a
+warning instead of failing silently, and property getters are never executed
+during configuration.
 
 ## Opting out of broadcasting
 
 Broadcasting matches by name alone, which can bite very generic parameter
-names. Two opt-outs exist — both block only BARE top-level keys; addressed
-`ClassName:` blocks and `configure()` always keep working:
+names. Two opt-outs exist — both block only cascade keys (bare top-level keys
+and `*`/`**` glob-delivered keys); addressed `ClassName:` blocks, dotted exact
+paths, and `configure()` always keep working:
 
 ```python
 from confluid import NoBroadcast, configurable
@@ -45,6 +86,8 @@ To see exactly what broadcast where, enable trace logging:
 ```bash
 LOGGAIR_CONSOLE_LEVEL=TRACE python train.py config/train.yaml
 # ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
+# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (glob '**')
+# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (block 'trainer')
 ```
 
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
@@ -98,6 +141,8 @@ silences the warning.
 ## Runnable example
 
 [`examples/broadcasting.py`](../examples/broadcasting.py) shows a bare key
-landing on two siblings, last-write-wins ordering, and both opt-outs
-(`NoBroadcast[str]` and `@configurable(broadcast=False)`). The bake step needs
-a real packaging pipeline, so it stays illustrated inline above.
+landing on two siblings, an exact addressed key stopping at its node, the
+`*` / `**` glob forms opting back into the cascade, last-write-wins ordering,
+and both opt-outs (`NoBroadcast[str]` and `@configurable(broadcast=False)`).
+The bake step needs a real packaging pipeline, so it stays illustrated inline
+above.

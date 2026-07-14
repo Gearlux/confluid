@@ -202,6 +202,104 @@ def test_nested_configurable_in_captured_kwargs_round_trips() -> None:
 
 
 # ---------------------------------------------------------------------------
+# capture=False: the ctor-kwargs capture opt-out
+# ---------------------------------------------------------------------------
+
+
+def test_capture_false_direct_construction_has_no_stamp() -> None:
+    """capture=False disables the validation-wrap stamp on direct Python construction."""
+
+    @configurable(capture=False)
+    class NoCap:
+        def __init__(self, data: Any = None) -> None:
+            self._size = len(data) if data else 0  # heavy arg transformed, not stored
+
+    obj = NoCap(data=[1, 2, 3])
+    assert not hasattr(obj, "__confluid_kwargs__")
+    assert obj._size == 3  # validation wrap still ran __init__ normally
+
+
+def test_capture_false_yaml_load_has_no_stamp() -> None:
+    """capture=False disables the engine re-stamp too — no kwargs AND no class origin."""
+
+    @configurable(capture=False)
+    class NoCapYaml:
+        def __init__(self, data: Any = None) -> None:
+            self._size = len(data) if data else 0
+
+    obj = load("thing: !class:NoCapYaml()\n  data: [1, 2]")["thing"]
+    assert obj._size == 2
+    assert not hasattr(obj, "__confluid_kwargs__")
+    # __confluid_class__ is skipped together with the kwargs — the pair exists
+    # only for the dump round-trip, and class-without-kwargs would break the
+    # dumper's non-configurable branch.
+    assert not hasattr(obj, "__confluid_class__")
+
+
+def test_capture_false_dump_degrades_to_defaults() -> None:
+    """Verbatim-stored params still dump (live attr); transformed params fall back to defaults on reload."""
+
+    @configurable(capture=False)
+    class NoCapMixed:
+        def __init__(self, kept: int = 1, transformed: int = 2) -> None:
+            self.kept = kept  # stored verbatim → still dumps
+            self._t = 10 * transformed  # transformed away → lost from the dump
+
+    obj = load("thing: !class:NoCapMixed()\n  kept: 5\n  transformed: 7")["thing"]
+    assert obj._t == 70
+    text = dump(obj)
+    assert "kept: 5" in text  # live attribute path is unaffected
+    assert "transformed" not in text  # no capture → no fallback → omitted
+    reloaded = load(text)
+    assert reloaded.kept == 5
+    assert reloaded._t == 20  # ctor default (2), NOT the original 7 — the documented trade-off
+
+
+def test_capture_false_dump_of_required_transformed_param_not_reloadable() -> None:
+    """The hard edge: a transformed REQUIRED param makes the dump non-reloadable."""
+
+    @configurable(capture=False)
+    class NoCapReq:
+        def __init__(self, n: int) -> None:
+            self._doubled = 2 * n
+
+    obj = load("thing: !class:NoCapReq()\n  n: 21")["thing"]
+    text = dump(obj)
+    assert "n" not in text
+    with pytest.raises(ConfluidError):
+        load(text)  # required param missing → located ConstructionError
+
+
+def test_capture_default_still_stamps() -> None:
+    """Regression guard: the default (capture=True) keeps both stamp paths intact."""
+
+    @configurable
+    class StillCaptured:
+        def __init__(self, n: int = 1) -> None:
+            self._doubled = 2 * n
+
+    direct = StillCaptured(4)
+    assert getattr(direct, "__confluid_kwargs__") == {"n": 4}
+    loaded = load("thing: !class:StillCaptured()\n  n: 6")["thing"]
+    assert loaded.__confluid_kwargs__ == {"n": 6}
+
+
+def test_capture_false_with_validation_off() -> None:
+    """capture=False composes with validation mode off — no stamp, no crash."""
+    from confluid.validation import override_init_mode
+
+    @configurable(capture=False)
+    class NoCapOff:
+        def __init__(self, n: int = 1) -> None:
+            self._doubled = 2 * n
+
+    with override_init_mode("off"):
+        obj = NoCapOff(4)
+    assert obj._doubled == 8
+    assert not hasattr(obj, "__confluid_kwargs__")
+
+
+# ---------------------------------------------------------------------------
 # The eager=True mark + the configure() staleness warning
 # ---------------------------------------------------------------------------
 
