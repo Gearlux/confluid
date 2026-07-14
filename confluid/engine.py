@@ -994,7 +994,14 @@ def _flow_target(
     if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
         instance_memo[id(obj)] = instance
 
-    # Preserve Confluid origin for serialization round-trip
+    # Preserve Confluid origin for serialization round-trip. The dumper reads
+    # __confluid_kwargs__ two ways: as the whole-object representation for
+    # NON-configurable targets (its __confluid_class__ branch), and as the
+    # per-param FALLBACK for @configurable instances whose constructor
+    # transformed a param instead of storing it verbatim (eager classes).
+    # This overwrites any capture the @configurable validation wrap stamped
+    # during __init__ — deliberately: the resolved ctor dict is the richer
+    # value (live children, Lazy markers).
     try:
         instance.__confluid_class__ = target
         instance.__confluid_kwargs__ = ctor

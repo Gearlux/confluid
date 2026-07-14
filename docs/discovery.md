@@ -24,7 +24,7 @@ class RealFftOp: ...
 
 `group` sets `__confluid_group__`, indexes in the registry (`get_registry().list_classes(group="numpy")`, `list_groups()`), and is otherwise inert — an absent group simply leaves the node directly under `<Package>/<Category>`. It is NOT part of the discovery contract.
 
-**Behavioral marks** — two mutually exclusive stamp-only flags (no registry index; consumers read the class attribute):
+**Behavioral marks** — stamp-only flags (no registry index; consumers read the class attribute):
 
 ```python
 @configurable(category="op", random=True)     # __confluid_random__: non-deterministic output
@@ -32,9 +32,14 @@ class AWGNOp: ...                             # editors re-execute its node on e
 
 @configurable(category="op", constant=True)   # __confluid_constant__: outputs are a PURE
 class ImpairmentsTxConfig: ...                # function of the constructor config
+
+@configurable(eager=True)                     # __confluid_eager__: __init__ does real work
+class Resampler: ...                          # from its params (a plain Python class)
 ```
 
 `constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no sample input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `!class:` entry and rewire consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
+
+`eager=True` declares a plain-constructor class — see [Eager Classes](eager-classes.md). Its runtime effect: `configure()` warns when a constructor-param attribute is set post-construction (the `__init__` work will not re-run). Orthogonal to `random`/`constant`.
 
 ## Schema & help extraction — one docstring, every GUI
 

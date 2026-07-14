@@ -231,6 +231,7 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
 
 def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> None:
     """Resolve, coerce, materialize, validate, and setattr the merged assignments."""
+    from confluid.engine import _ctor_params
     from confluid.engine import flow as _flow
     from confluid.fluid import Class, Instance
     from confluid.resolver import parse_value
@@ -239,7 +240,21 @@ def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> N
     cls = obj.__class__
     resolver = Resolver(context=context)
 
+    # Staleness guard for @configurable(eager=True) classes: their __init__
+    # does real work FROM its params, and a post-construction setattr of a
+    # ctor-param attribute cannot re-run it. Body attributes stay silent —
+    # they are freely reconfigurable by design.
+    eager_params: Set[str] = set()
+    if getattr(cls, "__confluid_eager__", False):
+        eager_params = _ctor_params(cls) or set()
+
     for attr_name, val in assignments.items():
+        if attr_name in eager_params:
+            cls_label = getattr(cls, "__confluid_name__", cls.__name__)
+            logger.warning(
+                f"configure(): setting constructor param {attr_name!r} on eager class {cls_label} — "
+                f"__init__ work will NOT re-run; derived state may be stale"
+            )
         resolved_val = resolver.resolve(val)
         if isinstance(resolved_val, str):
             resolved_val = parse_value(resolved_val)

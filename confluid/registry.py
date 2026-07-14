@@ -35,6 +35,7 @@ class ConfluidRegistry:
         lazy: bool = False,
         random: bool = False,
         constant: bool = False,
+        eager: bool = False,
         strict_typing: bool = False,
         display_name: Optional[str] = None,
         no_broadcast: bool = False,
@@ -47,9 +48,9 @@ class ConfluidRegistry:
         (e.g. navigaitor's snapshot restore) may forward as little as
         ``name``/``category`` — each mark falls back to the class's EXISTING
         mark when the argument is unset, so a partial re-register never drops
-        tags stamped earlier. ``random``/``constant``/``strict_typing``/
-        ``display_name``/``no_broadcast``/``broadcast_attrs`` are stamp-only
-        (no reverse index).
+        tags stamped earlier. ``random``/``constant``/``eager``/
+        ``strict_typing``/``display_name``/``no_broadcast``/
+        ``broadcast_attrs`` are stamp-only (no reverse index).
         """
         cls_name = name or cls.__name__
         self._classes[cls_name] = cls
@@ -63,6 +64,7 @@ class ConfluidRegistry:
         lazy = lazy or bool(getattr(cls, "__confluid_lazy__", False))
         random = random or bool(getattr(cls, "__confluid_random__", False))
         constant = constant or bool(getattr(cls, "__confluid_constant__", False))
+        eager = eager or bool(getattr(cls, "__confluid_eager__", False))
         strict_typing = strict_typing or bool(getattr(cls, "__confluid_strict_typing__", False))
         display_name = display_name if display_name is not None else getattr(cls, "__confluid_display_name__", None)
         no_broadcast = no_broadcast or bool(getattr(cls, "__confluid_no_broadcast__", False))
@@ -96,6 +98,13 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_random__", True)
             if constant:
                 setattr(cls, "__confluid_constant__", True)
+            if eager:
+                # An "eager" class does REAL WORK in its constructor from its
+                # params (a plain Python class, outside the lazy-init/zero-arg
+                # convention). Read by configure()'s staleness warning — a
+                # post-construction setattr of a ctor param can't re-run that
+                # work.
+                setattr(cls, "__confluid_eager__", True)
             if strict_typing:
                 setattr(cls, "__confluid_strict_typing__", True)
             if display_name is not None:
