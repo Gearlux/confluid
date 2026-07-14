@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
-from confluid.engine import active_context, cast, flow, get_configurable_attrs, materialize, resolve
+from confluid.engine import active_context, cast, collect_report, flow, get_configurable_attrs, materialize, resolve
 from confluid.exceptions import (
     CircularIncludeError,
     ConfigFileNotFoundError,
@@ -43,6 +43,7 @@ from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
 from confluid.registry import get_registry
+from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
 from confluid.schema import (
     InputSpec,
@@ -87,6 +88,8 @@ __all__ = [
     "dump",
     "configure",
     "configure_from_file",
+    "ConfigurationReport",
+    "collect_report",
     "Fluid",
     "Class",
     "Clone",

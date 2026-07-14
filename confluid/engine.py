@@ -35,6 +35,7 @@ from confluid.fluid import Class, Clone, Fluid, Instance, Lazy, Reference, T, fo
 from confluid.introspect import baked_init_attrs, init_setattr_names, init_source_available
 from confluid.merger import expand_dotted_keys
 from confluid.registry import get_registry, resolve_class
+from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, resolve_reference_path
 
 logger = get_logger("confluid.engine")
@@ -56,6 +57,11 @@ class _EngineState:
     flow_memo: Optional[Dict[int, Any]] = None
     instance_memo: Optional[Dict[int, Any]] = None
     suppress_solidify: bool = False
+    # Ambient ConfigurationReport installed by collect_report(). Mutable by
+    # design (like the memo dicts riding this frozen dataclass); every
+    # instrumentation site is ``if report is not None``-guarded so the
+    # default path stays zero-cost.
+    report: Optional[ConfigurationReport] = None
 
 
 _ENGINE_STATE: ContextVar[_EngineState] = ContextVar("confluid_engine_state", default=_EngineState())
@@ -88,11 +94,74 @@ def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
     ``active_context(...)`` inside the worker itself.
     """
     ctx = expand_dotted_keys(context) if context and any("." in k for k in context) else context
-    token = _ENGINE_STATE.set(_EngineState(context=ctx, flow_memo={}, instance_memo={}))
+    # Fresh memos, but the ambient report (collect_report) carries forward —
+    # a fresh state would silently stop the pass's tracking.
+    token = _ENGINE_STATE.set(_EngineState(context=ctx, flow_memo={}, instance_memo={}, report=_active_report()))
     try:
         yield
     finally:
         _ENGINE_STATE.reset(token)
+
+
+def _active_report() -> Optional[ConfigurationReport]:
+    """The ambient ConfigurationReport, if a ``collect_report()`` block is active."""
+    return _ENGINE_STATE.get().report
+
+
+@contextmanager
+def collect_report() -> Iterator[ConfigurationReport]:
+    """Collect a :class:`ConfigurationReport` for everything inside the block.
+
+    The engine-side counterpart of the report :func:`confluid.configure`
+    returns: ``load()`` / ``materialize()`` / ``flow()`` calls inside the
+    block record their applied broadcasts and document keys into the yielded
+    report, and a nested ``configure()`` adopts (and returns) the same
+    ambient report — so one report spans a load-then-configure pass::
+
+        with collect_report() as report:
+            model = load("config.yaml")
+            configure(model, config=overrides)
+        print(report.summary())
+
+    Nesting-safe: an already-active report is reused (the inner block
+    aggregates into it). On exit the aggregate unused-keys DEBUG summary is
+    logged once, by the outermost block only.
+    """
+    state = _ENGINE_STATE.get()
+    owns = state.report is None
+    report = state.report or ConfigurationReport()
+    token = _ENGINE_STATE.set(replace(state, report=report))
+    try:
+        yield report
+    finally:
+        _ENGINE_STATE.reset(token)
+        if owns:
+            report.log_unused()
+
+
+def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any]) -> None:
+    """Register a document's top-level keys as unused-tracking candidates.
+
+    Engine-path filter: a key whose value is (or transitively contains) a
+    ``Fluid`` marker, or is a list, is a DEFINITION — the node tree being
+    built — not an override candidate, and is excluded. Glob dict blocks
+    register per non-dict leaf (``**.lr`` notation) so a partially consumed
+    glob reports precisely.
+    """
+    for k, v in config.items():
+        if k in ("*", "**") and isinstance(v, dict):
+            report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
+        elif not _contains_fluid(v):
+            report.add_config_keys((k,))
+
+
+def _contains_fluid(value: Any) -> bool:
+    """True when ``value`` is / transitively holds a Fluid marker, or is a list."""
+    if isinstance(value, Fluid) or isinstance(value, list):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_fluid(v) for v in value.values())
+    return False
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
@@ -115,8 +184,11 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     _param_kind_cache.clear()
     if context:
         context = expand_dotted_keys(context)
+    report = _active_report()  # carry the ambient report through the fresh state
+    if report is not None and isinstance(context, dict):
+        _register_document_keys(report, context)
     token = _ENGINE_STATE.set(
-        _EngineState(context=context, flow_memo={}, instance_memo={}, suppress_solidify=not solidify)
+        _EngineState(context=context, flow_memo={}, instance_memo={}, suppress_solidify=not solidify, report=report)
     )
     try:
         result = _flow_recursive(data, parent_context=context)
@@ -948,11 +1020,25 @@ def _prepare_kwargs(
     merged = _View()
     self_unrolled = False
 
+    # Ambient ConfigurationReport (collect_report). ``origins`` tracks the
+    # origin of the LAST write per key so overwrites collapse to one applied
+    # record (last-write-wins); own kwargs erase an entry (a marker's own
+    # kwargs are definitions, not overrides). None-guarded — zero-cost off.
+    report = _ENGINE_STATE.get().report
+    origins: Dict[str, str] = {}
+
+    def _mark_used(k: str, origin: str) -> None:
+        if report is not None:
+            report.mark_used(f"**.{k}" if origin == "glob '**'" else f"*.{k}" if origin == "glob '*'" else k)
+
     def _apply_gated(k: str, v: Any, origin: str, scope: _KeyScope) -> None:
         """Bare-style application: NoBroadcast opt-outs gate, accept-list filters."""
         if broadcast_blocked is not None and k not in broadcast_blocked and _accepts(k, v):
             logger.trace(f"broadcast: {k!r} -> {cls_name} ({origin})")
             merged.set(k, v, scope)
+            if report is not None:
+                origins[k] = origin
+                _mark_used(k, origin)
 
     def _hoist_routing(k: str, v: Dict[str, Any]) -> None:
         """Keep a routing block ('**' floats, '*'/named sub-blocks are one-level)."""
@@ -992,6 +1078,8 @@ def _prepare_kwargs(
             elif _accepts(bk, bv):
                 logger.trace(f"broadcast: {bk!r} -> {cls_name} ({origin})")
                 merged.set(bk, bv, _KeyScope.EXACT)
+                if report is not None:
+                    origins[bk] = origin
 
     def _apply_own(kwargs: Dict[str, Any]) -> None:
         """Unroll the receiver's own kwargs — addressed to me, thus EXACT."""
@@ -1007,6 +1095,7 @@ def _prepare_kwargs(
                 _hoist_routing(k, v)
             else:
                 merged.set(k, v, _KeyScope.EXACT)
+                origins.pop(k, None)  # own kwargs are definitions, not overrides
 
     for k, v in parent_context.items():
         # Receiving Fluid's own slot — unroll its kwargs at this position.
@@ -1035,6 +1124,8 @@ def _prepare_kwargs(
 
         # Class-name / instance-name dict block — unroll inline (addressed → ungated).
         if k in (cls_name, instance_name) and isinstance(v, dict):
+            if report is not None:
+                report.mark_used(k)  # a named block is "used" once it matches an object
             _consume_block(v, origin=f"block {k!r}", gated=False)
             continue
 
@@ -1048,6 +1139,11 @@ def _prepare_kwargs(
 
     if not self_unrolled:
         _apply_own(own_kwargs)
+
+    if report is not None and origins:
+        label = f"{cls_name} {instance_name!r}" if isinstance(instance_name, str) else cls_name
+        for k, origin in origins.items():
+            report.record_applied(k, label, origin)
 
     return merged
 
@@ -1257,6 +1353,7 @@ def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
         target_cls = target if isinstance(target, type) else None
         acceptable = _get_acceptable_keys(target)
         blocked = _broadcast_blocked_keys(target_cls)
+        report = _ENGINE_STATE.get().report
         for gk, gv in star2.items():
             if isinstance(gv, dict):
                 continue
@@ -1266,6 +1363,10 @@ def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
             if acceptable is not None and gk not in acceptable:
                 continue
             merged[gk] = gv
+            if report is not None:
+                target_label = str(getattr(target, "__name__", target))
+                report.record_applied(gk, target_label, "glob '**'")
+                report.mark_used(f"**.{gk}")
     return pool
 
 
@@ -1411,6 +1512,7 @@ def _resolve_kwarg_value(
         return flow(v)
     if isinstance(v, Class):
         # Apply broadcasting: pull matching keys from full context
+        report = _ENGINE_STATE.get().report
         broadcasted = dict(v.kwargs)
         acceptable = _get_acceptable_keys(v.target)
         inner_target_cls = (
@@ -1440,6 +1542,9 @@ def _resolve_kwarg_value(
                 continue
             logger.trace(f"broadcast: {bk!r} -> {getattr(inner_target_cls, '__name__', v.target)} (nested-class)")
             broadcasted[bk] = bv
+            if report is not None:
+                report.record_applied(bk, str(getattr(inner_target_cls, "__name__", v.target)), "nested-class")
+                report.mark_used(bk)
         v_copy = copy(v)
         v_copy.kwargs = broadcasted
         v_copy._yaml_loc = getattr(v, "_yaml_loc", None)

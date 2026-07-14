@@ -290,7 +290,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
         logger.warning(f"{cls.__name__}: invalid configuration\n{exc}")
 
 
-def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> None:
+def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> Optional[str]:
     """Validate a post-construction setattr against the field's pydantic type.
 
     Mirrors :func:`validate_kwargs` for the single-field case used by
@@ -298,9 +298,14 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     here (the configure path may target attributes outside the ``__init__``
     signature, e.g. ``@configurable`` classes that expose extra knobs as
     plain instance attributes).
+
+    Returns:
+        The stringified validation error on a WARN-mode failure (so the
+        caller can record it in a ``ConfigurationReport``), ``None`` on
+        pass / off / unknown field. Strict mode still raises.
     """
     if mode == "off" or not _have_pydantic():
-        return
+        return None
 
     from pydantic import ValidationError
 
@@ -309,10 +314,10 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     try:
         model = to_pydantic(cls)
     except TypeError:
-        return
+        return None
 
     if name not in model.model_fields:
-        return
+        return None
 
     try:
         model.__pydantic_validator__.validate_assignment(model.model_construct(), name, value)
@@ -320,6 +325,8 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
         if mode == "strict":
             raise
         logger.warning(f"{cls.__name__}.{name}: invalid value\n{exc}")
+        return str(exc)
+    return None
 
 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:

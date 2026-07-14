@@ -26,6 +26,11 @@ The object graph is walked via ``vars(obj)`` — property getters are NEVER
 executed. Unknown non-dict keys inside a block addressed to an object emit a
 warning (typo protection); a present key with value ``None`` SETS ``None``
 (presence is explicit in the scan, so ``dropout: null`` works).
+
+Both entry points return a :class:`confluid.ConfigurationReport` — applied /
+failed / unused override keys for the whole call (see ``confluid.report``);
+inside a :func:`confluid.collect_report` block the ambient report is adopted,
+so a load-then-configure pass aggregates into one report.
 """
 
 from pathlib import Path
@@ -35,20 +40,36 @@ import yaml
 from loggair import get_logger
 
 from confluid.merger import expand_dotted_keys
+from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver
 
 logger = get_logger("confluid.configurator")
 
 
-def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> None:
+def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> ConfigurationReport:
     """Apply configuration to one or more existing object instances.
 
     Recursively walks the object graph and sets attributes by matching class
     names, instance names, and broadcast keys — document order,
     last-write-wins (see the module docstring for the full matching rule).
+
+    Returns:
+        A :class:`confluid.ConfigurationReport` spanning ALL instances of the
+        call: every applied override (with receiver + origin), failed keys
+        (unknown block attributes, per-field validation failures), and the
+        document keys that matched nothing. Inside a
+        :func:`confluid.collect_report` block the ambient report is adopted
+        (and returned), so a load-then-configure pass aggregates into one
+        report; otherwise a fresh report is returned and its unused-keys
+        DEBUG summary logged here.
     """
+    from confluid.engine import _active_report
+
+    ambient = _active_report()
+    report = ambient if ambient is not None else ConfigurationReport()
+
     if config is None:
-        return
+        return report
 
     if isinstance(config, str) and (":" in config or "\n" in config):
         # Parse with ConfluidLoader so tag-carrying strings (e.g. "!class:Model")
@@ -59,18 +80,33 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         config = yaml.load(config, Loader=ConfluidLoader)
 
     if not isinstance(config, dict):
-        return
+        return report
 
     resolved_context = context if context is not None else config
     resolver = Resolver(context=resolved_context)
     config = expand_dotted_keys(resolver.resolve(config))
 
+    # Register unused-tracking candidates: every top-level document key is an
+    # override candidate here (unlike the engine path, a marker-valued key IS
+    # an override — _assign flows it); glob blocks register per non-dict leaf.
+    for k, v in config.items():
+        if k in ("*", "**") and isinstance(v, dict):
+            report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
+        else:
+            report.add_config_keys((k,))
+
     visited: Set[int] = set()
     for instance in instances:
-        _walk(instance, config, resolved_context, visited)
+        _walk(instance, config, resolved_context, visited, report)
+
+    if ambient is None:
+        report.log_unused()
+    return report
 
 
-def configure_from_file(*instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None) -> None:
+def configure_from_file(
+    *instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None
+) -> ConfigurationReport:
     """Load a YAML config file and apply it to existing instances in one call.
 
     A convenience for the ``load_config`` + :func:`configure` two-step, so
@@ -95,7 +131,7 @@ def configure_from_file(*instances: Any, path: Union[str, Path], context: Option
     """
     from confluid.loader import load_config
 
-    configure(*instances, config=load_config(path), context=context)
+    return configure(*instances, config=load_config(path), context=context)
 
 
 def _walk(
@@ -103,6 +139,7 @@ def _walk(
     view: Dict[str, Any],
     context: Dict[str, Any],
     visited: Set[int],
+    report: ConfigurationReport,
 ) -> None:
     """Traverse the object graph, configuring each configurable object from its view.
 
@@ -127,17 +164,17 @@ def _walk(
 
     if isinstance(obj, (list, tuple)):
         for item in obj:
-            _walk(item, view, context, visited)
+            _walk(item, view, context, visited, report)
         return
 
     if isinstance(obj, dict):
         for v in obj.values():
-            _walk(v, view, context, visited)
+            _walk(v, view, context, visited, report)
         return
 
     child_view = view
     if getattr(obj.__class__, "__confluid_configurable__", False):
-        child_view = _apply(obj, view, context, visited)
+        child_view = _apply(obj, view, context, visited, report)
 
     # Recurse into instance attributes only (vars, not dir) — no getters fire.
     # Scalars / __slots__ objects carry no __dict__ and simply end the walk.
@@ -145,10 +182,12 @@ def _walk(
     if obj_dict:
         for attr_val in list(obj_dict.values()):
             if not callable(attr_val):
-                _walk(attr_val, child_view, context, visited)
+                _walk(attr_val, child_view, context, visited, report)
 
 
-def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set[int]) -> Dict[str, Any]:
+def _apply(
+    obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set[int], report: ConfigurationReport
+) -> Dict[str, Any]:
     """Configure one object from its view; return the spliced view for its subtree.
 
     Scans ``view`` in document order collecting assignments (last write wins),
@@ -183,10 +222,20 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     def _is_configurable(value: Any) -> bool:
         return getattr(getattr(value, "__class__", None), "__confluid_configurable__", False)
 
+    target_label = f"{cls_name} {instance_name!r}" if instance_name else cls_name
+
     # Document-order scan: assignments overwrite (last write wins); dict-valued
     # block entries addressing a configurable child become recursions; other
     # dict-valued block entries become one-level routing in the child view.
+    # ``origins`` mirrors ``assignments`` with the origin of each key's LAST
+    # write, so the report gets ONE applied record per attribute — the final
+    # effective assignment.
     assignments: Dict[str, Any] = {}
+    origins: Dict[str, str] = {}
+
+    def _mark_used(key: str, origin: str) -> None:
+        report.mark_used(f"**.{key}" if origin == "glob '**'" else f"*.{key}" if origin == "glob '*'" else key)
+
     recursions: Dict[str, Dict[str, Any]] = {}
 
     def _consume_block(
@@ -217,6 +266,8 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
                         recursions[bk] = bv
                     else:
                         assignments[bk] = bv  # a plain dict-typed attribute value
+                        origins[bk] = origin
+                    _mark_used(bk, origin)
                 # else: a name-scoped block for a direct child — routed as
                 # STRICT by _spliced; never a typo warning (dicts are blocks).
                 continue
@@ -224,12 +275,17 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
                 if broadcast_blocked is not None and bk not in broadcast_blocked and _settable(bk):
                     logger.trace(f"configure: {bk!r} -> {cls_name} ({origin})")
                     assignments[bk] = bv
+                    origins[bk] = origin
+                    _mark_used(bk, origin)
                 continue
             if _settable(bk):
                 logger.trace(f"configure: {bk!r} -> {cls_name} ({origin})")
                 assignments[bk] = bv
+                origins[bk] = origin
+                _mark_used(bk, origin)
             else:
                 logger.warning(f"configure(): {cls_name} block has no attribute {bk!r} — ignored")
+                report.record_failed(bk, target_label, "unknown-attribute")
 
     for k, v in view.items():
         scope = _scope_of(view, k)
@@ -238,14 +294,15 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
         if scope is _KeyScope.ADDRESSED:
             # An attr-recursion delivered this entry to exactly this object —
             # consume it like matched-block content (assign / recurse / route).
-            _consume_block({k: v})
+            _consume_block({k: v}, origin="addressed")
         elif k == "**" and isinstance(v, dict):
             _consume_block(v, origin="glob '**'", gated=True, floating=True)
         elif k == "*" and isinstance(v, dict):
             # Introduced one level up — this object is the "any child" it addresses.
             _consume_block(v, origin="glob '*'", gated=True)
         elif k in (cls_name, instance_name) and isinstance(v, dict):
-            _consume_block(v)
+            report.mark_used(k)  # a named block is "used" once it matches an object
+            _consume_block(v, origin=f"block {k!r}")
         elif scope is _KeyScope.STRICT:
             continue  # routing block for a sibling name — not mine
         elif (
@@ -256,8 +313,10 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
         ):
             logger.trace(f"configure: {k!r} -> {cls_name} (bare)")
             assignments[k] = v  # broadcast — dicts at the top level are blocks for others
+            origins[k] = "bare"
+            report.mark_used(k)
 
-    _assign(obj, assignments, context)
+    _assign(obj, assignments, context, report, origins, target_label)
 
     # Splice this object's addressed blocks into the subtree view at their
     # positions (the live-object analogue of ``_splice_kwargs_at_slot``):
@@ -269,13 +328,27 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     for attr_name, sub_block in recursions.items():
         child = getattr(obj, attr_name, None)
         if child is not None:
-            _walk(child, _spliced_at(child_view, attr_name, sub_block), context, visited)
+            _walk(child, _spliced_at(child_view, attr_name, sub_block), context, visited, report)
 
     return child_view
 
 
-def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> None:
-    """Resolve, coerce, materialize, validate, and setattr the merged assignments."""
+def _assign(
+    obj: Any,
+    assignments: Dict[str, Any],
+    context: Dict[str, Any],
+    report: ConfigurationReport,
+    origins: Dict[str, str],
+    target_label: str,
+) -> None:
+    """Resolve, coerce, materialize, validate, and setattr the merged assignments.
+
+    Reports into ``report``: a validation failure records a ``"validation"``
+    failed key (strict mode records then re-raises; warn mode records with
+    the value still applied), and every successful setattr records ONE
+    applied key with its last-write origin from ``origins`` (plus the
+    eager-class staleness note when it fires).
+    """
     from confluid.engine import _ctor_params
     from confluid.engine import flow as _flow
     from confluid.fluid import Class, Instance
@@ -294,8 +367,10 @@ def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> N
         eager_params = _ctor_params(cls) or set()
 
     for attr_name, val in assignments.items():
+        note: Optional[str] = None
         if attr_name in eager_params:
             cls_label = getattr(cls, "__confluid_name__", cls.__name__)
+            note = "eager-class constructor param — __init__ work not re-run"
             logger.warning(
                 f"configure(): setting constructor param {attr_name!r} on eager class {cls_label} — "
                 f"__init__ work will NOT re-run; derived state may be stale"
@@ -311,8 +386,15 @@ def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> N
         # constructor — re-uses ``policy.init`` because configure() is the
         # moral equivalent of "instantiate this attribute with this value",
         # just performed after the parent object exists.
-        validate_setattr(cls, attr_name, resolved_val, get_policy().init)
+        try:
+            detail = validate_setattr(cls, attr_name, resolved_val, get_policy().init)
+        except Exception as exc:  # strict mode — record, then let it propagate
+            report.record_failed(attr_name, target_label, "validation", str(exc))
+            raise
+        if detail is not None:  # warn mode — recorded, value still applied below
+            report.record_failed(attr_name, target_label, "validation", detail)
         setattr(obj, attr_name, resolved_val)
+        report.record_applied(attr_name, target_label, origins.get(attr_name, "block"), note)
 
 
 def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) -> Dict[str, Any]:
