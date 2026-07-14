@@ -67,9 +67,39 @@ parameter is still omitted — that omission is lossless.
 - **Body-slot attributes** (`__init__`-body assignments) holding an explicit `None` are omitted
   from dumps — body slots have no introspectable signature default to compare against.
 - Captured kwargs are held **by reference** for the instance lifetime — the same lifetime a
-  param-storing class would give them.
+  param-storing class would give them. This matters when a constructor argument is a **heavy,
+  disposable object** (a large tensor, a loaded dataset, an open connection) that `__init__`
+  transforms into something smaller: the capture keeps the original alive even though nothing
+  else references it. Prefer passing a lightweight handle (a path, an id, a spec) and
+  materializing the heavy object lazily inside the class — that is also what the
+  [lazy-init convention](class-design.md) prescribes. When the heavy argument is unavoidable,
+  opt out of the capture entirely with `capture=False` (below).
 
-## The `eager=True` mark and the staleness warning
+## Opting out: `capture=False`
+
+`@configurable(capture=False)` (also available on `register()` for third-party classes) stamps
+`__confluid_no_capture__` on the class and disables **both** capture paths — the validation wrap
+on direct Python construction and the engine stamp on the YAML path (which then also skips the
+`__confluid_class__` origin marker; the pair exists only for the dump round-trip):
+
+```python
+@configurable(capture=False)
+class Embedder:
+    def __init__(self, corpus: list[str] | None = None, dim: int = 32) -> None:
+        self.dim = dim                              # stored verbatim — still dumps
+        self._index = build_index(corpus, dim)      # corpus is NOT kept alive by a capture
+```
+
+The trade-off is **dump fidelity**:
+
+- params stored verbatim as same-named attributes still dump via the live-attribute path;
+- **transformed params are omitted** from the dump — a reload silently restores their
+  constructor defaults;
+- a transformed **required** (no-default) param makes the dump non-reloadable — the reload
+  raises a located construction error.
+
+Use `capture=False` only when the memory cost of the capture outweighs round-trip fidelity for
+transformed params. The mark is inherited by subclasses and survives a partial re-register.
 
 Declaring `@configurable(eager=True)` stamps the class as "my constructor does real work from its
 params". Its runtime effect: when `configure()` sets a **constructor-param** attribute on such an
@@ -81,8 +111,8 @@ configure(): setting constructor param 'rate' on eager class Resampler — __ini
 
 The value is still applied (warned, not blocked). Body attributes stay silent — they are freely
 reconfigurable by design. The mark is optional and does **not** gate loading or dumping (kwargs are
-captured universally); it exists to document the class's behavior and to surface the one genuine
-footgun of eager designs.
+captured universally unless the class opts out with `capture=False`); it exists to document the
+class's behavior and to surface the one genuine footgun of eager designs.
 
 ## When the lazy convention still matters
 

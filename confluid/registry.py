@@ -39,6 +39,7 @@ class ConfluidRegistry:
         strict_typing: bool = False,
         display_name: Optional[str] = None,
         no_broadcast: bool = False,
+        no_capture: bool = False,
         broadcast_attrs: Optional[Sequence[str]] = None,
     ) -> Callable[..., Any]:
         """Register ``cls`` and stamp its ``__confluid_*__`` marks — the ONE stamping authority.
@@ -49,7 +50,7 @@ class ConfluidRegistry:
         ``name``/``category`` — each mark falls back to the class's EXISTING
         mark when the argument is unset, so a partial re-register never drops
         tags stamped earlier. ``random``/``constant``/``eager``/
-        ``strict_typing``/``display_name``/``no_broadcast``/
+        ``strict_typing``/``display_name``/``no_broadcast``/``no_capture``/
         ``broadcast_attrs`` are stamp-only (no reverse index).
         """
         cls_name = name or cls.__name__
@@ -68,6 +69,7 @@ class ConfluidRegistry:
         strict_typing = strict_typing or bool(getattr(cls, "__confluid_strict_typing__", False))
         display_name = display_name if display_name is not None else getattr(cls, "__confluid_display_name__", None)
         no_broadcast = no_broadcast or bool(getattr(cls, "__confluid_no_broadcast__", False))
+        no_capture = no_capture or bool(getattr(cls, "__confluid_no_capture__", False))
         # ``()`` is a DELIBERATE declaration ("no post-init broadcast attrs"),
         # distinct from ``None`` (undeclared) — so the fallback tests ``is not None``.
         effective_broadcast_attrs: Optional[Tuple[str, ...]] = (
@@ -111,6 +113,12 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_display_name__", display_name)
             if no_broadcast:
                 setattr(cls, "__confluid_no_broadcast__", True)
+            if no_capture:
+                # Opt-out of ctor-kwargs capture (``__confluid_kwargs__``): the
+                # validation wrap AND the engine's flow re-stamp both consult
+                # this — for classes whose ctor args are heavy/disposable and
+                # must not be kept alive for the instance lifetime.
+                setattr(cls, "__confluid_no_capture__", True)
             if effective_broadcast_attrs is not None:
                 setattr(cls, "__confluid_broadcast_attrs__", effective_broadcast_attrs)
         except (TypeError, AttributeError):

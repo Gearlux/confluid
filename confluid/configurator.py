@@ -3,7 +3,7 @@
 Applies a config document to ALREADY-CONSTRUCTED object graphs, in place —
 the Post-Construction Paradigm. Matching follows confluid's ONE rule:
 **flat-view, document-order, last-write-wins** (the same rule the YAML
-materialization path applies via ``loader._prepare_kwargs``), scanned over
+materialization path applies via ``engine._prepare_kwargs``), scanned over
 live objects instead of Fluid markers:
 
 * a ``ClassName:`` / ``<instance-name>:`` dict block is unrolled inline at
@@ -13,8 +13,14 @@ live objects instead of Fluid markers:
 * whichever assignment comes LAST in document order wins — no priority tiers;
 * a dict-valued block entry addressing a configurable child recurses into it,
   with the sub-block spliced into the child's visible view at its position;
-* block contents become ambient context for the object's subtree, mirroring
-  ``_splice_kwargs_at_slot`` in the loader.
+* **addressed keys are exact** (2026-07): a matched block's values configure
+  that object only — they stay visible in the subtree view for ordering but
+  never re-apply below. Cascade is opt-in via glob blocks: ``'**'`` applies
+  its contents like bare keys to the matched object AND every descendant
+  (``mid.**.lr``), ``'*'`` to the direct children only; both are gated by
+  the NoBroadcast opt-outs like bare keys. Deeper named segments
+  (``root.mid.lr``) are strict one-level hops, mirroring
+  ``_splice_kwargs_at_slot`` / ``_prepare_kwargs`` in the engine.
 
 The object graph is walked via ``vars(obj)`` — property getters are NEVER
 executed. Unknown non-dict keys inside a block addressed to an object emit a
@@ -148,7 +154,11 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     Scans ``view`` in document order collecting assignments (last write wins),
     dict-valued child recursions, and the subtree view. Assignment values are
     resolved, string-coerced via ``parse_value``, ``Class``/``Instance``
-    markers flowed, then validated + setattr'd.
+    markers flowed, then validated + setattr'd. Scope tags (see
+    ``engine._KeyScope``) gate what applies: EXACT entries are an ancestor's
+    addressed values (inert here), STRICT entries are one-level routing
+    blocks (matched by name or skipped), glob blocks apply gated like bare
+    keys.
     """
     cls = obj.__class__
     cls_name = getattr(cls, "__confluid_name__", cls.__name__)
@@ -156,7 +166,7 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     if not isinstance(instance_name, str):
         instance_name = None
 
-    from confluid.engine import _broadcast_blocked_keys, _get_acceptable_keys
+    from confluid.engine import _broadcast_blocked_keys, _expand_block_keys, _get_acceptable_keys, _KeyScope, _scope_of
 
     acceptable = _get_acceptable_keys(cls)
     own_attrs = {k for k in vars(obj) if not k.startswith("_")}
@@ -174,17 +184,32 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
         return getattr(getattr(value, "__class__", None), "__confluid_configurable__", False)
 
     # Document-order scan: assignments overwrite (last write wins); dict-valued
-    # block entries addressing a configurable child become recursions; anything
-    # else dict-valued travels ambiently in the child view.
+    # block entries addressing a configurable child become recursions; other
+    # dict-valued block entries become one-level routing in the child view.
     assignments: Dict[str, Any] = {}
     recursions: Dict[str, Dict[str, Any]] = {}
 
-    def _consume_block(block: Dict[str, Any]) -> None:
-        for bk, bv in block.items():
-            if bk == instance_name and isinstance(bv, dict):
-                # ``Cls.inst.attr`` form — the instance-named sub-block nests
-                # inside the class block; unroll it inline (later → wins).
-                _consume_block(bv)
+    def _consume_block(
+        block: Dict[str, Any], *, origin: str = "block", gated: bool = False, floating: bool = False
+    ) -> None:
+        """Unroll a block addressed to this object.
+
+        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
+        apply, like bare keys — and unmatched keys stay silent, like bare
+        keys); named-block contents bypass the gate and warn on typos.
+        ``floating=True`` for ``'**'`` contents: nested named dicts are
+        matched-or-ignored (the riding ``'**'`` entry keeps them floating).
+        """
+        for bk, bv in _expand_block_keys(block).items():
+            if bk == "**" and isinstance(bv, dict):
+                _consume_block(bv, origin="glob '**'", gated=True, floating=True)
+                continue  # the '**' entry itself is re-emitted by _spliced
+            if bk == "*" and isinstance(bv, dict):
+                continue  # addresses my direct children — routed by _spliced
+            if isinstance(bv, dict) and bk in (cls_name, instance_name) and (floating or not gated):
+                # Addressed to me again (``Cls.inst.attr`` form, or a named
+                # match while floating under '**') — unroll inline, ungated.
+                _consume_block(bv, origin=f"block {bk!r}")
                 continue
             if isinstance(bv, dict):
                 if _settable(bk):
@@ -192,18 +217,37 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
                         recursions[bk] = bv
                     else:
                         assignments[bk] = bv  # a plain dict-typed attribute value
-                # else: a name-scoped block for a descendant — travels via the
-                # spliced child view; never a typo warning (dicts are blocks).
+                # else: a name-scoped block for a direct child — routed as
+                # STRICT by _spliced; never a typo warning (dicts are blocks).
+                continue
+            if gated:
+                if broadcast_blocked is not None and bk not in broadcast_blocked and _settable(bk):
+                    logger.trace(f"configure: {bk!r} -> {cls_name} ({origin})")
+                    assignments[bk] = bv
                 continue
             if _settable(bk):
-                logger.trace(f"configure: {bk!r} -> {cls_name} (block)")
+                logger.trace(f"configure: {bk!r} -> {cls_name} ({origin})")
                 assignments[bk] = bv
             else:
                 logger.warning(f"configure(): {cls_name} block has no attribute {bk!r} — ignored")
 
     for k, v in view.items():
-        if k in (cls_name, instance_name) and isinstance(v, dict):
+        scope = _scope_of(view, k)
+        if scope is _KeyScope.EXACT:
+            continue  # an ancestor's addressed value — ordering visibility only
+        if scope is _KeyScope.ADDRESSED:
+            # An attr-recursion delivered this entry to exactly this object —
+            # consume it like matched-block content (assign / recurse / route).
+            _consume_block({k: v})
+        elif k == "**" and isinstance(v, dict):
+            _consume_block(v, origin="glob '**'", gated=True, floating=True)
+        elif k == "*" and isinstance(v, dict):
+            # Introduced one level up — this object is the "any child" it addresses.
+            _consume_block(v, origin="glob '*'", gated=True)
+        elif k in (cls_name, instance_name) and isinstance(v, dict):
             _consume_block(v)
+        elif scope is _KeyScope.STRICT:
+            continue  # routing block for a sibling name — not mine
         elif (
             not isinstance(v, dict)
             and broadcast_blocked is not None  # None = class-level broadcast opt-out
@@ -216,9 +260,10 @@ def _apply(obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set
     _assign(obj, assignments, context)
 
     # Splice this object's addressed blocks into the subtree view at their
-    # positions (the live-object analogue of ``_splice_kwargs_at_slot``), so
-    # descendants see block contents — incl. name-scoped sub-blocks — as
-    # ambient keys, preserving document order for last-write-wins downstream.
+    # positions (the live-object analogue of ``_splice_kwargs_at_slot``):
+    # scalars become EXACT (visible for ordering, never re-applied), nested
+    # dicts STRICT (one level), glob blocks keep their reach; inherited
+    # one-level routing is dropped — its level is spent at this boundary.
     child_view = _spliced(view, cls_name, instance_name)
 
     for attr_name, sub_block in recursions.items():
@@ -271,43 +316,112 @@ def _assign(obj: Any, assignments: Dict[str, Any], context: Dict[str, Any]) -> N
 
 
 def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) -> Dict[str, Any]:
-    """Return ``view`` with the object's addressed blocks unrolled at their positions."""
+    """Return the subtree view: routing hoisted from matched blocks, spent levels dropped.
+
+    The live-object analogue of ``engine._splice_kwargs_at_slot``:
+
+    * a matched (floating) block STAYS in the view — a deeper node with the
+      same class/instance name matches it again (``**.name`` anchoring); its
+      scalars were already applied to this object and are simply carried
+      inside the block, never as ambient bare keys (the cascade removal);
+    * a matched block's ROUTING contents are hoisted as additional entries
+      at the block's position: ``'**'`` keeps floating (BARE, merged with an
+      existing rider), ``'*'`` and named sub-blocks become STRICT (valid for
+      the direct children only);
+    * inherited STRICT entries and ``'*'`` glob blocks are dropped — their
+      one level is spent at this object.
+    """
+    from confluid.engine import _KeyScope, _scope_of, _View
+
     block_keys = {cls_name, instance_name} - {None}
-    if not any(k in view and isinstance(view[k], dict) for k in block_keys):
+    has_block = any(
+        k in view and isinstance(view[k], dict) and _scope_of(view, k) is not _KeyScope.EXACT for k in block_keys
+    )
+    has_routing = ("*" in view and isinstance(view["*"], dict)) or (
+        isinstance(view, _View) and any(s in (_KeyScope.STRICT, _KeyScope.ADDRESSED) for s in view.scopes.values())
+    )
+    star2 = view.get("**")
+    has_glob_router = isinstance(star2, dict) and isinstance(star2.get("*"), dict)
+    if not (has_block or has_routing or has_glob_router):
         return view
-    out: Dict[str, Any] = {}
+
+    out = _View()
     for k, v in view.items():
-        if k in block_keys and isinstance(v, dict):
-            _unroll_into(out, v, instance_name)
-        else:
-            out[k] = v
+        scope = _scope_of(view, k)
+        if scope is _KeyScope.ADDRESSED:
+            # Delivered to the object that just consumed this view; its dict
+            # contents route one level further, scalars are spent.
+            if isinstance(v, dict):
+                _hoist_routing_from(out, {k: v}, instance_name)
+            continue
+        if isinstance(v, dict) and k in block_keys and scope is not _KeyScope.EXACT:
+            if scope is not _KeyScope.STRICT:
+                out.set(k, v, scope)  # floating block — deeper same-name nodes rematch
+            _hoist_routing_from(out, v, instance_name)
+            continue
+        if k == "*" and isinstance(v, dict):
+            continue  # one-level routing — spent at this boundary
+        if k == "**" and isinstance(v, dict):
+            out.set(k, v, _KeyScope.BARE)
+            if isinstance(v.get("*"), dict):
+                _hoist_strict(out, "*", v["*"])  # '*' inside a floating '**' routes my children
+            continue
+        if scope is _KeyScope.STRICT:
+            continue  # routing for a sibling name — spent
+        out.set(k, v, scope)
     return out
 
 
-def _unroll_into(out: Dict[str, Any], block: Dict[str, Any], instance_name: Optional[str]) -> None:
-    """Unroll a block's entries into ``out`` in order, nesting through the inst sub-block."""
-    for bk, bv in block.items():
+def _hoist_routing_from(out: Any, block: Dict[str, Any], instance_name: Optional[str]) -> None:
+    """Hoist a matched block's routing contents ('**'/'*'/named sub-blocks) into ``out``."""
+    from confluid.engine import _expand_block_keys, _KeyScope
+
+    for bk, bv in _expand_block_keys(block).items():
         if bk == instance_name and isinstance(bv, dict):
-            _unroll_into(out, bv, instance_name)
-        else:
-            out[bk] = bv
+            _hoist_routing_from(out, bv, instance_name)  # Cls.inst.attr form unrolls inline
+            continue
+        if not isinstance(bv, dict):
+            continue  # scalars were applied by _apply; the floating block keeps them visible
+        if bk == "**":
+            prev = out.get("**")
+            if isinstance(prev, dict):
+                bv = {**prev, **bv}
+            out.set("**", bv, _KeyScope.BARE)  # keeps floating below
+            if isinstance(bv.get("*"), dict):
+                _hoist_strict(out, "*", bv["*"])  # '*' inside the rider routes my children
+            continue
+        _hoist_strict(out, bk, bv)  # '*' or a deeper path segment — one level
+
+
+def _hoist_strict(out: Any, key: str, block: Dict[str, Any]) -> None:
+    from confluid.engine import _KeyScope, _scope_of
+
+    prev = out.get(key)
+    if isinstance(prev, dict) and _scope_of(out, key) is _KeyScope.STRICT:
+        block = {**prev, **block}
+    out.set(key, block, _KeyScope.STRICT)
 
 
 def _spliced_at(view: Dict[str, Any], key: str, sub_block: Dict[str, Any]) -> Dict[str, Any]:
-    """Return ``view`` with ``sub_block``'s entries unrolled at ``key``'s position.
+    """Return ``view`` with ``sub_block``'s entries spliced at ``key``'s position.
 
-    Used for child recursion: the sub-block addressed to the child replaces
-    the attr-keyed entry, so its values sit at the block's document position
+    Used for child recursion: the block addressed to the child replaces the
+    attr-keyed entry, so its values sit at the block's document position
     (later than earlier broadcasts → they win for the child, as authored).
+    The entries are ADDRESSED — consumed by that one child, spent below it.
     """
-    out: Dict[str, Any] = {}
+    from confluid.engine import _KeyScope, _scope_of, _View
+
+    out = _View()
     placed = False
     for k, v in view.items():
         if k == key and not placed:
-            out.update(sub_block)
+            for bk, bv in sub_block.items():
+                out.set(bk, bv, _KeyScope.ADDRESSED)
             placed = True
         else:
-            out[k] = v
+            out.set(k, v, _scope_of(view, k))
     if not placed:
-        out.update(sub_block)
+        for bk, bv in sub_block.items():
+            out.set(bk, bv, _KeyScope.ADDRESSED)
     return out

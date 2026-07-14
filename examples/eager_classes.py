@@ -3,9 +3,11 @@
 Covers: loading a class with a REQUIRED param that does real work in ``__init__``,
 the clear YAML-located error when a required param is missing, the dump round-trip
 via captured constructor kwargs (live attribute preferred, capture as fallback),
-direct-Python-construction capture, and the ``eager=True`` staleness warning fired
-by ``configure()``.
+direct-Python-construction capture, the ``eager=True`` staleness warning fired
+by ``configure()``, and the ``capture=False`` opt-out for heavy constructor args.
 """
+
+from typing import Any
 
 from confluid import ConfluidError, configurable, configure, dump, load
 
@@ -32,6 +34,19 @@ class Mixed:
         """
         self.kept = kept
         self._t = 10 * transformed
+
+
+@configurable(capture=False)
+class Embedder:
+    def __init__(self, corpus: Any = None, dim: int = 32) -> None:
+        """A class whose heavy ctor arg must NOT be kept alive by the kwargs capture.
+
+        Args:
+            corpus: A large, disposable input — consumed at construction.
+            dim: Embedding size — stored verbatim, still dumps.
+        """
+        self.dim = dim
+        self._index_size = len(corpus) * dim if corpus else 0  # "builds an index"
 
 
 def main() -> None:
@@ -69,6 +84,15 @@ def main() -> None:
     assert mixed.kept == 3
     assert mixed._t == 70  # __init__ work did NOT re-run — exactly what the warning says
     print("configure() applied the value; derived state untouched (see warning above)")
+
+    # --- capture=False: heavy disposable ctor args are not kept alive -------------------
+    embedder = Embedder(corpus=["a"] * 1000, dim=8)
+    assert not hasattr(embedder, "__confluid_kwargs__")  # no capture — corpus is collectable
+    text = dump(embedder)
+    assert "dim: 8" in text  # verbatim-stored params still dump via the live attribute
+    assert "corpus" not in text  # transformed params are omitted — reload uses the default
+    print("capture=False dump (corpus omitted, dim kept):")
+    print(text)
 
 
 if __name__ == "__main__":

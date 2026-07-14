@@ -1,9 +1,13 @@
 """Broadcasting & ordered matching — the runnable companion to ``docs/broadcasting.md``.
 
 Shows a bare top-level key landing on every accepting sibling (document order,
-last write wins) and both opt-outs: the param-level ``NoBroadcast[str]`` marker
-and the class-level ``@configurable(broadcast=False)``.
+last write wins), addressed keys stopping exactly at their node, the ``*`` /
+``**`` glob forms opting back into the cascade, and both opt-outs: the
+param-level ``NoBroadcast[str]`` marker and the class-level
+``@configurable(broadcast=False)``.
 """
+
+from typing import Any, Optional
 
 from confluid import NoBroadcast, configurable, load
 
@@ -63,6 +67,47 @@ Reporter:
     )
     assert addressed["reporter"].strength == 9.0, "an addressed ClassName: block is never blocked"
     print(f"Addressed Reporter block still applies: strength={addressed['reporter'].strength}")
+
+    scoped_broadcasting()
+
+
+@configurable
+class Stage:
+    def __init__(self, child: Any = None, lr: float = 0.0, name: Optional[str] = None) -> None:
+        """A nestable pipeline stage.
+
+        Args:
+            child: Optional nested stage.
+            lr: Learning rate — the knob the scoping demo addresses.
+            name: Instance name, matchable by addressed config paths.
+        """
+        self.child = child
+        self.lr = lr
+        self.name = name
+
+
+_TREE = """
+outer: !class:Stage()
+  name: trainer
+  child: !class:Stage()
+    name: inner
+    child: !class:Stage()
+      name: leaf
+"""
+
+
+def scoped_broadcasting() -> None:
+    """Addressed keys are exact; ``*`` / ``**`` globs opt back into the cascade."""
+
+    def lrs(doc: str) -> tuple:
+        root = load(_TREE + doc)["outer"]
+        return (root.lr, root.child.lr, root.child.child.lr)
+
+    assert lrs("lr: 0.9\n") == (0.9, 0.9, 0.9), "bare key == implicit '**.lr' — whole tree"
+    assert lrs("trainer.lr: 0.5\n") == (0.5, 0.0, 0.0), "addressed key is exact — no cascade"
+    assert lrs("trainer.*.lr: 0.5\n") == (0.0, 0.5, 0.0), "'*' = exactly one level (direct children)"
+    assert lrs("trainer.**.lr: 0.5\n") == (0.5, 0.5, 0.5), "'**' = zero or more levels (declare-once)"
+    print("Scoped broadcasting: bare=(tree)  trainer.lr=(exact)  trainer.*.lr=(children)  trainer.**.lr=(subtree)")
 
 
 if __name__ == "__main__":

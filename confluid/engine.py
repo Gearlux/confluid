@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Type
 
 from loggair import get_logger
@@ -591,16 +592,157 @@ def _classify_annotation(ann: Any) -> Optional[str]:
     return None
 
 
+class _KeyScope(Enum):
+    """Broadcast scope of one key in a config view (see :class:`_View`).
+
+    * ``BARE`` — an un-addressed key (implicit ``**.key``): broadcasts to
+      every accepting node in the subtree. The default for untagged keys,
+      so a plain root document is all-BARE by construction.
+    * ``EXACT`` — an addressed value already delivered to its target node
+      (a Fluid's own kwarg, or a matched named block's scalar). Stays in
+      the view for document ordering and ``!ref:`` resolution but is never
+      re-applied below.
+    * ``STRICT`` — a routing sub-block (a deeper path segment such as the
+      ``opt`` in ``Trainer: {opt: {lr: …}}``, or a ``'*'`` glob block)
+      valid for exactly one more nesting level; dropped at the next Fluid
+      boundary by :func:`_splice_kwargs_at_slot`.
+    * ``ADDRESSED`` — used by the configurator's attr-recursion path: an
+      entry of a block addressed to exactly the object now consuming the
+      view (applied like matched-block contents, spent below it). Avoids
+      wrapping the sub-block under the child's class name, which would
+      collide with a floating block of the same name in same-class trees.
+    """
+
+    BARE = "bare"
+    EXACT = "exact"
+    STRICT = "strict"
+    ADDRESSED = "addressed"
+
+
+class _View(dict):
+    """An ordered config view whose keys carry broadcast-scope tags.
+
+    A plain ``dict`` subclass so every existing ``isinstance`` / iteration /
+    ``in`` / value-identity site keeps working; the ``scopes`` side-table
+    (missing key ⇒ ``BARE``) is what the scoping rules read. Only
+    view-CONSTRUCTION sites need to preserve tags — a ``dict(view)`` /
+    ``{**view}`` copy degrades to all-BARE, which is correct for the root
+    document but loses addressing info anywhere else.
+    """
+
+    __slots__ = ("scopes",)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.scopes: Dict[str, _KeyScope] = {}
+        if args and isinstance(args[0], _View):
+            self.scopes.update(args[0].scopes)
+
+    def set(self, key: str, value: Any, scope: _KeyScope) -> None:
+        """Assign ``key`` (keeping its position if present) with a scope tag."""
+        self[key] = value
+        if scope is _KeyScope.BARE:
+            self.scopes.pop(key, None)
+        else:
+            self.scopes[key] = scope
+
+    def scope_of(self, key: str) -> _KeyScope:
+        return self.scopes.get(key, _KeyScope.BARE)
+
+    def pop(self, key: str, *default: Any) -> Any:  # type: ignore[override]
+        self.scopes.pop(key, None)
+        return super().pop(key, *default)
+
+
+def _scope_of(view: Any, key: str) -> _KeyScope:
+    """Scope of ``key`` in ``view`` — plain (untagged) dicts are all-BARE."""
+    if isinstance(view, _View):
+        return view.scope_of(key)
+    return _KeyScope.BARE
+
+
+_GLOB_KEYS = ("*", "**")
+
+
+def _is_glob_key(key: Any) -> bool:
+    """True for the glob routing block names ``'*'`` / ``'**'``.
+
+    Glob keys are addressing metadata, never values: they must not reach
+    constructor kwargs, post-init setattrs, or ``__confluid_kwargs__``
+    capture.
+    """
+    return key in _GLOB_KEYS
+
+
+def _expand_block_keys(block: Dict[str, Any]) -> Dict[str, Any]:
+    """Expand dotted keys INSIDE a block / marker-kwargs mapping.
+
+    The in-block analogue of :func:`confluid.merger.expand_dotted_keys`
+    (which only processes the document's top-level keys): ``'**.lr'`` inside
+    a matched ``Trainer:`` block nests to ``{'**': {'lr': …}}``, so
+    ``Trainer: {'**.lr': 1}`` ≡ ``Trainer.**.lr: 1``. Unlike the merger
+    variant this shares every value by REFERENCE (never deep-copies), so
+    resolved ``!ref:`` identity survives; dicts descended into are
+    shallow-copied copy-on-write so the caller's input is never mutated
+    (a ``Fluid`` target's kwargs ARE descended into and extended in place,
+    mirroring the merger's traversal). No-op (same object) when no key
+    contains a dot.
+    """
+    if not any("." in k for k in block):
+        return block
+    out: Dict[str, Any] = {k: v for k, v in block.items() if "." not in k}
+    dotted = sorted((k for k in block if "." in k), key=lambda k: (k.count("."), k))
+    for key in dotted:
+        value = block[key]
+        parts = key.split(".")
+        cur: Dict[str, Any] = out
+        for part in parts[:-1]:
+            nxt = cur.get(part)
+            if isinstance(nxt, Fluid):
+                cur = nxt.kwargs
+                continue
+            if isinstance(nxt, dict):
+                copied = dict(nxt)
+                cur[part] = copied
+                cur = copied
+                continue
+            fresh: Dict[str, Any] = {}
+            cur[part] = fresh
+            cur = fresh
+        last = parts[-1]
+        prev = cur.get(last)
+        if isinstance(prev, dict) and isinstance(value, dict):
+            cur[last] = {**prev, **value}
+        else:
+            cur[last] = value
+    return out
+
+
 def _splice_kwargs_at_slot(
     parent_context: Dict[str, Any],
     self_key: Optional[str],
     kwargs: Dict[str, Any],
     receiver_cls: Any = None,
 ) -> Dict[str, Any]:
-    """Build a new ordered dict by replacing ``parent_context[self_key]``
+    """Build the receiver's child view: replace ``parent_context[self_key]``
     with ``kwargs``'s items at the same position, preserving document
     order. When ``self_key`` is not in ``parent_context`` (top-level call,
     or identity match failed), kwargs are appended at the end.
+
+    This is where the scoping semantics flip (2026-07): the returned view is
+    a :class:`_View` whose tags decide what descendants may consume —
+
+    * inherited ``STRICT`` entries (and ``'*'`` glob blocks) from
+      ``parent_context`` are DROPPED: their one nesting level is spent at
+      this Fluid boundary (if they matched this receiver, their contents are
+      already in ``kwargs``);
+    * ``kwargs`` entries keep the scope :func:`_prepare_kwargs` assigned —
+      own kwargs / matched-block values are ``EXACT`` (visible for ordering
+      and ``!ref:`` resolution, never re-broadcast below: addressed keys no
+      longer cascade), bare-derived values stay ``BARE`` (a bare key keeps
+      cascading through the node it landed on), hoisted routing sub-blocks
+      are ``STRICT``, and a ``'**'`` glob block stays ``BARE`` so it floats
+      to every depth.
 
     Collisions on a key ``kk`` that appears in BOTH ``parent_context`` and
     ``kwargs`` are resolved by inspecting the receiver class's type:
@@ -615,8 +757,8 @@ def _splice_kwargs_at_slot(
       must remain visible in ``child_ctx``.
     * Otherwise (``kk`` is NOT a typed param of the receiver) →
       ``kwargs`` wins. The kwarg was placed on the receiver's YAML
-      block specifically to pass through to descendants; it sits at a
-      later document position than the colliding parent broadcast, so
+      block specifically to shield/override for descendants; it sits at
+      a later document position than the colliding parent broadcast, so
       last-write-wins gives it the slot.
     * ``receiver_cls`` is unknown or accepts ``**kwargs`` (accept-list
       is ``None``) → keep parent's value. Conservative fallback that
@@ -625,6 +767,8 @@ def _splice_kwargs_at_slot(
     acceptable = _get_acceptable_keys(receiver_cls) if receiver_cls is not None else None
 
     def _parent_wins(kk: str, kv: Any) -> bool:
+        if kk == "**":
+            return False  # glob riders always re-emit, merged with the parent's
         if kk not in parent_context:
             return False
         if isinstance(kv, Reference):
@@ -633,29 +777,72 @@ def _splice_kwargs_at_slot(
             return True
         return kk in acceptable
 
-    out: Dict[str, Any] = {}
+    out = _View()
+
+    def _emit_parent(k: str, v: Any) -> None:
+        scope = _scope_of(parent_context, k)
+        if scope is _KeyScope.STRICT or (k == "*" and isinstance(v, dict)):
+            return  # one-level routing — spent at this Fluid boundary
+        if k == "**" and isinstance(v, dict):
+            prev = out.get("**")
+            if isinstance(prev, dict):
+                v = {**prev, **v}  # later parent rider merges over the own one
+        out.set(k, v, scope)
+
+    def _emit_merged(kk: str, kv: Any) -> None:
+        if kk == "**" and isinstance(kv, dict):
+            prev = out.get("**")
+            if isinstance(prev, dict):
+                kv = {**prev, **kv}  # a node's own rider merges with the parent's
+        out.pop(kk, None)
+        out.set(kk, kv, _scope_of(kwargs, kk) if isinstance(kwargs, _View) else _KeyScope.EXACT)
+
+    def _shield_glob_rider() -> None:
+        """Rewrite a floating ``'**'`` rider with the receiver's shield values.
+
+        An own/block value the receiver does NOT accept was placed on its
+        block to override the subtree (the wrapper-shield idiom — the same
+        not-a-typed-param signal ``_parent_wins`` reads). When a ``'**'``
+        glob rider carries the same key, the shield value replaces the
+        rider's entry for THIS subtree (copy-on-write — the parent's rider
+        dict is shared by sibling subtrees and must not be mutated).
+        """
+        rider = out.get("**")
+        if not isinstance(rider, dict) or not isinstance(kwargs, _View):
+            return
+        if acceptable is None:
+            return
+        replacements = {
+            kk: kv
+            for kk, kv in kwargs.items()
+            if kk in rider and kk not in acceptable and kwargs.scope_of(kk) is _KeyScope.EXACT
+        }
+        if replacements:
+            out.set("**", {**rider, **replacements}, out.scope_of("**"))
+
     if self_key is None or self_key not in parent_context:
         for k, v in parent_context.items():
-            out[k] = v
+            _emit_parent(k, v)
         for k, v in kwargs.items():
             if _parent_wins(k, v):
                 continue
-            out[k] = v
+            _emit_merged(k, v)
+        _shield_glob_rider()
         return out
     for k, v in parent_context.items():
         if k == self_key:
             for kk, kv in kwargs.items():
                 if _parent_wins(kk, kv):
                     continue
-                out.pop(kk, None)
-                out[kk] = kv
-        elif k in kwargs and not _parent_wins(k, kwargs[k]):
+                _emit_merged(kk, kv)
+        elif k in kwargs and k != "**" and not _parent_wins(k, kwargs[k]):
             # Wrapper's value at this key will win at the self_key slot;
             # skip parent's value at its original position so the wrapper's
             # value ends up at the slot.
             continue
         else:
-            out[k] = v
+            _emit_parent(k, v)
+    _shield_glob_rider()
     return out
 
 
@@ -683,7 +870,7 @@ def _prepare_kwargs(
     parent_context: Dict[str, Any],
     target: Any = None,
     self_obj: Any = None,
-) -> Dict[str, Any]:
+) -> "_View":
     """Flat-view, document-order, last-write-wins kwarg assembly.
 
     Walks ``parent_context`` in document order. The receiving Fluid's own
@@ -691,11 +878,32 @@ def _prepare_kwargs(
     ``parent_context`` (matched by Python identity); when ``self_obj`` is
     not found, they are applied at the end. Class-name and instance-name
     dict blocks (``Foo: {...}``) are unrolled inline at their position.
-    Scalar/Fluid values broadcast when the key matches the receiving
+    Bare scalar/Fluid values broadcast when the key matches the receiving
     class's ``acceptable`` set.
 
     There is no "explicit kwargs > broadcast" priority — every source is
     ordered by its YAML position. Whichever assignment comes last wins.
+
+    Scoping (2026-07 — addressed keys are exact, cascade is opt-in):
+
+    * Only ``BARE``-tagged parent entries broadcast; ``EXACT`` entries
+      (an ancestor's addressed values, kept visible for ordering/``!ref:``)
+      are skipped, so a value delivered to one node no longer cascades to
+      its descendants.
+    * A ``'**'`` glob block (``trainer.**.lr``) applies its contents like
+      bare keys — gated by the NoBroadcast opt-outs — to this node AND
+      keeps floating below (zero-or-more levels); a named dict inside it
+      matches like a floating block.
+    * A ``'*'`` glob block applies one level below its introducer only:
+      encountered in ``parent_context`` it addresses THIS node (any name);
+      introduced by own kwargs / a matched block it is hoisted as STRICT
+      routing for the direct children.
+    * A dict inside own kwargs / a matched block that is not consumed as a
+      dict-typed param value is hoisted as a STRICT routing sub-block — a
+      deeper path segment valid for the direct children only.
+    * Dotted keys inside blocks and marker kwargs are expanded here via
+      :func:`_expand_block_keys` (``Trainer: {'**.lr': 1}`` ≡
+      ``Trainer.**.lr: 1``).
 
     ``cls_name`` is the receiver's target name (used for class-name block
     matching and accept-list lookup). ``target`` is an optional class object
@@ -737,13 +945,73 @@ def _prepare_kwargs(
             return False
         return True
 
-    merged: Dict[str, Any] = {}
+    merged = _View()
     self_unrolled = False
+
+    def _apply_gated(k: str, v: Any, origin: str, scope: _KeyScope) -> None:
+        """Bare-style application: NoBroadcast opt-outs gate, accept-list filters."""
+        if broadcast_blocked is not None and k not in broadcast_blocked and _accepts(k, v):
+            logger.trace(f"broadcast: {k!r} -> {cls_name} ({origin})")
+            merged.set(k, v, scope)
+
+    def _hoist_routing(k: str, v: Dict[str, Any]) -> None:
+        """Keep a routing block ('**' floats, '*'/named sub-blocks are one-level)."""
+        prev = merged.get(k)
+        if isinstance(prev, dict):
+            v = {**prev, **v}
+        merged.set(k, v, _KeyScope.BARE if k == "**" else _KeyScope.STRICT)
+
+    def _consume_block(block: Dict[str, Any], *, origin: str, gated: bool, floating: bool = False) -> None:
+        """Unroll a block addressed to this node into ``merged``.
+
+        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
+        apply, like bare keys); named-block contents bypass them (addressed).
+        ``floating=True`` for ``'**'`` contents: nested named dicts are
+        matched-or-ignored (the riding ``'**'`` entry keeps them floating)
+        instead of being hoisted as one-level STRICT routing.
+        """
+        for bk, bv in _expand_block_keys(block).items():
+            if bk == "**" and isinstance(bv, dict):
+                _consume_block(bv, origin="glob '**'", gated=True, floating=True)
+                _hoist_routing("**", bv)
+                continue
+            if bk == "*" and isinstance(bv, dict):
+                _hoist_routing("*", bv)
+                continue
+            if isinstance(bv, dict) and bk in (cls_name, instance_name) and (floating or not gated):
+                # Addressed to me again (``Cls.inst.attr`` form, or a named
+                # match while floating under '**') — unroll inline, ungated.
+                _consume_block(bv, origin=f"block {bk!r}", gated=False)
+                continue
+            if isinstance(bv, dict) and not _accepts(bk, bv):
+                if not floating:
+                    _hoist_routing(bk, bv)  # deeper path segment → direct children
+                continue
+            if gated:
+                _apply_gated(bk, bv, origin, _KeyScope.EXACT)
+            elif _accepts(bk, bv):
+                logger.trace(f"broadcast: {bk!r} -> {cls_name} ({origin})")
+                merged.set(bk, bv, _KeyScope.EXACT)
+
+    def _apply_own(kwargs: Dict[str, Any]) -> None:
+        """Unroll the receiver's own kwargs — addressed to me, thus EXACT."""
+        for k, v in _expand_block_keys(kwargs).items():
+            if k == "**" and isinstance(v, dict):
+                _consume_block(v, origin="glob '**'", gated=True, floating=True)
+                _hoist_routing("**", v)
+            elif k == "*" and isinstance(v, dict):
+                _hoist_routing("*", v)
+            elif isinstance(v, dict) and acceptable is not None and k not in acceptable:
+                # Not a param/attr of mine — a sub-block addressing a direct
+                # child by name (e.g. the expanded form of ``trainer.b.lr``).
+                _hoist_routing(k, v)
+            else:
+                merged.set(k, v, _KeyScope.EXACT)
 
     for k, v in parent_context.items():
         # Receiving Fluid's own slot — unroll its kwargs at this position.
         if self_obj is not None and v is self_obj and not self_unrolled:
-            merged.update(own_kwargs)
+            _apply_own(own_kwargs)
             self_unrolled = True
             continue
 
@@ -751,23 +1019,35 @@ def _prepare_kwargs(
         if isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls):
             continue
 
-        # Class-name / instance-name dict block — unroll inline.
-        if k in (cls_name, instance_name) and isinstance(v, dict):
-            for bk, bv in v.items():
-                if _accepts(bk, bv):
-                    logger.trace(f"broadcast: {bk!r} -> {cls_name} (block {k!r})")
-                    merged[bk] = bv
+        scope = _scope_of(parent_context, k)
+        if scope is _KeyScope.EXACT:
+            continue  # an ancestor's addressed value — ordering/!ref: visibility only
+
+        # '**' glob block — floats at every level; contents act like bare keys.
+        if k == "**" and isinstance(v, dict):
+            _consume_block(v, origin="glob '**'", gated=True, floating=True)
             continue
+
+        # '*' glob block — introduced one level up; I am the "any child" it addresses.
+        if k == "*" and isinstance(v, dict):
+            _consume_block(v, origin="glob '*'", gated=True)
+            continue
+
+        # Class-name / instance-name dict block — unroll inline (addressed → ungated).
+        if k in (cls_name, instance_name) and isinstance(v, dict):
+            _consume_block(v, origin=f"block {k!r}", gated=False)
+            continue
+
+        if scope is _KeyScope.STRICT:
+            continue  # routing block for a sibling name — not mine
 
         # Plain broadcast — the only path the NoBroadcast opt-out gates:
         # addressed blocks above always work. ``blocked is None`` means the
         # class opted out entirely (@configurable(broadcast=False)).
-        if broadcast_blocked is not None and k not in broadcast_blocked and _accepts(k, v):
-            logger.trace(f"broadcast: {k!r} -> {cls_name} (bare)")
-            merged[k] = v
+        _apply_gated(k, v, "bare", _KeyScope.BARE)
 
     if not self_unrolled:
-        merged.update(own_kwargs)
+        _apply_own(own_kwargs)
 
     return merged
 
@@ -778,9 +1058,16 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     # live object is instantiated downstream.
     flow_memo: Optional[Dict[int, Any]] = _ENGINE_STATE.get().flow_memo
 
-    # 1. Plain dictionaries — pass merged context down
+    # 1. Plain dictionaries — pass merged context down (a grouping dict is
+    #    transparent: it consumes no nesting level, and its own keys are
+    #    fresh BARE entries within the subtree).
     if isinstance(data, dict):
-        local_ctx = {**parent_context, **data} if parent_context else dict(data)
+        if parent_context:
+            local_ctx = _View(parent_context)  # tags copied when parent is a _View
+            for k, v in data.items():
+                local_ctx.set(k, v, _KeyScope.BARE)
+        else:
+            local_ctx = _View(data)
         return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
@@ -788,31 +1075,36 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         if flow_memo is not None and id(data) in flow_memo:
             return flow_memo[id(data)]
         raw_id = id(data)
-        if parent_context:
-            target_name = (
-                data.target
-                if isinstance(data.target, str)
-                else getattr(
-                    data.target,
-                    "__confluid_name__",
-                    getattr(data.target, "__name__", ""),
-                )
+        target_name = (
+            data.target
+            if isinstance(data.target, str)
+            else getattr(
+                data.target,
+                "__confluid_name__",
+                getattr(data.target, "__name__", ""),
             )
-            actual_target = data.target if isinstance(data.target, type) else None
-            merged_kwargs = _prepare_kwargs(
-                target_name, data.kwargs, parent_context, target=actual_target, self_obj=data
-            )
-        else:
-            merged_kwargs = dict(data.kwargs)
+        )
+        actual_target = data.target if isinstance(data.target, type) else None
+        # Always prepared (even with no parent context) so own kwargs get
+        # scope tags, glob routing, and in-marker dotted-key expansion.
+        merged_kwargs = _prepare_kwargs(
+            target_name, data.kwargs, parent_context or {}, target=actual_target, self_obj=data
+        )
 
         # Splice this Fluid's prepared kwargs into its slot in parent_context to
         # preserve document order for downstream broadcasts.
+        self_key = None
         if parent_context:
             self_key = next((k for k, v in parent_context.items() if v is data), None)
-            child_ctx = _splice_kwargs_at_slot(parent_context, self_key, merged_kwargs, receiver_cls=data.target)
-        else:
-            child_ctx = dict(merged_kwargs)
-        resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
+        child_ctx = _splice_kwargs_at_slot(parent_context or {}, self_key, merged_kwargs, receiver_cls=data.target)
+        # Routing entries ('**'/'*' glob blocks, STRICT sub-blocks) are
+        # addressing metadata: they ride in child_ctx only, never into the
+        # marker's kwargs (→ ctor / post-init / dump / resolve() output).
+        resolved_kwargs = {
+            k: _flow_recursive(v, parent_context=child_ctx)
+            for k, v in merged_kwargs.items()
+            if not (_is_glob_key(k) or merged_kwargs.scope_of(k) is _KeyScope.STRICT)
+        }
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs
         if flow_memo is not None:
@@ -945,6 +1237,62 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     return obj
 
 
+def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
+    """Remove ``'*'``/``'**'`` glob blocks from ``merged``; return their scalar pool.
+
+    Direct-flow counterpart of the materialize path's glob handling for
+    hand-built markers: ``'**'`` contents additionally apply to the receiver
+    itself (gated by the accept-list and the NoBroadcast opt-outs, like bare
+    keys — zero-or-more levels includes the receiver); ``'*'`` contents only
+    feed the nested-Class pool (one level below = the marker's direct
+    children). Dict-valued contents are routing for deeper levels and stay
+    out of the pool (the nested-Class loop skips dicts anyway).
+    """
+    pool: Dict[str, Any] = {}
+    star = merged.pop("*", None)
+    if isinstance(star, dict):
+        pool.update({k: v for k, v in star.items() if not isinstance(v, dict)})
+    star2 = merged.pop("**", None)
+    if isinstance(star2, dict):
+        target_cls = target if isinstance(target, type) else None
+        acceptable = _get_acceptable_keys(target)
+        blocked = _broadcast_blocked_keys(target_cls)
+        for gk, gv in star2.items():
+            if isinstance(gv, dict):
+                continue
+            pool[gk] = gv
+            if gk in merged or blocked is None or gk in blocked:
+                continue
+            if acceptable is not None and gk not in acceptable:
+                continue
+            merged[gk] = gv
+    return pool
+
+
+def _broadcast_pool(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a context's ``'**'`` entry into the nested-Class broadcast pool.
+
+    The nested-Class broadcast loop in :func:`_resolve_kwarg_value` skips
+    dict/list values, so a ``'**'`` glob block at the top level of the active
+    context would be invisible to it; unroll its non-dict contents at the
+    block's document position (``'*'`` blocks are depth-addressed and stay
+    out — the recursive-descent path handles them).
+    """
+    if "**" not in ctx and "*" not in ctx:
+        return ctx
+    pool: Dict[str, Any] = {}
+    for k, v in ctx.items():
+        if k == "**" and isinstance(v, dict):
+            for gk, gv in v.items():
+                if not isinstance(gv, dict):
+                    pool[gk] = gv
+        elif k == "*" and isinstance(v, dict):
+            continue
+        else:
+            pool[k] = v
+    return pool
+
+
 def _flow_target(
     obj: Any,
     context: Optional[Dict[str, Any]],
@@ -964,6 +1312,13 @@ def _flow_target(
     merged: dict[str, Any] = dict(obj.kwargs)
     merged.update(runtime_kwargs)
 
+    # Glob routing keys ('*'/'**') are addressing metadata, never values.
+    # The materialize path strips them before markers reach flow(); a
+    # hand-built marker flowed directly still honours them here: '**'
+    # contents apply to the receiver (gated like bare keys) and both feed
+    # the nested-Class broadcast pool below.
+    glob_pool = _pop_glob_routing(merged, target)
+
     # Flow Instance values (instant), keep Class/Reference deferred for
     # configurable targets (which manually flow their kwargs with runtime
     # injection — e.g. ``configure_optimizers`` flows the optimizer Class
@@ -973,8 +1328,12 @@ def _flow_target(
     # would reach attribute hooks unconverted ("'Class' object has no
     # attribute 'setup'"). For those targets, eagerly materialize nested
     # Class fluids inside list/dict kwargs.
+    #
+    # The nested-Class broadcast pool is the ACTIVE context (bare root keys
+    # + '**' contents) — never the receiver's own kwargs (addressed keys do
+    # not cascade); without a context only the marker's own glob blocks feed it.
     is_configurable_target = bool(getattr(target, "__confluid_configurable__", False))
-    broadcast_ctx = context or merged
+    broadcast_ctx = _broadcast_pool(context) if context else glob_pool
     merged = {
         k: _resolve_kwarg_value(
             v, context=context, broadcast_ctx=broadcast_ctx, eager_classes=not is_configurable_target
@@ -1001,12 +1360,16 @@ def _flow_target(
     # transformed a param instead of storing it verbatim (eager classes).
     # This overwrites any capture the @configurable validation wrap stamped
     # during __init__ — deliberately: the resolved ctor dict is the richer
-    # value (live children, Lazy markers).
-    try:
-        instance.__confluid_class__ = target
-        instance.__confluid_kwargs__ = ctor
-    except (TypeError, AttributeError):
-        pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
+    # value (live children, Lazy markers). A capture=False class
+    # (__confluid_no_capture__) skips BOTH attrs together — they exist only
+    # for the dump round-trip, and __confluid_class__ without
+    # __confluid_kwargs__ would break the dumper's non-configurable branch.
+    if not getattr(target, "__confluid_no_capture__", False):
+        try:
+            instance.__confluid_class__ = target
+            instance.__confluid_kwargs__ = ctor
+        except (TypeError, AttributeError):
+            pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
 
     _apply_post_init_attrs(instance, target, merged, params)
     _broadcast_onto_instance(instance, params, ctor, context, broadcast_ctx)
@@ -1185,6 +1548,8 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], p
         return
     extra_keys: list[str] = []
     for k, v in merged.items():
+        if _is_glob_key(k):
+            continue  # glob routing metadata — never an attribute
         if params and k not in params:
             member = getattr(target, k, None)
             if isinstance(member, property) and member.fset is None:

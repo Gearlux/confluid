@@ -35,11 +35,16 @@ class ImpairmentsTxConfig: ...                # function of the constructor conf
 
 @configurable(eager=True)                     # __confluid_eager__: __init__ does real work
 class Resampler: ...                          # from its params (a plain Python class)
+
+@configurable(capture=False)                  # __confluid_no_capture__: ctor kwargs are NOT
+class Embedder: ...                           # captured — heavy args aren't kept alive
 ```
 
 `constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no sample input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `!class:` entry and rewire consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
 
 `eager=True` declares a plain-constructor class — see [Eager Classes](eager-classes.md). Its runtime effect: `configure()` warns when a constructor-param attribute is set post-construction (the `__init__` work will not re-run). Orthogonal to `random`/`constant`.
+
+`capture=False` disables the constructor-kwargs capture (`__confluid_kwargs__`) on both the direct-construction and YAML paths, so heavy, disposable constructor arguments are not held by reference for the instance lifetime — at the cost of dump fidelity for transformed params. See [Eager Classes → Opting out](eager-classes.md#opting-out-capturefalse).
 
 ## Schema & help extraction — one docstring, every GUI
 

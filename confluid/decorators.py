@@ -31,6 +31,7 @@ def configurable(
     constant: bool = False,
     eager: bool = False,
     broadcast: bool = True,
+    capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
@@ -51,6 +52,7 @@ def configurable(
     constant: bool = False,
     eager: bool = False,
     broadcast: bool = True,
+    capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
     display_name: Optional[str] = None,
@@ -120,6 +122,19 @@ def configurable(
             ``ClassName:`` / instance-name blocks and ``configure()`` still set
             attributes normally. The param-level counterpart is the
             ``NoBroadcast[T]`` annotation (``confluid.no_broadcast``).
+        capture: When ``False``, stamp ``__confluid_no_capture__`` on the
+            class: constructor kwargs are NOT captured into
+            ``__confluid_kwargs__`` — neither by the validation wrap on direct
+            Python construction nor by the engine's re-stamp on the YAML flow
+            path. Use it when constructor arguments are heavy, disposable
+            objects (a tensor, a loaded dataset) that ``__init__`` transforms
+            and that must not be kept alive by reference for the instance
+            lifetime. Trade-off: ``dump()`` loses its per-param fallback —
+            params the constructor transformed (not stored verbatim as
+            same-named attributes) are omitted from the dump, so a reload
+            restores their constructor defaults, and a transformed REQUIRED
+            param makes the dump non-reloadable. Inherited by subclasses. See
+            ``docs/eager-classes.md``.
         broadcast_attrs: Optional explicit declaration of post-init
             ``__init__``-body attribute names that must stay broadcastable.
             Stamped as ``__confluid_broadcast_attrs__`` (a tuple) and UNIONED
@@ -184,6 +199,7 @@ def configurable(
             strict_typing=strict_typing,
             display_name=display_name,
             no_broadcast=not broadcast,
+            no_capture=not capture,
             broadcast_attrs=broadcast_attrs,
         )
 
@@ -206,6 +222,7 @@ def register(
     role: Optional[str] = None,
     lazy: bool = False,
     eager: bool = False,
+    capture: bool = True,
 ) -> C:
     """Register a class OR callable (e.g. a third-party class or builder function) as configurable.
 
@@ -228,12 +245,25 @@ def register(
         eager: When ``True``, stamp ``__confluid_eager__`` — the constructor
             does real work from its params (a plain Python class). Enables the
             ``configure()`` staleness warning. See :func:`configurable`.
+        capture: When ``False``, stamp ``__confluid_no_capture__`` — the
+            engine's YAML-flow re-stamp skips the ctor-kwargs capture
+            (``__confluid_kwargs__``), so heavy/disposable constructor args are
+            not kept alive by reference. Costs dump fidelity for transformed
+            params. See :func:`configurable`.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
     # ``register_class`` stamps the discovery markers (incl. ``__confluid_lazy__``)
     # on the class — it tolerates immutable built-ins via try/except.
     get_registry().register_class(
-        cls, name=name, category=effective_category, group=group, task=task, role=role, lazy=lazy, eager=eager
+        cls,
+        name=name,
+        category=effective_category,
+        group=group,
+        task=task,
+        role=role,
+        lazy=lazy,
+        eager=eager,
+        no_capture=not capture,
     )
     return cls
 
@@ -337,7 +367,10 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
     live attribute and falls back to this capture). Notes: the capture runs
     even when validation mode is ``off``; values are held BY REFERENCE for
     the instance lifetime (the same lifetime a param-storing class gives
-    them); ``__slots__``/frozen instances that reject the setattr degrade
+    them) — ``@configurable(capture=False)`` (``__confluid_no_capture__``,
+    checked at call time so a later re-register is honored) skips the stamp
+    for classes whose ctor args are heavy and disposable;
+    ``__slots__``/frozen instances that reject the setattr degrade
     gracefully to the live-attribute dump heuristic; on the YAML path the
     engine re-stamps with the resolved ctor dict afterwards (last write wins).
 
@@ -390,7 +423,7 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
             if mode != "off":
                 validate_kwargs(cls, cleaned, mode)
         original_init(self, *args, **kwargs)
-        if cleaned is not None:
+        if cleaned is not None and not getattr(cls, "__confluid_no_capture__", False):
             # Capture the explicitly-passed ctor kwargs so dump() can
             # round-trip an eager class (see the function docstring). Stamped
             # AFTER the original __init__ so a same-named assignment in the
