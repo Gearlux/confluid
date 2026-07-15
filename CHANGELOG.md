@@ -166,6 +166,20 @@ _Nothing below has been published yet — no confluid release exists on PyPI. Th
 
 ### Changed
 
+- **`_View.copy()` / `_View.update()` preserve broadcast-scope tags.** The
+  engine's scoped-view dict subclass previously degraded to all-BARE on a
+  `copy()` (dict subclasses return a plain `dict`) — a latent silent-flattening
+  trap for addressed/glob keys. `copy()` now returns a `_View` carrying the
+  scope side-table, and `update()` applies last-write-wins to the tags (a
+  `_View` source carries its tag over; an untagged source key clears an
+  existing tag). Plain-dict syntax (`dict(view)` / `{**view}`) remains lossy
+  by nature — construct a `_View` instead.
+- **`**kwargs` constructors broadcast permissively — now documented and
+  traced.** A `**kwargs` catch-all makes a class's accept-list unknowable, and
+  confluid deliberately errs permissive: every bare / glob-delivered key
+  broadcasts into such instances. This behaviour is now documented
+  (`docs/broadcasting.md` → "Classes with `**kwargs` constructors", with the
+  opt-outs as remedies) and announced once per class at TRACE level.
 - **`Lazy[T]` and `Mandatory[T]` annotations are now typed:
   `Annotated[Union[T, Fluid], marker]`.** Subscript with the interface the
   slot eventually flows into — `optimizer: Lazy[Optimizer] = Class(Adam,
