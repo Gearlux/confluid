@@ -524,6 +524,14 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
             return None
         sig = inspect.signature(init_method)
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            # A **kwargs constructor makes the accept-list unknowable, and the
+            # gates treat ``None`` as accept-EVERYTHING: every bare top-level /
+            # glob-delivered key broadcasts into instances of this class. See
+            # docs/broadcasting.md → "Classes with **kwargs constructors".
+            logger.trace(
+                f"accept-list unknown for {cache_key} (**kwargs constructor) — "
+                f"bare broadcasts are unfiltered for this class"
+            )
             _acceptable_keys_cache[cache_key] = None
             return None
         keys.update(p for p in sig.parameters if p not in ("self", "cls"))
@@ -696,10 +704,13 @@ class _View(dict):
 
     A plain ``dict`` subclass so every existing ``isinstance`` / iteration /
     ``in`` / value-identity site keeps working; the ``scopes`` side-table
-    (missing key ⇒ ``BARE``) is what the scoping rules read. Only
-    view-CONSTRUCTION sites need to preserve tags — a ``dict(view)`` /
-    ``{**view}`` copy degrades to all-BARE, which is correct for the root
-    document but loses addressing info anywhere else.
+    (missing key ⇒ ``BARE``) is what the scoping rules read. The dict-API
+    surface preserves the tags — ``_View(view)``, ``view.copy()``, and
+    ``view.update(other_view)`` all carry the side-table — so engine code can
+    copy views without silently flattening addressing. The ONE remaining
+    degradation is a copy through plain-dict syntax (``dict(view)`` /
+    ``{**view}``), which yields an untagged dict (all-BARE): correct for the
+    root document, lossy anywhere else — construct a ``_View`` instead.
     """
 
     __slots__ = ("scopes",)
@@ -724,6 +735,38 @@ class _View(dict):
     def pop(self, key: str, *default: Any) -> Any:  # type: ignore[override]
         self.scopes.pop(key, None)
         return super().pop(key, *default)
+
+    def copy(self) -> "_View":
+        """A ``_View`` copy carrying the scope tags — ``dict.copy()`` on a
+        subclass returns a plain ``dict``, which would silently drop them."""
+        return _View(self)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        """``dict.update`` with last-write-wins on the scope tags.
+
+        Each updated key takes the SOURCE's scope: a ``_View`` source carries
+        its tag over; a plain-dict / iterable-of-pairs / keyword source is
+        untagged, so it CLEARS any existing tag (the key is now BARE) —
+        keeping the side-table consistent with the values under it.
+        """
+        if args and not isinstance(args[0], dict):
+            args = (list(args[0]), *args[1:])  # materialize a one-shot iterator
+        super().update(*args, **kwargs)
+        src = args[0] if args else None
+        if isinstance(src, _View):
+            for k in src:
+                if k in src.scopes:
+                    self.scopes[k] = src.scopes[k]
+                else:
+                    self.scopes.pop(k, None)
+        elif isinstance(src, dict):
+            for k in src:
+                self.scopes.pop(k, None)
+        elif src is not None:
+            for k, _ in src:
+                self.scopes.pop(k, None)
+        for k in kwargs:
+            self.scopes.pop(k, None)
 
 
 def _scope_of(view: Any, key: str) -> _KeyScope:

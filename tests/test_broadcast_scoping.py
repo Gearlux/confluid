@@ -588,3 +588,111 @@ group:
     node = flow(result["group"]["node"])
     assert node.lr == 0.4
     assert node.child.lr == 0.4
+
+
+# ---------------------------------------------------------------------------
+# _View copy/update preserve the scope side-table (the silent-flattening trap)
+# ---------------------------------------------------------------------------
+
+
+def test_view_copy_returns_view_with_scopes() -> None:
+    """``view.copy()`` must return a ``_View`` carrying the tags — ``dict.copy()``
+    on a subclass returns a plain ``dict``, which would silently flatten every
+    addressed/glob key to BARE."""
+    from confluid.engine import _KeyScope, _View
+
+    v = _View({"a": 1})
+    v.set("b", 2, _KeyScope.EXACT)
+    v.set("c", 3, _KeyScope.ADDRESSED)
+
+    c = v.copy()
+    assert isinstance(c, _View)
+    assert c == {"a": 1, "b": 2, "c": 3}
+    assert c.scope_of("a") is _KeyScope.BARE
+    assert c.scope_of("b") is _KeyScope.EXACT
+    assert c.scope_of("c") is _KeyScope.ADDRESSED
+    # Independent side-table — mutating the copy never touches the original.
+    c.set("b", 9, _KeyScope.STRICT)
+    assert v.scope_of("b") is _KeyScope.EXACT
+
+
+def test_view_update_last_write_wins_on_scopes() -> None:
+    """``update()`` takes each key's scope FROM THE SOURCE: a ``_View`` source
+    carries its tag over, and an untagged source key CLEARS an existing tag
+    (the value was overwritten, so the stale tag must not survive)."""
+    from confluid.engine import _KeyScope, _View
+
+    v = _View()
+    v.set("kept", 1, _KeyScope.EXACT)
+    v.set("retagged", 2, _KeyScope.EXACT)
+    v.set("cleared", 3, _KeyScope.EXACT)
+
+    src = _View()
+    src.set("retagged", 20, _KeyScope.STRICT)
+    src["cleared"] = 30  # untagged (BARE) in the source
+
+    v.update(src)
+    assert v.scope_of("kept") is _KeyScope.EXACT  # untouched key keeps its tag
+    assert v.scope_of("retagged") is _KeyScope.STRICT
+    assert v.scope_of("cleared") is _KeyScope.BARE
+    assert v == {"kept": 1, "retagged": 20, "cleared": 30}
+
+
+def test_view_update_from_plain_sources_clears_tags() -> None:
+    """A plain-dict / iterable-of-pairs / keyword source is untagged, so the
+    updated keys become BARE."""
+    from confluid.engine import _KeyScope, _View
+
+    v = _View()
+    v.set("a", 1, _KeyScope.EXACT)
+    v.set("b", 2, _KeyScope.EXACT)
+    v.set("c", 3, _KeyScope.EXACT)
+
+    v.update({"a": 10})
+    v.update(iter([("b", 20)]))  # one-shot iterator source
+    v.update(c=30)
+    assert v == {"a": 10, "b": 20, "c": 30}
+    assert all(v.scope_of(k) is _KeyScope.BARE for k in ("a", "b", "c"))
+
+
+# ---------------------------------------------------------------------------
+# **kwargs constructors: unknowable accept-list -> permissive broadcasting
+# ---------------------------------------------------------------------------
+
+
+def test_var_keyword_class_receives_every_bare_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``**kwargs`` constructor makes the accept-list ``None`` (unknowable),
+    which the gates treat as accept-EVERYTHING — every bare top-level key
+    broadcasts in. The permissive path announces itself once at TRACE."""
+    from types import SimpleNamespace
+
+    import confluid.engine as engine_module
+
+    traces: List[str] = []
+    real_logger = engine_module.logger
+    monkeypatch.setattr(
+        engine_module,
+        "logger",
+        SimpleNamespace(
+            trace=lambda msg: traces.append(msg),
+            debug=real_logger.debug,
+            warning=real_logger.warning,
+        ),
+    )
+    engine_module._acceptable_keys_cache.clear()
+
+    @configurable(validate=False)
+    class _CatchAll:
+        def __init__(self, **kwargs: Any) -> None:
+            self.options = dict(kwargs)
+
+    graph = load(
+        """
+sink: !class:_CatchAll()
+name: run-42
+strength: 0.75
+"""
+    )
+    sink = graph["sink"]
+    assert sink.name == "run-42" and sink.strength == 0.75
+    assert any("accept-list unknown" in msg and "_CatchAll" in msg for msg in traces)

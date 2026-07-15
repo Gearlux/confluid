@@ -2,9 +2,10 @@
 
 Shows a bare top-level key landing on every accepting sibling (document order,
 last write wins), addressed keys stopping exactly at their node, the ``*`` /
-``**`` glob forms opting back into the cascade, and both opt-outs: the
-param-level ``NoBroadcast[str]`` marker and the class-level
-``@configurable(broadcast=False)``.
+``**`` glob forms opting back into the cascade, both opt-outs (the param-level
+``NoBroadcast[str]`` marker and the class-level
+``@configurable(broadcast=False)``), and the ``**kwargs``-constructor caveat
+(an unknowable accept-list broadcasts permissively).
 """
 
 from typing import Any, Optional
@@ -69,6 +70,7 @@ Reporter:
     print(f"Addressed Reporter block still applies: strength={addressed['reporter'].strength}")
 
     scoped_broadcasting()
+    kwargs_catch_all()
 
 
 @configurable
@@ -108,6 +110,38 @@ def scoped_broadcasting() -> None:
     assert lrs("trainer.*.lr: 0.5\n") == (0.0, 0.5, 0.0), "'*' = exactly one level (direct children)"
     assert lrs("trainer.**.lr: 0.5\n") == (0.5, 0.5, 0.5), "'**' = zero or more levels (declare-once)"
     print("Scoped broadcasting: bare=(tree)  trainer.lr=(exact)  trainer.*.lr=(children)  trainer.**.lr=(subtree)")
+
+
+@configurable(validate=False)
+class Passthrough:
+    def __init__(self, **kwargs: Any) -> None:
+        """A ``**kwargs`` catch-all constructor — the accept-list is unknowable.
+
+        Args:
+            kwargs: Arbitrary options, stored verbatim.
+        """
+        self.options = dict(kwargs)
+
+
+def kwargs_catch_all() -> None:
+    """A ``**kwargs`` constructor broadcasts PERMISSIVELY — every bare key lands.
+
+    Confluid cannot enumerate such a class's parameters, so it errs permissive
+    (accept-everything) and announces it once per class at TRACE level. Use
+    ``@configurable(broadcast=False)`` or explicit parameters when that soaks
+    up keys you did not intend (docs/broadcasting.md → "Classes with
+    ``**kwargs`` constructors").
+    """
+    graph = load(
+        """
+sink: !class:Passthrough()
+name: run-42
+strength: 0.75
+"""
+    )
+    sink = graph["sink"]
+    assert sink.name == "run-42" and sink.strength == 0.75, "every bare key broadcast in"
+    print(f"Passthrough (**kwargs): received name={sink.name!r} strength={sink.strength} (unfiltered)")
 
 
 if __name__ == "__main__":

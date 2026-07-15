@@ -96,6 +96,31 @@ key with its receiver and origin, plus failed and unused keys — see
 `ConfigurationReport`, and `collect_report()` collects one across a
 `load()` / `materialize()` pass.
 
+## Classes with `**kwargs` constructors
+
+Broadcasting filters cascade keys through each receiver's *accept-list* — the
+set of constructor parameters (plus configurable attributes) the class
+declares. A constructor with a `**kwargs` catch-all makes that list
+**unknowable**, and confluid deliberately errs permissive: the accept-list is
+treated as "accepts everything", so **every** bare top-level key (and every
+`*`/`**` glob-delivered key) broadcasts into instances of such a class:
+
+```python
+@configurable
+class Passthrough:
+    def __init__(self, **kwargs):   # accept-list unknowable
+        self.options = kwargs
+
+# name: "x" / lr: 0.1 / ANY other bare top-level key now lands on Passthrough
+```
+
+If that soaks up keys you didn't intend, the opt-outs above are the fix:
+`@configurable(broadcast=False)` shields the whole class from cascade keys
+(addressed blocks still work), or declare the real parameters explicitly so
+the accept-list exists. The permissive path announces itself once per class at
+TRACE level (`accept-list unknown for <Class> (**kwargs constructor)` — see
+the trace-logging snippet above).
+
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 
 Broadcasting discovers post-init body attributes (`self.loss_fn = …` inside
