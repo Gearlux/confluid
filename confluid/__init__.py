@@ -38,7 +38,7 @@ from confluid.fluid import Lazy as LazyClass
 from confluid.fluid import Reference, format_yaml_loc
 from confluid.lazy import Lazy, lazy_param_names
 from confluid.llm_schema import sanitize_schema
-from confluid.loader import load, load_config, load_config_with_paths
+from confluid.loader import get_app_name, load, load_config, load_config_with_paths, resolve_config_path, set_app_name
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
@@ -79,6 +79,9 @@ __all__ = [
     "load",
     "load_config",
     "load_config_with_paths",
+    "resolve_config_path",
+    "set_app_name",
+    "get_app_name",
     "materialize",
     "resolve",
     "active_context",

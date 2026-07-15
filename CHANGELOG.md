@@ -8,6 +8,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **XDG config-file search paths.** A relative path handed to `load()` /
+  `load_config()` — and every relative `include:` entry — now resolves
+  through ordered tiers, local first, XDG last: the including file's
+  directory (includes only) → CWD → `./config/` → `$XDG_CONFIG_HOME`
+  (default `~/.config`) → each `$XDG_CONFIG_DIRS` entry (default
+  `/etc/xdg`). Under each XDG base dir the lookup is namespaced by the new
+  process-wide app name (`set_app_name("my-app")` → `<base>/my-app/` then
+  `<base>/confluid/`; unset → the bare base dir). New public API:
+  `resolve_config_path`, `set_app_name`, `get_app_name`. Absolute paths are
+  used verbatim; a total miss raises `ConfigFileNotFoundError` listing every
+  searched location. `load_config_with_paths` records the resolved (possibly
+  XDG) files. See `docs/search-paths.md`.
+
 - **Configuration reports — applied / failed / unused override tracking.**
   `configure()` / `configure_from_file()` now return a `ConfigurationReport`
   (previously `None`): one `applied` record per attribute per object (the
