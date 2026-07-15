@@ -114,8 +114,58 @@ def test_is_mandatory_annotation_and_param_names() -> None:
 
     assert mandatory_param_names(Runner) == {"model"}
     # The marker is detected on the raw annotation form.
-    assert is_mandatory_annotation(Mandatory[int]) is True
+    assert is_mandatory_annotation(Mandatory[int]) is True  # type: ignore[misc]
     assert is_mandatory_annotation(int) is False
+
+
+def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
+    """``Mandatory[T]`` == ``Annotated[Union[T, Fluid], marker]`` — the typed form
+    admits a deferred ``Class(...)`` default under strict mypy (no ignore needed:
+    that absence is the static pin, like the ``Lazy`` twin)."""
+    from typing import get_args
+
+    from confluid import Class
+    from confluid.fluid import Fluid
+
+    class Base:
+        pass
+
+    class Impl(Base):
+        pass
+
+    ann = Mandatory[Base]  # type: ignore[misc]
+    assert get_args(ann)[0] == Union[Base, Fluid]
+
+    class Runner:
+        def __init__(self, model: Mandatory[Base] = Class(Impl)) -> None:
+            self.model = model
+
+    assert mandatory_param_names(Runner) == {"model"}
+    specs = {s["name"]: s for s in input_specs(Runner)}
+    assert specs["model"]["required"] is True
+
+
+def test_marker_composition_detected_in_both_orders() -> None:
+    """``Mandatory[Lazy[T]]`` AND ``Lazy[Mandatory[T]]`` carry both markers — the
+    union-carrying aliases bury the inner marker in a Union arm, so detection
+    walks nested Annotated/Union layers (``annotation_has_marker``)."""
+    from confluid import Class, Lazy
+    from confluid.lazy import lazy_param_names
+
+    class Dep:
+        pass
+
+    class Runner:
+        def __init__(
+            self,
+            a: Mandatory[Lazy[Dep]] = Class(Dep),
+            b: Lazy[Mandatory[Dep]] = Class(Dep),
+        ) -> None:
+            self.a = a
+            self.b = b
+
+    assert mandatory_param_names(Runner) == {"a", "b"}
+    assert lazy_param_names(Runner) == {"a", "b"}
 
 
 def test_input_specs_three_way_required_and_nullable() -> None:

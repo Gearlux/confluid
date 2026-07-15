@@ -26,9 +26,17 @@ Type-checkers see ``NoBroadcast[T]`` as ``T`` — the marker only affects runtim
 inspection (see :func:`is_no_broadcast_annotation`). It mirrors
 :data:`confluid.Lazy` / :data:`confluid.Mandatory` in shape and composes with
 them; ``to_pydantic`` strips it so it never leaks into JSON schemas.
+
+Unlike ``Lazy[T]`` / ``Mandatory[T]``, this alias deliberately does NOT union a
+``Fluid`` arm into ``T``: those two mark *dependency* slots (which legitimately
+hold a deferred ``Fluid`` stub pre-flow), whereas ``NoBroadcast`` is a routing
+gate for generically-NAMED scalar knobs (``name``, ``path``, ``size``) whose
+values are plain scalars — a ``Fluid`` arm would misdescribe them.
 """
 
 from typing import Annotated, Any, FrozenSet, TypeVar, get_type_hints
+
+from confluid.introspect import annotation_has_marker
 
 T = TypeVar("T")
 
@@ -38,13 +46,15 @@ NoBroadcast = Annotated[T, _NO_BROADCAST_MARKER]
 """Type alias: ``NoBroadcast[T]`` is ``Annotated[T, _NO_BROADCAST_MARKER]``.
 
 Type-checkers see ``NoBroadcast[T]`` as ``T``; the marker only affects runtime
-inspection (see :func:`is_no_broadcast_annotation`).
+inspection (see :func:`is_no_broadcast_annotation`). No ``Fluid`` union arm —
+see the module docstring for why this deliberately differs from ``Lazy`` /
+``Mandatory``.
 """
 
 
 def is_no_broadcast_annotation(annotation: Any) -> bool:
-    """True iff ``annotation`` was declared with ``NoBroadcast[...]``."""
-    return _NO_BROADCAST_MARKER in getattr(annotation, "__metadata__", ())
+    """True iff ``annotation`` was declared with ``NoBroadcast[...]`` — at any wrapper depth."""
+    return annotation_has_marker(annotation, _NO_BROADCAST_MARKER)
 
 
 def no_broadcast_param_names(cls: Any) -> FrozenSet[str]:

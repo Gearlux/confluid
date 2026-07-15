@@ -194,21 +194,30 @@ argument. A `Lazy` is *never* auto-flowed by anything; only an explicit
 `Class` / `Instance` default in that slot alone:
 
 ```python
-from typing import Any
+from torch.optim import Adam, Optimizer
+
 from confluid import Class, configurable, flow
-from confluid.lazy import Lazy   # Lazy[T] == Annotated[T, <marker>]
+from confluid.lazy import Lazy   # Lazy[T] == Annotated[Union[T, Fluid], <marker>]
 
 @configurable
 class Trainer:
-    def __init__(self, optimizer: Lazy[Any] = Class(Adam, lr=1e-3)):
+    def __init__(self, optimizer: Lazy[Optimizer] = Class(Adam, lr=1e-3)):
         self.optimizer = optimizer           # auto-flow walkers skip this slot
     def configure_optimizers(self):
         return flow(self.optimizer, params=self.parameters())
 ```
 
-`Lazy[T]` reads as plain `T` to type-checkers; the marker is runtime-only and is
-discovered via `lazy_param_names(cls)`. It is the Python-annotation twin of the
-YAML `!lazy:` tag: **the tag defers a *value*, the annotation defers a *slot*.**
+Subscript with the **interface the slot eventually flows into** — the abstract
+base (`Lazy[Optimizer]`), not the concrete default (`Lazy[Adam]`). Because
+`Lazy[T]` expands to `Union[T, Fluid]`, the annotation is honest to strict type
+checkers about *both* states of the slot: pre-flow it holds a deferred `Fluid`
+stub (so the `Class(Adam, …)` default type-checks — a `Class` *is* a `Fluid`),
+and any live `Optimizer` also satisfies it. `Lazy[Any]` remains valid when the
+target type is genuinely open. To narrow the flowed result for a type-checker,
+use `cast(node, Optimizer)` (confluid's typed `flow`). The marker itself is
+runtime-only and is discovered via `lazy_param_names(cls)`. `Lazy[T]` is the
+Python-annotation twin of the YAML `!lazy:` tag: **the tag defers a *value*,
+the annotation defers a *slot*.**
 
 ## `!ref:` vs `!clone:` — shared instance vs. deep copy
 

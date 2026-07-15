@@ -117,6 +117,27 @@ def test_configure_respects_marker_and_class_flag() -> None:
     assert o.size == 42
 
 
+def test_no_broadcast_alias_has_no_fluid_arm() -> None:
+    """Deliberate asymmetry with Lazy/Mandatory: NoBroadcast is a routing gate for
+    generically-named SCALAR knobs, so its alias stays ``Annotated[T, marker]`` —
+    no ``Union[..., Fluid]`` arm (which would misdescribe a plain scalar)."""
+    from typing import get_args
+
+    from confluid import NoBroadcast
+
+    ann = NoBroadcast[str]  # type: ignore[misc]
+    assert get_args(ann)[0] is str
+
+
+def test_no_broadcast_detected_inside_union_carrying_marker() -> None:
+    """``Mandatory[NoBroadcast[T]]``-style composition: the NoBroadcast marker sits
+    inside Mandatory's Union arm and is still detected (recursive walk)."""
+    from confluid import Mandatory, NoBroadcast
+    from confluid.no_broadcast import is_no_broadcast_annotation
+
+    assert is_no_broadcast_annotation(Mandatory[NoBroadcast[str]]) is True  # type: ignore[misc]
+
+
 def test_to_pydantic_strips_marker_but_keeps_field() -> None:
     from confluid import to_pydantic
 

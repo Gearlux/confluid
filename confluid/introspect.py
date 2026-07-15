@@ -35,7 +35,8 @@ import ast
 import importlib
 import inspect
 import textwrap
-from typing import Any, Dict, Literal, NamedTuple, Optional, Set, Tuple
+import types
+from typing import Annotated, Any, Dict, Literal, NamedTuple, Optional, Set, Tuple, Union, get_args, get_origin
 
 SlotKind = Literal["assign", "annassign", "augassign", "setattr"]
 
@@ -235,6 +236,29 @@ def _is_lazy_call(value: Any) -> bool:
     func = value.func
     name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
     return name in ("LazyClass", "Lazy")
+
+
+def annotation_has_marker(annotation: Any, marker: str) -> bool:
+    """True iff ``marker`` appears in the annotation's ``Annotated`` metadata — at any wrapper depth.
+
+    The ONE detection rule behind ``is_lazy_annotation`` / ``is_mandatory_annotation`` /
+    ``is_no_broadcast_annotation``. Directly-nested ``Annotated`` layers flatten their
+    metadata (``Mandatory[Lazy[T]]`` carries both markers at the top), but a ``Union``
+    arm does NOT — and since ``Lazy[T]`` / ``Mandatory[T]`` expand to
+    ``Annotated[Union[T, Fluid], marker]``, composed spellings bury the inner marker
+    inside a Union arm. This helper therefore also walks ``Union`` arms (PEP 604
+    included) and ``Annotated`` payloads, so every composition order — and the natural
+    ``Optional[Lazy[T]] = None`` spelling — is detected. It deliberately does NOT
+    recurse into other generics (``List[Lazy[T]]`` marks the ELEMENT, not the param).
+    """
+    if marker in getattr(annotation, "__metadata__", ()):
+        return True
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return annotation_has_marker(get_args(annotation)[0], marker)
+    if origin is Union or origin is types.UnionType:
+        return any(annotation_has_marker(arm, marker) for arm in get_args(annotation))
+    return False
 
 
 # NOTE — a shared "ctor params minus self/cls" helper was CONSIDERED here and

@@ -45,10 +45,18 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from confluid.exceptions import IntrospectionError
 from confluid.introspect import init_lazy_setattr_names, scan_init_body
-from confluid.lazy import is_lazy_annotation
+from confluid.lazy import _LAZY_MARKER, is_lazy_annotation
+from confluid.mandatory import _MANDATORY_MARKER
+from confluid.no_broadcast import _NO_BROADCAST_MARKER
 from confluid.schema import _parse_docstring
 
 _SKIP_PARAMS = {"self", "cls", "args", "kwargs"}
+
+# Confluid's own annotation markers — stripped wherever ``Annotated`` metadata is
+# peeled so none of them leaks into a generated model / JSON schema. (``Lazy`` is
+# recorded separately via ``_confluid_lazy_params``; ``Mandatory`` via
+# ``confluid.input_specs``; ``NoBroadcast`` is a broadcast-routing concern.)
+_INTERNAL_MARKERS = {_LAZY_MARKER, _MANDATORY_MARKER, _NO_BROADCAST_MARKER}
 
 # Numeric range marks (PEP-593 ``annotated_types``) the workspace convention puts
 # on the OUTER annotation of a ``(min, max)`` container param — see
@@ -147,11 +155,35 @@ def _unwrap_annotated(anno: Any) -> Any:
 def _convert_annotation(anno: Any) -> Any:
     """Recursively replace ``@configurable`` types inside ``anno`` with generated models.
 
+    A NESTED ``Annotated`` (a Union arm, a container element — e.g. the
+    ``Annotated[float, Interval]`` arm inside ``Mandatory[DbPower]``, whose alias
+    expands to ``Annotated[Union[Annotated[float, Interval], Fluid], marker]``)
+    keeps its non-marker metadata: confluid's internal markers are stripped, the
+    payload is converted, and the surviving metadata (range marks, ``Field``
+    constraints) is re-wrapped — so code-side tightening reaches the schema even
+    when a union-carrying marker alias prevents ``Annotated`` flattening.
+    Container range marks relocate element-wise exactly like the field-level path.
+    """
+    metadata: Tuple[Any, ...] = ()
+    while get_origin(anno) is Annotated:
+        args = get_args(anno)
+        anno = args[0]
+        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m in _INTERNAL_MARKERS))
+    converted = _convert_annotation_unwrapped(anno)
+    if not metadata:
+        return converted
+    converted, metadata = _spread_range_marks_into_container(converted, metadata)
+    return Annotated[(converted, *metadata)] if metadata else converted
+
+
+def _convert_annotation_unwrapped(anno: Any) -> Any:
+    """The conversion body behind :func:`_convert_annotation` — ``anno`` is already peeled.
+
     Leaves typing constructs intact (``Optional``, ``Union``, ``List``,
-    ``Dict``, ``Tuple``, ``Literal``, etc.) but recurses into their type args.
+    ``Dict``, ``Tuple``, ``Literal``, etc.) but recurses into their type args
+    (via :func:`_convert_annotation`, so nested metadata is preserved).
     Unknown / opaque types are returned as-is.
     """
-    anno = _unwrap_annotated(anno)
 
     # Plain Any / no annotation
     if anno is Any or anno is None or anno is type(None):
@@ -275,25 +307,14 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     ``gt`` / ``le`` / ``Literal`` refinements a source class declares on its
     ``__init__`` params) so code-side tightening survives into the generated
     schema — while still converting the INNER type so nested ``@configurable``
-    detection works. Confluid's own ``Lazy`` / ``Mandatory`` markers are dropped
-    (``Lazy`` is recorded separately via ``_confluid_lazy_params``; ``Mandatory``
-    via :func:`confluid.input_specs`) so neither leaks into the JSON Schema.
+    detection works. Confluid's own ``Lazy`` / ``Mandatory`` / ``NoBroadcast``
+    markers are dropped (``Lazy`` is recorded separately via
+    ``_confluid_lazy_params``; ``Mandatory`` via :func:`confluid.input_specs`)
+    so none leaks into the JSON Schema. The peel / marker-strip / range-mark
+    relocation all live in :func:`_convert_annotation`, which handles nested
+    ``Annotated`` layers identically.
     """
-    from confluid.lazy import _LAZY_MARKER
-    from confluid.mandatory import _MANDATORY_MARKER
-    from confluid.no_broadcast import _NO_BROADCAST_MARKER
-
-    internal_markers = {_LAZY_MARKER, _MANDATORY_MARKER, _NO_BROADCAST_MARKER}
-    metadata: Tuple[Any, ...] = ()
-    inner = anno
-    while get_origin(inner) is Annotated:
-        args = get_args(inner)
-        inner = args[0]
-        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m in internal_markers))
-
-    converted_inner = _convert_annotation(inner)
-    converted_inner, metadata = _spread_range_marks_into_container(converted_inner, metadata)
-    converted_type = Annotated[(converted_inner, *metadata)] if metadata else converted_inner
+    converted_type = _convert_annotation(anno)
     desc_kw: Dict[str, Any] = {"description": description} if description else {}
 
     if param.default is inspect.Parameter.empty:

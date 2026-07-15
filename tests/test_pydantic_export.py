@@ -20,7 +20,8 @@ from typing import Any, Dict, Generic, List, Literal, Optional, Tuple, TypeVar, 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from confluid import configurable, confluid_class_of, get_registry, to_pydantic
+from confluid import LazyClass, configurable, confluid_class_of, get_registry, to_pydantic
+from confluid.fluid import Fluid
 from confluid.lazy import Lazy
 from confluid.pydantic_export import _convert_annotation, _qualname, lazy_param_names_of
 
@@ -292,13 +293,76 @@ def test_lazy_annotation_is_unwrapped_and_recorded() -> None:
             self.optimizer = optimizer
 
     Model = to_pydantic(HasOptim)
-    # The Lazy wrapper is stripped from the field type (pydantic sees Any).
+    # The Lazy marker is stripped from the field type; the alias's honest
+    # ``Union[T, Fluid]`` shape survives (the Fluid arm gains its generated
+    # mirror per the configurable-union rule).
     field = Model.model_fields["optimizer"]
-    # Any/None are both acceptable here; we just want no Annotated wrapper.
-    assert field.annotation in (Any, type(None), Optional[Any], Union[Any, None])
+    assert getattr(field.annotation, "__metadata__", ()) == ()  # no Annotated wrapper
+    assert Fluid in get_args(field.annotation)
     # The lazy marker is recorded on the generated model.
     assert "optimizer" in lazy_param_names_of(Model)
     assert "optimizer" in lazy_param_names_of(Model())
+
+
+def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
+    @configurable
+    class Leaf:
+        def __init__(self, n: int = 1) -> None:
+            self.n = n
+
+    @configurable
+    class HasTyped:
+        def __init__(self, dep: Lazy[Leaf] = LazyClass(Leaf, n=2)) -> None:
+            self.dep = dep
+
+    Model = to_pydantic(HasTyped)
+    # All three legal runtime forms validate: a deferred Fluid, a live
+    # instance of T, and the generated config mirror.
+    Model(dep=LazyClass(Leaf, n=3))
+    Model(dep=Leaf(n=4))
+    Model(dep=to_pydantic(Leaf)(n=5))
+    # The marker never leaks into the JSON schema, which stays generable.
+    schema = Model.model_json_schema()
+    assert "__confluid_lazy__" not in str(schema)
+    assert "dep" in lazy_param_names_of(Model)
+
+
+def test_range_marks_survive_inside_marker_union_arms() -> None:
+    """A range mark composed with a union-carrying marker alias (``Mandatory[DbPower]``,
+    where the Interval sits on a Union ARM instead of flattening to the top) still
+    reaches the pydantic model: schema bounds present, out-of-range rejected, and a
+    marked ``(min, max)`` CONTAINER arm relocates element-wise."""
+    from typing import Annotated
+
+    from annotated_types import Interval
+
+    from confluid import Mandatory
+
+    DbPower = Annotated[float, Interval(ge=-200.0, le=50.0)]
+    WattRange = Annotated[Tuple[float, float], Interval(ge=0.0)]
+
+    @configurable
+    class Marked:
+        def __init__(
+            self,
+            power: Mandatory[DbPower] = -30.0,
+            rng: Mandatory[WattRange] = (0.0, 1.0),
+        ) -> None:
+            self.power = power
+            self.rng = rng
+
+    Model = to_pydantic(Marked)
+    schema = Model.model_json_schema()
+    power_arms = schema["properties"]["power"]["anyOf"]
+    numeric_arm = next(a for a in power_arms if a.get("type") == "number")
+    assert (numeric_arm["minimum"], numeric_arm["maximum"]) == (-200.0, 50.0)
+    rng_arm = next(a for a in schema["properties"]["rng"]["anyOf"] if a.get("type") == "array")
+    assert all(item["minimum"] == 0.0 for item in rng_arm["prefixItems"])
+    Model(power=-100.0)
+    with pytest.raises(ValidationError):
+        Model(power=99.0)
+    with pytest.raises(ValidationError):
+        Model(rng=(-1.0, 1.0))
 
 
 def test_no_lazy_params_means_empty_set() -> None:

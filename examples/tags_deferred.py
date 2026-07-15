@@ -2,12 +2,13 @@
 
 Covers the tag family end-to-end: ``!class:Name`` (deferred ``Class`` stub) vs
 ``!class:Name(...)`` (eager ``Instance``), ``!lazy:`` + ``flow()`` runtime injection,
-and ``!ref:`` (shared instance) vs ``!clone:`` (deep copy).
+the Python-side ``Lazy[T]`` annotation (typed with the interface the slot flows
+into), and ``!ref:`` (shared instance) vs ``!clone:`` (deep copy).
 """
 
 from typing import Optional
 
-from confluid import Class, configurable, flow, load
+from confluid import Class, Lazy, configurable, flow, load
 
 
 @configurable
@@ -66,6 +67,26 @@ ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
     assert isinstance(injected, Engine)
     assert (injected.cylinders, injected.fuel) == (6, "diesel")
     print(f"!lazy: built with runtime kwarg: {injected.cylinders} cylinders on {injected.fuel}")
+
+    # --- Lazy[T] annotation: the slot is typed with the INTERFACE it flows into ---------
+    # Lazy[Engine] == Annotated[Union[Engine, Fluid], marker]: the Class(...) default
+    # type-checks (a Class IS a Fluid), auto-flow walkers leave the slot deferred,
+    # and the subscript documents what an explicit flow() eventually builds.
+    @configurable
+    class Garage:
+        def __init__(self, spare: Lazy[Engine] = Class(Engine, cylinders=3)) -> None:
+            """A garage holding a deferred spare-engine template.
+
+            Args:
+                spare: Deferred engine template, flowed on demand.
+            """
+            self.spare = spare
+
+    garage = Garage()
+    assert isinstance(garage.spare, Class), "Lazy slot stays a deferred stub"
+    spare = flow(garage.spare, fuel="e85")  # runtime kwarg injected at flow time
+    assert isinstance(spare, Engine) and (spare.cylinders, spare.fuel) == (3, "e85")
+    print(f"Lazy[Engine] slot flowed on demand: {spare.cylinders} cylinders on {spare.fuel}")
 
     # --- !ref: vs !clone: shared identity vs deep copy ----------------------------------
     identity = load(
