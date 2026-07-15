@@ -41,3 +41,15 @@ def _registry_isolation() -> Iterator[None]:
             index = getattr(reg, name)
             index.clear()
             index.update(value)
+
+
+@pytest.fixture(autouse=True)
+def _app_name_isolation() -> Iterator[None]:
+    """Restore the XDG-lookup app name (another process-global) after every test."""
+    from confluid import get_app_name, set_app_name
+
+    saved = get_app_name()
+    try:
+        yield
+    finally:
+        set_app_name(saved)

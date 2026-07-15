@@ -1,4 +1,5 @@
 import importlib
+import os
 import re
 from contextvars import ContextVar
 from pathlib import Path
@@ -17,6 +18,86 @@ logger = get_logger("confluid.loader")
 # Per-context include accumulator (a YAML-side concern — deliberately NOT on
 # the engine's _ENGINE_STATE): populated only inside load_config_with_paths.
 _INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
+
+
+# Process-wide application identity for the XDG search path (see
+# resolve_config_path). A plain module global — like validation's policy, the
+# app name is the same for every load in the process, unlike the per-context
+# include accumulator above.
+_APP_NAME: Optional[str] = None
+
+
+def set_app_name(name: Optional[str]) -> None:
+    """Set the application name used for XDG config-file lookup.
+
+    With an app name configured, :func:`resolve_config_path` searches
+    ``<xdg-base>/<app_name>/`` then ``<xdg-base>/confluid/`` under each XDG
+    base directory; without one it searches the bare base directory. A CLI
+    framework typically calls this once at startup with its application
+    name. Pass ``None`` to reset.
+    """
+    global _APP_NAME
+    _APP_NAME = name
+
+
+def get_app_name() -> Optional[str]:
+    """Return the application name set via :func:`set_app_name`, or ``None``."""
+    return _APP_NAME
+
+
+def _xdg_base_dirs() -> List[Path]:
+    """XDG base directories: ``$XDG_CONFIG_HOME`` then each ``$XDG_CONFIG_DIRS`` entry.
+
+    Defaults per the XDG Base Directory spec (``~/.config`` and ``/etc/xdg``);
+    an EMPTY env var is treated as unset, also per the spec.
+    """
+    dirs = [Path(os.getenv("XDG_CONFIG_HOME") or "~/.config").expanduser()]
+    for entry in (os.getenv("XDG_CONFIG_DIRS") or "/etc/xdg").split(":"):
+        if entry:
+            dirs.append(Path(entry).expanduser())
+    return dirs
+
+
+def _search_candidates(rel: Path, base_dir: Optional[Path]) -> List[Path]:
+    """Ordered candidate locations for a RELATIVE config path.
+
+    Local tiers first (a local file always wins over an XDG one), XDG last:
+    ``base_dir`` (the including file's directory, include-resolution only) →
+    CWD → ``CWD/config`` → the XDG base dirs. Under each XDG base dir the
+    app-name subdirectory is tried before the ``confluid`` one; with no app
+    name configured the bare base dir is searched instead.
+    """
+    candidates: List[Path] = []
+    if base_dir is not None:
+        candidates.append(base_dir / rel)
+    candidates.append(Path.cwd() / rel)
+    candidates.append(Path.cwd() / "config" / rel)
+    for base in _xdg_base_dirs():
+        if _APP_NAME:
+            candidates.append(base / _APP_NAME / rel)
+            candidates.append(base / "confluid" / rel)
+        else:
+            candidates.append(base / rel)
+    return candidates
+
+
+def resolve_config_path(path: Union[str, Path], *, base_dir: Optional[Path] = None) -> Path:
+    """Resolve a config-file path through the search tiers (XDG last).
+
+    An absolute path — or a relative one that exists as given — is returned
+    unchanged. Otherwise the first EXISTING candidate from
+    :func:`_search_candidates` wins. On a total miss the path is returned
+    as given, so the caller's normal not-found handling fires.
+    """
+    rel = Path(path)
+    if rel.is_absolute():
+        return rel
+    for candidate in _search_candidates(rel, base_dir):
+        if candidate.exists():
+            if candidate != rel and candidate != Path.cwd() / rel:
+                logger.debug(f"resolved config path {str(rel)!r} -> {candidate}")
+            return candidate
+    return rel
 
 
 def _record_loaded_path(path: Path) -> None:
@@ -201,8 +282,15 @@ _register_constructors()
 
 
 def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
-    """Load raw YAML with markers and recursive includes."""
-    path = Path(path).resolve()
+    """Load raw YAML with markers and recursive includes.
+
+    A relative ``path`` is resolved through the config search tiers (CWD →
+    ``CWD/config`` → XDG base dirs — see :func:`resolve_config_path`) BEFORE
+    canonicalization, so circular-include detection and the include
+    accumulator operate on the real file.
+    """
+    requested = Path(path)
+    path = resolve_config_path(path).resolve()
     if _included is None:
         _included = set()
     if path in _included:
@@ -211,7 +299,10 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     _record_loaded_path(path)
 
     if not path.exists():
-        raise ConfigFileNotFoundError(f"Not found: {path}")
+        if requested.is_absolute():
+            raise ConfigFileNotFoundError(f"Not found: {path}")
+        searched = ", ".join(str(c) for c in _search_candidates(requested, None))
+        raise ConfigFileNotFoundError(f"Not found: {requested} (searched: {searched})")
 
     with open(path, "r") as f:
         data = yaml.load(f, Loader=ConfluidLoader) or {}
@@ -306,9 +397,7 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
             for inc_path in includes:
                 if not isinstance(inc_path, str):
                     continue
-                target_path = current_path.parent / inc_path
-                if not target_path.exists():
-                    target_path = Path(inc_path)
+                target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
 
                 inc_data = load_config(target_path, _included=set(_included))
                 merged_base = deep_merge(merged_base, inc_data)
@@ -335,7 +424,12 @@ def load(
     """
     if isinstance(data, (str, Path)):
         str_data = str(data)
-        if "\n" not in str_data and ":" not in str_data and len(str_data) < 255 and Path(str_data).exists():
+        if (
+            "\n" not in str_data
+            and ":" not in str_data
+            and len(str_data) < 255
+            and resolve_config_path(str_data).exists()
+        ):
             data = load_config(data)
         else:
             data = cast(Dict[str, Any], yaml.load(str_data, Loader=ConfluidLoader) or {})
