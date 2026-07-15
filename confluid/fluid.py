@@ -117,7 +117,8 @@ class Lazy(Class, Generic[T]):
     ctor still accepts any ``Type | str``), so ``LazyClass(MulticlassAccuracy)``
     stays ``Lazy[Any]`` and the subscript is purely an intent annotation for
     type-checkers / readers. Mirrors the Python-side ``confluid.Lazy[T]``
-    *annotation* alias (``Annotated[T, _LAZY_MARKER]``) at the fluid layer.
+    *annotation* alias (``Annotated[Union[T, Fluid], _LAZY_MARKER]``) at the
+    fluid layer.
 
     Behaves identically to :class:`Class` for the purposes of broadcasting:
     a ``Lazy`` value receives broadcast kwargs from its surrounding context

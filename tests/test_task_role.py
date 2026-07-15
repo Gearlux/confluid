@@ -91,7 +91,7 @@ def test_to_pydantic_preserves_annotated_field_constraints() -> None:
 def test_lazy_param_does_not_leak_marker_and_is_recorded() -> None:
     @configurable
     class C:
-        def __init__(self, opt: Lazy[Any] = None) -> None:  # type: ignore[assignment]
+        def __init__(self, opt: Lazy[Any] = None) -> None:
             self.opt = opt
 
     model = to_pydantic(C)

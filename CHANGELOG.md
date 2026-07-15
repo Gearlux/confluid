@@ -6,7 +6,58 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+_Nothing below has been published yet — no confluid release exists on PyPI. The first public release will be tagged `v0.1.0`._
+
+### Breaking
+
+- **Scoped broadcasting — addressed keys are exact, cascade is opt-in.**
+  A bare top-level key still broadcasts tree-wide (it is an implicit
+  `**.key`), but an ADDRESSED key — dotted `trainer.lr: 0.001`, the nested
+  block `trainer: {lr: 0.001}`, or a marker's own kwargs — now configures
+  the matched node ONLY and no longer cascades to the node's descendants.
+  Glob wildcards opt back into the cascade: `*` matches exactly one nesting
+  level (`trainer.*.lr` = direct children), `**` matches zero or more
+  (`trainer.**.lr` = trainer AND all its descendants — the declare-once
+  form; quote keys that start with `*` in YAML). The first named path
+  segment floats (`trainer.lr` ≡ `**.trainer.lr`, the classic block reach);
+  segments after the first are strict one-level hops. Glob-delivered keys
+  honour the `NoBroadcast[T]` / `@configurable(broadcast=False)` opt-outs
+  like bare keys; exact addressed keys bypass them. Document-order
+  last-write-wins remains the only priority rule — no specificity tiers.
+  `configure()` follows the same rule over live objects. Configs that
+  relied on a block's values reaching the addressed node's descendants must
+  add a `'**'` segment (`trainer.**.lr`). See `docs/broadcasting.md`.
+
+- **Marker-dict IR removed.** The legacy `{"_confluid_class_": ...}` /
+  `{"_confluid_ref_": ...}` dicts are no longer accepted by `flow()` /
+  `materialize()` / `resolve()`. Fluid objects (`Class` / `Instance` /
+  `Reference` / `Clone` / `Lazy`) are the only intermediate representation;
+  synthesize markers with `Instance(cls_name)` + `.kwargs.update(...)`.
+- **YAML tags parse only through confluid's own loader.** Tag constructors
+  live on a private `ConfluidLoader(yaml.SafeLoader)` subclass; the global
+  `yaml.SafeLoader` is never mutated, so a plain `yaml.safe_load` elsewhere in
+  the process now raises on `!class:` / `!ref:` instead of silently building
+  Fluids.
+- **`configure()` follows flat-view, document-order, last-write-wins matching**
+  — the same rule as YAML materialization. The old 4-candidate priority
+  matcher is gone. Additionally: a present `null` value now SETS `None`,
+  unknown non-dict keys in an object's own block log a warning, and property
+  getters are never executed during configuration.
+- **Public API pruned (`__all__` 72 → 60).** Internal machinery moved off the
+  top level (still importable from home modules): `validate_kwargs`,
+  `validate_setattr`, `override_init_mode` (`confluid.validation`);
+  `normalize_active`, `parse_scope_arg`, `resolve_scopes` (`confluid.scopes`);
+  `is_lazy_annotation` (`confluid.lazy`); `is_mandatory_annotation`
+  (`confluid.mandatory`); `lazy_param_names_of` (`confluid.pydantic_export`);
+  `ScopeBlock` (`confluid.fluid`); `load_workspace_env` (`confluid.env`).
+- **`readonly_config` deleted.** Its mark was never enforced anywhere.
+
 ### Added
+
+- **The feature-complete core.** Hierarchical config/DI, YAML tag IR
+  (`!class:` / `!ref:` / `!clone:` / `!lazy:` / `!scope:` / `!notscope:`),
+  broadcasting with flat-view ordered matching, scopes, pydantic schema export
+  (`to_pydantic`), validation policy, dump/load round-trip.
 
 - **XDG config-file search paths.** A relative path handed to `load()` /
   `load_config()` — and every relative `include:` entry — now resolves
@@ -52,56 +103,6 @@ All notable changes to confluid are documented here. The format follows
   watched across engine changes; `CONFLUID_BENCH_PROFILE=1` adds a cProfile
   breakdown. Print-only — no timing assertions in CI. See
   `docs/performance.md`.
-
-### Breaking
-
-- **Scoped broadcasting — addressed keys are exact, cascade is opt-in.**
-  A bare top-level key still broadcasts tree-wide (it is an implicit
-  `**.key`), but an ADDRESSED key — dotted `trainer.lr: 0.001`, the nested
-  block `trainer: {lr: 0.001}`, or a marker's own kwargs — now configures
-  the matched node ONLY and no longer cascades to the node's descendants.
-  Glob wildcards opt back into the cascade: `*` matches exactly one nesting
-  level (`trainer.*.lr` = direct children), `**` matches zero or more
-  (`trainer.**.lr` = trainer AND all its descendants — the declare-once
-  form; quote keys that start with `*` in YAML). The first named path
-  segment floats (`trainer.lr` ≡ `**.trainer.lr`, the classic block reach);
-  segments after the first are strict one-level hops. Glob-delivered keys
-  honour the `NoBroadcast[T]` / `@configurable(broadcast=False)` opt-outs
-  like bare keys; exact addressed keys bypass them. Document-order
-  last-write-wins remains the only priority rule — no specificity tiers.
-  `configure()` follows the same rule over live objects. Configs that
-  relied on a block's values reaching the addressed node's descendants must
-  add a `'**'` segment (`trainer.**.lr`). See `docs/broadcasting.md`.
-
-## [0.2.0] — 2026-07-11
-
-### Breaking
-
-- **Marker-dict IR removed.** The legacy `{"_confluid_class_": ...}` /
-  `{"_confluid_ref_": ...}` dicts are no longer accepted by `flow()` /
-  `materialize()` / `resolve()`. Fluid objects (`Class` / `Instance` /
-  `Reference` / `Clone` / `Lazy`) are the only intermediate representation;
-  synthesize markers with `Instance(cls_name)` + `.kwargs.update(...)`.
-- **YAML tags parse only through confluid's own loader.** Tag constructors
-  live on a private `ConfluidLoader(yaml.SafeLoader)` subclass; the global
-  `yaml.SafeLoader` is never mutated, so a plain `yaml.safe_load` elsewhere in
-  the process now raises on `!class:` / `!ref:` instead of silently building
-  Fluids.
-- **`configure()` follows flat-view, document-order, last-write-wins matching**
-  — the same rule as YAML materialization. The old 4-candidate priority
-  matcher is gone. Additionally: a present `null` value now SETS `None`,
-  unknown non-dict keys in an object's own block log a warning, and property
-  getters are never executed during configuration.
-- **Public API pruned (`__all__` 72 → 60).** Internal machinery moved off the
-  top level (still importable from home modules): `validate_kwargs`,
-  `validate_setattr`, `override_init_mode` (`confluid.validation`);
-  `normalize_active`, `parse_scope_arg`, `resolve_scopes` (`confluid.scopes`);
-  `is_lazy_annotation` (`confluid.lazy`); `is_mandatory_annotation`
-  (`confluid.mandatory`); `lazy_param_names_of` (`confluid.pydantic_export`);
-  `ScopeBlock` (`confluid.fluid`); `load_workspace_env` (`confluid.env`).
-- **`readonly_config` deleted.** Its mark was never enforced anywhere.
-
-### Added
 
 - **Eager (plain-constructor) classes are first-class.** `dump()` now
   round-trips a class whose constructor transforms its params instead of
@@ -163,6 +164,27 @@ All notable changes to confluid are documented here. The format follows
 - README documentation for `cast` (the typed materializer for static
   checkers), the `${...}` interpolation family, and loader-directive notes.
 
+### Changed
+
+- **`Lazy[T]` and `Mandatory[T]` annotations are now typed:
+  `Annotated[Union[T, Fluid], marker]`.** Subscript with the interface the
+  slot eventually flows into — `optimizer: Lazy[Optimizer] = Class(Adam,
+  lr=1e-3)`, `model: Mandatory[nn.Module] = Class(MyModel)` — which now
+  type-checks under strict mypy: pre-flow the slot holds a deferred `Fluid`
+  stub, and the union arm admits it (a `Class` *is* a `Fluid`). Previously
+  the aliases were `Annotated[T, marker]`, forcing the `Lazy[Any]` /
+  hand-spelled `Mandatory[Union[T, Fluid]]` workarounds; `Lazy[Any]` remains
+  valid for genuinely open slots. `NoBroadcast[T]` deliberately keeps no
+  `Fluid` arm (it gates broadcasting on scalar knobs). Marker detection is
+  now recursive (`confluid.introspect.annotation_has_marker` walks nested
+  `Annotated`/`Union` layers), so compositions work in either order
+  (`Mandatory[Lazy[T]]` / `Lazy[Mandatory[T]]`) and `Optional[Lazy[T]] =
+  None` is detected too. `to_pydantic` preserves non-marker metadata on
+  nested `Annotated` layers, so a range mark composed with a marker alias
+  (`Mandatory[DbPower]`) still reaches the JSON-Schema bounds and pydantic
+  validation, container marks included. See `docs/tags.md` and
+  `docs/io-contract.md`.
+
 ### Changed (internal — no public API change)
 
 - Logging is loggair-only (the stdlib/loggair split is gone); `%`-style log
@@ -208,10 +230,3 @@ All notable changes to confluid are documented here. The format follows
 - Order-dependent test failures caused by global YAML-loader mutation.
 - An inherited `cfg.items` → `dict.items` method leak in dotted-ref
   resolution (dict-key lookup always wins on containers).
-
-## [0.1.0] — baseline
-
-Initial feature-complete release: hierarchical config/DI, YAML tag IR
-(`!class:` / `!ref:` / `!clone:` / `!lazy:` / `!scope:` / `!notscope:`),
-broadcasting with flat-view ordered matching, scopes, pydantic schema export
-(`to_pydantic`), validation policy, dump/load round-trip.

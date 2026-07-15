@@ -5,7 +5,7 @@
 #
 # Publishes the `confluid` distribution to PyPI when a version tag is pushed:
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag v0.1.0 && git push origin v0.1.0
 #
 # Uses PyPI Trusted Publishing (OIDC, no stored API token). One-time setup on
 # https://pypi.org/manage/account/publishing/ — add a "pending publisher":

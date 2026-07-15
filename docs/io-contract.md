@@ -44,8 +44,24 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
   when the **Zero-Arg Construction** mandate (see [Class Design](class-design.md))
   forces a default onto a genuinely required class/`Fluid` slot. `input_specs(cls)`
   reports `{required, nullable}` per param (`required = no-default OR Mandatory`).
-  The marker is stripped by `to_pydantic`, so it never leaks into the JSON Schema,
-  and composes with `Lazy` (`Mandatory[Lazy[T]]`).
+  The marker is stripped by `to_pydantic`, so it never leaks into the JSON Schema.
+
+  Like `Lazy[T]`, the alias expands to `Annotated[Union[T, Fluid], marker]`:
+  subscript with the **interface the slot flows into**. The canonical spellings:
+
+  ```python
+  model: Mandatory[nn.Module] = Class(TimmModel)               # required dependency slot
+  optimizer: Mandatory[Lazy[Optimizer]] = Class(Adam, lr=1e-3)  # required AND deferred
+  ```
+
+  The `Fluid` arm lets the deferred `Class(...)` default type-check under strict
+  mypy (previously this had to be spelled `Mandatory[Union[nn.Module, Fluid]]`
+  by hand), and `Mandatory[Lazy[T]]` is the composed form for a required slot
+  that must also stay deferred for runtime injection. `NoBroadcast[T]`
+  deliberately has **no** `Fluid` arm: it gates broadcasting on generically-named
+  *scalar* knobs, where a `Fluid` arm would misdescribe the value. Marker
+  detection walks nested `Annotated`/`Union` layers, so a composed spelling —
+  including `Optional[Lazy[T]] = None` — is always recognised.
 
 ## Runnable example
 
