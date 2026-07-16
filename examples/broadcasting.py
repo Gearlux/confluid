@@ -6,6 +6,10 @@ last write wins), addressed keys stopping exactly at their node, the ``*`` /
 ``NoBroadcast[str]`` marker and the class-level
 ``@configurable(broadcast=False)``), and the ``**kwargs``-constructor caveat
 (an unknowable accept-list broadcasts permissively).
+
+For the same rules applied at scenario scale — a four-level service tree
+configured with zero parameter-threading code — see
+``examples/deep_injection.py``.
 """
 
 from typing import Any, Optional

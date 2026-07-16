@@ -177,3 +177,7 @@ landing on two siblings, an exact addressed key stopping at its node, the
 and both opt-outs (`NoBroadcast[str]` and `@configurable(broadcast=False)`).
 The bake step needs a real packaging pipeline, so it stays illustrated inline
 above.
+
+For the same rules at scenario scale — a four-level service tree configured
+with zero parameter-threading code — see
+[`examples/deep_injection.py`](../examples/deep_injection.py).

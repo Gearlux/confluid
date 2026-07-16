@@ -54,6 +54,17 @@ _Nothing below has been published yet — no confluid release exists on PyPI. Th
 
 ### Added
 
+- **Real-world scenario examples.** [`examples/ml_experiments/`](examples/ml_experiments/README.md)
+  — a Hydra-style ML experiment suite (config groups via `!scope:` dimensions,
+  `include:` experiment overlays, `!class:`/`!ref:`/`!lazy:` wiring, bare-key
+  global knobs, `dump()` reproducibility round-trip) — and
+  [`examples/deep_injection.py`](examples/deep_injection.py) — the gin-config
+  pitch: a four-level component tree configured with zero parameter-threading
+  code. Directory examples (`examples/*/run.py`) are executed by CI alongside
+  the flat scripts; `examples/modular_includes/run.py` was fixed in passing
+  (it loaded a config-block document as an object and used a CI-hostile
+  relative path).
+
 - **The feature-complete core.** Hierarchical config/DI, YAML tag IR
   (`!class:` / `!ref:` / `!clone:` / `!lazy:` / `!scope:` / `!notscope:`),
   broadcasting with flat-view ordered matching, scopes, pydantic schema export
