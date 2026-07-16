@@ -1,0 +1,11 @@
+# experiment_quick.yaml — a smoke-test-sized run layered on the base config.
+# `include:` pulls in base.yaml; keys below override it (document order,
+# last write wins).
+include: base.yaml
+
+# Addressed key: exact — reaches trainer.max_epochs and nothing else.
+trainer.max_epochs: 3
+
+# Class-name block: every SyntheticDataset instance.
+SyntheticDataset:
+  n_samples: 32

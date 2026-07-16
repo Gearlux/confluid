@@ -37,6 +37,24 @@ Each topic has its own guide, and every guide has a runnable companion script in
 | [Threads & Async](https://github.com/Gearlux/confluid/blob/main/docs/concurrency.md) | ContextVar propagation, `active_context`, worker-thread recipes | `concurrency.py` |
 | [Performance](https://github.com/Gearlux/confluid/blob/main/docs/performance.md) | The engine-timing baseline: per-phase benchmark over a ~2,500-marker tree, `CONFLUID_BENCH_PROFILE=1` profiling mode | `performance.py` |
 
+### Real-world scenarios
+
+Two examples show the features working *together* at application scale (pure
+Python, no ML dependencies — run them as-is):
+
+- [`examples/ml_experiments/`](https://github.com/Gearlux/confluid/tree/main/examples/ml_experiments)
+  — an ML experiment suite in the Hydra style: one base config, model/optimizer
+  **config groups** selected per run via scopes (`scopes=["model=cnn"]`),
+  `include:` experiment overlays, `!class:`/`!ref:`/`!lazy:` object wiring,
+  bare-key broadcast of global knobs (`seed`, `device`), and a `dump()`
+  snapshot that reloads into the identical experiment. Its README maps each
+  Hydra concept to the confluid feature that plays its role.
+- [`examples/deep_injection.py`](https://github.com/Gearlux/confluid/blob/main/examples/deep_injection.py)
+  — the gin-config pitch: a four-level service tree (`Pipeline → Stage →
+  Worker → RetryPolicy`) where one bare YAML key configures the deepest leaf
+  with **zero parameter-threading code**, while addressed keys stay surgical,
+  globs scope a subtree, and `NoBroadcast` protects generic names.
+
 ## Design Goals & Requirements
 
 ### Configuration Engine

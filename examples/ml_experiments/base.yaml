@@ -1,0 +1,43 @@
+# base.yaml — the shared foundation every experiment builds on.
+#
+# Structure:
+#   * bare top-level keys  -> global knobs, broadcast tree-wide (implicit **.key)
+#   * !scope: / !notscope: -> "config groups": pick a model/optimizer per run
+#                             without editing any file (scopes=["model=cnn"])
+#   * !class: / !ref: / !lazy: -> object wiring
+
+# --- global knobs: bare keys reach EVERY component that accepts them ---
+seed: 7
+device: cpu
+verbose: false
+base_lr: 0.5
+
+# --- data ---
+# Trailing () = build eagerly at load time (broadcast keys still reach it);
+# the mapping body supplies constructor kwargs.
+dataset: !class:SyntheticDataset()
+  n_samples: 256
+
+# --- config group "model" (default: MLP; select others via scopes=["model=cnn"]) ---
+model_default: !notscope:model      # active while no model=... dimension is set
+  model: !class:MLP()
+    hidden: 32
+model_cnn: !scope:model=cnn
+  model: !class:CNN()
+    channels: 8
+
+# --- config group "optimizer" (default: SGD; select via scopes=["optimizer=adam"]) ---
+# !lazy: = deferred until the trainer flows it with params= at run time.
+optim_default: !notscope:optimizer
+  optimizer: !lazy:SGD
+    lr: !ref:base_lr
+optim_adam: !scope:optimizer=adam
+  optimizer: !lazy:Adam
+    lr: !ref:base_lr
+
+# --- the trainer wires everything together ---
+trainer: !class:Trainer
+  model: !ref:model
+  dataset: !ref:dataset
+  optimizer: !ref:optimizer
+  max_epochs: 10

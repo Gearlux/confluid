@@ -39,3 +39,7 @@ flags (e.g. `--scope debug` / `--task classification`) into `load(scopes=...)`.
 
 [`examples/scopes.py`](../examples/scopes.py) loads one document under three
 different scope activations and shows which blocks were spliced in.
+
+For scope-driven **config groups** in a realistic setting (pick a model or
+optimizer per run without editing files, Hydra-style), see
+[`examples/ml_experiments/`](../examples/ml_experiments/README.md).
