@@ -167,7 +167,7 @@ def _register_constructors() -> None:
         """Build a Fluid marker with its kwargs assigned POST-construction.
 
         ``factory(name, **kwargs)`` collides when a YAML kwarg is literally named
-        ``target`` (the marker ctor's own first parameter — e.g. dataflux
+        ``target`` (the marker ctor's own first parameter — e.g. sampleflux
         ``ConfigureOp.target``). The marker stores ``self.kwargs = kwargs`` verbatim,
         so the post-construction update is exactly equivalent and collision-proof.
         """
