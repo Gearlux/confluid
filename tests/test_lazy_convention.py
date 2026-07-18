@@ -11,7 +11,7 @@ These tests assert the convention's interactions WITH confluid's machinery (not 
   * fully-defaulted constructor params are all optional in the generated pydantic schema.
 
 See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction". The reference
-implementation in the workspace is ``dataflux.sources.HuggingFaceSource``.
+implementation in the workspace is ``sampleflux.sources.HuggingFaceSource``.
 """
 
 from typing import Any, List, Optional

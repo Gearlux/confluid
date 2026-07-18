@@ -68,7 +68,7 @@ def _inst(target: str, /, **kwargs: Any) -> Instance:
 
 @configurable
 class _Outer:
-    """Stand-in for ``dataflux.core.Flux``: accepts an ``ops`` kwarg AND a
+    """Stand-in for ``sampleflux.core.Flux``: accepts an ``ops`` kwarg AND a
     ``source`` which can itself be another configurable. Both the
     top-level container and the leaf nodes in the broadcast tree are
     instances of this class (mirroring the train_set / inner Flux
@@ -82,7 +82,7 @@ class _Outer:
 
 @configurable
 class _Wrapper:
-    """Stand-in for ``dataflux.core.JointFlux``: holds a list of children
+    """Stand-in for ``sampleflux.core.JointFlux``: holds a list of children
     but does NOT itself take an ``ops`` kwarg.
     """
 

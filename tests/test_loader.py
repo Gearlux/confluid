@@ -31,7 +31,7 @@ def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> No
 
     The Fluid constructors' own first parameter is ``target`` — building a marker via
     ``Instance(name, **mapping)`` raised ``got multiple values for argument 'target'``
-    whenever a config carried a ``target:`` kwarg (e.g. dataflux ``ConfigureOp.target``).
+    whenever a config carried a ``target:`` kwarg (e.g. sampleflux ``ConfigureOp.target``).
     The loader assigns kwargs post-construction instead.
     """
 
