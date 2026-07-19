@@ -267,7 +267,7 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
 
     The workspace range-mark convention allows marking a ``(min, max)`` container
     param on the OUTER annotation — ``Annotated[Tuple[float, float], Interval(ge=0.0)]``
-    (waivefront-torchsig's ``WattRange``/``DbRange``) — because that is where
+    (waivefront.torchsig's ``WattRange``/``DbRange``) — because that is where
     FluxStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
     Pydantic, however, applies ``annotated_types`` constraints to the field VALUE:
     ``(0.0, 30.0) >= 0.0`` raises ``TypeError: Unable to apply constraint 'ge'`` the

@@ -4,7 +4,7 @@ Origin of these tests
 =====================
 
 While profiling a YOLO26 training startup in
-``waivefront-rfuav/config/train_yolo26_ultralytics.yaml`` we noticed that
+``waivefront/config/train_yolo26_ultralytics.yaml`` we noticed that
 the ``ops`` kwarg set on the outer ``Flux`` was being broadcast not only
 to the outer Flux itself but ALSO to every inner Flux nested deep inside
 a sibling wrapper class (``JointFlux``), even though those inner Fluxes'
