@@ -6,7 +6,9 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
-_Nothing below has been published yet — no confluid release exists on PyPI. The first public release will be tagged `v0.1.0`._
+## [0.1.0] — 2026-07-18
+
+_First public release, published to PyPI as `confluid` (tag `v0.1.0`)._
 
 ### Breaking
 
