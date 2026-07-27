@@ -11,7 +11,15 @@ from typing import Any
 
 import pytest
 
-from confluid import NoBroadcast, configurable, configure, load, no_broadcast_param_names
+from confluid import (
+    NoBroadcast,
+    accepts_broadcast,
+    accepts_key,
+    configurable,
+    configure,
+    load,
+    no_broadcast_param_names,
+)
 
 # No per-file registry clear: the module-level @configurable classes below must
 # stay resolvable by name; conftest's autouse snapshot/restore provides isolation.
@@ -179,3 +187,65 @@ def test_broadcast_trace_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     doc = load("alpha: 1.5\nobj: !class:Plain()\n")
     assert doc["obj"].alpha == 1.5
     assert any("'alpha'" in msg and "Plain" in msg and "bare" in msg for msg in traces)
+
+
+# ---------------------------------------------------------------------------
+# Public settability predicates — the ONE answer external config front-ends ask
+# ---------------------------------------------------------------------------
+# A CLI layer turning `--lr 0.1` into a config change needs the same
+# "may this key set this attribute?" answer the engine uses internally. These
+# predicates export it so no consumer re-derives an accept-list (which would
+# miss **kwargs targets, __init__-body slots, and both broadcast opt-outs).
+
+
+@configurable
+class _PredicateKwargs:
+    def __init__(self, **kw: Any):
+        self.kw = kw
+
+
+@configurable
+class _PredicateBodySlot:
+    def __init__(self, a: int = 1):
+        self.a = a
+        self.optimizer: Any = None
+
+
+def test_accepts_key_covers_ctor_params_and_body_slots() -> None:
+    assert accepts_key(_PredicateBodySlot, "a")  # ctor param
+    assert accepts_key(_PredicateBodySlot, "optimizer")  # __init__-body slot
+    assert not accepts_key(_PredicateBodySlot, "typo")
+
+
+def test_accepts_key_is_true_for_kwargs_constructor() -> None:
+    """A **kwargs ctor makes the accept-list unknowable -> accept everything."""
+    assert accepts_key(_PredicateKwargs, "whatever")
+    assert accepts_broadcast(_PredicateKwargs, "whatever")
+
+
+def test_accepts_key_normalizes_class_instance_and_dotted_name() -> None:
+    assert accepts_key(MarkedParam, "strength")
+    assert accepts_key(MarkedParam(), "strength")  # a live instance
+    assert accepts_key("MarkedParam", "strength")  # a registered dotted/short name
+    assert not accepts_key("no.such.ClassAnywhere", "strength")
+    assert not accepts_key(None, "strength")
+
+
+def test_accepts_broadcast_honors_the_class_level_opt_out() -> None:
+    """`broadcast=False` blocks every BARE key while addressed writes stay legal."""
+    assert accepts_key(OptedOut, "size")
+    assert not accepts_broadcast(OptedOut, "size")
+
+
+def test_accepts_broadcast_honors_the_param_level_opt_out() -> None:
+    assert accepts_key(MarkedParam, "name")
+    assert not accepts_broadcast(MarkedParam, "name")  # NoBroadcast[str]
+    assert accepts_broadcast(MarkedParam, "strength")  # its sibling is unaffected
+
+
+def test_accepts_broadcast_matches_what_materialization_actually_does() -> None:
+    """Drift pin: the predicate's answer == the engine's observed behaviour."""
+    doc = load("size: 99\nstrength: 2.0\nname: broadcast\nopted: !class:OptedOut()\nmarked: !class:MarkedParam()\n")
+    assert doc["opted"].size == 1  # accepts_broadcast(OptedOut, "size") is False
+    assert doc["marked"].name == "default"  # accepts_broadcast(MarkedParam, "name") is False
+    assert doc["marked"].strength == 2.0  # accepts_broadcast(MarkedParam, "strength") is True

@@ -4,8 +4,10 @@ Shows a bare top-level key landing on every accepting sibling (document order,
 last write wins), addressed keys stopping exactly at their node, the ``*`` /
 ``**`` glob forms opting back into the cascade, both opt-outs (the param-level
 ``NoBroadcast[str]`` marker and the class-level
-``@configurable(broadcast=False)``), and the ``**kwargs``-constructor caveat
-(an unknowable accept-list broadcasts permissively).
+``@configurable(broadcast=False)``), the ``**kwargs``-constructor caveat
+(an unknowable accept-list broadcasts permissively), and the two public
+predicates (``accepts_key`` / ``accepts_broadcast``) that let code outside a
+YAML document ask the same question the engine asks.
 
 For the same rules applied at scenario scale — a four-level service tree
 configured with zero parameter-threading code — see
@@ -14,7 +16,7 @@ configured with zero parameter-threading code — see
 
 from typing import Any, Optional
 
-from confluid import NoBroadcast, configurable, load
+from confluid import NoBroadcast, accepts_broadcast, accepts_key, configurable, load
 
 
 @configurable
@@ -75,6 +77,7 @@ Reporter:
 
     scoped_broadcasting()
     kwargs_catch_all()
+    settability_predicates()
 
 
 @configurable
@@ -146,6 +149,33 @@ strength: 0.75
     sink = graph["sink"]
     assert sink.name == "run-42" and sink.strength == 0.75, "every bare key broadcast in"
     print(f"Passthrough (**kwargs): received name={sink.name!r} strength={sink.strength} (unfiltered)")
+
+
+def settability_predicates() -> None:
+    """Ask confluid whether a key may land — instead of re-deriving the rules.
+
+    A front-end that delivers configuration from outside a YAML document (a CLI
+    turning ``--strength 2.0`` into a config change, a form editor, an RPC
+    surface) needs the SAME answer the engine uses. ``accepts_key`` is the
+    ADDRESSED question (gated by the accept-list alone); ``accepts_broadcast``
+    is the BARE question (accept-list AND both opt-outs). Re-deriving them by
+    hand typically misses ``**kwargs`` targets, ``__init__``-body slots, and the
+    opt-outs — so an opted-out class quietly accepts a bare key anyway
+    (docs/broadcasting.md → "Asking whether a key may land").
+    """
+    # Class-level opt-out: addressed writes still land, bare keys never do.
+    assert accepts_key(Reporter, "strength"), "`Reporter: {strength: ...}` is legal"
+    assert not accepts_broadcast(Reporter, "strength"), "a bare `strength:` must not cascade in"
+
+    # Param-level opt-out: only that one slot is shielded.
+    assert accepts_key(Transform, "name") and not accepts_broadcast(Transform, "name")
+    assert accepts_broadcast(Transform, "strength"), "its sibling is unaffected"
+
+    # Unknowable accept-list -> accepts everything; unknown names -> nothing.
+    assert accepts_broadcast(Passthrough, "anything_at_all")
+    assert not accepts_key(Transform, "typo")
+
+    print("predicates: Reporter.strength addressed=True bare=False; Transform.name bare=False")
 
 
 if __name__ == "__main__":

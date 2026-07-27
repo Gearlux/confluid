@@ -18,7 +18,17 @@ from typing import TYPE_CHECKING, Any
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
-from confluid.engine import active_context, cast, collect_report, flow, get_configurable_attrs, materialize, resolve
+from confluid.engine import (
+    accepts_broadcast,
+    accepts_key,
+    active_context,
+    cast,
+    collect_report,
+    flow,
+    get_configurable_attrs,
+    materialize,
+    resolve,
+)
 from confluid.exceptions import (
     CircularIncludeError,
     ConfigFileNotFoundError,
@@ -120,6 +130,8 @@ __all__ = [
     "to_pydantic",
     "confluid_class_of",
     "discover_dimensions",
+    "accepts_key",
+    "accepts_broadcast",
     "ValidationMode",
     "ValidationPolicy",
     "get_policy",
