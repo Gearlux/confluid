@@ -7,7 +7,7 @@ the structural convention confluid already uses (a parameter with no default, or
 a non-``Optional`` type, reads as required): under the **Zero-Arg Construction**
 mandate every parameter tends to be defaulted, which would make a genuinely
 mandatory class / ``Fluid`` slot *look* optional. ``Mandatory[T]`` restores the
-contract so consumers (FluxStudio sockets, navigaitor's form-spec, MCP schemas)
+contract so consumers (StreamStudio sockets, navigaitor's form-spec, MCP schemas)
 can render the slot as required even when it is defaulted for zero-arg build.
 
 Named ``Mandatory`` (NOT ``Required``) to avoid confusion with
@@ -74,7 +74,7 @@ def mandatory_param_names(cls: type) -> Set[str]:
     """Return the ``__init__`` parameter names of ``cls`` declared ``Mandatory[...]``.
 
     Cached per-class on ``cls.__confluid_mandatory_params__`` so introspecting
-    consumers (FluxStudio's runnable-node builder) don't re-resolve hints on every
+    consumers (StreamStudio's runnable-node builder) don't re-resolve hints on every
     call. Returns an empty set if ``cls`` has no resolvable ``__init__`` or no
     Mandatory params.
     """

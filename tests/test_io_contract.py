@@ -1,6 +1,6 @@
 """Tests for the I/O contract: ``@output`` properties + ``Mandatory[T]`` inputs.
 
-The contract is what FluxStudio runnable nodes and navigaitor's form-spec read to
+The contract is what StreamStudio runnable nodes and navigaitor's form-spec read to
 render output sockets and required/optional inputs. It lives entirely in confluid
 (``confluid.output`` / ``confluid.Mandatory`` + the ``output_specs`` / ``input_specs``
 introspection helpers) so every consumer reads one source of truth.

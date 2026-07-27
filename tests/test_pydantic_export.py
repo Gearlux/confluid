@@ -544,7 +544,7 @@ def test_to_pydantic_scalar_range_mark_validates_and_bounds_schema() -> None:
 
 
 def test_to_pydantic_container_range_mark_relocates_to_elements() -> None:
-    """An outer range mark on a (min, max) container — the convention FluxStudio's
+    """An outer range mark on a (min, max) container — the convention StreamStudio's
     widget bounds read — must NOT be applied to the tuple VALUE (pydantic raises
     ``TypeError: Unable to apply constraint`` on first validation); it relocates
     element-wise, validating each endpoint and bounding the schema prefixItems."""

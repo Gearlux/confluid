@@ -394,7 +394,7 @@ def parse_param_docs(obj: Any) -> Dict[str, str]:
     function or other callable, its own ``__doc__``. This is the single source of
     per-parameter help reused across the workspace: navigaitor turns it into
     pydantic ``Field(description=...)`` (via ``to_pydantic``) for the form-spec /
-    HTTP editor, and FluxStudio turns it into ComfyUI widget tooltips. Document a
+    HTTP editor, and StreamStudio turns it into ComfyUI widget tooltips. Document a
     constructor parameter once in the class's ``Args:`` block and it surfaces in
     both GUIs.
 
@@ -454,7 +454,7 @@ def output_specs(cls: type) -> List[OutputSpec]:
     ``__confluid_output__`` marker set by :func:`confluid.output`. For each, the
     getter's return annotation and the first docstring line describe the output.
 
-    This is the I/O-contract OUTPUT surface: FluxStudio runnable nodes append these
+    This is the I/O-contract OUTPUT surface: StreamStudio runnable nodes append these
     as output sockets and navigaitor's form-spec surfaces them. An ``@output``
     property is read-only/derived, so it never appears as a config field.
 
@@ -496,7 +496,7 @@ def input_specs(cls: type) -> List[InputSpec]:
     * ``nullable`` — True when the (Annotated-stripped) type admits ``None``
       (``Optional[T]`` / ``T | None``).
 
-    This is the I/O-contract INPUT surface consumed by FluxStudio (required vs
+    This is the I/O-contract INPUT surface consumed by StreamStudio (required vs
     optional sockets) and navigaitor's form-spec.
 
     Args:

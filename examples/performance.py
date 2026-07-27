@@ -76,12 +76,12 @@ def build_yaml() -> str:
 
 def timed(label: str, marker_count: int, fn: Callable[[], Any]) -> None:
     """Run ``fn`` REPEATS times and print best/mean wall time + throughput."""
-    samples = []
+    records = []
     for _ in range(REPEATS):
         start = time.perf_counter()
         fn()
-        samples.append(time.perf_counter() - start)
-    best, mean = min(samples), sum(samples) / len(samples)
+        records.append(time.perf_counter() - start)
+    best, mean = min(records), sum(records) / len(records)
     print(
         f"{label:<12} {marker_count:>5} markers   best {best * 1e3:>8.1f} ms   "
         f"mean {mean * 1e3:>8.1f} ms   {marker_count / best:>8.0f} markers/s"

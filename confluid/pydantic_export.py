@@ -268,7 +268,7 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
     The workspace range-mark convention allows marking a ``(min, max)`` container
     param on the OUTER annotation — ``Annotated[Tuple[float, float], Interval(ge=0.0)]``
     (waivefront.torchsig's ``WattRange``/``DbRange``) — because that is where
-    FluxStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
+    StreamStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
     Pydantic, however, applies ``annotated_types`` constraints to the field VALUE:
     ``(0.0, 30.0) >= 0.0`` raises ``TypeError: Unable to apply constraint 'ge'`` the
     first time the kwarg is actually validated. Relocating the marks element-wise
@@ -404,7 +404,7 @@ def _post_init_field_specs(
     reconfigured post-construction (YAML / broadcasting / a subclass), so a config
     may omit them. This keeps body-attribute config slots — a trainer's
     ``optimizer`` / ``train_loader`` / ``lightning`` / ``*_metrics`` — visible to
-    ``to_pydantic`` (navigaitor form-spec, MCP schemas, FluxStudio widgets) even
+    ``to_pydantic`` (navigaitor form-spec, MCP schemas, StreamStudio widgets) even
     though they aren't constructor parameters.
     """
     specs: Dict[str, Tuple[Any, Any]] = {}
@@ -530,7 +530,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # Also surface post-init body slots (``self.optimizer = LazyClass(...)`` etc.)
     # that aren't constructor parameters — the minimal-ctor / post-construction
     # pattern keeps configurable slots in the ``__init__`` body, and they must
-    # still be enumerable by the form-spec / MCP / FluxStudio surfaces. Signature
+    # still be enumerable by the form-spec / MCP / StreamStudio surfaces. Signature
     # params already in ``fields`` win (never overwritten).
     signature_params = set(fields)
     if isinstance(cls, type):  # post-init body-slot scan walks ``cls.__mro__`` (classes only)

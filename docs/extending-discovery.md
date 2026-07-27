@@ -31,7 +31,7 @@ classes and validates *values*; a **visual node editor** offers nodes and enforc
 2. **Entry-point the module** so importing it runs the decorators:
    ```toml
    [project.entry-points."confluid.configurables"]
-   sampleflux-ops-numpy = "sampleflux.ops.numpy"   # key arbitrary; value = module path
+   recordstream-ops-numpy = "recordstream.ops.numpy"   # key arbitrary; value = module path
    ```
 3. **Reinstall the editable after touching entry points** — they freeze into `*.dist-info` at
    install time; a stale install shows an empty palette / missing class with no error. **Never**
@@ -65,8 +65,8 @@ is only a fallback for the unambiguous roles (`metric`←`torchmetrics.Metric`,
 `optimizer`←`torch.optim.Optimizer`, `loader`←`DataLoader`, `logger`←`pl.Logger`); the tag wins.
 
 **Task-agnostic categories** (bare `category=`): `source` (record producers — `HuggingFaceSource`,
-`DatasetSplit`; also unioned into dataset slot pickers) · `engine` (`Flux`, `JointFlux`) · `op`
-(`Threshold`, `ConvertToImage`, `Pipeline`, `Parallel`, `Enable`) · `sink` (whole-Flux
+`DatasetSplit`; also unioned into dataset slot pickers) · `engine` (`Stream`, `JointStream`) · `op`
+(`Threshold`, `ConvertToImage`, `Pipeline`, `Parallel`, `Enable`) · `sink` (whole-Stream
 `write(record)` writers — `HDF5Sink`, `YoloSink`) · `optimizer` / `loader` / `logger` (infra,
 `register(..., lazy=True)`, **deliberately without a task category** so they never leak into task
 slot pickers).
@@ -104,12 +104,12 @@ the constructor stays the validation authority.
 | Annotation / condition | Rendered as |
 |---|---|
 | closed `Literal[...]` (incl. `Optional[...]`) | combo dropdown (first) |
-| `sampleflux.Record` (== `Dict[str, Any]`; also `Optional`/`Iterator` of it) | `SAMPLEFLUX_SAMPLE` wire — alias **equality**, before the container branch |
+| `recordstream.Record` (== `Dict[str, Any]`; also `Optional`/`Iterator` of it) | `RECORDSTREAM_RECORD` wire — alias **equality**, before the container branch |
 | `datasets.Dataset` | `HF_DATASET` wire |
 | `pathlib.Path`, or a name containing `path`/`dir`/`root`/`folder` | directory picker (the one deliberate name-based rule) |
 | a `(min, max)` numeric tuple | a `__lo` / `__hi` widget pair |
 | any other container (`List`/`Dict`/`Sequence`) | `STRING`, parsed back by the coercion step |
-| a NESTED container in any union arm | a wired `SAMPLEFLUX_VALUE` socket |
+| a NESTED container in any union arm | a wired `RECORDSTREAM_VALUE` socket |
 | `int`/`float`/`str`/`bool` (incl. `Optional`/`Union` arms) | `INT`/`FLOAT`/`STRING`/`BOOLEAN` |
 | anything else | `STRING` fallback |
 
@@ -158,7 +158,7 @@ opts out with `@configurable(validate=False)`.
 
 It enumerates classes (`list_configurable_classes`), generates schemas (`get_node_pydantic_schema`,
 `get_node_form_spec`, `config_to_yaml`), and composes/executes task configs — every execution tool
-spawning `sampleflux run <config.yaml>`. `sanitize_schema` downgrades each advertised tool schema to
+spawning `recordstream run <config.yaml>`. `sanitize_schema` downgrades each advertised tool schema to
 the OpenAPI-3.0 subset that strict LLM function-calling APIs accept.
 
 **Slot options are TYPE-compatible, with `task`/`role` ranked FIRST.** A config-valued slot becomes
@@ -179,7 +179,7 @@ fill a model slot). Slots are located by param name (`model`, `loss_fn`,
 `lightning`) get curated configs.
 
 **Naming discipline:** `Download*` / `*To*` / `*Trainer` / `*Evaluator` are auto-wrappable as MCP
-tools. There is ONE runner — `sampleflux run <config.yaml>` — and what used to be a CLI verb is now
+tools. There is ONE runner — `recordstream run <config.yaml>` — and what used to be a CLI verb is now
 encoded in the config (the runnable's class + its `task:`). Adding a CLI subcommand? Sketch its MCP
 tool in the same change; if the tool would be awkward, the CLI is too.
 
@@ -195,31 +195,31 @@ Everything else is excluded **by construction** — the raw-callable op wrappers
 
 | Signal | Node kind | Output socket(s) |
 |---|---|---|
-| no-arg `run(self)` | **Runnable** — itself the terminal `OUTPUT_NODE` (there is no separate Run node) | `SAMPLEFLUX_RUNNABLE` + `@output` sockets |
-| `@configurable(category="op")` with a carrier-taking `__call__` | **Op** (dual-mode) | `(SAMPLEFLUX_SAMPLE, SAMPLEFLUX_OP)` |
-| `__getitem__`/`__iter__` yielding records, name ends `Source`, or `role="dataset"` | **Source** | `SAMPLEFLUX_SOURCE` |
-| `role ∈ {model, loss, metric, logger}`, `lazy=True`, or `category="sink"` | **Object member** | `(instance, class)` on `SAMPLEFLUX_OBJECT[:role]` |
+| no-arg `run(self)` | **Runnable** — itself the terminal `OUTPUT_NODE` (there is no separate Run node) | `RECORDSTREAM_RUNNABLE` + `@output` sockets |
+| `@configurable(category="op")` with a carrier-taking `__call__` | **Op** (dual-mode) | `(RECORDSTREAM_RECORD, RECORDSTREAM_OP)` |
+| `__getitem__`/`__iter__` yielding records, name ends `Source`, or `role="dataset"` | **Source** | `RECORDSTREAM_SOURCE` |
+| `role ∈ {model, loss, metric, logger}`, `lazy=True`, or `category="sink"` | **Object member** | `(instance, class)` on `RECORDSTREAM_OBJECT[:role]` |
 | no-arg `__call__(self)` | **Value producer** | `@output` sockets |
 | anything else | **Generic** | `STRING` (or `HF_DATASET`) |
 
 Op classification is the **positive `category="op"` tag**, not an annotation sniff: the record
 carrier is a plain `dict` (no marker class to identity-match) and a kernel-only `Transform` subclass
 *inherits* its `__call__`, so a `vars(cls)` scan would misclassify it as generic; the signature is
-resolved through the MRO. Engines (`Flux`/`JointFlux`) and source-views (`DatasetSplit`) render
-source-typed ctor params as **wired sockets** — `source` → one `SAMPLEFLUX_SOURCE`;
-`fluxes`/`sources` → dynamic `source_N`; `ops`/`transforms` → dynamic `op_N`; `op`/`target` → one
-`SAMPLEFLUX_OP`. Detection is by **param name**, never per class.
+resolved through the MRO. Engines (`Stream`/`JointStream`) and source-views (`DatasetSplit`) render
+source-typed ctor params as **wired sockets** — `source` → one `RECORDSTREAM_SOURCE`;
+`streams`/`sources` → dynamic `source_N`; `ops`/`transforms` → dynamic `op_N`; `op`/`target` → one
+`RECORDSTREAM_OP`. Detection is by **param name**, never per class.
 
-**Object sockets are ROLE-qualified and TASK-AGNOSTIC** — `SAMPLEFLUX_OBJECT:<role>` for
+**Object sockets are ROLE-qualified and TASK-AGNOSTIC** — `RECORDSTREAM_OBJECT:<role>` for
 `role ∈ {model, loss, metric, sink}`, since ComfyUI connects sockets on string equality. A
-classification model and a segmentation model both produce `SAMPLEFLUX_OBJECT:model` and dock into
+classification model and a segmentation model both produce `RECORDSTREAM_OBJECT:model` and dock into
 *any* trainer's `model` slot; the role still guards *kind* (a loss is refused by a model slot).
-Role-less infra (optimizer / loader / lightning / logger) stays bare `SAMPLEFLUX_OBJECT`. Output
+Role-less infra (optimizer / loader / lightning / logger) stays bare `RECORDSTREAM_OBJECT`. Output
 side and slot side gate on the same role set so they always agree — a one-sided qualifier silently
 refuses a valid wire. Task survives only as guidance (palette folder + MCP slot ranking); the
 hand-written **Retag** node is the per-instance escape hatch.
 
-**Sample wires are NOT type-checked at connection time.** A `SAMPLEFLUX_SAMPLE` wire keeps one
+**Record wires are NOT type-checked at connection time.** A `RECORDSTREAM_RECORD` wire keeps one
 socket string, so any op *can* be wired; the record is self-describing (a plain `dict` of typed
 items each carrying its own metadata), so an op given an incompatible record raises naturally when
 applied. An op's `handles` / `consumes` / `optional` / `produces` attributes are **declarative graph
@@ -237,7 +237,7 @@ constructor types (numeric strings → `int`/`float`, comma-lists → `List[str]
 the canvas never feeds the constructor a value the schema (§5) would reject.
 
 **Hand-written adapters are ComfyUI *execution-model* bridges only** — Walk Dataset, Extract from
-Sample / Extract Metadata, Compose Sample, Mix Samples, Retag, Value, Math, Yaml Dump, Subgraph Op,
+Record / Extract Metadata, Compose Record, Mix Records, Retag, Value, Math, Yaml Dump, Subgraph Op,
 and the viewers. A missing op or visualizer is added to its home package, never here.
 
 ## 8. Common failure modes
@@ -262,7 +262,7 @@ and the viewers. A missing op or visualizer is added to its home package, never 
 
 ## 9. Worked examples
 
-A per-sample op — node, composable, YAML-wireable:
+A per-record op — node, composable, YAML-wireable:
 
 ```python
 @configurable(category="op", group="numpy")
@@ -284,7 +284,7 @@ class Threshold(Transform):
 ```
 
 A task-scoped model — ranked first in classification trainer `model` slots (still offered to any
-other `role="model"` slot), canvas socket `SAMPLEFLUX_OBJECT:model`, and `lazy=True` so a config
+other `role="model"` slot), canvas socket `RECORDSTREAM_OBJECT:model`, and `lazy=True` so a config
 wires it `!lazy:` and the trainer injects the dataset-derived `num_classes` at flow time:
 
 ```python

@@ -74,7 +74,7 @@ def configurable(
         group: Optional free-form, path-like sub-grouping WITHIN a category
             (e.g. ``"numpy"``, ``"fft/numpy"``, ``"segmentation"``). Unlike
             ``category`` / ``task`` / ``role`` (which gate *what* is offered),
-            ``group`` only organises presentation: FluxStudio nests a node's
+            ``group`` only organises presentation: StreamStudio nests a node's
             palette folder as ``<Package>/<Category>/<group>``. It is NOT part
             of the discovery contract — an absent group simply means the node
             sits directly under ``<Package>/<Category>``.
@@ -91,18 +91,18 @@ def configurable(
             runtime-injection slot (e.g. an optimizer needing ``params=`` or a
             DataLoader needing ``dataset=``). Consumers that compose configs read
             it to emit a ``LazyClass`` (deferred) rather than a live instance —
-            notably FluxStudio's object nodes, which feed a runnable's deferred
+            notably StreamStudio's object nodes, which feed a runnable's deferred
             body slots. Independent of ``category``/``task``/``role``.
         random: When ``True``, stamp ``__confluid_random__`` on the class.
             Marks a class whose output is non-deterministic (e.g. stochastic
-            augmentation ops). FluxStudio uses this to inject ``IS_CHANGED``
+            augmentation ops). StreamStudio uses this to inject ``IS_CHANGED``
             on the generated ComfyUI node so downstream nodes (Preview Image,
             etc.) always re-execute rather than serving a cached output.
         constant: When ``True``, stamp ``__confluid_constant__`` on the class.
             Marks a class whose instances (and declared ``@output`` properties)
-            are a PURE function of the constructor config — no I/O, no sample
+            are a PURE function of the constructor config — no I/O, no record
             input, no hidden state. Exporters may fold/hoist such a value
-            producer into a static config: FluxStudio's ops-export hoists a
+            producer into a static config: StreamStudio's ops-export hoists a
             constant value node as a top-level ``!class:`` entry and rewires
             its consumers via dotted ``!ref:<name>.<output>`` instead of
             dropping the wired values. Mutually exclusive with ``random``.
@@ -148,13 +148,13 @@ def configurable(
             An explicit empty sequence (``broadcast_attrs=[]``) declares "no
             post-init broadcast attrs" and silences that warning.
         strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
-            the class. FluxStudio uses this to render ``Union[int, str]``
-            constructor params as two optional sockets — ``{name}_samples``
+            the class. StreamStudio uses this to render ``Union[int, str]``
+            constructor params as two optional sockets — ``{name}_records``
             (INT, full range) and ``{name}_duration`` (STRING) — instead of
             the default single STRING widget. Whichever socket is
             connected/filled wins; if neither, the constructor default applies.
         display_name: Optional human-readable label for UI surfaces (e.g.
-            FluxStudio palette). Stamped as ``__confluid_display_name__``.
+            StreamStudio palette). Stamped as ``__confluid_display_name__``.
             Falls back to the class name when absent.
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
@@ -284,7 +284,7 @@ def output(func: T) -> T:
         @output
         def trained_model(self) -> nn.Module: ...
 
-    Consumers (FluxStudio runnable nodes, navigaitor's form-spec) read
+    Consumers (StreamStudio runnable nodes, navigaitor's form-spec) read
     :func:`confluid.output_specs` to expose these as node OUTPUT sockets. An
     ``@output`` property is read-only / derived, so it is already excluded from
     config introspection (``to_pydantic`` skips setter-less properties) — it never
