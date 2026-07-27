@@ -4,7 +4,7 @@
 
 **Feature-complete.** Confluid is the hierarchical configuration + dependency-injection engine: YAML tag markers (`!class:` / `!lazy:` / `!ref:` / `!scope:`) materialized by `flow()` / `materialize()` / `resolve()`, scoped broadcasting, post-construction `configure()`, recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` / `sanitize_schema`) that every AI- and GUI-facing consumer reads for tool schemas and form specs.
 
-**Published on PyPI — v0.1.0** (tag-driven `release.yml` + Trusted Publishing; see "Releasing to PyPI" below). Consequence: confluid is a standalone product, so feature/fix PRs go on `Gearlux/confluid` (`main` ← `dev/main`) and are never bundled into a workspace PR; its README/`docs/` stay consumer-agnostic.
+**Published on PyPI — v0.1.0; v0.2.0 prepared and PENDING a tag** (it adds the public `accepts_key`/`accepts_broadcast` settability predicates, which liquifai imports at module level — liquifai cannot publish until confluid 0.2.0 is on PyPI) (tag-driven `release.yml` + Trusted Publishing; see "Releasing to PyPI" below). Consequence: confluid is a standalone product, so feature/fix PRs go on `Gearlux/confluid` (`main` ← `dev/main`) and are never bundled into a workspace PR; its README/`docs/` stay consumer-agnostic.
 
 **Performance baseline:** `examples/performance.py` + `docs/performance.md` — a print-only engine-timing run over a ~2,500-marker tree (`CONFLUID_BENCH_PROFILE=1` adds a cProfile pass) tracking broadcast-scoping overhead across engine changes.
 
