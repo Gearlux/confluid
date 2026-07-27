@@ -40,7 +40,7 @@ class Resampler: ...                          # from its params (a plain Python 
 class Embedder: ...                           # captured — heavy args aren't kept alive
 ```
 
-`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no sample input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `!class:` entry and rewire consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
+`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no record input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `!class:` entry and rewire consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
 
 `eager=True` declares a plain-constructor class — see [Eager Classes](eager-classes.md). Its runtime effect: `configure()` warns when a constructor-param attribute is set post-construction (the `__init__` work will not re-run). Orthogonal to `random`/`constant`.
 

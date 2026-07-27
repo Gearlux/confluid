@@ -16,7 +16,7 @@ base_lr: 0.5
 # Trailing () = build eagerly at load time (broadcast keys still reach it);
 # the mapping body supplies constructor kwargs.
 dataset: !class:SyntheticDataset()
-  n_samples: 256
+  n_records: 256
 
 # --- config group "model" (default: MLP; select others via scopes=["model=cnn"]) ---
 model_default: !notscope:model      # active while no model=... dimension is set

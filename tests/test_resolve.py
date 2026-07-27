@@ -1,6 +1,6 @@
 """Tests for ``confluid.resolve`` (marker walk) and the ``solidify=False`` flag.
 
-These back FluxStudio's YAML→graph import, which needs a config's *structure*
+These back StreamStudio's YAML→graph import, which needs a config's *structure*
 (broadcast-resolved markers / live-but-unsolidified objects) without paying for
 the expensive ``solidify()`` finalize (e.g. building a model backbone).
 """

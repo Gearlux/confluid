@@ -33,23 +33,23 @@ CFG_DIR = Path(__file__).parent
 
 @configurable
 class SyntheticDataset:
-    """Noisy samples of the line y = 2x - 1.
+    """Noisy records of the line y = 2x - 1.
 
     Args:
-        n_samples: Number of (x, y) points to generate.
+        n_records: Number of (x, y) points to generate.
         noise: Standard deviation of the Gaussian noise on y.
         seed: RNG seed (reached by the broadcast top-level ``seed`` key).
     """
 
-    def __init__(self, n_samples: int = 64, noise: float = 0.05, seed: int = 0):
-        self.n_samples = n_samples
+    def __init__(self, n_records: int = 64, noise: float = 0.05, seed: int = 0):
+        self.n_records = n_records
         self.noise = noise
         self.seed = seed
 
     @property
     def points(self) -> List[Tuple[float, float]]:
         rng = random.Random(self.seed)
-        xs = [i / max(self.n_samples - 1, 1) for i in range(self.n_samples)]
+        xs = [i / max(self.n_records - 1, 1) for i in range(self.n_records)]
         return [(x, 2.0 * x - 1.0 + rng.gauss(0.0, self.noise)) for x in xs]
 
 
@@ -226,7 +226,7 @@ def main() -> None:
     # The bare `seed: 7` broadcast reached BOTH the dataset and the model — zero plumbing.
     assert trainer.dataset.seed == 7 and trainer.model.seed == 7
     assert trainer.max_epochs == 3, "trainer.max_epochs addressed override from the overlay"
-    assert trainer.dataset.n_samples == 32, "SyntheticDataset class-block override from the overlay"
+    assert trainer.dataset.n_records == 32, "SyntheticDataset class-block override from the overlay"
     loss = trainer.fit()
     print(f"model=MLP(hidden={trainer.model.hidden}) epochs={trainer.max_epochs} loss={loss:.4f}")
 
@@ -256,7 +256,7 @@ def main() -> None:
     assert isinstance(clone, Trainer) and isinstance(clone.model, MLP)
     assert clone.max_epochs == trainer.max_epochs
     assert clone.model.hidden == trainer.model.hidden
-    assert clone.dataset.n_samples == trainer.dataset.n_samples
+    assert clone.dataset.n_records == trainer.dataset.n_records
     print("snapshot round-trip OK — the archived YAML rebuilds the identical experiment")
 
 

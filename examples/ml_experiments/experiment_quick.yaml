@@ -8,4 +8,4 @@ trainer.max_epochs: 3
 
 # Class-name block: every SyntheticDataset instance.
 SyntheticDataset:
-  n_samples: 32
+  n_records: 32

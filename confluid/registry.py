@@ -92,7 +92,7 @@ class ConfluidRegistry:
             if lazy:
                 # A "lazy" class is one whose constructed value should stay
                 # deferred (a LazyClass / runtime-injected slot — e.g. an
-                # optimizer needing ``params``). Consumers (FluxStudio object
+                # optimizer needing ``params``). Consumers (StreamStudio object
                 # nodes) read this to emit a deferred ``LazyClass`` instead of a
                 # live instance.
                 setattr(cls, "__confluid_lazy__", True)

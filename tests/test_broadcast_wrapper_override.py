@@ -5,11 +5,11 @@ Origin of these tests
 
 While profiling a YOLO26 training startup in
 ``waivefront/config/train_yolo26_ultralytics.yaml`` we noticed that
-the ``ops`` kwarg set on the outer ``Flux`` was being broadcast not only
-to the outer Flux itself but ALSO to every inner Flux nested deep inside
-a sibling wrapper class (``JointFlux``), even though those inner Fluxes'
+the ``ops`` kwarg set on the outer ``Stream`` was being broadcast not only
+to the outer Stream itself but ALSO to every inner Stream nested deep inside
+a sibling wrapper class (``JointStream``), even though those inner Streams'
 YAML blocks set no ``ops:`` at all. The leak made the supposedly-empty
-inner Flux op chains carry the full heavy op list, turning an ~85ms JSON
+inner Stream op chains carry the full heavy op list, turning an ~85ms JSON
 walk into a 2½-minute eager iteration on the main thread.
 
 That shape — outer-Class with kwarg X → wrapper-Class without kwarg X →
@@ -68,10 +68,10 @@ def _inst(target: str, /, **kwargs: Any) -> Instance:
 
 @configurable
 class _Outer:
-    """Stand-in for ``sampleflux.core.Flux``: accepts an ``ops`` kwarg AND a
+    """Stand-in for ``recordstream.core.Stream``: accepts an ``ops`` kwarg AND a
     ``source`` which can itself be another configurable. Both the
     top-level container and the leaf nodes in the broadcast tree are
-    instances of this class (mirroring the train_set / inner Flux
+    instances of this class (mirroring the train_set / inner Stream
     structure that triggered the original bug).
     """
 
@@ -82,7 +82,7 @@ class _Outer:
 
 @configurable
 class _Wrapper:
-    """Stand-in for ``sampleflux.core.JointFlux``: holds a list of children
+    """Stand-in for ``recordstream.core.JointStream``: holds a list of children
     but does NOT itself take an ``ops`` kwarg.
     """
 

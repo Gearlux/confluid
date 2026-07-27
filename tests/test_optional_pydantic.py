@@ -123,11 +123,11 @@ def test_lazy_exports_resolve_when_pydantic_present() -> None:
     import confluid
     from confluid.pydantic_export import lazy_param_names_of
 
-    model_cls = confluid.to_pydantic(_Sample)
+    model_cls = confluid.to_pydantic(_Record)
     assert confluid.confluid_class_of(model_cls) is not None
     assert lazy_param_names_of(model_cls) == frozenset()
 
 
-class _Sample:
+class _Record:
     def __init__(self, x: int = 1) -> None:
         self.x = x
