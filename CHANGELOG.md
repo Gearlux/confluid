@@ -6,6 +6,8 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-27
+
 ### Added
 
 - **`accepts_key(target, key)` / `accepts_broadcast(target, key)`** — the two
