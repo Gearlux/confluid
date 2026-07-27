@@ -58,7 +58,7 @@ class ConfigWithPlain:
 
 @configurable
 class PostConstructionToggle:
-    """Mimics the Enable wrapper — kwarg set via setattr after __init__."""
+    """A kwarg set via setattr after __init__ — invisible to the static-type walker."""
 
     def __init__(self, op: Any) -> None:
         self.op = op
@@ -121,7 +121,7 @@ def test_non_configurable_is_one_level_deep() -> None:
 
 def test_post_construction_setattr_surfaces() -> None:
     obj = PostConstructionToggle(op=None)
-    obj.visualize = True  # type: ignore[attr-defined]  # the Enable pattern
+    obj.visualize = True  # type: ignore[attr-defined]  # undeclared: only the instance walker sees it
     h = get_hierarchy_from_instance(obj)
     assert "PostConstructionToggle.visualize" in h
     type_str, val, doc = h["PostConstructionToggle.visualize"]
