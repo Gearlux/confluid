@@ -212,7 +212,7 @@ def resolve(
     ``Instance`` / ``Lazy`` / ``Class`` markers with their broadcast siblings
     merged into ``.kwargs`` — WITHOUT constructing any live object.
 
-    Use for static structural introspection of a config (e.g. FluxStudio's
+    Use for static structural introspection of a config (e.g. StreamStudio's
     YAML→graph import) when even side-effect-free construction is undesirable.
     ``materialize(data, solidify=False)`` is the instantiate-but-cheap
     counterpart; prefer it unless you specifically need un-built markers.
@@ -977,6 +977,78 @@ def _broadcast_blocked_keys(target_cls: Any) -> Optional[frozenset[str]]:
     from confluid.no_broadcast import no_broadcast_param_names
 
     return no_broadcast_param_names(target_cls)
+
+
+# ---------------------------------------------------------------------------
+# Public settability predicates
+# ---------------------------------------------------------------------------
+# The accept-list and the broadcast overlay above are the engine's answer to
+# "may this key set this attribute?". External config front-ends (a CLI layer
+# turning `--lr 0.1` into a config change) need the SAME answer, and any
+# re-derivation of it drifts: a hand-rolled accept-list misses `**kwargs`
+# targets, `__init__`-body slots, and both broadcast opt-outs. These two
+# predicates are that answer, exported so there is exactly one implementation.
+
+
+def accepts_key(target: Any, key: str) -> bool:
+    """True if ``key`` can set an attribute on ``target`` when ADDRESSED explicitly.
+
+    "Addressed" means the key names its receiver — a ``ClassName:`` block, an
+    exact dotted path, a marker's own kwargs, or a :func:`configure` block.
+    Such keys are gated by the accept-list ALONE: constructor parameters,
+    public settable class attributes, and ``__init__``-body slots (AST-scanned,
+    plus any ``broadcast_attrs=`` declaration and baked table). A target whose
+    constructor takes ``**kwargs`` accepts everything.
+
+    ``target`` may be a class, a live instance, or the dotted string a
+    ``!class:`` marker carries; an unresolvable target accepts nothing.
+
+    Example::
+
+        accepts_key(Trainer, "lr")        # True  — a ctor param
+        accepts_key(Trainer, "typo")      # False — nothing to set
+    """
+    cls = _settability_target(target)
+    if cls is None:
+        return False
+    acceptable = _get_acceptable_keys(cls)
+    return True if acceptable is None else key in acceptable
+
+
+def accepts_broadcast(target: Any, key: str) -> bool:
+    """True if a BARE (unaddressed) ``key`` may cascade onto ``target``.
+
+    Stricter than :func:`accepts_key`: on top of the accept-list this honours
+    the two broadcast opt-outs — ``@configurable(broadcast=False)`` on the
+    class (nothing bare ever lands) and ``NoBroadcast[T]`` on the parameter
+    (that one slot is excluded). Use this for a key the user did not address to
+    a specific receiver, so an opt-out declared in code is respected no matter
+    which front-end delivered the key.
+
+    Example::
+
+        @configurable(broadcast=False)
+        class Pinned:
+            def __init__(self, lr: float = 0.1) -> None: ...
+
+        accepts_key(Pinned, "lr")        # True  — `Pinned: {lr: …}` still works
+        accepts_broadcast(Pinned, "lr")  # False — a bare `lr:` must not land
+    """
+    if not accepts_key(target, key):
+        return False
+    blocked = _broadcast_blocked_keys(_settability_target(target))
+    if blocked is None:
+        return False  # @configurable(broadcast=False) — nothing bare lands
+    return key not in blocked
+
+
+def _settability_target(target: Any) -> Any:
+    """Normalize a class / instance / dotted-name into the class to introspect."""
+    if target is None:
+        return None
+    if isinstance(target, str):
+        return resolve_class(target)
+    return target if isinstance(target, type) else type(target)
 
 
 def _prepare_kwargs(

@@ -121,6 +121,39 @@ the accept-list exists. The permissive path announces itself once per class at
 TRACE level (`accept-list unknown for <Class> (**kwargs constructor)` — see
 the trace-logging snippet above).
 
+## Asking whether a key may land
+
+The rules above — the accept-list, plus the two opt-outs — are also available
+as two predicates, so code that delivers configuration from *outside* a YAML
+document (a CLI layer turning `--lr 0.1` into a config change, a form editor,
+an RPC surface) can ask confluid instead of re-deriving them:
+
+```python
+from confluid import accepts_broadcast, accepts_key, configurable, NoBroadcast
+
+@configurable(broadcast=False)
+class Pinned:
+    def __init__(self, lr: float = 0.1, tag: NoBroadcast[str] = "") -> None:
+        self.lr, self.tag = lr, tag
+
+accepts_key(Pinned, "lr")         # True  — `Pinned: {lr: …}` sets it
+accepts_broadcast(Pinned, "lr")   # False — a bare `lr:` must not cascade in
+accepts_key(Pinned, "typo")       # False — nothing to set
+```
+
+Which predicate to use follows the addressing, not the source:
+
+| The key… | Predicate | Gated by |
+|---|---|---|
+| names its receiver (`ClassName:` block, exact dotted path, a marker's own kwargs) | `accepts_key` | the accept-list |
+| is bare and cascades | `accepts_broadcast` | the accept-list **and** both opt-outs |
+
+Both accept a class, a live instance, or the dotted string a `!class:` marker
+carries; an unresolvable target accepts nothing. Re-deriving this yourself is
+the mistake they exist to prevent — a hand-rolled accept-list typically misses
+`**kwargs` targets, `__init__`-body slots, and both opt-outs, so a class that
+declared "no bare key may land on me" quietly accepts one anyway.
+
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 
 Broadcasting discovers post-init body attributes (`self.loss_fn = …` inside

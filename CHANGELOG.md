@@ -6,6 +6,29 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`accepts_key(target, key)` / `accepts_broadcast(target, key)`** — the two
+  settability predicates the engine already used internally, now public. They
+  answer "may this key set this attribute on this target?" so an external
+  config front-end (a CLI layer turning `--lr 0.1` into a config change) gets
+  the SAME answer a YAML key gets, instead of re-deriving an accept-list that
+  drifts.
+  - `accepts_key` covers ADDRESSED writes — a `ClassName:` block, an exact
+    dotted path, a marker's own kwargs, a `configure()` block — and is gated by
+    the accept-list alone: constructor params, public settable class
+    attributes, `__init__`-body slots (scan ∪ declaration ∪ bake), and a
+    `**kwargs` constructor accepting everything.
+  - `accepts_broadcast` is the stricter BARE-key question: the accept-list
+    MINUS the two broadcast opt-outs, `@configurable(broadcast=False)` on the
+    class and `NoBroadcast[T]` on the parameter.
+  - Both accept a class, a live instance, or the dotted string a `!class:`
+    marker carries; an unresolvable target accepts nothing.
+  - A consumer that hand-rolled its own accept-list was silently bypassing both
+    opt-outs — that is the failure this exports to prevent. See
+    `docs/broadcasting.md` → "Asking whether a key may land".
+
+
 ## [0.1.0] — 2026-07-18
 
 _First public release, published to PyPI as `confluid` (tag `v0.1.0`)._
@@ -232,7 +255,7 @@ _First public release, published to PyPI as `confluid` (tag `v0.1.0`)._
   The loader's include-accumulator moved to its own ContextVar; the private
   `_state` re-export from `confluid.loader` is gone. Downstream boundary
   fixes shipped in the same change: navigaitor's in-process trainer uses
-  `asyncio.to_thread`, fluxstudio's run-worker thread runs under
+  `asyncio.to_thread`, streamstudio's run-worker thread runs under
   `copy_context()`.
 - **Stamping single source of truth:** `registry.register_class` stamps every
   `__confluid_*__` mark (widened with `random`/`constant`/`strict_typing`/
