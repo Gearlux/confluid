@@ -75,9 +75,19 @@ def get_active_context() -> Optional[Dict[str, Any]]:
 def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
     """Activate ``context`` for bare ``flow()`` calls inside the block.
 
-    The public way to make ``!ref:``/broadcast resolution work for ``flow()``
-    calls made OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a
-    deferred ``Lazy`` slot later, on another thread). Fresh flow/instance memos
+    The public way to make ``!ref:`` resolution work for ``flow()`` calls made
+    OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a deferred
+    ``Lazy`` slot later, on another thread).
+
+    **It does NOT enable broadcasting.** A ``flow()`` inside this block builds
+    the target in isolation — the context's top-level keys are NOT injected into
+    same-named constructor parameters, and the object comes back on its
+    defaults. Broadcasting happens only in a ``materialize()`` pass, so pass the
+    document explicitly (``materialize(fluid, context=document)``) when a flat
+    config's keys must reach the object. (This paragraph exists because the
+    omission is invisible: the object builds fine, just unconfigured.)
+
+    Fresh flow/instance memos
     are installed so dotted refs share one instance within the block; the
     previous state is restored on exit (nesting-safe).
 
