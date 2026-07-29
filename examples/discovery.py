@@ -55,6 +55,22 @@ class StaticConfig:
         self.level = level
 
 
+@configurable(task="classification", role="loss", framework="torch")
+class TorchStyleLoss:
+    """A loss belonging to one engine's API."""
+
+    def __init__(self, gamma: float = 2.0) -> None:
+        self.gamma = gamma
+
+
+@configurable(task="classification", role="loss", framework="keras")
+class KerasStyleLoss:
+    """The same slot, a different engine — not interchangeable with the above."""
+
+    def __init__(self, from_logits: bool = True) -> None:
+        self.from_logits = from_logits
+
+
 def main() -> None:
     registry = get_registry()
 
@@ -81,6 +97,18 @@ def main() -> None:
         print("random=True + constant=True correctly rejected")
     else:
         raise AssertionError("contradictory marks should raise ConfigurableDefinitionError")
+
+    # `framework` is what makes a picker OFFERABLE: task+role alone would hand a
+    # torch loss to a Keras trainer. The unit is the API, not the tensor runtime.
+    torch_losses = registry.list_classes(task="classification", role="loss", framework="torch")
+    keras_losses = registry.list_classes(task="classification", role="loss", framework="keras")
+    assert torch_losses == {"TorchStyleLoss"}, torch_losses
+    assert keras_losses == {"KerasStyleLoss"}, keras_losses
+    both = registry.list_classes(task="classification", role="loss")
+    assert {"TorchStyleLoss", "KerasStyleLoss"} <= both, both
+    print(f"framework='torch' finds: {sorted(torch_losses)}")
+    print(f"framework='keras' finds: {sorted(keras_losses)}")
+    print(f"unfiltered finds both:   {sorted(both & {'TorchStyleLoss', 'KerasStyleLoss'})}")
 
     # One docstring, every GUI: the Args: block is machine-readable.
     docs = parse_param_docs(StandardizeOp)

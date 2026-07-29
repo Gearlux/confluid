@@ -24,6 +24,35 @@ class RealFftOp: ...
 
 `group` sets `__confluid_group__`, indexes in the registry (`get_registry().list_classes(group="numpy")`, `list_groups()`), and is otherwise inert — an absent group simply leaves the node directly under `<Package>/<Category>`. It is NOT part of the discovery contract.
 
+**Framework** — which engine's API a class belongs to, and therefore what it can be *wired to*:
+
+```python
+@configurable(task="classification", role="loss", framework="torch")
+class FocalLoss: ...
+
+register(keras.losses.CategoricalCrossentropy,
+         task="classification", role="loss", framework="keras")
+```
+
+`task` / `role` say what a class is **for**; neither says a torch loss cannot be
+handed to a Keras trainer. Without the axis, a picker asked for "a classification
+loss" offers both and the mismatch surfaces as a type error far from its cause.
+`framework` closes that:
+
+```python
+get_registry().list_classes(task="classification", role="loss", framework="keras")
+```
+
+The unit is the **API, not the tensor runtime** — a `keras.losses.Loss` is
+`"keras"` whether Keras runs on TensorFlow, JAX or PyTorch, because the API is
+what decides whether a trainer can consume it. Values in use: `torch`, `keras`,
+`tensorflow`, `jax`, `mlx`, `sklearn`.
+
+It is indexed (`list_classes(framework=…)`, `list_frameworks()`) and deliberately
+**not** folded into `category`, which stays `f"{task}_{role}"`. Classes left
+untagged are absent from the index, so a `framework` filter returns only what
+explicitly claims that engine — probe without the filter to see everything.
+
 **Behavioral marks** — stamp-only flags (no registry index; consumers read the class attribute):
 
 ```python

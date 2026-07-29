@@ -6,6 +6,40 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-29
+
+### Added
+
+- **`framework=` — a third orthogonal discovery axis** on `@configurable`,
+  `register()` and `register_class()`, indexed like `task`/`role`
+  (`list_classes(framework=…)`, `list_frameworks()`).
+
+  `task` and `role` say what a class is *for*; neither says a `torch.nn` loss
+  cannot be handed to a Keras trainer. A discovery consumer asked for "a
+  classification loss" therefore offers both, and the mismatch surfaces as a
+  type error far from its cause. `framework` is what makes such a picker
+  offerable:
+
+  ```python
+  @configurable(task="classification", role="loss", framework="torch")
+  class FocalLoss: ...
+
+  list_classes(task="classification", role="loss", framework="keras")
+  ```
+
+  - The unit is the **API, not the tensor runtime** — a `keras.losses.Loss` is
+    `"keras"` whether Keras runs on TensorFlow, JAX or PyTorch, because the API
+    is what decides whether a trainer can consume it.
+  - Deliberately **not** folded into `category`, which stays `f"{task}_{role}"`.
+  - Follows the same fallback template as the other marks, so a partial
+    re-register never drops it.
+  - Works for `register()`-ed **functions** too (builder factories have no base
+    class, so type inference cannot cover them — the reason this is an explicit
+    tag rather than something derived from the MRO).
+  - Untagged classes are absent from the index: a `framework` filter returns
+    only what explicitly claims that engine. Probe without it to see everything.
+
+
 ## [0.2.0] — 2026-07-27
 
 ### Added
