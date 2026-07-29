@@ -309,9 +309,17 @@ def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
     import ast
     import typing as _typing
 
+    # UNWRAP first: `@configurable` replaces `__init__` with a validation wrapper whose
+    # `__globals__` is confluid's own module dict, where the caller's names do not exist.
+    # Resolving against it silently degraded EVERY body-slot annotation to `Any` — so a
+    # class that dutifully wrote `self.optimizer: Lazy[Optimizer] = ...` got an untyped
+    # schema field and an undetected lazy slot. The scanners already see through the
+    # wrapper for SOURCE; this makes the scope agree with them.
+    target = inspect.unwrap(init_func)
+
     try:
         src = ast.unparse(annotation)
-        scope: Dict[str, Any] = {**vars(_typing), **getattr(init_func, "__globals__", {})}
+        scope: Dict[str, Any] = {**vars(_typing), **getattr(target, "__globals__", {})}
         resolved = eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
     except Exception:
         return Any
