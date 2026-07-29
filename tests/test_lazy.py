@@ -330,3 +330,104 @@ def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any)
         assert isinstance(built, _Needsy) and built.lr == 0.05
     finally:
         del sys.modules["_lazy_slot_probe"]
+
+
+# --------------------------------------------------------------------------- #
+# Body slots — a deferred slot declared in the __init__ BODY, not the signature
+# --------------------------------------------------------------------------- #
+# A class with many deferred dependencies takes a minimal constructor and assigns
+# the rest as body attributes (AGENTS rule 4). Scanning only the signature made the
+# marker load-bearing on params and decorative in the body: a trainer whose deferred
+# slots ALL live in the body reported an empty set while annotating every one of them.
+
+
+def test_a_lazy_annotated_body_slot_is_reported() -> None:
+    from confluid import LazyClass, configurable
+
+    @configurable
+    class _T:
+        def __init__(self) -> None:
+            self.optimizer: Lazy[Any] = LazyClass(dict)
+
+    assert lazy_param_names(_T) == {"optimizer"}
+
+
+def test_a_body_slot_lazy_by_VALUE_is_reported_too() -> None:
+    """`LazyClass(...)` says "deferred" even when the annotation does not."""
+    from confluid import LazyClass, configurable
+
+    @configurable
+    class _T:
+        def __init__(self) -> None:
+            self.optimizer: Any = LazyClass(dict)
+
+    assert lazy_param_names(_T) == {"optimizer"}
+
+
+def test_a_plain_body_slot_is_not_lazy() -> None:
+    from confluid import configurable
+
+    @configurable
+    class _T:
+        def __init__(self) -> None:
+            self.batch_size: int = 32
+
+    assert lazy_param_names(_T) == set()
+
+
+def test_params_and_body_slots_are_unioned() -> None:
+    """The realistic shape: a required input in the signature, infra in the body."""
+    from confluid import LazyClass, configurable
+
+    @configurable
+    class _T:
+        def __init__(self, model: Lazy[Any] = None, batch_size: int = 8) -> None:
+            self.model = model
+            self.batch_size = batch_size
+            self.optimizer: Lazy[Any] = LazyClass(dict)
+            self.lightning: Any = LazyClass(list)
+
+    assert lazy_param_names(_T) == {"model", "optimizer", "lightning"}
+
+
+def test_body_slots_are_collected_across_the_configurable_mro() -> None:
+    from confluid import LazyClass, configurable
+
+    @configurable
+    class _Base:
+        def __init__(self) -> None:
+            self.optimizer: Lazy[Any] = LazyClass(dict)
+
+    @configurable
+    class _Child(_Base):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lightning: Lazy[Any] = LazyClass(list)
+
+    assert lazy_param_names(_Child) == {"optimizer", "lightning"}
+
+
+def test_an_unresolvable_body_annotation_degrades_rather_than_raising() -> None:
+    """Best-effort: an annotation that will not evaluate is simply not lazy."""
+    from confluid import configurable
+
+    @configurable
+    class _T:
+        def __init__(self) -> None:
+            self.thing: "NoSuchTypeAnywhere" = 1  # type: ignore[name-defined]  # noqa: F821
+
+    assert lazy_param_names(_T) == set()
+
+
+def test_to_pydantic_and_lazy_param_names_agree_on_body_slots() -> None:
+    """The asymmetry this closed: one scanned the body, the other did not."""
+    from confluid import LazyClass, configurable
+    from confluid.pydantic_export import lazy_param_names_of, to_pydantic
+
+    @configurable
+    class _T:
+        def __init__(self) -> None:
+            self.optimizer: Lazy[Any] = LazyClass(dict)
+
+    # `lazy_param_names_of` reads the marker off the GENERATED model, so build it first.
+    assert lazy_param_names(_T) == set(lazy_param_names_of(to_pydantic(_T))) == {"optimizer"}
