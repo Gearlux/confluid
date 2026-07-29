@@ -219,6 +219,32 @@ runtime-only and is discovered via `lazy_param_names(cls)`. `Lazy[T]` is the
 Python-annotation twin of the YAML `!lazy:` tag: **the tag defers a *value*,
 the annotation defers a *slot*.**
 
+**Body slots count too.** A class with many deferred dependencies often takes a
+minimal constructor and assigns the rest in the `__init__` body. Annotate those
+the same way — `lazy_param_names` reports constructor parameters *and* body
+slots:
+
+```python
+@configurable
+class Trainer:
+    def __init__(self, model: Lazy[Module], batch_size: int = 32):
+        self.model = model
+        self.optimizer: Lazy[Optimizer] = LazyClass(Adam, lr=1e-3)
+        self.lightning: Lazy[pl.Trainer] = LazyClass(pl.Trainer)
+
+lazy_param_names(Trainer)      # {'model', 'optimizer', 'lightning'}
+```
+
+A body slot is deferred if *either* signal says so — a `LazyClass(...)` value or
+a `Lazy[T]` annotation — so an existing class that only used the value form keeps
+working. Prefer writing both: the value is what makes the slot survive an
+auto-flow walker, and the annotation is what tells a reader and a type-checker.
+Annotating such a slot `Any` (a common habit) declares nothing to either.
+
+The body scan reads `__init__` source, so it is empty in a compiled / frozen /
+zip-imported deployment — the same packaged-mode caveat as broadcasting, with the
+same fix (`confluid-bake`).
+
 ## `!ref:` vs `!clone:` — shared instance vs. deep copy
 
 Both point at another node in the same document; the difference is identity.

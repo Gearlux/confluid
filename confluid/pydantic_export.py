@@ -44,8 +44,8 @@ from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from confluid.exceptions import IntrospectionError
-from confluid.introspect import init_lazy_setattr_names, scan_init_body
-from confluid.lazy import _LAZY_MARKER, is_lazy_annotation
+from confluid.introspect import resolve_ast_annotation, scan_init_body
+from confluid.lazy import _LAZY_MARKER, body_slot_lazy_names, is_lazy_annotation
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
 from confluid.schema import _parse_docstring
@@ -328,69 +328,6 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     return converted_type, Field(default=default, **desc_kw)
 
 
-def _post_init_lazy_slots(cls: type) -> Set[str]:
-    """Names of ``@configurable``-chain body slots whose default is a ``LazyClass(...)``.
-
-    ``self.optimizer: Any = LazyClass(torch.optim.Adam, lr=1e-3)`` marks
-    ``optimizer`` as a **deferred (lazy) slot** — the same role a ``Lazy[T]``
-    constructor-param annotation plays, but expressed as a body attribute under
-    the minimal-ctor pattern. Recorded in ``_confluid_lazy_params`` so the
-    serializer emits ``!lazy:`` (not ``!class:``) for whatever fills the slot.
-    Scanning delegates to the shared :mod:`confluid.introspect`.
-    """
-    lazy: Set[str] = set()
-    for klass in cls.__mro__:
-        if klass is object or not getattr(klass, "__confluid_configurable__", False):
-            continue
-        init = klass.__dict__.get("__init__")
-        if init is not None:
-            lazy |= init_lazy_setattr_names(init)
-    return lazy
-
-
-def _contains_forwardref(anno: Any) -> bool:
-    """True when ``anno`` is — or nests — an unresolved ``typing.ForwardRef``.
-
-    A string forward reference (``self.child: Optional["Node"] = …``) evaluates
-    to ``Optional[ForwardRef('Node')]`` rather than raising, because the string
-    inside the subscript is captured verbatim, not looked up. If the referent
-    isn't a module global (e.g. a class defined inside a function), pydantic
-    can't resolve it and ``create_model`` yields a "not fully defined" model
-    whose ``model_validate`` raises ``PydanticUserError``. Detecting the marker
-    lets us degrade such slots to ``Any`` (the documented fallback).
-    """
-    import typing
-
-    if isinstance(anno, typing.ForwardRef):
-        return True
-    return any(_contains_forwardref(arg) for arg in get_args(anno))
-
-
-def _resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
-    """Best-effort resolve an AST annotation node to a runtime type, else ``Any``.
-
-    Evaluates the unparsed expression against the defining function's module
-    globals plus ``typing``. Any failure (unimportable name, exotic expression)
-    — or a resulting annotation that still carries an unresolved forward
-    reference — falls back to ``Any``: a post-init slot is always surfaced; only
-    its precision degrades.
-    """
-    if annotation is None:
-        return Any
-    import ast
-    import typing as _typing
-
-    try:
-        src = ast.unparse(annotation)
-        scope: Dict[str, Any] = {**vars(_typing), **getattr(init_func, "__globals__", {})}
-        resolved = eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
-    except Exception:
-        return Any
-    # A string forward ref evals to a ForwardRef instead of raising; pydantic
-    # would build a model it can't finish (see _contains_forwardref). Degrade.
-    return Any if _contains_forwardref(resolved) else resolved
-
-
 def _post_init_field_specs(
     cls: type, signature_params: Set[str], param_docs: Dict[str, str]
 ) -> Dict[str, Tuple[Any, Any]]:
@@ -432,7 +369,7 @@ def _post_init_field_specs(
                 continue  # read-only derived property — not a config knob
             if getattr(member, "__confluid_ignore__", False):
                 continue
-            resolved = _resolve_ast_annotation(annotations.get(name), init)
+            resolved = resolve_ast_annotation(annotations.get(name), init)
             converted = _convert_annotation(resolved)
             desc_kw: Dict[str, Any] = {"description": param_docs[name]} if param_docs.get(name) else {}
             # Optional (default None): the class supplies its own default and the
@@ -562,7 +499,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # (which confluid would eagerly flow on assignment and crash).
     lazy_params = {name for name, anno in hints.items() if name not in _SKIP_PARAMS and is_lazy_annotation(anno)}
     if isinstance(cls, type):  # body-slot lazy scan walks ``cls.__mro__`` (classes only)
-        lazy_params |= _post_init_lazy_slots(cls)
+        lazy_params |= body_slot_lazy_names(cls)
     if lazy_params:
         model._confluid_lazy_params = frozenset(lazy_params)  # type: ignore[attr-defined]
 

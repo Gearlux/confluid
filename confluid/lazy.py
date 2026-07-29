@@ -30,7 +30,7 @@ at script init — which fails because ``Adam`` requires ``params``.
 from typing import Annotated, Any, Set, TypeVar, Union, get_type_hints
 
 from confluid.fluid import Fluid
-from confluid.introspect import annotation_has_marker
+from confluid.introspect import annotation_has_marker, init_lazy_setattr_names, resolve_ast_annotation, scan_init_body
 
 T = TypeVar("T")
 
@@ -60,24 +60,65 @@ def is_lazy_annotation(annotation: Any) -> bool:
     return annotation_has_marker(annotation, _LAZY_MARKER)
 
 
-def lazy_param_names(cls: type) -> Set[str]:
-    """Return the set of ``__init__`` parameter names of ``cls`` declared ``Lazy[...]``.
+def body_slot_lazy_names(cls: type) -> Set[str]:
+    """Deferred ``__init__``-BODY slots across ``cls``'s ``@configurable`` MRO.
 
-    Cached per-class on ``cls.__confluid_lazy_params__`` so deep-flow walkers
-    don't re-introspect on every visit. Returns an empty set if ``cls`` has
-    no resolvable ``__init__`` or no Lazy params.
+    A class with many deferred dependencies may declare them as body attributes rather
+    than constructor parameters (AGENTS rule 4) — a trainer's ``optimizer`` /
+    ``train_loader`` / ``lightning``. Such a slot is deferred if EITHER signal says so,
+    and both are reported here so there is one answer rather than one per caller:
+
+    * its **value** is a ``LazyClass(...)`` — what the serializer keys off, so the slot
+      round-trips as ``!lazy:`` instead of a ``!class:`` the engine would eagerly flow;
+    * its **annotation** is ``Lazy[T]`` — the declaration a reader and a type-checker see.
+
+    Best-effort by construction. The scan reads ``__init__`` SOURCE, so a compiled /
+    frozen / zip-imported deployment yields nothing (the documented packaged-mode caveat —
+    run ``confluid-bake``); an annotation that will not evaluate degrades to ``Any``, which
+    simply is not lazy.
+    """
+    names: Set[str] = set()
+    for klass in getattr(cls, "__mro__", ()):
+        if klass is object or not getattr(klass, "__confluid_configurable__", False):
+            continue
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        names |= init_lazy_setattr_names(init)  # lazy by VALUE
+        for slot in scan_init_body(init):  # lazy by ANNOTATION
+            if slot.kind in ("assign", "annassign") and is_lazy_annotation(
+                resolve_ast_annotation(slot.annotation, init)
+            ):
+                names.add(slot.name)
+    return names
+
+
+def lazy_param_names(cls: type) -> Set[str]:
+    """Every slot of ``cls`` declared ``Lazy[...]`` — constructor params AND body slots.
+
+    Both are configurable slots (AGENTS rule 4), so both are reported. Scanning only the
+    constructor made the marker load-bearing in one place and decorative in the other: a
+    trainer whose deferred slots all live in the body (``self.optimizer`` /
+    ``self.train_loader`` / ``self.lightning``) reported an EMPTY set while carrying a
+    ``Lazy`` annotation on every one of them, so a deep-flow walker had nothing to honour
+    and stayed correct only because those slots happened to hold ``LazyClass`` VALUES.
+
+    Cached per-class on ``cls.__confluid_lazy_params__`` so deep-flow walkers don't
+    re-introspect on every visit. Returns an empty set if ``cls`` has no resolvable
+    ``__init__`` or no Lazy slots.
     """
     cached = getattr(cls, "__confluid_lazy_params__", None)
     if cached is not None:
         return cached  # type: ignore[no-any-return]
+    names: Set[str] = set()
     init = getattr(cls, "__init__", None)
-    if init is None:
-        return set()
-    try:
-        hints = get_type_hints(init, include_extras=True)
-    except Exception:
-        return set()
-    names = {name for name, ann in hints.items() if is_lazy_annotation(ann)}
+    if init is not None:
+        try:
+            hints = get_type_hints(init, include_extras=True)
+        except Exception:
+            hints = {}
+        names |= {name for name, ann in hints.items() if is_lazy_annotation(ann)}
+    names |= body_slot_lazy_names(cls)
     try:
         cls.__confluid_lazy_params__ = names  # type: ignore[attr-defined]
     except (AttributeError, TypeError):
