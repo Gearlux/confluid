@@ -23,6 +23,12 @@ class ConfluidRegistry:
         self._by_group: Dict[str, Set[str]] = {}
         self._by_task: Dict[str, Set[str]] = {}
         self._by_role: Dict[str, Set[str]] = {}
+        # ``framework`` is the third orthogonal axis: which ENGINE's API a class
+        # belongs to, and therefore what it can be wired to. `task`/`role` say
+        # what a class is FOR; neither says a `torch.nn` loss cannot be handed to
+        # a Keras trainer. Deliberately NOT folded into ``category`` — that stays
+        # ``f"{task}_{role}"``.
+        self._by_framework: Dict[str, Set[str]] = {}
 
     def register_class(
         self,
@@ -32,6 +38,7 @@ class ConfluidRegistry:
         group: Optional[str] = None,
         task: Optional[str] = None,
         role: Optional[str] = None,
+        framework: Optional[str] = None,
         lazy: bool = False,
         random: bool = False,
         constant: bool = False,
@@ -62,6 +69,7 @@ class ConfluidRegistry:
         group = group if group is not None else getattr(cls, "__confluid_group__", None)
         task = task if task is not None else getattr(cls, "__confluid_task__", None)
         role = role if role is not None else getattr(cls, "__confluid_role__", None)
+        framework = framework if framework is not None else getattr(cls, "__confluid_framework__", None)
         lazy = lazy or bool(getattr(cls, "__confluid_lazy__", False))
         random = random or bool(getattr(cls, "__confluid_random__", False))
         constant = constant or bool(getattr(cls, "__confluid_constant__", False))
@@ -89,6 +97,8 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_task__", task)
             if role is not None:
                 setattr(cls, "__confluid_role__", role)
+            if framework is not None:
+                setattr(cls, "__confluid_framework__", framework)
             if lazy:
                 # A "lazy" class is one whose constructed value should stay
                 # deferred (a LazyClass / runtime-injected slot — e.g. an
@@ -132,6 +142,8 @@ class ConfluidRegistry:
             self._by_task.setdefault(task, set()).add(cls_name)
         if role is not None:
             self._by_role.setdefault(role, set()).add(cls_name)
+        if framework is not None:
+            self._by_framework.setdefault(framework, set()).add(cls_name)
         return cls
 
     def get_class(self, name: str) -> Optional[Callable[..., Any]]:
@@ -155,6 +167,7 @@ class ConfluidRegistry:
         self._by_group.clear()
         self._by_task.clear()
         self._by_role.clear()
+        self._by_framework.clear()
 
     def list_classes(
         self,
@@ -162,14 +175,21 @@ class ConfluidRegistry:
         group: Optional[str] = None,
         task: Optional[str] = None,
         role: Optional[str] = None,
+        framework: Optional[str] = None,
     ) -> Set[str]:
-        """Return registered class names, optionally filtered by ``category`` / ``group`` / ``task`` / ``role``.
+        """Return registered class names, filtered by ``category``/``group``/``task``/``role``/``framework``.
 
         All filters are ``None`` by default (returns every registered name).
         When several are given they INTERSECT (e.g. ``task="classification",
         role="model"`` returns only classification models — equivalent to
         ``category="classification_model"``). A filter no class matches returns
         the empty set rather than raising, so discovery callers can probe freely.
+
+        ``framework`` narrows to one engine's API, which is what makes a picker
+        offerable: ``task="classification", role="loss"`` alone would hand a
+        ``torch.nn`` loss to a Keras trainer. Classes left UNTAGGED are absent
+        from the index, so a ``framework`` filter returns only what explicitly
+        claims that engine — probe without the filter to see everything.
         """
         result: Optional[Set[str]] = None
         for index, value in (
@@ -177,6 +197,7 @@ class ConfluidRegistry:
             (self._by_group, group),
             (self._by_task, task),
             (self._by_role, role),
+            (self._by_framework, framework),
         ):
             if value is None:
                 continue
@@ -201,6 +222,10 @@ class ConfluidRegistry:
     def list_roles(self) -> Set[str]:
         """Return the set of role names that have at least one registered class."""
         return set(self._by_role.keys())
+
+    def list_frameworks(self) -> Set[str]:
+        """Return the set of framework names that have at least one registered class."""
+        return set(self._by_framework.keys())
 
     def register_object(self, obj: Any, name: str) -> None:
         """Register an existing object instance."""

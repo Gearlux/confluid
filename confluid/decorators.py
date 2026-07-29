@@ -25,6 +25,7 @@ def configurable(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    framework: Optional[str] = None,
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
@@ -46,6 +47,7 @@ def configurable(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    framework: Optional[str] = None,
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
@@ -84,6 +86,15 @@ def configurable(
             ``category=f"{task}_{role}"`` so existing category-based discovery
             keeps working, while ``list_classes(task=..., role=...)`` enables
             navigaitor's scan-and-generate task surfaces.
+        framework: Optional engine whose API this class belongs to (``"torch"`` /
+            ``"keras"`` / ``"tensorflow"`` / ``"jax"`` / ``"mlx"`` / ``"sklearn"``).
+            The unit is the **API**, not the tensor runtime: a ``keras.losses.Loss``
+            is ``"keras"`` whether Keras runs on TensorFlow, JAX or PyTorch,
+            because that is what decides whether a given trainer can consume it.
+            Orthogonal to ``task``/``role`` and NOT folded into ``category``:
+            ``task``/``role`` say what a class is FOR, ``framework`` says what it
+            can be WIRED TO. Indexed, so ``list_classes(task=…, role=…,
+            framework=…)`` filters a picker down to compatible candidates.
         role: Optional slot role this class fills for its task (``"model"`` /
             ``"loss"`` / ``"dataset"`` / ``"metric"`` / ``"trainer"``).
         lazy: When ``True``, stamp ``__confluid_lazy__`` on the class. Marks a
@@ -192,6 +203,7 @@ def configurable(
             group=group,
             task=task,
             role=role,
+            framework=framework,
             lazy=lazy,
             random=random,
             constant=constant,
@@ -220,6 +232,7 @@ def register(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    framework: Optional[str] = None,
     lazy: bool = False,
     eager: bool = False,
     capture: bool = True,
@@ -238,6 +251,9 @@ def register(
         group: Optional path-like presentation sub-grouping (see :func:`configurable`).
         task: Optional ML task (see :func:`configurable`).
         role: Optional slot role (see :func:`configurable`).
+        framework: Optional engine whose API this class belongs to (see
+            :func:`configurable`) — e.g. ``register(nn.CrossEntropyLoss,
+            task="classification", role="loss", framework="torch")``.
         lazy: When ``True``, stamp ``__confluid_lazy__`` — the constructed value
             should stay deferred (a runtime-injection slot like a torch optimizer
             needing ``params=`` / a DataLoader needing ``dataset=``). See
@@ -261,6 +277,7 @@ def register(
         group=group,
         task=task,
         role=role,
+        framework=framework,
         lazy=lazy,
         eager=eager,
         no_capture=not capture,
