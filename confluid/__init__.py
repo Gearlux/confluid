@@ -30,6 +30,7 @@ from confluid.engine import (
     resolve,
 )
 from confluid.exceptions import (
+    AmbiguousClassError,
     CircularIncludeError,
     ConfigFileNotFoundError,
     ConfigurableDefinitionError,
@@ -71,6 +72,7 @@ from confluid.validation import ValidationMode, ValidationPolicy, get_policy, re
 __all__ = [
     "ConfluidError",
     "ConfigurationError",
+    "AmbiguousClassError",
     "CircularIncludeError",
     "ReferenceResolutionError",
     "UnknownClassError",

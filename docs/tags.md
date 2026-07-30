@@ -98,7 +98,7 @@ model: !class:Model()
   head: !class:LinearHead(units=128)
 ```
 
-Three grammar notes (all pinned by the test suite):
+Four grammar notes (all pinned by the test suite):
 
 - **Inline scalars are coerced.** In both the unquoted tag (`!class:Model(layers=7)`)
   and the quoted-string (`"!class:Model(layers=7)"`) forms, each inline
@@ -116,6 +116,14 @@ Three grammar notes (all pinned by the test suite):
   `(k=v)` kwargs combine with the block; on a key in both, the **block body
   wins** (it's later in document order — last-write-wins). Inline-only keys are
   preserved, not discarded.
+- **A target may carry a tag selector.** `!class:FourierOp@group=fft/torch` picks
+  between classes that share a registered name (see
+  [Discovery](discovery.md#when-two-classes-share-a-name)). It composes with
+  everything above — inline kwargs (`!class:X@role=metric(k=3)`), a block body,
+  and `!lazy:`. A value written `$key` is read from the loaded configuration
+  (`!class:Loss@framework=$engine`), including from inside another marker's
+  block; `${...}` cannot appear in an unquoted tag at all, because `{` is not a
+  legal YAML tag character.
 
 > A legacy, colon-free spelling — `!class Model` / `!class Model(lr=1)` — is
 > kept for backward compatibility. It mirrors the same eager/deferred `()` rule

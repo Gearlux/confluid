@@ -53,6 +53,76 @@ It is indexed (`list_classes(framework=…)`, `list_frameworks()`) and deliberat
 untagged are absent from the index, so a `framework` filter returns only what
 explicitly claims that engine — probe without the filter to see everything.
 
+## When two classes share a name
+
+A registered name is not required to be unique. Two classes legitimately share one when a
+discovery tag tells them apart — the same op implemented per framework, or a library that
+publishes one name as both a loss and a metric:
+
+```python
+@configurable(category="op", group="fft/numpy")
+class FourierOp: ...
+
+@configurable(category="op", group="fft/torch")     # same name, different group
+class FourierOp: ...
+```
+
+Both are registered, both are enumerable, and both are reachable. What changes is how you
+address them: an unambiguous name is published under itself, while a shared name is
+published under each class's canonical dotted key, so the usual enumerate-then-look-up
+pass reaches both.
+
+```python
+get_registry().list_classes(category="op")
+# {'myops.numpy.FourierOp', 'myops.torch.FourierOp'}
+
+get_registry().get_class("FourierOp")                    # AmbiguousClassError
+get_registry().get_class("FourierOp", group="fft/torch") # the torch one
+get_registry().get_class("myops.torch.FourierOp")        # ...or address it directly
+```
+
+A **bare** lookup of a shared name raises [`AmbiguousClassError`](errors.md) listing the
+candidates — binding one of them would otherwise depend on which module imported last.
+The tag filters mirror `list_classes`, so a consumer that already narrowed an enumeration
+carries the same filter into the lookup.
+
+In a config, three spellings choose one:
+
+```yaml
+op: !class:myops.torch.FourierOp()      # the dotted path — always unambiguous
+op: !class:FourierOp@group=fft/torch()  # a tag selector
+op: !class:FourierOp@framework=$engine() # ...whose value may come from the document
+engine: torch
+```
+
+The `@axis=value` selector accepts any of the five discovery axes (`category`, `group`,
+`task`, `role`, `framework`), comma-separated for more than one, and an unknown axis is
+rejected rather than silently ignored. A value written `$key` is read from the loaded
+configuration — so a document says which engine it is targeting once, and every ambiguous
+target follows it. Dotted paths work there too (`$run.engine`), and because the value is
+resolved at construction time it also works for a target nested inside another marker's
+kwargs.
+
+> **`$key` reads the document being materialized.** A marker that is deliberately kept
+> deferred and flowed LATER by your own code — `flow(self.loss)` inside a trainer's
+> `run()`, long after `load()` returned — is outside that window, and the selector fails
+> naming the key it could not find. Write the value literally there
+> (`@framework=keras`), or flow inside `confluid.active_context(document)`. Pair it with a [scope block](tags.md) that declares the key, and one config drives
+either engine:
+
+```yaml
+torch_run: !scope:engine=torch
+  engine: torch
+keras_run: !scope:engine=keras
+  engine: keras
+loss: !class:CrossEntropy@framework=$engine()
+```
+
+**When it is a mistake instead.** If a second class claims a name and NO tag distinguishes
+it, there is nothing a lookup could select on — so that case keeps its last-write-wins
+behaviour but logs a warning naming both classes. Give one a distinguishing tag, or an
+explicit `name=`.
+
 **Behavioral marks** — stamp-only flags (no registry index; consumers read the class attribute):
 
 ```python

@@ -250,25 +250,25 @@ def test_materialize_keeps_lazy_post_init_attr_deferred() -> None:
     mod = types.ModuleType("_lazy_postinit_probe")
 
     @configurable
-    class _Trainerish:
+    class _LazyPostInitTrainer:
         def __init__(self, name: str = "x") -> None:
             self.name = name
             self.optimizer: Any = None  # post-init slot, not a ctor param
 
-    mod._Trainerish = _Trainerish  # type: ignore[attr-defined]
+    mod._LazyPostInitTrainer = _LazyPostInitTrainer  # type: ignore[attr-defined]
     sys.modules["_lazy_postinit_probe"] = mod
     try:
         trainer = flow(
             load(
-                "t: !class:_lazy_postinit_probe._Trainerish\n"
+                "t: !class:_lazy_postinit_probe._LazyPostInitTrainer\n"
                 "  name: t\n"
-                "  optimizer: !lazy:_lazy_postinit_probe._Trainerish\n"
+                "  optimizer: !lazy:_lazy_postinit_probe._LazyPostInitTrainer\n"
                 "    name: inner\n"
             )["t"]
         )
         assert isinstance(trainer.optimizer, LazyClass)
         # The owning code flows it explicitly when ready.
-        assert isinstance(flow(trainer.optimizer), _Trainerish)
+        assert isinstance(flow(trainer.optimizer), _LazyPostInitTrainer)
     finally:
         del sys.modules["_lazy_postinit_probe"]
 
