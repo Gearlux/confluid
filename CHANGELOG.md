@@ -6,7 +6,7 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.0] — 2026-07-29
+## [0.3.0] — 2026-07-30
 
 ### Added
 
@@ -38,6 +38,70 @@ All notable changes to confluid are documented here. The format follows
     tag rather than something derived from the MRO).
   - Untagged classes are absent from the index: a `framework` filter returns
     only what explicitly claims that engine. Probe without it to see everything.
+
+- **A registered NAME may map to more than one class.** Two classes may share a
+  name when any discovery tag tells them apart — the same op implemented per
+  framework (`group="fft/numpy"` vs `"fft/torch"`), or a library publishing one
+  name as both a loss and a metric (`role="loss"` vs `"metric"`). Previously the
+  second registration silently replaced the first: it vanished from every
+  picker, and which one survived depended on import order.
+
+  ```python
+  get_registry().get_class("FourierOp", group="fft/torch")   # tag-filtered lookup
+  get_registry().get_class("myops.torch.FourierOp")          # ...or the dotted key
+  ```
+
+  - `get_class` takes the same five filters `list_classes` intersects.
+  - `list_classes()` returns the bare name while it is unambiguous and the
+    canonical dotted key once a name is shared, so the enumerate-then-look-up
+    idiom keeps working AND both classes become reachable.
+  - `ConfluidRegistry.key_for(cls)` reports the key a class is published under;
+    `dump()` uses it, so a round-trip reloads the same class rather than a
+    namesake.
+
+- **`AmbiguousClassError`** (a `ConfigurationError`, and so a `ValueError`) —
+  raised when a bare lookup names several classes and nothing narrows the
+  choice. A sibling of `UnknownClassError`, not a subclass: code catching
+  "unknown" to fall back to an import must not swallow "ambiguous". The message
+  lists every candidate with the tags that separate them.
+
+- **Tag selectors in a target** — `!class:FourierOp@group=fft/torch`, composable
+  with inline kwargs and `!lazy:`. A selector value written `$key` is read from
+  the loaded configuration (`!class:Loss@framework=$engine`), so a document
+  states its engine once and every ambiguous target follows it — including
+  targets nested inside another marker's block, which load-time `${...}`
+  interpolation cannot reach. An unknown axis is rejected, not ignored.
+
+### Changed
+
+- **A bare lookup of a shared name now raises** instead of returning whichever
+  class registered last (`get_class`, and `resolve_class(strict=True)` — which
+  the construction path uses). `resolve_class` stays non-raising by default, so
+  introspection callers that already treat `None` as "not introspectable" are
+  unaffected.
+- **`list_classes()` returns dotted keys for a shared name** (bare names are
+  unchanged for every unique one).
+- `ConfluidRegistry._classes` is gone, replaced by `_entries` (name → entries)
+  and `_by_key` (canonical key → entry). The five tag indices now hold entry
+  keys rather than names.
+
+### Fixed
+
+- **A duplicate registration with nothing to tell it apart now warns.** Same
+  name, same tags, different class: last-write-wins is preserved, but it is no
+  longer silent. Re-registering the SAME class object stays silent, since a
+  snapshot restore does that on every bootstrap.
+- **`register_class(cls)` is idempotent after a `name=` override** — `name` now
+  falls back to the mark the class already carries (read from its OWN
+  `__dict__`, so a subclass is never registered under its parent's custom name).
+  A partial re-register used to mint a second entry under the short name.
+- **A dotted `!class:` target now matches its class-name block.**
+  `!class:pkg.mod.Widget` set the block-match name to the dotted string, so a
+  `Widget:` block silently did not apply and the value stayed at its
+  constructor default. This also aligns the load path with `configure()`, which
+  has always matched on the registered name.
+- **A re-registration that changes a tag no longer leaves the class indexed
+  under the old value.**
 
 
 ## [0.2.0] — 2026-07-27

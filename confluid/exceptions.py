@@ -30,6 +30,15 @@ class UnknownClassError(ConfigurationError):
     """A ``!class:`` / ``Fluid`` target names a class not in the registry and not importable."""
 
 
+class AmbiguousClassError(ConfigurationError):
+    """A target names a class registered by SEVERAL classes, and nothing narrows the choice.
+
+    A sibling of :class:`UnknownClassError`, not a subclass: "unknown" and "ambiguous" are
+    opposite failures, and a caller catching "unknown" to fall back to an import must not
+    swallow this one. The message lists every candidate with its distinguishing tags.
+    """
+
+
 class ConfigurableDefinitionError(ConfigurationError):
     """A ``@configurable`` declaration is self-contradictory (e.g. ``constant=True, random=True``)."""
 

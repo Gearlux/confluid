@@ -110,6 +110,27 @@ def main() -> None:
     print(f"framework='keras' finds: {sorted(keras_losses)}")
     print(f"unfiltered finds both:   {sorted(both & {'TorchStyleLoss', 'KerasStyleLoss'})}")
 
+    # Two classes may share a NAME when a tag tells them apart — here the same op
+    # implemented for two engines. Both stay discoverable; the shared name simply
+    # publishes each under its canonical dotted key.
+    def _variant(engine: str) -> type:
+        @confluid.configurable(category="op", group=f"fft/{engine}")
+        class FourierOp:
+            """The same op, per engine."""
+
+        return FourierOp
+
+    numpy_op, torch_op = _variant("numpy"), _variant("torch")
+    keys = registry.list_classes(category="op")
+    assert registry.key_for(numpy_op) in keys and registry.key_for(torch_op) in keys
+    assert registry.get_class("FourierOp", group="fft/torch") is torch_op
+    try:
+        registry.get_class("FourierOp")
+    except confluid.AmbiguousClassError:
+        print("a shared name needs a tag filter, a selector, or the dotted key")
+    else:
+        raise AssertionError("a bare lookup of a shared name should raise")
+
     # One docstring, every GUI: the Args: block is machine-readable.
     docs = parse_param_docs(StandardizeOp)
     assert docs["mean"] == "Channel mean."

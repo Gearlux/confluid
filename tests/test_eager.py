@@ -187,11 +187,11 @@ def test_nested_configurable_in_captured_kwargs_round_trips() -> None:
             self.x = x
 
     @configurable(eager=True)
-    class Holder:
+    class EagerHolder:
         def __init__(self, child: Any = None) -> None:
             self._c = child  # stored under a PRIVATE attr — invisible to the live-attr walk
 
-    obj = load("thing: !class:Holder()\n  child: !class:Child()\n    x: 3")["thing"]
+    obj = load("thing: !class:EagerHolder()\n  child: !class:Child()\n    x: 3")["thing"]
     assert isinstance(obj._c, Child)
     text = dump(obj)
     assert "!class:Child" in text

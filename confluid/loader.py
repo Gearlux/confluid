@@ -15,6 +15,16 @@ from confluid.scopes import normalize_active, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
+# The ``Target(...)`` call grammar shared by ``!class:`` / ``!lazy:`` and the legacy
+# colon-free ``!class`` — one constant so the three cannot drift. The name group accepts
+# a dotted path AND a ``@axis=value`` tag selector (``!class:FourierOp@group=fft/torch``,
+# ``!class:X@framework=$framework``): ``@ = / , $ ~ -`` are all legal YAML tag-suffix
+# characters, so the selector rides an unquoted tag. Widening the group is purely
+# additive — every pre-existing spelling (``Foo``, ``Foo()``, ``a.b.Foo(x=1)``) matches
+# exactly as before. ``_parse_scope_suffix`` keeps its own pattern on purpose: a scope
+# key is a plain identifier, not a class target.
+_TARGET_CALL_RE = re.compile(r"^([\w.@=/,~$-]+)\((.*)\)$")
+
 # Per-context include accumulator (a YAML-side concern — deliberately NOT on
 # the engine's _ENGINE_STATE): populated only inside load_config_with_paths.
 _INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
@@ -179,7 +189,7 @@ def _register_constructors() -> None:
         return _stamp(Reference(tag_suffix), loader, node)
 
     def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
-        instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
+        instant = _TARGET_CALL_RE.match(tag_suffix)
         factory = Instance if instant else Class
         name = instant.group(1) if instant else tag_suffix
         inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
@@ -208,7 +218,7 @@ def _register_constructors() -> None:
         # ``!lazy:Adam`` (bare), ``!lazy:Adam(lr=1e-3)`` (inline kwargs),
         # or ``!lazy:Adam`` with a YAML mapping body for the kwargs. Inline
         # values are coerced and merged with the body exactly as for !class:.
-        instant = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
+        instant = _TARGET_CALL_RE.match(tag_suffix)
         name = instant.group(1) if instant else tag_suffix
         inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
 
@@ -263,7 +273,7 @@ def _register_constructors() -> None:
 
     def class_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         val = loader.construct_scalar(node)
-        instant = re.match(r"^([\w_.]+)\((.*)\)$", val)
+        instant = _TARGET_CALL_RE.match(val)
         if instant:
             return _stamp(
                 Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2))),

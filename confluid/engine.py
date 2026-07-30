@@ -30,11 +30,11 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Type
 
 from loggair import get_logger
 
-from confluid.exceptions import ConstructionError, ReferenceResolutionError, UnknownClassError
+from confluid.exceptions import ConfigurationError, ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.fluid import Class, Clone, Fluid, Instance, Lazy, Reference, T, format_yaml_loc
 from confluid.introspect import baked_init_attrs, init_setattr_names, init_source_available
 from confluid.merger import expand_dotted_keys
-from confluid.registry import get_registry, resolve_class
+from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, resolve_reference_path
 
@@ -1116,6 +1116,19 @@ def _prepare_kwargs(
     target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
     param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
     broadcast_blocked = _broadcast_blocked_keys(target_cls)
+    # A class-name block is matched by NAME, but `cls_name` is whatever the target was
+    # SPELLED as — which may be a dotted path (`!class:pkg.mod.Widget`) or carry a tag
+    # selector (`!class:Widget@framework=torch`). Both are spellings of the same class, so
+    # a `Widget:` block must still reach it; before this, a dotted target silently ignored
+    # its block (measured: the value stayed at the constructor default). The registered
+    # name of the resolved class is therefore matched alongside the literal spelling —
+    # which also aligns this path with `configure()`, which has always keyed off the
+    # stamped `__confluid_name__` (configurator._apply).
+    block_names = {cls_name}
+    if target_cls is not None:
+        registered = target_cls.__dict__.get("__confluid_name__") if hasattr(target_cls, "__dict__") else None
+        block_names.add(str(registered or getattr(target_cls, "__name__", "")))
+    block_names.discard("")
 
     def _accepts(k: str, v: Any) -> bool:
         if isinstance(v, Fluid):
@@ -1248,7 +1261,7 @@ def _prepare_kwargs(
             continue
 
         # Class-name / instance-name dict block — unroll inline (addressed → ungated).
-        if k in (cls_name, instance_name) and isinstance(v, dict):
+        if (k in block_names or k == instance_name) and isinstance(v, dict):
             if report is not None:
                 report.mark_used(k)  # a named block is "used" once it matches an object
             _consume_block(v, origin=f"block {k!r}", gated=False)
@@ -1604,13 +1617,37 @@ def _flow_target(
 
 
 def _resolve_target_callable(target: Any) -> Any:
-    """Resolve a string target to its class/callable via the registry; pass callables through."""
+    """Resolve a string target to its class/callable via the registry; pass callables through.
+
+    This is a CONSTRUCTION funnel, so it resolves ``strict=True``: an ambiguous name must
+    stop the run naming its candidates, never bind whichever module happened to import
+    last. It also passes the active document, which is what lets a ``@axis=$key`` selector
+    read the choice from the config (``!class:FourierOp@framework=$framework``) — the
+    context is available here even for a node nested inside another marker's kwargs.
+    """
     if isinstance(target, str):
-        resolved = resolve_class(target)
+        resolved = resolve_class(target, strict=True, context=get_active_context())
         if resolved is None:
-            raise UnknownClassError(f"Cannot resolve class: {target}")
+            raise UnknownClassError(f"Cannot resolve class: {target}{_selector_detail(target)}")
         return resolved
     return target
+
+
+def _selector_detail(target: str) -> str:
+    """Explain a selector miss in terms of the RESOLVED filter, not the raw spelling.
+
+    ``!class:Loss@framework=$framework`` failing is otherwise reported verbatim, which
+    hides the thing the reader needs: which value ``$framework`` actually carried.
+    """
+    try:
+        name, selectors = parse_target_spec(target)
+    except ConfigurationError:
+        return ""
+    if not selectors:
+        return ""
+    resolved = _resolve_selector_values(selectors, get_active_context())
+    shown = ", ".join(f"{axis}={value!r}" for axis, value in resolved.items())
+    return f" — no class named {name!r} with {shown} is registered"
 
 
 def _resolve_kwarg_value(
@@ -1917,7 +1954,9 @@ def _flow_generic_fluid(obj: Any, runtime_kwargs: Dict[str, Any]) -> Any:
     """Generic ``Fluid`` fallback — treat as a Class when the target resolves."""
     target = obj.target
     if isinstance(target, str):
-        resolved = resolve_class(target)
+        # A construction funnel like _resolve_target_callable — same strictness, same
+        # context (so a `@axis=$key` selector resolves against the active document).
+        resolved = resolve_class(target, strict=True, context=get_active_context())
         if resolved is not None:
             base_kwargs = {**obj.kwargs, **runtime_kwargs}
             return resolved(**base_kwargs)

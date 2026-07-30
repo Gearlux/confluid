@@ -4,6 +4,8 @@ from typing import Any, Optional, Set
 
 import yaml
 
+from confluid.registry import get_registry
+
 
 class CompactDumper(yaml.SafeDumper):
     """Custom YAML dumper with !class tag support."""
@@ -100,8 +102,13 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             cls_name = str(target)
         return dumper.represent_mapping(f"!class:{cls_name}()", getattr(data, "__confluid_kwargs__", {}))
 
-    # Live @configurable instance → dump with () to indicate instant construction on reload
-    cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
+    # Live @configurable instance → dump with () to indicate instant construction on reload.
+    # The registry answers with the PUBLIC key — the bare name while it is unambiguous, the
+    # dotted key once a second class claims that name — so the emitted tag re-resolves to
+    # THIS class rather than to whichever namesake happens to win a bare lookup. Asking the
+    # registry (rather than reading a stamped attribute) is what keeps that correct: a name
+    # becomes ambiguous at the second registration, when this class is already stamped.
+    cls_name = get_registry().key_for(data.__class__) or getattr(data, "__confluid_name__", data.__class__.__name__)
     sig: Optional[inspect.Signature]
     try:
         sig = inspect.signature(data.__class__)
@@ -132,7 +139,10 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             if not _skip_none(p, val):
                 if isinstance(val, type):
                     if hasattr(val, "__confluid_configurable__"):
-                        val = f"!class:{getattr(val, '__confluid_name__', val.__name__)}"
+                        # Same reasoning as the instance branch above: a class-VALUED
+                        # kwarg needs the unambiguous key, not the shared short name.
+                        key = get_registry().key_for(val) or getattr(val, "__confluid_name__", None)
+                        val = f"!class:{key or val.__name__}"
                     else:
                         val = f"{val.__module__}.{val.__name__}"
                 kwargs[p] = val

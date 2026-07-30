@@ -21,10 +21,25 @@ import pytest
 
 from confluid import get_registry
 
-# The registry's backing index dicts (mirrors marainer/tests/test_presets.py's
-# snapshot pattern). Values are copied one level deep so re-registration in a
-# test can't mutate the snapshot's category/group/task/role buckets.
-_REGISTRY_INDEXES = ("_classes", "_objects", "_by_category", "_by_group", "_by_task", "_by_role")
+# The registry's backing index dicts. Values are copied one level deep so
+# re-registration in a test can't mutate the snapshot's entry lists or its
+# category/group/task/role/framework buckets. Entries themselves are frozen and
+# replaced (never mutated), so sharing them by reference is safe.
+#
+# ``test_registry_isolation_covers_every_index`` DERIVES the expected set from a fresh
+# registry rather than restating it — ``_by_framework`` was silently missing here from
+# the day it was added, so any test that cleared the registry emptied the framework index
+# for the rest of the session.
+_REGISTRY_INDEXES = (
+    "_entries",
+    "_by_key",
+    "_objects",
+    "_by_category",
+    "_by_group",
+    "_by_task",
+    "_by_role",
+    "_by_framework",
+)
 
 
 @pytest.fixture(autouse=True)

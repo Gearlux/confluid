@@ -90,7 +90,7 @@ obj: !class:OptedOut()
 
 def test_nested_class_stub_broadcast_honors_marker() -> None:
     @configurable
-    class Holder:
+    class NoBroadcastHolder:
         def __init__(self, child: Any = None):
             self.child = child
 
@@ -98,7 +98,7 @@ def test_nested_class_stub_broadcast_honors_marker() -> None:
         """
 name: stray
 strength: 3.0
-holder: !class:Holder()
+holder: !class:NoBroadcastHolder()
   child: !class:MarkedParam
 """
     )
