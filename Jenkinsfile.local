@@ -39,6 +39,10 @@ pipeline {
                 sh "${VENV_BIN}/uv --version"
                 echo 'Installing Project in Editable Mode...'
                 
+                // Internal Gearlux dependencies — installed FIRST with --no-deps
+                // so .[dev] below finds them pre-satisfied instead of hitting PyPI
+                // (Gearlux distribution names are intentionally unpublished on PyPI).
+                sh "if [ -f '${env.WORKSPACE_ROOT}/loggair/pyproject.toml' ]; then ${VENV_BIN}/uv pip install --no-deps -e '${env.WORKSPACE_ROOT}/loggair'; else ${VENV_BIN}/uv pip install --no-deps git+https://github.com/Gearlux/loggair.git@main; fi"
                 sh "${VENV_BIN}/uv pip install -e .[dev]"
                 // Notebook-only extras (matplotlib, jupyter kernels, etc.) live
                 // in the optional `[notebook]` extra when the project ships
