@@ -28,19 +28,52 @@ overridable via env vars at first :func:`get_policy` access:
 * ``CONFLUID_VALIDATE_INIT``
 * ``CONFLUID_VALIDATE_YAML``
 * ``CONFLUID_VALIDATE_TOOL``
+
+Pydantic is an OPTIONAL dependency (the ``confluid[pydantic]`` extra). When it
+is not installed, every validation point degrades to ``"off"`` — a one-time
+log line records the downgrade and all three ``validate_*`` functions return
+without checking anything.
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional
 
-from pydantic import BaseModel, ValidationError
+from confluid.exceptions import ValidationModeError
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+
+from loggair import get_logger
+
+logger = get_logger("confluid.validation")
+
+_pydantic_available: Optional[bool] = None
+
+
+def _have_pydantic() -> bool:
+    """True when pydantic is importable; logs a one-time notice when it is not.
+
+    Cached module-wide so the import is attempted (and the downgrade logged)
+    at most once per process.
+    """
+    global _pydantic_available
+    if _pydantic_available is None:
+        try:
+            import pydantic  # noqa: F401
+
+            _pydantic_available = True
+        except ImportError:
+            _pydantic_available = False
+            logger.warning(
+                "pydantic is not installed — confluid validation is disabled "
+                "(all validation points degrade to 'off'). "
+                "Install the extra to enable it: pip install 'confluid[pydantic]'"
+            )
+    return _pydantic_available
 
 
 ValidationMode = Literal["strict", "warn", "off"]
@@ -96,7 +129,7 @@ def _normalize_mode(value: str, *, env_var: str) -> ValidationMode:
     """
     lowered = value.strip().lower()
     if lowered not in _VALID_MODES:
-        raise ValueError(
+        raise ValidationModeError(
             f"{env_var}={value!r} is not a valid ValidationMode " f"(expected one of {sorted(_VALID_MODES)})"
         )
     return lowered  # type: ignore[return-value]
@@ -169,8 +202,11 @@ def override_init_mode(mode: ValidationMode) -> Iterator[None]:
         _policy = previous
 
 
-def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> None:
-    """Validate constructor kwargs against ``to_pydantic(cls)`` under ``mode``.
+def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> None:
+    """Validate constructor / call kwargs against ``to_pydantic(cls)`` under ``mode``.
+
+    ``cls`` may be a class OR a callable (a ``@configurable`` builder function),
+    mirroring ``to_pydantic``'s callable-awareness.
 
     Builds (or reuses the cached) pydantic mirror of ``cls.__init__`` and
     runs ``Model.model_validate(kwargs)``. On failure:
@@ -199,13 +235,15 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
     Any kwarg whose value contains a Fluid anywhere in its tree is treated
     as deferred and skipped.
     """
-    if mode == "off":
+    if mode == "off" or not _have_pydantic():
         return
 
     # Lazy import: ``pydantic_export`` pulls pydantic + inspect, which is
     # heavier than this module needs to be eligible to import. ``Fluid`` is
     # imported lazily too so this module stays importable before fluid.py is
     # fully initialised (the loader → fluid → validation chain runs at startup).
+    from pydantic import ValidationError
+
     from confluid.fluid import Fluid
     from confluid.pydantic_export import to_pydantic
 
@@ -249,10 +287,10 @@ def validate_kwargs(cls: type, kwargs: Dict[str, Any], mode: ValidationMode) -> 
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning("%s: invalid configuration\n%s", cls.__name__, exc)
+        logger.warning(f"{cls.__name__}: invalid configuration\n{exc}")
 
 
-def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> None:
+def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> Optional[str]:
     """Validate a post-construction setattr against the field's pydantic type.
 
     Mirrors :func:`validate_kwargs` for the single-field case used by
@@ -260,26 +298,35 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     here (the configure path may target attributes outside the ``__init__``
     signature, e.g. ``@configurable`` classes that expose extra knobs as
     plain instance attributes).
+
+    Returns:
+        The stringified validation error on a WARN-mode failure (so the
+        caller can record it in a ``ConfigurationReport``), ``None`` on
+        pass / off / unknown field. Strict mode still raises.
     """
-    if mode == "off":
-        return
+    if mode == "off" or not _have_pydantic():
+        return None
+
+    from pydantic import ValidationError
 
     from confluid.pydantic_export import to_pydantic
 
     try:
         model = to_pydantic(cls)
     except TypeError:
-        return
+        return None
 
     if name not in model.model_fields:
-        return
+        return None
 
     try:
         model.__pydantic_validator__.validate_assignment(model.model_construct(), name, value)
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning("%s.%s: invalid value\n%s", cls.__name__, name, exc)
+        logger.warning(f"{cls.__name__}.{name}: invalid value\n{exc}")
+        return str(exc)
+    return None
 
 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:
@@ -289,15 +336,17 @@ def validate_model(model: BaseModel, mode: ValidationMode) -> None:
     to surface ``warn`` outcomes as structured warnings without raising. This
     helper redundantly re-validates so the same mode logic applies uniformly.
     """
-    if mode == "off":
+    if mode == "off" or not _have_pydantic():
         return
+
+    from pydantic import ValidationError
 
     try:
         type(model).model_validate(model.model_dump())
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning("%s: invalid configuration\n%s", type(model).__name__, exc)
+        logger.warning(f"{type(model).__name__}: invalid configuration\n{exc}")
 
 
 __all__ = [

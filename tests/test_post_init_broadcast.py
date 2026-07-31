@@ -11,7 +11,7 @@ class's block.
 
 import pytest
 
-from confluid import configurable, flow, load, materialize
+from confluid import Instance, configurable, flow, load, materialize
 from confluid.loader import _get_acceptable_keys, _get_post_init_attrs
 
 # ---------------------------------------------------------------------------
@@ -141,12 +141,11 @@ def test_post_init_broadcast_coexists_with_ctor_param_broadcast() -> None:
 def test_post_init_broadcast_via_materialize() -> None:
     # The materialize entry point (what Liquify uses) must honor the same
     # broadcast rule.
+    trainer_marker = Instance(f"{_Trainerish.__module__}.{_Trainerish.__qualname__}")
+    trainer_marker.kwargs.update({"model": "m"})
     config = {
         "loss_fn": "custom_loss",
-        "trainer": {
-            "_confluid_class_": f"{_Trainerish.__module__}.{_Trainerish.__qualname__}",
-            "model": "m",
-        },
+        "trainer": trainer_marker,
     }
     result = materialize(config, context=config)
     trainer = result["trainer"]

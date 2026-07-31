@@ -20,8 +20,26 @@ include:
 # Standard top-level settings and object configurations.
 base_lr: 0.001
 
+# String interpolation (${...}). The name decides the source:
+#   plain name              -> environment variable  (${HOME}, ${PORT:8080})
+#   dotted / bracketed name -> another CONFIG KEY     (${train.dataset}, ${items[0]})
+# A whole-string match keeps the value's native type; embedded matches
+# substitute str(value). On a miss the :default applies, else the literal
+# ${...} is left in place. (For wiring a live OBJECT into a slot, use !ref:.)
+train:
+  dataset: RFUAV
+  version: v3
+data_dir: "${HOME}/data/${train.dataset}/${train.version}"
+
 # Dotted Notation (Helios Style)
 # These are expanded into nested dicts: {"Model": {"layers": 3, "dropout": 0.1}}
+# Addressed keys are EXACT: they configure the matched node only, never its
+# descendants. A bare key (like base_lr above, if a class accepted it) is the
+# opposite — it broadcasts tree-wide. Glob wildcards opt back into cascade:
+#   Trainer.*.lr: 0.001     -> Trainer's DIRECT children only
+#   Trainer.**.lr: 0.001    -> Trainer AND all its descendants (declare-once)
+# ('*' = exactly one level, '**' = zero or more; quote a key that STARTS with
+# '*', e.g. '**.lr': 0.001 — a bare * opens a YAML alias.)
 Model.layers: 3
 Model.dropout: 0.1
 

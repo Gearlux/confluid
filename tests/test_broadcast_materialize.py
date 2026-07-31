@@ -1,6 +1,16 @@
 from typing import Any
 
-from confluid import configurable, materialize, register
+from confluid import Instance, configurable, materialize, register
+
+
+def _inst(target: str, /, **kwargs: Any) -> Instance:
+    """Build an Instance marker with kwargs assigned post-construction.
+
+    ``target`` is positional-only so test kwargs literally named ``name`` or
+    ``target`` can't collide with it."""
+    marker = Instance(target)
+    marker.kwargs.update(kwargs)
+    return marker
 
 
 @configurable
@@ -31,7 +41,7 @@ def test_broadcast_materialize() -> None:
     }
 
     # Data to materialize (a Branch containing a Leaf)
-    data = {"_confluid_class_": "Branch", "leaf": {"_confluid_class_": "Leaf"}}
+    data = _inst("Branch", leaf=_inst("Leaf"))
 
     result = materialize(data, context=context)
 
@@ -51,13 +61,13 @@ def test_broadcast_priority() -> None:
     }
 
     # 1. Scoped > Broadcast
-    data_scoped = {"_confluid_class_": "Leaf"}
+    data_scoped = _inst("Leaf")
     res1 = materialize(data_scoped, context=context)
     assert not isinstance(res1, dict)
     assert res1.value == 20
 
     # 2. Explicit > Scoped > Broadcast
-    data_explicit = {"_confluid_class_": "Leaf", "value": 30}
+    data_explicit = _inst("Leaf", value=30)
     res2 = materialize(data_explicit, context=context)
     assert not isinstance(res2, dict)
     assert res2.value == 30
@@ -84,7 +94,7 @@ def test_deep_broadcast_propagation() -> None:
 
     # Case 1: Inner is in the config dict
     config = {"max_epochs": 10}
-    data = {"_confluid_class_": "Outer", "inner": {"_confluid_class_": "Inner"}}
+    data = _inst("Outer", inner=_inst("Inner"))
 
     result = materialize(data, context=config)
     assert isinstance(result, Outer)
@@ -101,7 +111,7 @@ def test_deep_broadcast_propagation() -> None:
     register(OuterDeferred)
 
     config2 = {"max_epochs": 10}
-    data2 = {"_confluid_class_": "OuterDeferred"}
+    data2 = _inst("OuterDeferred")
     result2 = materialize(data2, context=config2)
     assert isinstance(result2, OuterDeferred)
     # inner is deferred — flow it to materialize
@@ -137,8 +147,8 @@ def test_parameter_aware_broadcast_filtering() -> None:
     }
 
     data = {
-        "trainer": {"_confluid_class_": "TrainerLike"},
-        "optimizer": {"_confluid_class_": "OptimizerLike"},
+        "trainer": _inst("TrainerLike"),
+        "optimizer": _inst("OptimizerLike"),
     }
 
     result = materialize(data, context=context)
@@ -185,7 +195,7 @@ def test_unregistered_class_broadcast_filtering() -> None:
     register(Pipeline)
 
     config = {"max_epochs": 10, "batch_size": 64, "experiment_name": "mnist"}
-    data = {"_confluid_class_": "Pipeline"}
+    data = _inst("Pipeline")
     result = materialize(data, context=config)
 
     assert isinstance(result, Pipeline)
@@ -233,7 +243,7 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
     register(OuterCfg)
 
     config = {"max_epochs": 7, "batch_size": 16}
-    data = {"_confluid_class_": "OuterCfg"}
+    data = _inst("OuterCfg")
     result = materialize(data, context=config)
 
     assert isinstance(result, OuterCfg)
@@ -258,11 +268,7 @@ def test_dotted_broadcast_materialize() -> None:
     register(Branch)
     # Verify that a dotted key at root can broadcast
     context = {"leaf.value": 99}
-    data = {
-        "_confluid_class_": "Branch",
-        "name": "root",
-        "leaf": {"_confluid_class_": "Leaf", "name": "leaf"},
-    }
+    data = _inst("Branch", name="root", leaf=_inst("Leaf", name="leaf"))
 
     result = materialize(data, context=context)
     # result.leaf.value should be 99

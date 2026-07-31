@@ -10,13 +10,11 @@ from typing import Any
 import pytest
 
 from confluid import configurable, get_registry, load
-from confluid.loader import _register_constructors
 
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
     get_registry().clear()
-    _register_constructors()
 
 
 def test_ref_returns_same_instance() -> None:

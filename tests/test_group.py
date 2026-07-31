@@ -1,7 +1,7 @@
 """Tests for ``@configurable(group=)`` / ``register(group=)`` tagging and the
 registry's ``_by_group`` index.
 
-``group`` is a free-form, path-like presentation hint (FluxStudio nests a node's
+``group`` is a free-form, path-like presentation hint (StreamStudio nests a node's
 palette folder by it) — orthogonal to the ``category`` / ``task`` / ``role``
 discovery contract. It must set ``__confluid_group__``, index in the registry,
 and survive a tagless re-register (navigaitor's snapshot restore)."""

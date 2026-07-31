@@ -11,8 +11,19 @@ setattr).
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from confluid import configurable, flow, materialize, register
+from confluid import Instance, configurable, flow, materialize, register
 from confluid.loader import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
+
+
+def _inst(target: str, /, **kwargs: Any) -> Instance:
+    """Build an Instance marker with kwargs assigned post-construction.
+
+    ``target`` is positional-only so test kwargs literally named ``name`` or
+    ``target`` can't collide with it."""
+    marker = Instance(target)
+    marker.kwargs.update(kwargs)
+    return marker
+
 
 # ---------------------------------------------------------------------------
 # Cache collision: two classes sharing a short name across modules.
@@ -68,7 +79,7 @@ def test_dict_value_broadcasts_when_annotated_dict() -> None:
     register(WithDictParam)
 
     context = {"extras": {"a": 1, "b": 2}}
-    data = {"_confluid_class_": "WithDictParam"}
+    data = _inst("WithDictParam")
     result = materialize(data, context=context)
 
     assert isinstance(result, WithDictParam)
@@ -84,7 +95,7 @@ def test_list_value_broadcasts_when_annotated_sequence() -> None:
     register(WithListParam)
 
     context = {"callbacks": ["a", "b"]}
-    data = {"_confluid_class_": "WithListParam"}
+    data = _inst("WithListParam")
     result = materialize(data, context=context)
 
     assert isinstance(result, WithListParam)
@@ -108,7 +119,7 @@ def test_dict_value_does_NOT_broadcast_when_param_is_scalar() -> None:
     # `name` is annotated str, so the dict is treated as a config sub-block
     # (which has no class marker → effectively ignored).
     context = {"name": {"oops": "this is a dict"}}
-    data = {"_confluid_class_": "WithScalarParam"}
+    data = _inst("WithScalarParam")
     result = materialize(data, context=context)
 
     assert isinstance(result, WithScalarParam)
@@ -130,7 +141,7 @@ def test_optional_dict_annotation_still_classifies_as_dict() -> None:
     assert kinds.get("extras") == "dict"
 
     context = {"extras": {"k": 9}}
-    data = {"_confluid_class_": "WithOptionalDict"}
+    data = _inst("WithOptionalDict")
     result = materialize(data, context=context)
     assert isinstance(result, WithOptionalDict)
     assert result.extras == {"k": 9}
@@ -171,7 +182,7 @@ def test_post_init_ast_scan_detects_literal_setattr() -> None:
 
     # And it actually broadcasts:
     context = {"extra_attr": 99}
-    data = {"_confluid_class_": "WithLiteralSetattr"}
+    data = _inst("WithLiteralSetattr")
     result = materialize(data, context=context)
     assert isinstance(result, WithLiteralSetattr)
     assert getattr(result, "extra_attr") == 99
@@ -258,10 +269,7 @@ def test_lazy_inside_a_class_attribute_is_left_deferred() -> None:
     register(_Optim)
     register(TrainerLike)
 
-    data = {
-        "_confluid_class_": "TrainerLike",
-        "optimizer": LazyClass(_Optim, lr=0.001),
-    }
+    data = _inst("TrainerLike", optimizer=LazyClass(_Optim, lr=0.001))
     result = materialize(data)
     assert isinstance(result, TrainerLike)
     assert isinstance(result.optimizer, LazyClass)

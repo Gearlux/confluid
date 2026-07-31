@@ -1,25 +1,103 @@
 import importlib
+import os
 import re
-import threading
-from copy import copy
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union, cast
+from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import yaml
-from logflow import get_logger
+from loggair import get_logger
 
+from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver, parse_value
 from confluid.scopes import normalize_active, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
-# Thread-local storage for materialization context
-_state = threading.local()
+# Per-context include accumulator (a YAML-side concern — deliberately NOT on
+# the engine's _ENGINE_STATE): populated only inside load_config_with_paths.
+_INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
 
 
-def get_active_context() -> Optional[Dict[str, Any]]:
-    return getattr(_state, "context", None)
+# Process-wide application identity for the XDG search path (see
+# resolve_config_path). A plain module global — like validation's policy, the
+# app name is the same for every load in the process, unlike the per-context
+# include accumulator above.
+_APP_NAME: Optional[str] = None
+
+
+def set_app_name(name: Optional[str]) -> None:
+    """Set the application name used for XDG config-file lookup.
+
+    With an app name configured, :func:`resolve_config_path` searches
+    ``<xdg-base>/<app_name>/`` then ``<xdg-base>/confluid/`` under each XDG
+    base directory; without one it searches the bare base directory. A CLI
+    framework typically calls this once at startup with its application
+    name. Pass ``None`` to reset.
+    """
+    global _APP_NAME
+    _APP_NAME = name
+
+
+def get_app_name() -> Optional[str]:
+    """Return the application name set via :func:`set_app_name`, or ``None``."""
+    return _APP_NAME
+
+
+def _xdg_base_dirs() -> List[Path]:
+    """XDG base directories: ``$XDG_CONFIG_HOME`` then each ``$XDG_CONFIG_DIRS`` entry.
+
+    Defaults per the XDG Base Directory spec (``~/.config`` and ``/etc/xdg``);
+    an EMPTY env var is treated as unset, also per the spec.
+    """
+    dirs = [Path(os.getenv("XDG_CONFIG_HOME") or "~/.config").expanduser()]
+    for entry in (os.getenv("XDG_CONFIG_DIRS") or "/etc/xdg").split(":"):
+        if entry:
+            dirs.append(Path(entry).expanduser())
+    return dirs
+
+
+def _search_candidates(rel: Path, base_dir: Optional[Path]) -> List[Path]:
+    """Ordered candidate locations for a RELATIVE config path.
+
+    Local tiers first (a local file always wins over an XDG one), XDG last:
+    ``base_dir`` (the including file's directory, include-resolution only) →
+    CWD → ``CWD/config`` → the XDG base dirs. Under each XDG base dir the
+    app-name subdirectory is tried before the ``confluid`` one; with no app
+    name configured the bare base dir is searched instead.
+    """
+    candidates: List[Path] = []
+    if base_dir is not None:
+        candidates.append(base_dir / rel)
+    candidates.append(Path.cwd() / rel)
+    candidates.append(Path.cwd() / "config" / rel)
+    for base in _xdg_base_dirs():
+        if _APP_NAME:
+            candidates.append(base / _APP_NAME / rel)
+            candidates.append(base / "confluid" / rel)
+        else:
+            candidates.append(base / rel)
+    return candidates
+
+
+def resolve_config_path(path: Union[str, Path], *, base_dir: Optional[Path] = None) -> Path:
+    """Resolve a config-file path through the search tiers (XDG last).
+
+    An absolute path — or a relative one that exists as given — is returned
+    unchanged. Otherwise the first EXISTING candidate from
+    :func:`_search_candidates` wins. On a total miss the path is returned
+    as given, so the caller's normal not-found handling fires.
+    """
+    rel = Path(path)
+    if rel.is_absolute():
+        return rel
+    for candidate in _search_candidates(rel, base_dir):
+        if candidate.exists():
+            if candidate != rel and candidate != Path.cwd() / rel:
+                logger.debug(f"resolved config path {str(rel)!r} -> {candidate}")
+            return candidate
+    return rel
 
 
 def _record_loaded_path(path: Path) -> None:
@@ -28,16 +106,30 @@ def _record_loaded_path(path: Path) -> None:
     Populated by :func:`load_config_with_paths` for the duration of one
     load so callers can recover the ordered list of every YAML file
     transitively read (entrypoint + recursive ``include:`` targets). The
-    accumulator lives on the existing thread-local so re-entrant loads on
-    different threads do not collide.
+    accumulator rides a ContextVar so re-entrant loads on different
+    threads/tasks do not collide.
     """
-    accum = getattr(_state, "include_accumulator", None)
+    accum = _INCLUDE_ACCUMULATOR.get()
     if accum is not None:
         accum.append(path)
 
 
+class ConfluidLoader(yaml.SafeLoader):
+    """SafeLoader subclass carrying confluid's tag constructors.
+
+    The constructors are registered on THIS class only (once, at module
+    import) — never on the global ``yaml.SafeLoader``. Registering on the
+    global class would make every ``yaml.safe_load`` call in the process
+    parse confluid tags, silently handing Fluid markers to unrelated
+    libraries instead of raising on the unknown tag.
+    """
+
+
 def _register_constructors() -> None:
-    """Register YAML constructors for !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: tags."""
+    """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
+
+    Invoked exactly once at module import (see the call below the definition).
+    """
     from confluid.fluid import Class, Clone, Instance, Lazy, Reference, ScopeBlock
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
@@ -75,7 +167,7 @@ def _register_constructors() -> None:
         """Build a Fluid marker with its kwargs assigned POST-construction.
 
         ``factory(name, **kwargs)`` collides when a YAML kwarg is literally named
-        ``target`` (the marker ctor's own first parameter — e.g. dataflux
+        ``target`` (the marker ctor's own first parameter — e.g. recordstream
         ``ConfigureOp.target``). The marker stores ``self.kwargs = kwargs`` verbatim,
         so the post-construction update is exactly equivalent and collision-proof.
         """
@@ -159,12 +251,12 @@ def _register_constructors() -> None:
     def notscope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         return _build_scope(loader, tag_suffix, node, negate=True)
 
-    yaml.SafeLoader.add_multi_constructor("!ref:", ref_constructor)
-    yaml.SafeLoader.add_multi_constructor("!class:", class_constructor)
-    yaml.SafeLoader.add_multi_constructor("!clone:", clone_constructor)
-    yaml.SafeLoader.add_multi_constructor("!lazy:", lazy_constructor)
-    yaml.SafeLoader.add_multi_constructor("!scope:", scope_constructor)
-    yaml.SafeLoader.add_multi_constructor("!notscope:", notscope_constructor)
+    ConfluidLoader.add_multi_constructor("!ref:", ref_constructor)
+    ConfluidLoader.add_multi_constructor("!class:", class_constructor)
+    ConfluidLoader.add_multi_constructor("!clone:", clone_constructor)
+    ConfluidLoader.add_multi_constructor("!lazy:", lazy_constructor)
+    ConfluidLoader.add_multi_constructor("!scope:", scope_constructor)
+    ConfluidLoader.add_multi_constructor("!notscope:", notscope_constructor)
 
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         return _stamp(Reference(loader.construct_scalar(node)), loader, node)
@@ -180,26 +272,40 @@ def _register_constructors() -> None:
             )
         return _stamp(Class(val), loader, node)
 
-    yaml.SafeLoader.add_constructor("!ref", ref_compat)
-    yaml.SafeLoader.add_constructor("!class", class_compat)
+    ConfluidLoader.add_constructor("!ref", ref_compat)
+    ConfluidLoader.add_constructor("!class", class_compat)
+
+
+# Register once at import — constructors live on ConfluidLoader for the
+# lifetime of the process; the global yaml.SafeLoader is never touched.
+_register_constructors()
 
 
 def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
-    """Load raw YAML with markers and recursive includes."""
-    path = Path(path).resolve()
+    """Load raw YAML with markers and recursive includes.
+
+    A relative ``path`` is resolved through the config search tiers (CWD →
+    ``CWD/config`` → XDG base dirs — see :func:`resolve_config_path`) BEFORE
+    canonicalization, so circular-include detection and the include
+    accumulator operate on the real file.
+    """
+    requested = Path(path)
+    path = resolve_config_path(path).resolve()
     if _included is None:
         _included = set()
     if path in _included:
-        raise ValueError(f"Circular include: {path}")
+        raise CircularIncludeError(f"Circular include: {path}")
     _included.add(path)
     _record_loaded_path(path)
 
     if not path.exists():
-        raise FileNotFoundError(f"Not found: {path}")
+        if requested.is_absolute():
+            raise ConfigFileNotFoundError(f"Not found: {path}")
+        searched = ", ".join(str(c) for c in _search_candidates(requested, None))
+        raise ConfigFileNotFoundError(f"Not found: {requested} (searched: {searched})")
 
-    _register_constructors()
     with open(path, "r") as f:
-        data = yaml.safe_load(f) or {}
+        data = yaml.load(f, Loader=ConfluidLoader) or {}
 
     # Root-level !class: documents parse to a Fluid. Imports/includes are
     # dict-only constructs, so skip them and just walk the Fluid's kwargs
@@ -225,12 +331,11 @@ def load_config_with_paths(path: Union[str, Path]) -> tuple[Dict[str, Any], List
     public signature so callers that do not need the tree are unaffected.
     """
     accum: List[Path] = []
-    old = getattr(_state, "include_accumulator", None)
-    _state.include_accumulator = accum
+    token = _INCLUDE_ACCUMULATOR.set(accum)
     try:
         data = load_config(path)
     finally:
-        _state.include_accumulator = old
+        _INCLUDE_ACCUMULATOR.reset(token)
     seen: Set[Path] = set()
     ordered: List[Path] = []
     for p in accum:
@@ -249,8 +354,13 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
             for m in imports:
                 try:
                     importlib.import_module(m)
-                except ImportError:
-                    pass
+                except ImportError as exc:
+                    # Warn instead of raising: an ``import:`` module may be an
+                    # optional dependency of a shared/included config. But a
+                    # TYPO'd module previously failed silently here and only
+                    # surfaced much later as "Cannot resolve class: X" — the
+                    # warning names the real cause at the real moment.
+                    logger.warning(f"import: failed to import {m!r}: {exc}")
     return data
 
 
@@ -287,9 +397,7 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
             for inc_path in includes:
                 if not isinstance(inc_path, str):
                     continue
-                target_path = current_path.parent / inc_path
-                if not target_path.exists():
-                    target_path = Path(inc_path)
+                target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
 
                 inc_data = load_config(target_path, _included=set(_included))
                 merged_base = deep_merge(merged_base, inc_data)
@@ -314,14 +422,17 @@ def load(
     blocks tagged with ``!scope:…`` / ``!notscope:…`` in the YAML are resolved
     against this set before flow runs. See :mod:`confluid.scopes`.
     """
-    _register_constructors()
-
     if isinstance(data, (str, Path)):
         str_data = str(data)
-        if "\n" not in str_data and ":" not in str_data and len(str_data) < 255 and Path(str_data).exists():
+        if (
+            "\n" not in str_data
+            and ":" not in str_data
+            and len(str_data) < 255
+            and resolve_config_path(str_data).exists()
+        ):
             data = load_config(data)
         else:
-            data = cast(Dict[str, Any], yaml.safe_load(str_data) or {})
+            data = cast(Dict[str, Any], yaml.load(str_data, Loader=ConfluidLoader) or {})
             data = _process_includes_recursive(data, Path.cwd() / "string.yaml", set())
 
     # Resolve scope blocks before anything else — they only carry until this
@@ -362,910 +473,20 @@ def load(
     return materialize(data, context=context or data, solidify=solidify)
 
 
-def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
-    """Resolve config data and instantiate all Class objects recursively.
-
-    Within a single materialize pass, identical raw markers (reached directly
-    or via ``!ref:``) produce a single flowed ``Instance`` object, which is
-    materialized into a single live instance. ``!clone:`` opts out of this
-    sharing with an explicit deepcopy.
-
-    ``solidify=False`` suppresses the post-flow ``solidify()`` hook for every
-    object built in this pass (see :func:`confluid.fluid.flow`) — for static
-    introspection that needs live objects but must NOT pay for the expensive
-    finalize (e.g. building a model backbone). The objects are still fully
-    constructed (``__init__`` only stores values per the zero-arg / lazy-init
-    convention), just not solidified.
-    """
-    _acceptable_keys_cache.clear()
-    _post_init_attrs_cache.clear()
-    _param_kind_cache.clear()
-    if context:
-        context = expand_dotted_keys(context)
-    old_ctx = getattr(_state, "context", None)
-    old_flow_memo = getattr(_state, "flow_memo", None)
-    old_instance_memo = getattr(_state, "instance_memo", None)
-    old_suppress = getattr(_state, "suppress_solidify", None)
-    _state.context = context
-    _state.flow_memo = {}
-    _state.instance_memo = {}
-    _state.suppress_solidify = not solidify
-    try:
-        result = _flow_recursive(data, parent_context=context)
-        return _deep_flow(result)
-    finally:
-        _state.context = old_ctx
-        _state.flow_memo = old_flow_memo
-        _state.instance_memo = old_instance_memo
-        _state.suppress_solidify = old_suppress
-
-
-def resolve(
-    data: Any,
-    *,
-    context: Optional[Dict[str, Any]] = None,
-    scopes: Optional[List[str]] = None,
-) -> Any:
-    """Broadcast-resolve a config to a Fluid marker graph WITHOUT instantiating.
-
-    Like :func:`materialize`, but stops before ``_deep_flow``: it parses,
-    resolves scopes/includes, applies broadcasting and ``!ref:`` resolution
-    (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
-    ``!ref:`` is one object reached twice), and returns the resulting
-    ``Instance`` / ``Lazy`` / ``Class`` markers with their broadcast siblings
-    merged into ``.kwargs`` — WITHOUT constructing any live object.
-
-    Use for static structural introspection of a config (e.g. FluxStudio's
-    YAML→graph import) when even side-effect-free construction is undesirable.
-    ``materialize(data, solidify=False)`` is the instantiate-but-cheap
-    counterpart; prefer it unless you specifically need un-built markers.
-
-    Caveat: a *dotted* ``!ref:a.b`` (attribute/method access) still instantiates
-    its target subtree to read the attribute — plain whole-object ``!ref:name``
-    stays a marker.
-    """
-    prepared = load(data, flow=False, context=context, scopes=scopes)
-    ctx = context if context is not None else (prepared if isinstance(prepared, dict) else None)
-    if ctx:
-        ctx = expand_dotted_keys(ctx)
-    _acceptable_keys_cache.clear()
-    _post_init_attrs_cache.clear()
-    _param_kind_cache.clear()
-    old_ctx = getattr(_state, "context", None)
-    old_flow_memo = getattr(_state, "flow_memo", None)
-    old_instance_memo = getattr(_state, "instance_memo", None)
-    _state.context = ctx
-    _state.flow_memo = {}
-    _state.instance_memo = {}
-    try:
-        return _flow_recursive(prepared, parent_context=ctx)
-    finally:
-        _state.context = old_ctx
-        _state.flow_memo = old_flow_memo
-        _state.instance_memo = old_instance_memo
-
-
-def _deep_flow(data: Any) -> Any:
-    """Flow the top-level Fluid + any Instance objects in the tree.
-
-    ``Lazy`` Fluids are left deferred at every level — they are
-    runtime-injection points whose construction happens later (e.g.
-    inside ``configure_optimizers`` once ``model.parameters()`` is
-    available). Flowing them here would either fail (missing runtime
-    args) or produce a partially-initialized object.
-    """
-    from confluid.fluid import Fluid, Instance, Lazy
-    from confluid.fluid import flow as _flow
-
-    def _maybe_flow(v: Any) -> Any:
-        if isinstance(v, Lazy):
-            return v
-        if isinstance(v, Instance):
-            return _flow(v)
-        return v
-
-    if isinstance(data, Lazy):
-        return data
-    if isinstance(data, Fluid):
-        return _flow(data)
-    if isinstance(data, dict):
-        return {k: _maybe_flow(v) for k, v in data.items()}
-    if isinstance(data, list):
-        return [_maybe_flow(item) for item in data]
-    return data
-
-
-_acceptable_keys_cache: Dict[str, Optional[frozenset[str]]] = {}
-_post_init_attrs_cache: Dict[str, frozenset[str]] = {}
-# Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
-# as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
-_param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
-
-
-def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
-    """True if ``fluid_target`` resolves to the same class object as ``cls``.
-
-    Identity-only comparison: two classes that share a short name across
-    different modules are NOT considered "same". This prevents the
-    self-broadcast guard from over-skipping fluids whose target happens to
-    share a name with the receiving class.
-
-    Handles three cases:
-      * ``fluid_target`` IS ``cls`` — fast path.
-      * ``fluid_target`` is a string and ``resolve_class`` resolves it to
-        ``cls`` — registry-confirmed match.
-      * ``fluid_target`` is a string equal to the fully-qualified
-        ``cls.__module__.__qualname__`` — last-resort match for classes
-        that aren't registered yet but whose dotted path is unambiguous.
-
-    Bare-name strings (``"Trainer"``) that can't be registry-resolved are
-    treated as "not same" — better to broadcast and let the receiver's
-    accept-list filter than to silently skip across module boundaries.
-    """
-    if fluid_target is cls:
-        return True
-    if isinstance(fluid_target, str):
-        from confluid.registry import resolve_class
-
-        resolved = resolve_class(fluid_target)
-        if resolved is cls:
-            return True
-        qualified = f"{cls.__module__}.{cls.__qualname__}"
-        if fluid_target == qualified:
-            return True
-    return False
-
-
-def _ast_scan_init_setattrs(init_func: Any) -> Set[str]:
-    """Return non-underscore attribute names assigned via ``self.<name> = …`` or
-    ``setattr(self, "<name>", …)`` inside a single ``__init__`` function body.
-
-    Pure AST inspection — no class context required, so the same scan is reused
-    by both the MRO walker (:func:`_get_post_init_attrs`) and the
-    @configurable-chain walker (:func:`get_post_init_attrs_configurable_chain`).
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    names: Set[str] = set()
-    try:
-        source = inspect.getsource(init_func)
-    except (OSError, TypeError):
-        return names
-    try:
-        # ``textwrap.dedent`` preserves relative indentation (strips the
-        # common leading whitespace), so the method body still sits
-        # under its ``def`` header. ``inspect.cleandoc`` would flatten
-        # every line to column 0 and break the parse.
-        tree = ast.parse(textwrap.dedent(source))
-    except SyntaxError:
-        return names
-
-    for node in ast.walk(tree):
-        # Pattern 1: ``self.x = ...`` / ``self.x: T = ...`` / ``self.x += ...``
-        targets = (
-            [node.target]
-            if isinstance(node, (ast.AnnAssign, ast.AugAssign))
-            else node.targets if isinstance(node, ast.Assign) else []
-        )
-        for t in targets:
-            if (
-                isinstance(t, ast.Attribute)
-                and isinstance(t.value, ast.Name)
-                and t.value.id == "self"
-                and not t.attr.startswith("_")
-            ):
-                names.add(t.attr)
-
-        # Pattern 2: ``setattr(self, "x", ...)`` with a string literal name.
-        # Common when classes apply external config in a loop or use a
-        # helper to bulk-assign attributes. Non-literal names (variables,
-        # f-strings) stay invisible — we don't try to be clever.
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "setattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "self"
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
-            and not node.args[1].value.startswith("_")
-        ):
-            names.add(node.args[1].value)
-
-    return names
-
-
-def _get_post_init_attrs(target: type) -> frozenset[str]:
-    """Extract attribute names assigned in ``__init__`` bodies via AST.
-
-    Walks the class MRO, parses each class's ``__init__`` source, and collects
-    every ``self.<name> = ...`` target. Private names (underscore-prefixed) are
-    skipped to avoid broadcasting into implementation details. Results cache
-    per-class by dotted module name.
-
-    This is what lets broadcasting see post-init attributes (e.g.
-    ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's ``__init__``
-    body) in addition to the constructor signature — so a top-level YAML
-    ``loss_fn: !class:...`` flows into the Trainer without the user
-    duplicating the key under the trainer block.
-    """
-    cache_key = f"{target.__module__}.{target.__qualname__}"
-    if cache_key in _post_init_attrs_cache:
-        return _post_init_attrs_cache[cache_key]
-
-    names: Set[str] = set()
-    try:
-        mro = target.__mro__
-    except AttributeError:
-        _post_init_attrs_cache[cache_key] = frozenset()
-        return frozenset()
-
-    for klass in mro:
-        if klass is object:
-            continue
-        init = klass.__dict__.get("__init__")
-        if init is None:
-            continue
-        names.update(_ast_scan_init_setattrs(init))
-
-    result = frozenset(names)
-    _post_init_attrs_cache[cache_key] = result
-    return result
-
-
-def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
-    """Non-underscore attribute names contributed by NON-``@configurable`` ancestors.
-
-    Returns the union, across every non-``@configurable`` class in ``cls.__mro__``
-    (excluding ``cls`` and ``object``), of:
-
-    * Names from ``__annotations__`` (e.g. ``training: bool`` annotated on
-      ``torch.nn.Module``'s class body — gets set instance-side via
-      ``super().__setattr__('training', True)`` which the AST scan can't see).
-    * Names from ``__dict__`` whose value is a non-callable, non-property
-      attribute (e.g. class-level constants like
-      ``CHECKPOINT_HYPER_PARAMS_KEY = "hyper_parameters"`` on
-      ``pytorch_lightning.LightningModule``).
-    * Names assigned via ``self.<name> = …``, ``self.<name>: T = …``, or
-      ``setattr(self, "<name>", …)`` in the class's ``__init__`` body
-      (e.g. ``self.prepare_data_per_node: bool = True`` in
-      ``pytorch_lightning.core.hooks.DataHooks.__init__``).
-
-    Used by parameter-discovery walkers to subtract parent-class contributions
-    from ``vars(obj)`` so the configurable surface reflects only what the
-    user (and Confluid's own broadcast machinery) put there.
-    """
-    cache_key = f"{cls.__module__}.{cls.__qualname__}#parent_blacklist"
-    if cache_key in _post_init_attrs_cache:
-        return _post_init_attrs_cache[cache_key]
-
-    blacklist: Set[str] = set()
-    try:
-        mro = cls.__mro__
-    except AttributeError:
-        _post_init_attrs_cache[cache_key] = frozenset()
-        return frozenset()
-
-    for klass in mro:
-        if klass is object or klass is cls:
-            continue
-        if getattr(klass, "__confluid_configurable__", False):
-            continue
-        for name in getattr(klass, "__annotations__", {}).keys():
-            if not name.startswith("_"):
-                blacklist.add(name)
-        for name, val in klass.__dict__.items():
-            if name.startswith("_"):
-                continue
-            if callable(val) or isinstance(val, property):
-                continue
-            blacklist.add(name)
-        init = klass.__dict__.get("__init__")
-        if init is not None:
-            blacklist.update(_ast_scan_init_setattrs(init))
-
-    result = frozenset(blacklist)
-    _post_init_attrs_cache[cache_key] = result
-    return result
-
-
-def get_configurable_attrs(obj: Any) -> frozenset[str]:
-    """Return non-underscore instance attributes of ``obj`` that belong to its ``@configurable`` surface.
-
-    Filters ``vars(obj)`` to exclude attributes contributed by non-``@configurable``
-    parent classes — their class annotations (``training: bool`` on
-    ``torch.nn.Module``), class-level constants
-    (``CHECKPOINT_HYPER_PARAMS_KEY`` on ``pytorch_lightning.LightningModule``),
-    and ``__init__``-body setattrs (``self.prepare_data_per_node: bool = True``
-    on ``pytorch_lightning.core.hooks.DataHooks``). Anything still present
-    after that subtraction is either a constructor parameter the user
-    declared, a post-construction setattr the user did themselves, or one
-    Confluid's broadcast/Enable machinery wrote on the instance.
-
-    See [confluid/confluid/loader.py:_get_parent_attr_blacklist] for the
-    blacklist construction.
-    """
-    cls = obj.__class__
-    blacklist = _get_parent_attr_blacklist(cls)
-    return frozenset(name for name in vars(obj).keys() if not name.startswith("_") and name not in blacklist)
-
-
-def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
-    """Return constructor params (+ configurable properties + post-init attrs) for a class.
-
-    Accepts either a class object or a string name (resolved via registry).
-    Returns None if the class cannot be resolved or accepts **kwargs (broadcast everything).
-
-    For ``@configurable`` targets the result also includes attribute names
-    assigned in the class's ``__init__`` body (via AST inspection). This
-    makes broadcasting see post-init attributes such as
-    ``self.loss_fn = nn.CrossEntropyLoss()`` even though they aren't listed
-    in the constructor signature — so a top-level YAML key matching one of
-    those names flows into the target without having to be duplicated under
-    the target's block.
-
-    Resolution order: a string name is resolved to its class FIRST, then
-    cached under the resolved class's fully-qualified name. This prevents
-    two classes that share a short name across different modules from
-    silently inheriting one another's accept-list.
-    """
-    import inspect
-
-    target: Any
-    if isinstance(cls_or_name, type):
-        target = cls_or_name
-    else:
-        # Always resolve the string first so the cache key is module-qualified.
-        from confluid.registry import resolve_class
-
-        resolved = resolve_class(cls_or_name)
-        if resolved is None:
-            # Truly unresolvable — cache the negative result under the raw
-            # name so repeated lookups stay O(1). Two modules with the same
-            # unresolvable name collide, but the value is None in both cases
-            # so the collision is benign.
-            if cls_or_name in _acceptable_keys_cache:
-                return _acceptable_keys_cache[cls_or_name]
-            _acceptable_keys_cache[cls_or_name] = None
-            return None
-        target = resolved
-
-    cache_key = f"{target.__module__}.{target.__qualname__}"
-    if cache_key in _acceptable_keys_cache:
-        return _acceptable_keys_cache[cache_key]
-
-    keys: Set[str] = set()
-    try:
-        init_method = getattr(target, "__init__", None)
-        if init_method is None:
-            _acceptable_keys_cache[cache_key] = None
-            return None
-        sig = inspect.signature(init_method)
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-            _acceptable_keys_cache[cache_key] = None
-            return None
-        keys.update(p for p in sig.parameters if p not in ("self", "cls"))
-    except (ValueError, TypeError):
-        _acceptable_keys_cache[cache_key] = None
-        return None
-
-    if getattr(target, "__confluid_configurable__", False):
-        for name in dir(target):
-            if name.startswith("_") or name in keys:
-                continue
-            member = getattr(target, name, None)
-            if member is None or callable(member):
-                continue
-            if getattr(member, "__confluid_ignore__", False):
-                continue
-            if isinstance(member, property) and member.fset is None:
-                continue
-            keys.add(name)
-
-        # Fold in attribute names assigned in __init__'s body (AST scan).
-        # These are instance attributes not visible via dir(cls), but the
-        # post-init injection loop in confluid.fluid.flow already assigns
-        # any matching kwarg via setattr — broadcasting just needs to know
-        # the names so a top-level YAML key can flow into them.
-        keys.update(_get_post_init_attrs(target))
-
-    result = frozenset(keys)
-    _acceptable_keys_cache[cache_key] = result
-    return result
-
-
-def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
-    """Return ``{param_name: "dict" | "list" | None}`` for a target's ctor.
-
-    Used by :func:`_accepts` to decide whether a dict/list value at a
-    matching key in the parent context should be broadcast IN (when the
-    target's annotation says it expects a dict/list) or left to recurse as
-    a config sub-block (the default for un-annotated/scalar-shaped params).
-
-    Resolution is annotation-only (no runtime values); if a class doesn't
-    annotate, the value stays None and the legacy "skip dict/list" rule
-    applies. ``typing.get_type_hints`` is wrapped in a try/except because
-    forward references that can't be resolved would otherwise raise.
-    """
-    import inspect
-    import typing
-
-    target: Any
-    if isinstance(cls_or_name, type):
-        target = cls_or_name
-    else:
-        from confluid.registry import resolve_class
-
-        target = resolve_class(cls_or_name)
-        if target is None:
-            return {}
-
-    cache_key = f"{target.__module__}.{target.__qualname__}"
-    if cache_key in _param_kind_cache:
-        return _param_kind_cache[cache_key]
-
-    kinds: Dict[str, Optional[str]] = {}
-    try:
-        init_method = getattr(target, "__init__", None)
-        if init_method is None:
-            _param_kind_cache[cache_key] = kinds
-            return kinds
-        sig = inspect.signature(init_method)
-    except (ValueError, TypeError):
-        _param_kind_cache[cache_key] = kinds
-        return kinds
-
-    # Try to resolve forward refs via typing.get_type_hints; fall back to
-    # the raw .annotation when that fails (common for self-referential or
-    # third-party-imported annotations).
-    try:
-        hints = typing.get_type_hints(init_method)
-    except Exception:
-        hints = {}
-
-    for name, param in sig.parameters.items():
-        if name in ("self", "cls"):
-            continue
-        ann = hints.get(name, param.annotation)
-        kinds[name] = _classify_annotation(ann)
-
-    _param_kind_cache[cache_key] = kinds
-    return kinds
-
-
-def _classify_annotation(ann: Any) -> Optional[str]:
-    """Map a type annotation to ``"dict"`` / ``"list"`` / None.
-
-    Recognizes the obvious built-ins (``dict``, ``list``, ``tuple``,
-    ``set``) and their ``typing`` analogues (``Dict``, ``List``, ``Tuple``,
-    ``Set``, ``Mapping``, ``Sequence``, ``MutableMapping``, etc.). Unions
-    that include any of these on either side count as the corresponding
-    kind — e.g. ``Optional[Dict[str, int]]`` classifies as ``"dict"``.
-
-    Returns None for anything else (including bare ``Any`` and unannotated).
-    """
-    import inspect
-    import typing
-
-    if ann is inspect.Parameter.empty:
-        return None
-
-    # Direct built-ins.
-    if ann in (dict, list, tuple, set, frozenset):
-        return "dict" if ann is dict else "list"
-
-    # typing.* origins.
-    origin = typing.get_origin(ann)
-    if origin is not None:
-        if origin in (dict,) or origin is typing.Dict:  # type: ignore[attr-defined]
-            return "dict"
-        if origin in (list, tuple, set, frozenset):
-            return "list"
-        # Abstract collections from typing/collections.abc.
-        try:
-            import collections.abc as cabc
-        except ImportError:  # pragma: no cover
-            cabc = None  # type: ignore[assignment]
-        if cabc is not None:
-            if origin in (cabc.Mapping, cabc.MutableMapping):
-                return "dict"
-            if origin in (
-                cabc.Sequence,
-                cabc.MutableSequence,
-                cabc.Iterable,
-                cabc.Collection,
-            ):
-                return "list"
-        if origin is typing.Union:
-            for arg in typing.get_args(ann):
-                kind = _classify_annotation(arg)
-                if kind is not None:
-                    return kind
-    return None
-
-
-def _splice_kwargs_at_slot(
-    parent_context: Dict[str, Any],
-    self_key: Optional[str],
-    kwargs: Dict[str, Any],
-    receiver_cls: Any = None,
-) -> Dict[str, Any]:
-    """Build a new ordered dict by replacing ``parent_context[self_key]``
-    with ``kwargs``'s items at the same position, preserving document
-    order. When ``self_key`` is not in ``parent_context`` (top-level call,
-    or identity match failed), kwargs are appended at the end.
-
-    Collisions on a key ``kk`` that appears in BOTH ``parent_context`` and
-    ``kwargs`` are resolved by inspecting the receiver class's type:
-
-    * ``kwargs[kk]`` is a :class:`Reference` → keep parent's value
-      (avoids infinite recursion when ``foo: !ref:foo`` would resolve
-      against itself).
-    * ``kk`` is a typed param of the receiver (i.e. in its accept-list)
-      → keep parent's value. The receiver's constructor consumes
-      ``kwargs[kk]`` directly via ``resolved_kwargs``; the parent's
-      entry at ``kk`` is broadcast metadata aimed at descendants and
-      must remain visible in ``child_ctx``.
-    * Otherwise (``kk`` is NOT a typed param of the receiver) →
-      ``kwargs`` wins. The kwarg was placed on the receiver's YAML
-      block specifically to pass through to descendants; it sits at a
-      later document position than the colliding parent broadcast, so
-      last-write-wins gives it the slot.
-    * ``receiver_cls`` is unknown or accepts ``**kwargs`` (accept-list
-      is ``None``) → keep parent's value. Conservative fallback that
-      preserves pre-existing dotted-broadcast behaviour.
-    """
-    from confluid.fluid import Reference
-
-    acceptable = _get_acceptable_keys(receiver_cls) if receiver_cls is not None else None
-
-    def _parent_wins(kk: str, kv: Any) -> bool:
-        if kk not in parent_context:
-            return False
-        if isinstance(kv, Reference):
-            return True
-        if acceptable is None:
-            return True
-        return kk in acceptable
-
-    out: Dict[str, Any] = {}
-    if self_key is None or self_key not in parent_context:
-        for k, v in parent_context.items():
-            out[k] = v
-        for k, v in kwargs.items():
-            if _parent_wins(k, v):
-                continue
-            out[k] = v
-        return out
-    for k, v in parent_context.items():
-        if k == self_key:
-            for kk, kv in kwargs.items():
-                if _parent_wins(kk, kv):
-                    continue
-                out.pop(kk, None)
-                out[kk] = kv
-        elif k in kwargs and not _parent_wins(k, kwargs[k]):
-            # Wrapper's value at this key will win at the self_key slot;
-            # skip parent's value at its original position so the wrapper's
-            # value ends up at the slot.
-            continue
-        else:
-            out[k] = v
-    return out
-
-
-def _prepare_kwargs(
-    marker_dict: Dict[str, Any],
-    parent_context: Dict[str, Any],
-    target: Any = None,
-    self_obj: Any = None,
-) -> Dict[str, Any]:
-    """Flat-view, document-order, last-write-wins kwarg assembly.
-
-    Walks ``parent_context`` in document order. The receiving class's own
-    ``marker_dict`` is unrolled at the position WHERE ``self_obj`` sits in
-    ``parent_context`` (matched by Python identity); when ``self_obj`` is
-    not found, ``marker_dict`` is applied at the end. Class-name and
-    instance-name dict blocks (``Foo: {...}``) are unrolled inline at their
-    position. Scalar/Fluid values broadcast when the key matches the
-    receiving class's ``acceptable`` set.
-
-    There is no "explicit kwargs > broadcast" priority — every source is
-    ordered by its YAML position. Whichever assignment comes last wins.
-
-    ``target`` is an optional class object for parameter inspection (avoids
-    name collisions). ``self_obj`` is the Fluid (or marker dict) being
-    materialized — passed so we can locate its slot in ``parent_context``.
-    """
-    cls_name = marker_dict.get("_confluid_class_", "")
-    if cls_name.endswith("()"):
-        cls_name = cls_name[:-2]
-    instance_name = marker_dict.get("name")
-
-    from confluid.fluid import Fluid
-    from confluid.registry import resolve_class
-
-    acceptable = _get_acceptable_keys(target or cls_name)
-    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
-    param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
-
-    def _accepts(k: str, v: Any) -> bool:
-        if isinstance(v, Fluid):
-            if acceptable is None or k not in acceptable:
-                return False
-            # Skip same-target Fluids that are not self — broadcasting them
-            # in would loop on infinite re-materialization.
-            if target_cls is not None and _same_target(v.target, target_cls):
-                return False
-            return True
-        if isinstance(v, dict):
-            # Marker dicts (``{"_confluid_class_": ...}``) are flowable
-            # values, treat them like Fluids — accept when the key is in
-            # the accept-list.
-            if "_confluid_class_" in v:
-                if acceptable is None or k not in acceptable:
-                    return False
-                return True
-            # Plain dict — only broadcast IN when the target annotates the
-            # param as a dict/mapping. Otherwise keep the legacy behavior
-            # (recurse as a config sub-block, do NOT pull the dict in as
-            # a value).
-            if param_kinds.get(k) == "dict":
-                return acceptable is None or k in acceptable
-            return False
-        if isinstance(v, list):
-            if param_kinds.get(k) == "list":
-                return acceptable is None or k in acceptable
-            return False
-        if acceptable is not None and k not in acceptable:
-            return False
-        return True
-
-    def _unroll_marker_dict(into: Dict[str, Any]) -> None:
-        # Keep ``_confluid_class_`` so callers can still pop it after this
-        # function returns; everything else lands at its document position.
-        for bk, bv in marker_dict.items():
-            into[bk] = bv
-
-    merged: Dict[str, Any] = {}
-    self_unrolled = False
-
-    for k, v in parent_context.items():
-        # Receiving class's own marker — unroll its kwargs at this position.
-        if self_obj is not None and v is self_obj and not self_unrolled:
-            _unroll_marker_dict(merged)
-            self_unrolled = True
-            continue
-
-        # Same-target Fluid that isn't self — skip (would otherwise loop).
-        if isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls):
-            continue
-
-        # Class-name / instance-name dict block — unroll inline.
-        if k in (cls_name, instance_name) and isinstance(v, dict):
-            for bk, bv in v.items():
-                if _accepts(bk, bv):
-                    merged[bk] = bv
-            continue
-
-        # Plain broadcast.
-        if _accepts(k, v):
-            merged[k] = v
-
-    if not self_unrolled:
-        _unroll_marker_dict(merged)
-
-    # Recurse into nested marker dicts so their own contexts are prepared.
-    for k, v in list(merged.items()):
-        if isinstance(v, dict) and "_confluid_class_" in v:
-            merged[k] = _prepare_kwargs(v, merged, self_obj=v)
-
-    return merged
-
-
-def _resolve_dotted_ref(target: str, context: Dict[str, Any]) -> Any:
-    """Resolve a dotted reference path, supporting attribute access and method calls.
-
-    Handles patterns like:
-      - ``obj.attr`` — attribute access on a flowed object
-      - ``obj.method()`` — method call on a flowed object
-      - ``module.sub.func()`` — module-level function call (if not in context)
-
-    Returns None if the reference cannot be resolved.
-    """
-    import importlib
-    import re
-
-    from confluid.fluid import Fluid
-    from confluid.fluid import flow as _flow
-
-    # Detect method call suffix: "path.method()"
-    match = re.match(r"^(.+)\.([\w_]+)\(\)$", target)
-    if match:
-        obj_path, method_name = match.group(1), match.group(2)
-    else:
-        # Try plain dotted path: "path.attr"
-        parts = target.rsplit(".", 1)
-        if len(parts) == 2:
-            obj_path, method_name = parts[0], parts[1]
-        else:
-            return None
-
-    # Resolve the base object
-    obj = None
-    if obj_path in context:
-        raw = context[obj_path]
-        if isinstance(raw, Fluid):
-            # Reuse the SINGLE materialized instance rather than re-flowing the raw marker.
-            # ``_flow_recursive`` records ``flow_memo[id(raw_marker)] = resolved_marker`` and the
-            # instance memo then caches ``flow(resolved_marker)`` as one live object. Flowing the
-            # RAW marker here would miss the instance memo (it keys on the resolved marker) and
-            # rebuild the whole sub-tree — so ``!ref:my_split.train`` + ``!ref:my_split.val`` would
-            # each construct a fresh ``my_split`` (and reload its source, e.g. a HuggingFaceSource).
-            # Mapping raw → resolved first makes the dotted ref share the top-level instance.
-            flow_memo = getattr(_state, "flow_memo", None)
-            if flow_memo is not None:
-                raw = flow_memo.get(id(raw), raw)
-            obj = _flow(raw)
-        else:
-            obj = raw
-    else:
-        # Fallback: try to import obj_path as a module or resolve as a class
-        try:
-            obj = importlib.import_module(obj_path)
-        except ImportError:
-            # Maybe obj_path is "module.Class", try resolving it
-            from confluid.registry import resolve_class
-
-            obj = resolve_class(obj_path)
-
-    if obj is None:
-        return None
-
-    if match:
-        # Method/Function call
-        method = getattr(obj, method_name, None)
-        if method is not None and callable(method):
-            return method()
-    else:
-        # Plain dotted path — return attribute
-        return getattr(obj, method_name, None)
-
-    return None
-
-
-def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
-    from confluid.fluid import Class, Clone, Fluid, Instance, Reference
-
-    # Shared-identity memo: ensures the same raw marker (reached directly or via
-    # !ref:) always flows to the same Instance/Class marker object, so a single
-    # live object is instantiated downstream.
-    flow_memo: Optional[Dict[int, Any]] = getattr(_state, "flow_memo", None)
-
-    # 1. Marker dictionaries → Fluid citizens with broadcasting applied
-    if isinstance(data, dict):
-        if "_confluid_class_" in data:
-            if flow_memo is not None and id(data) in flow_memo:
-                return flow_memo[id(data)]
-            raw_id = id(data)
-            self_obj = data
-            self_key = next((k for k, v in parent_context.items() if v is self_obj), None) if parent_context else None
-            if parent_context:
-                data = _prepare_kwargs(data, parent_context, self_obj=self_obj)
-            else:
-                data = dict(data)  # Don't mutate the original
-
-            cls_name = data.pop("_confluid_class_")
-            if cls_name.endswith("()"):
-                cls_name = cls_name[:-2]
-
-            # Child context: splice this class's prepared kwargs into the
-            # parent's ambient view at THIS class's slot, preserving document
-            # order. When this class isn't in parent_context (top-level call),
-            # append at end.
-            child_ctx = (
-                _splice_kwargs_at_slot(parent_context, self_key, data, receiver_cls=cls_name)
-                if parent_context is not None
-                else dict(data)
-            )
-            resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in data.items()}
-            result = Instance(cls_name, **resolved_kwargs)
-            if flow_memo is not None:
-                flow_memo[raw_id] = result
-            return result
-
-        if "_confluid_ref_" in data:
-            data = Reference(data["_confluid_ref_"])
-        else:
-            # Plain dict — pass merged context down
-            local_ctx = {**parent_context, **data} if parent_context else dict(data)
-            return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
-
-    # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
-    if isinstance(data, (Class, Instance)):
-        if flow_memo is not None and id(data) in flow_memo:
-            return flow_memo[id(data)]
-        raw_id = id(data)
-        if parent_context:
-            target_name = (
-                data.target
-                if isinstance(data.target, str)
-                else getattr(
-                    data.target,
-                    "__confluid_name__",
-                    getattr(data.target, "__name__", ""),
-                )
-            )
-            synthetic = {**data.kwargs, "_confluid_class_": target_name}
-            actual_target = data.target if isinstance(data.target, type) else None
-            merged_kwargs = _prepare_kwargs(synthetic, parent_context, target=actual_target, self_obj=data)
-            merged_kwargs.pop("_confluid_class_", None)
-        else:
-            merged_kwargs = dict(data.kwargs)
-
-        # Splice this Fluid's prepared kwargs into its slot in parent_context to
-        # preserve document order for downstream broadcasts.
-        if parent_context:
-            self_key = next((k for k, v in parent_context.items() if v is data), None)
-            child_ctx = _splice_kwargs_at_slot(parent_context, self_key, merged_kwargs, receiver_cls=data.target)
-        else:
-            child_ctx = dict(merged_kwargs)
-        resolved_kwargs = {k: _flow_recursive(v, parent_context=child_ctx) for k, v in merged_kwargs.items()}
-        res_obj = copy(data)
-        res_obj.kwargs = resolved_kwargs
-        if flow_memo is not None:
-            flow_memo[raw_id] = res_obj
-        return res_obj
-
-    # 3. Reference — resolve against parent context
-    if isinstance(data, Reference):
-        if parent_context and data.target in parent_context:
-            resolved = parent_context[data.target]
-            # Self-reference guard: a kwarg like ``foo: !ref:foo`` with no
-            # outer ``foo`` in scope splices itself into ``parent_context``,
-            # so the only ``foo`` it can resolve against is itself —
-            # recursing here would stack-overflow. Fail loudly instead.
-            if resolved is data:
-                from confluid.fluid import format_yaml_loc
-
-                loc = format_yaml_loc(data)
-                loc_str = f" at {loc}" if loc else ""
-                raise ValueError(
-                    f"Self-referential !ref:{data.target}{loc_str}: the only "
-                    f"{data.target!r} in scope is this reference itself. "
-                    f"Define a top-level {data.target!r} key (e.g. "
-                    f"`{data.target}: null`), or remove the kwarg."
-                )
-            return _flow_recursive(resolved, parent_context=parent_context)
-        # Support dotted paths and method calls (e.g., "obj.method()")
-        if parent_context:
-            resolved = _resolve_dotted_ref(data.target, parent_context)
-            if resolved is not None:
-                return resolved
-        return data
-
-    # 3b. Clone — resolve reference then deepcopy, merging extra kwargs
-    if isinstance(data, Clone):
-        if parent_context and data.target in parent_context:
-            from copy import deepcopy
-
-            resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
-            cloned = deepcopy(resolved)
-            if data.kwargs and isinstance(cloned, (Class, Instance)):
-                resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
-                cloned.kwargs.update(resolved_kwargs)
-            return cloned
-        return data
-
-    # 4. Generic Fluid — pass through
-    if isinstance(data, Fluid):
-        return data
-
-    # 5. Lists
-    if isinstance(data, list):
-        return [_flow_recursive(item, parent_context=parent_context) for item in data]
-
-    return data
+# --- compat re-exports ---------------------------------------------------
+# The materialization engine moved to ``confluid.engine`` (2026-07). These
+# names stay importable from ``confluid.loader`` for backward compatibility
+# (downstream reach-ins + tests); NEW code should import from the engine.
+from confluid.engine import (  # noqa: F401,E402  (re-exports; placed after loader defs)
+    _deep_flow,
+    _flow_recursive,
+    _get_acceptable_keys,
+    _get_param_kinds,
+    _get_post_init_attrs,
+    _prepare_kwargs,
+    _same_target,
+    get_active_context,
+    get_configurable_attrs,
+    materialize,
+    resolve,
+)

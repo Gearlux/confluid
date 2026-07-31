@@ -35,7 +35,7 @@ class Model:
         changed post-construction via ``configure``. (``configure`` introspects an instance by
         ``getattr``, which would trigger and freeze a *cached* property before the new config lands;
         recomputing reflects current state. Cache only an expensive external materialization whose
-        inputs are stable by first use — see dataflux ``HuggingFaceSource.dataset``.)
+        inputs are stable by first use.)
         """
         return [0.0] * self.layers
 

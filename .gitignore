@@ -45,4 +45,11 @@ mypy.txt
 coverage.xml
 test-report.xml
 coverage/
+
+# Generated quality-gate artifacts (CI writes these; never commit)
+coverage-confluid/
+*.zip
+lightning_logs/
+logs/
+*.log
 /pyrightconfig.json

@@ -43,10 +43,20 @@ from typing import (
 from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from confluid.lazy import is_lazy_annotation
+from confluid.exceptions import IntrospectionError
+from confluid.introspect import init_lazy_setattr_names, scan_init_body
+from confluid.lazy import _LAZY_MARKER, is_lazy_annotation
+from confluid.mandatory import _MANDATORY_MARKER
+from confluid.no_broadcast import _NO_BROADCAST_MARKER
 from confluid.schema import _parse_docstring
 
 _SKIP_PARAMS = {"self", "cls", "args", "kwargs"}
+
+# Confluid's own annotation markers — stripped wherever ``Annotated`` metadata is
+# peeled so none of them leaks into a generated model / JSON schema. (``Lazy`` is
+# recorded separately via ``_confluid_lazy_params``; ``Mandatory`` via
+# ``confluid.input_specs``; ``NoBroadcast`` is a broadcast-routing concern.)
+_INTERNAL_MARKERS = {_LAZY_MARKER, _MANDATORY_MARKER, _NO_BROADCAST_MARKER}
 
 # Numeric range marks (PEP-593 ``annotated_types``) the workspace convention puts
 # on the OUTER annotation of a ``(min, max)`` container param — see
@@ -145,11 +155,35 @@ def _unwrap_annotated(anno: Any) -> Any:
 def _convert_annotation(anno: Any) -> Any:
     """Recursively replace ``@configurable`` types inside ``anno`` with generated models.
 
+    A NESTED ``Annotated`` (a Union arm, a container element — e.g. the
+    ``Annotated[float, Interval]`` arm inside ``Mandatory[DbPower]``, whose alias
+    expands to ``Annotated[Union[Annotated[float, Interval], Fluid], marker]``)
+    keeps its non-marker metadata: confluid's internal markers are stripped, the
+    payload is converted, and the surviving metadata (range marks, ``Field``
+    constraints) is re-wrapped — so code-side tightening reaches the schema even
+    when a union-carrying marker alias prevents ``Annotated`` flattening.
+    Container range marks relocate element-wise exactly like the field-level path.
+    """
+    metadata: Tuple[Any, ...] = ()
+    while get_origin(anno) is Annotated:
+        args = get_args(anno)
+        anno = args[0]
+        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m in _INTERNAL_MARKERS))
+    converted = _convert_annotation_unwrapped(anno)
+    if not metadata:
+        return converted
+    converted, metadata = _spread_range_marks_into_container(converted, metadata)
+    return Annotated[(converted, *metadata)] if metadata else converted
+
+
+def _convert_annotation_unwrapped(anno: Any) -> Any:
+    """The conversion body behind :func:`_convert_annotation` — ``anno`` is already peeled.
+
     Leaves typing constructs intact (``Optional``, ``Union``, ``List``,
-    ``Dict``, ``Tuple``, ``Literal``, etc.) but recurses into their type args.
+    ``Dict``, ``Tuple``, ``Literal``, etc.) but recurses into their type args
+    (via :func:`_convert_annotation`, so nested metadata is preserved).
     Unknown / opaque types are returned as-is.
     """
-    anno = _unwrap_annotated(anno)
 
     # Plain Any / no annotation
     if anno is Any or anno is None or anno is type(None):
@@ -233,8 +267,8 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
 
     The workspace range-mark convention allows marking a ``(min, max)`` container
     param on the OUTER annotation — ``Annotated[Tuple[float, float], Interval(ge=0.0)]``
-    (waivefront-torchsig's ``WattRange``/``DbRange``) — because that is where
-    FluxStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
+    (waivefront.torchsig's ``WattRange``/``DbRange``) — because that is where
+    StreamStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
     Pydantic, however, applies ``annotated_types`` constraints to the field VALUE:
     ``(0.0, 30.0) >= 0.0`` raises ``TypeError: Unable to apply constraint 'ge'`` the
     first time the kwarg is actually validated. Relocating the marks element-wise
@@ -273,24 +307,14 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     ``gt`` / ``le`` / ``Literal`` refinements a source class declares on its
     ``__init__`` params) so code-side tightening survives into the generated
     schema — while still converting the INNER type so nested ``@configurable``
-    detection works. Confluid's own ``Lazy`` / ``Mandatory`` markers are dropped
-    (``Lazy`` is recorded separately via ``_confluid_lazy_params``; ``Mandatory``
-    via :func:`confluid.input_specs`) so neither leaks into the JSON Schema.
+    detection works. Confluid's own ``Lazy`` / ``Mandatory`` / ``NoBroadcast``
+    markers are dropped (``Lazy`` is recorded separately via
+    ``_confluid_lazy_params``; ``Mandatory`` via :func:`confluid.input_specs`)
+    so none leaks into the JSON Schema. The peel / marker-strip / range-mark
+    relocation all live in :func:`_convert_annotation`, which handles nested
+    ``Annotated`` layers identically.
     """
-    from confluid.lazy import _LAZY_MARKER
-    from confluid.mandatory import _MANDATORY_MARKER
-
-    internal_markers = {_LAZY_MARKER, _MANDATORY_MARKER}
-    metadata: Tuple[Any, ...] = ()
-    inner = anno
-    while get_origin(inner) is Annotated:
-        args = get_args(inner)
-        inner = args[0]
-        metadata = metadata + tuple(m for m in args[1:] if not (isinstance(m, str) and m in internal_markers))
-
-    converted_inner = _convert_annotation(inner)
-    converted_inner, metadata = _spread_range_marks_into_container(converted_inner, metadata)
-    converted_type = Annotated[(converted_inner, *metadata)] if metadata else converted_inner
+    converted_type = _convert_annotation(anno)
     desc_kw: Dict[str, Any] = {"description": description} if description else {}
 
     if param.default is inspect.Parameter.empty:
@@ -304,99 +328,23 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     return converted_type, Field(default=default, **desc_kw)
 
 
-def _ast_init_setattr_annotations(init_func: Any) -> Dict[str, Any]:
-    """Return ``{attr_name: annotation_node_or_None}`` for ``self.<name>[: T] = …``
-    assignments in a single ``__init__`` body (pure AST; no class context).
-
-    Mirrors :func:`confluid.loader._ast_scan_init_setattrs` but additionally
-    captures the *annotation expression* of an ``AnnAssign`` (``self.x: T = …``)
-    so :func:`to_pydantic` can type a post-init body slot. A plain ``Assign``
-    (``self.x = …``, no annotation) maps to ``None`` → typed ``Any``.
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    found: Dict[str, Any] = {}
-    try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(init_func)))
-    except (OSError, TypeError, SyntaxError):
-        return found
-
-    def _record(target: Any, annotation: Any) -> None:
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and not target.attr.startswith("_")
-        ):
-            found.setdefault(target.attr, annotation)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign):
-            _record(node.target, node.annotation)
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                _record(t, None)
-    return found
-
-
-def _ast_init_lazy_setattrs(init_func: Any) -> Set[str]:
-    """Return body-slot names whose RHS is a ``LazyClass(...)`` / ``Lazy(...)`` call.
+def _post_init_lazy_slots(cls: type) -> Set[str]:
+    """Names of ``@configurable``-chain body slots whose default is a ``LazyClass(...)``.
 
     ``self.optimizer: Any = LazyClass(torch.optim.Adam, lr=1e-3)`` marks
     ``optimizer`` as a **deferred (lazy) slot** — the same role a ``Lazy[T]``
     constructor-param annotation plays, but expressed as a body attribute under
     the minimal-ctor pattern. Recorded in ``_confluid_lazy_params`` so the
-    serializer emits ``!lazy:`` (not ``!class:``) for whatever fills the slot —
-    which is what keeps a runtime-injected slot (optimizer / loader / a trainer's
-    lightning) from being eagerly materialized on assignment.
+    serializer emits ``!lazy:`` (not ``!class:``) for whatever fills the slot.
+    Scanning delegates to the shared :mod:`confluid.introspect`.
     """
-    import ast
-    import inspect
-    import textwrap
-
-    names: Set[str] = set()
-    try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(init_func)))
-    except (OSError, TypeError, SyntaxError):
-        return names
-
-    def _is_lazy_call(value: Any) -> bool:
-        if not isinstance(value, ast.Call):
-            return False
-        func = value.func
-        name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
-        return name in ("LazyClass", "Lazy")
-
-    def _record(target: Any, value: Any) -> None:
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and not target.attr.startswith("_")
-            and _is_lazy_call(value)
-        ):
-            names.add(target.attr)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign) and node.value is not None:
-            _record(node.target, node.value)
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                _record(t, node.value)
-    return names
-
-
-def _post_init_lazy_slots(cls: type) -> Set[str]:
-    """Names of ``@configurable``-chain body slots whose default is a ``LazyClass(...)``."""
     lazy: Set[str] = set()
     for klass in cls.__mro__:
         if klass is object or not getattr(klass, "__confluid_configurable__", False):
             continue
         init = klass.__dict__.get("__init__")
         if init is not None:
-            lazy |= _ast_init_lazy_setattrs(init)
+            lazy |= init_lazy_setattr_names(init)
     return lazy
 
 
@@ -456,11 +404,9 @@ def _post_init_field_specs(
     reconfigured post-construction (YAML / broadcasting / a subclass), so a config
     may omit them. This keeps body-attribute config slots — a trainer's
     ``optimizer`` / ``train_loader`` / ``lightning`` / ``*_metrics`` — visible to
-    ``to_pydantic`` (navigaitor form-spec, MCP schemas, FluxStudio widgets) even
+    ``to_pydantic`` (navigaitor form-spec, MCP schemas, StreamStudio widgets) even
     though they aren't constructor parameters.
     """
-    from confluid.loader import _ast_scan_init_setattrs
-
     specs: Dict[str, Tuple[Any, Any]] = {}
     seen: Set[str] = set(signature_params) | _SKIP_PARAMS
     for klass in cls.__mro__:
@@ -469,8 +415,14 @@ def _post_init_field_specs(
         init = klass.__dict__.get("__init__")
         if init is None:
             continue
-        names = _ast_scan_init_setattrs(init)
-        annotations = _ast_init_setattr_annotations(init)
+        # ONE shared scan per __init__ (confluid.introspect), projected twice:
+        # every slot NAME (all kinds), and the assign/annassign annotation map.
+        body_slots = scan_init_body(init)
+        names = {slot.name for slot in body_slots}
+        annotations: Dict[str, Any] = {}
+        for slot in body_slots:
+            if slot.kind in ("assign", "annassign"):
+                annotations.setdefault(slot.name, slot.annotation)
         for name in names:
             if name in seen:
                 continue
@@ -524,11 +476,12 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
         A new pydantic ``BaseModel`` subclass.
 
     Raises:
-        TypeError: If ``cls`` is not a class or its ``__init__`` is not
-            inspectable (e.g. C extension types without Python wrappers).
+        confluid.IntrospectionError: (a ``TypeError``) If ``cls`` is not a
+            class or its ``__init__`` is not inspectable (e.g. C extension
+            types without Python wrappers).
     """
     if not callable(cls):
-        raise TypeError(f"to_pydantic(cls) expected a class or callable, got {type(cls).__name__}")
+        raise IntrospectionError(f"to_pydantic(cls) expected a class or callable, got {type(cls).__name__}")
 
     # A target may be a class OR a plain builder/factory FUNCTION (e.g. a torchvision
     # detection builder ``fasterrcnn_resnet50_fpn``) — mirroring flow()/resolve_class's
@@ -548,14 +501,14 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
                 sig = inspect.signature(init)
                 hints = get_type_hints(init, include_extras=True)
             except (TypeError, ValueError, NameError) as exc:
-                raise TypeError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
+                raise IntrospectionError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
             docstring = init.__doc__ or cls.__doc__ or ""
     else:
         try:
             sig = inspect.signature(cls)
             hints = get_type_hints(cls, include_extras=True)
         except (TypeError, ValueError, NameError) as exc:
-            raise TypeError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
+            raise IntrospectionError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
         docstring = cls.__doc__ or ""
 
     param_docs = _parse_docstring(docstring)
@@ -577,7 +530,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # Also surface post-init body slots (``self.optimizer = LazyClass(...)`` etc.)
     # that aren't constructor parameters — the minimal-ctor / post-construction
     # pattern keeps configurable slots in the ``__init__`` body, and they must
-    # still be enumerable by the form-spec / MCP / FluxStudio surfaces. Signature
+    # still be enumerable by the form-spec / MCP / StreamStudio surfaces. Signature
     # params already in ``fields`` win (never overwritten).
     signature_params = set(fields)
     if isinstance(cls, type):  # post-init body-slot scan walks ``cls.__mro__`` (classes only)

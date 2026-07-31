@@ -2,7 +2,7 @@
 
 ``parse_param_docs`` is the single source of per-parameter help reused across the
 workspace: navigaitor turns it into pydantic ``Field(description=...)`` (via
-``to_pydantic``) for the visual editor, and FluxStudio turns it into ComfyUI
+``to_pydantic``) for the visual editor, and StreamStudio turns it into ComfyUI
 widget tooltips. The multi-line fix matters because ``re.MULTILINE`` made the old
 terminator (``$``) match the end of every physical line, truncating every
 description to its first line in BOTH surfaces.
@@ -41,16 +41,16 @@ def test_parse_param_docs_prefers_init_docstring() -> None:
 
 
 def test_parse_param_docs_on_function() -> None:
-    def fn(value: str, sample: object) -> str:
+    def fn(value: str, record: object) -> str:
         """Do a thing.
 
         Args:
             value: The expression string.
-            sample: The sample object.
+            record: The record object.
         """
         return value
 
-    assert parse_param_docs(fn) == {"value": "The expression string.", "sample": "The sample object."}
+    assert parse_param_docs(fn) == {"value": "The expression string.", "record": "The record object."}
 
 
 def test_parse_param_docs_class_without_init_uses_class_doc() -> None:
