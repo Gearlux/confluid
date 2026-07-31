@@ -14,7 +14,7 @@ class CompactDumper(yaml.SafeDumper):
 def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Emit a module-level function/builtin as ``!ref:module.qualname``.
 
-    The loader's ``_resolve_dotted_ref`` resolves this back to the live
+    The resolver's ``resolve_reference_path`` resolves this back to the live
     object via ``importlib.import_module`` + ``getattr``, so dump/load
     round-trips hold as long as the symbol stays importable at the same
     dotted path.
@@ -98,26 +98,47 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             cls_name = f"{target.__module__}.{target.__qualname__}"
         else:
             cls_name = str(target)
-        return dumper.represent_mapping(f"!class:{cls_name}()", data.__confluid_kwargs__)
+        return dumper.represent_mapping(f"!class:{cls_name}()", getattr(data, "__confluid_kwargs__", {}))
 
     # Live @configurable instance → dump with () to indicate instant construction on reload
     cls_name = getattr(data, "__confluid_name__", data.__class__.__name__)
+    sig: Optional[inspect.Signature]
     try:
         sig = inspect.signature(data.__class__)
         params = [p for p in sig.parameters if p not in ("self", "cls")]
     except (ValueError, TypeError):
+        sig = None
         params = []
+
+    # Ctor kwargs captured at construction (engine stamp on the YAML path,
+    # validation-wrap stamp on direct Python construction) — the fallback for
+    # an EAGER class that transforms a param instead of storing it verbatim.
+    captured = getattr(data, "__confluid_kwargs__", {})
+
+    def _skip_none(param: str, val: Any) -> bool:
+        # Suppress dump noise ONLY when the omission is lossless: a ``None``
+        # value on a param whose default is also ``None`` reloads identically.
+        # A ``None`` on any other default MUST dump as ``param: null`` —
+        # Serialization Symmetry (the old unconditional None-skip reloaded the
+        # non-None default instead).
+        if val is not None or sig is None:
+            return False
+        return sig.parameters[param].default is None
 
     kwargs = {}
     for p in params:
         if hasattr(data, p):
             val = getattr(data, p)
-            if val is not None:
+            if not _skip_none(p, val):
                 if isinstance(val, type):
                     if hasattr(val, "__confluid_configurable__"):
                         val = f"!class:{getattr(val, '__confluid_name__', val.__name__)}"
                     else:
                         val = f"{val.__module__}.{val.__name__}"
+                kwargs[p] = val
+        elif p in captured:
+            val = captured[p]
+            if not _skip_none(p, val):
                 kwargs[p] = val
 
     # Include post-construction attributes set via @configurable
@@ -189,6 +210,11 @@ def dump(obj: Any) -> str:
                         _discover_and_register(getattr(target, p), visited)
             except (ValueError, TypeError):
                 pass
+            # Traverse captured ctor kwargs too — a nested configurable an
+            # EAGER class stored under a private attr is reachable ONLY here,
+            # and _represent_object will emit it via the captured fallback.
+            for v in getattr(target, "__confluid_kwargs__", {}).values():
+                _discover_and_register(v, visited)
             # Traverse post-construction attributes (set via @configurable)
             for name in getattr(target, "__confluid_extra__", []):
                 if name in param_set:

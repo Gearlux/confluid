@@ -1,25 +1,34 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+# setuptools>=77 is the PEP 639 floor: `license` as a plain SPDX string below
+# requires it (the TOML-table form is deprecated, removal slated 2027-02).
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "confluid"
-version = "0.1.0"
+version = "0.2.0"
 description = "Modern, hierarchical configuration and dependency injection for Python."
 readme = "README.md"
-authors = [{name = "Taidal"}]
-license = {text = "MIT"}
+authors = [{name = "Gert Behiels"}]
+# PEP 639 SPDX expression; the license CLASSIFIER is deliberately absent
+# (deprecated in favour of this field — re-adding it reintroduces the
+# SetuptoolsDeprecationWarning at build time).
+license = "MIT"
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 dependencies = [
-    "pydantic>=2.0.0",
     "pyyaml>=6.0",
-    "log-flow>=0.1.0",
+    "loggair>=0.1.0",
     "python-dotenv>=1.0.0",
     # PEP 696 TypeVar(default=...) for the generic Lazy[T] fluid (fluid.py); the
     # stdlib typing gained `default` only in 3.13, py-floor is 3.12 so use the backport.
@@ -28,7 +37,15 @@ dependencies = [
 requires-python = ">=3.12"
 
 [project.optional-dependencies]
+# Schema export (`to_pydantic`, `confluid_class_of`, `lazy_param_names_of`) and
+# init/YAML/tool validation are pydantic-powered. Without this extra, confluid
+# still imports and runs — validation degrades to "off" (logged once) and the
+# schema-export API raises ImportError pointing here.
+pydantic = [
+    "pydantic>=2.0.0",
+]
 dev = [
+    "pydantic>=2.0.0",
     "black>=24.0.0,<25.0.0",
     "isort>=5.13.0,<6.0.0",
     "flake8>=6.0.0,<8.0.0",
@@ -38,6 +55,12 @@ dev = [
     "pytest>=7.0.0,<9.0.0",
     "pytest-cov>=4.0.0,<7.0.0",
 ]
+
+[project.scripts]
+# Build-time bake of __init__ body-slot names into <package>/_confluid_baked.py so
+# broadcasting keeps seeing post-init attrs in compiled/frozen/zip deployments where
+# inspect.getsource fails (see confluid/bake.py; `confluid-bake <pkg>` == `python -m confluid.bake <pkg>`).
+confluid-bake = "confluid.bake:main"
 
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"
@@ -71,7 +94,7 @@ module = "yaml.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "logflow.*"
+module = "loggair.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -25,8 +25,9 @@ stripped at the end of resolution.
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from logflow import get_logger
+from loggair import get_logger
 
+from confluid.exceptions import ScopeError
 from confluid.fluid import ScopeBlock
 
 logger = get_logger("confluid.scopes")
@@ -199,7 +200,7 @@ def _resolve_aliases(requested: List[str], aliases: Dict[str, Any]) -> List[str]
 
     def expand(name: str, path: List[str]) -> None:
         if name in path:
-            raise ValueError(f"Circular scope alias detected: {' -> '.join(path + [name])}")
+            raise ScopeError(f"Circular scope alias detected: {' -> '.join(path + [name])}")
         if name in seen:
             return
         seen.add(name)

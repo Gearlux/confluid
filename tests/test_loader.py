@@ -31,7 +31,7 @@ def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> No
 
     The Fluid constructors' own first parameter is ``target`` — building a marker via
     ``Instance(name, **mapping)`` raised ``got multiple values for argument 'target'``
-    whenever a config carried a ``target:`` kwarg (e.g. dataflux ``ConfigureOp.target``).
+    whenever a config carried a ``target:`` kwarg (e.g. recordstream ``ConfigureOp.target``).
     The loader assigns kwargs post-construction instead.
     """
 
@@ -108,7 +108,7 @@ def test_load_config_root_level_class(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# `!class:` eager-vs-deferred grammar (README §"Tags & Deferred Initialization")
+# `!class:` eager-vs-deferred grammar (docs/tags.md)
 # ---------------------------------------------------------------------------
 
 
@@ -131,16 +131,15 @@ def _register_grammar_model() -> None:
 
 
 def _parse_tags(text: str) -> dict:
-    """Parse a YAML string through the same constructors ``load_config`` registers,
+    """Parse a YAML string through ConfluidLoader (the tag-aware loader class),
     WITHOUT materializing — so the raw ``Class`` / ``Instance`` Fluids are visible."""
     from typing import cast
 
     import yaml
 
-    from confluid.loader import _register_constructors
+    from confluid.loader import ConfluidLoader
 
-    _register_constructors()
-    return cast(dict, yaml.safe_load(text))
+    return cast(dict, yaml.load(text, Loader=ConfluidLoader))
 
 
 def test_class_form_bare_parses_to_deferred_class() -> None:
@@ -226,7 +225,7 @@ def test_class_form_quoted_inline_kwargs_are_coerced(_register_grammar_model: No
 
 
 def test_class_form_quoted_inline_ref_is_resolved(_register_grammar_model: None) -> None:
-    """A nested ``!ref:`` works only in the QUOTED form (the README's Adam example).
+    """A nested ``!ref:`` works only in the QUOTED form (the Adam example in docs/tags.md).
 
     YAML forbids two tags on one node, so ``!class:Model(layers=!ref:n)`` cannot be
     written unquoted — the value must be a quoted string the resolver then parses.
@@ -277,3 +276,53 @@ def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> Non
     stays a plain string and is NEVER turned into a ``Lazy``."""
     value = load('m: "!lazy:Model(layers=5)"\n')["m"]
     assert value == "!lazy:Model(layers=5)"  # untouched string
+
+
+def test_import_key_warns_on_missing_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo'd ``import:`` module warns at load time (it used to fail silently
+    and only surface much later as "Cannot resolve class"). Loading still
+    succeeds — the module may be an optional dependency of a shared config."""
+    from types import SimpleNamespace
+
+    import confluid.loader as loader_module
+
+    warnings_seen: list[str] = []
+    monkeypatch.setattr(loader_module, "logger", SimpleNamespace(warning=lambda msg: warnings_seen.append(msg)))
+
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("import: [definitely_not_a_module_xyz]\nval: 1\n")
+    data = load_config(cfg)
+    assert data == {"val": 1}
+    assert any("definitely_not_a_module_xyz" in msg for msg in warnings_seen)
+
+
+def test_global_safe_loader_stays_clean() -> None:
+    """Tags are registered on ConfluidLoader ONLY — plain ``yaml.safe_load``
+    must still REJECT confluid tags. Guards against re-polluting the global
+    ``yaml.SafeLoader``, which would hand Fluid markers to every other
+    yaml-consuming library in the process."""
+    import yaml
+
+    import confluid  # noqa: F401 — confluid fully imported, constructors registered
+
+    with pytest.raises(yaml.constructor.ConstructorError):
+        yaml.safe_load("m: !class:Model\n")
+    with pytest.raises(yaml.constructor.ConstructorError):
+        yaml.safe_load("r: !ref:base\n")
+    # ...while confluid's own entry point parses them fine.
+    from confluid.fluid import Class
+
+    assert isinstance(load("m: !class:Model\n", flow=False)["m"], Class)
+
+
+def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${key.path}`` embeds another config value; ``${ENV}`` stays env-based."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    doc = (
+        "train:\n"
+        "  dataset: RFUAV\n"
+        "  version: v3\n"
+        'data_dir: "${CONFLUID_TEST_ROOT}/${train.dataset}/${train.version}/data"\n'
+    )
+    result = load(doc, flow=False)
+    assert result["data_dir"] == "/store/RFUAV/v3/data"
