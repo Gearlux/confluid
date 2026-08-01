@@ -33,9 +33,10 @@ Each topic has its own guide, and every guide has a runnable companion script in
 | [Discovery](https://github.com/Gearlux/confluid/blob/main/docs/discovery.md) | `category` / `group` tags, behavioral marks (`random` / `constant`), docstring-derived help | `discovery.py` |
 | [Extending the Discovery Surface](https://github.com/Gearlux/confluid/blob/main/docs/extending-discovery.md) | The end-to-end contract a tagged class must satisfy to surface automatically in an MCP tool server and a visual node editor: the `task` × `role` taxonomy, entry-point registration, signature-to-widget/schema mapping, and the common failure modes | `discovery.py` |
 | [Error Handling](https://github.com/Gearlux/confluid/blob/main/docs/errors.md) | The typed exception hierarchy (each also inherits the builtin it replaces) | `error_handling.py` |
-| [Scopes](https://github.com/Gearlux/confluid/blob/main/docs/scopes.md) | `!scope:` / `!notscope:` conditional overlays and their activation | `scopes.py` |
+| [Scopes](https://github.com/Gearlux/confluid/blob/main/docs/scopes.md) | `!scope:` / `!notscope:` conditional overlays, their activation, and `discover_dimension_values` — what a document offers, and the error when you ask for something else | `scopes.py` |
 | [Introspection](https://github.com/Gearlux/confluid/blob/main/docs/introspection.md) | `cast()` for type checkers, `resolve()` markers, `solidify=False`, dump/reconstruct | `introspection.py` |
 | [Threads & Async](https://github.com/Gearlux/confluid/blob/main/docs/concurrency.md) | ContextVar propagation, `active_context`, worker-thread recipes | `concurrency.py` |
+| [Architecture Decisions](https://github.com/Gearlux/confluid/blob/main/docs/architecture.md) | The *why* behind non-obvious behaviour — decision records, backfilled as the questions come up | — |
 | [Performance](https://github.com/Gearlux/confluid/blob/main/docs/performance.md) | The engine-timing baseline: per-phase benchmark over a ~2,500-marker tree, `CONFLUID_BENCH_PROFILE=1` profiling mode | `performance.py` |
 
 ### Real-world scenarios

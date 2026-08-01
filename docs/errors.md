@@ -26,7 +26,7 @@ Every concrete class **also inherits the builtin it replaces**, so pre-existing 
 | `AmbiguousClassError` | `ValueError` | a `!class:` target names a class registered by SEVERAL classes and nothing narrows the choice |
 | `ConfigurableDefinitionError` | `ValueError` | a `@configurable` declaration is contradictory |
 | `ValidationModeError` | `ValueError` | a `CONFLUID_VALIDATE_*` env var holds an unknown mode |
-| `ScopeError` | `ValueError` | a scope alias chain is circular |
+| `ScopeError` | `ValueError` | a scope alias chain is circular; a block's body shape cannot splice where it sits; an activation names a value no block declares |
 | `ConfigFileNotFoundError` | `FileNotFoundError` | a config or included file is missing |
 | `ConstructionError` | `RuntimeError` | a target's constructor failed and the original exception class cannot be rebuilt (original chained via `__cause__`) |
 | `WorkspaceEnvError` | `RuntimeError` | no `.env` found / a required key is unset / a path-typed value is missing |
@@ -47,6 +47,20 @@ Disambiguate with the dotted path (!class:myops.numpy.FourierOp), a tag selector
 ```
 
 See [Discovery](discovery.md) for when two classes may share a name in the first place.
+
+`ScopeError` covers three unrelated conditions, so read the message rather than the type.
+The one worth calling out is an activation that matches nothing:
+
+```console
+confluid.ScopeError: No scope block matches task='classifcation'. This document declares
+task with: classification, segmentation. Either use one of those values, or add a
+`!scope:task=classifcation` block.
+```
+
+It exists because the alternative is silence — a value matching no block used to resolve to
+the document's *unscoped* keys, so a typo ran the default configuration and reported nothing.
+Note that an entirely **undeclared** dimension is still an inert no-op, and a dimension with
+any `!notscope:` block accepts every value; see [Scopes](scopes.md) for why.
 
 Note: a failing constructor normally re-raises with the **original** exception class (`Failed to construct X: ...`) — `ConstructionError` is only the fallback for exception classes that cannot be rebuilt from a plain message (e.g. pydantic's `ValidationError`).
 

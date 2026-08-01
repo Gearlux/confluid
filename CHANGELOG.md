@@ -6,9 +6,27 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.0] — 2026-07-30
+## [0.3.0] — 2026-08-01
 
 ### Added
+
+- **`discover_dimension_values(config)`** — every keyed scope dimension in a raw
+  document mapped to the values it offers:
+
+  ```python
+  from confluid import discover_dimension_values, load_config
+
+  discover_dimension_values(load_config("experiment.yaml"))
+  # {"task": {"classification", "segmentation"}, "model": {"convnet"}}
+  ```
+
+  Takes the **raw** document — by the time `load()` returns, the blocks have been
+  spliced away. `discover_dimensions` (keys only) is now derived from the same
+  walk rather than traversing separately.
+
+  A dimension declared only by `!notscope:` blocks maps to an **empty set**: it is
+  a real dimension a CLI must bind, but a negation is activated by every value
+  except the one it names, so there is nothing to *select*.
 
 - **`framework=` — a third orthogonal discovery axis** on `@configurable`,
   `register()` and `register_class()`, indexed like `task`/`role`
@@ -74,6 +92,30 @@ All notable changes to confluid are documented here. The format follows
 
 ### Changed
 
+- **An active keyed scope must name a value the document declares** — otherwise
+  `load(..., scopes=[...])` raises `ScopeError` listing the values that do exist.
+
+  ```
+  ScopeError: No scope block matches task='classifcation'. This document declares
+  task with: classification, segmentation. Either use one of those values, or add
+  a `!scope:task=classifcation` block.
+  ```
+
+  Previously a value matching no block resolved to the document's *unscoped* keys,
+  so a typo ran the default configuration and reported nothing — indistinguishable
+  from success until the outputs were inspected.
+
+  The rule is narrow, and three cases are deliberately unchanged: an **undeclared**
+  dimension stays an inert no-op (a CLI may pass a dimension a config has not grown
+  into yet), an **unset** dimension resolves to the defaults as before, and a
+  dimension carrying **any** `!notscope:` block accepts every value (both matching
+  and differing are meaningful there, so nothing can be rejected).
+
+  **Breaking** for a config that was relying on an unmatched value falling through
+  to its defaults. The fix is to declare the value as a block — including for a
+  "default" variant a CLI names unconditionally, which is now a checkable value
+  rather than a silent no-op.
+
 - **A bare lookup of a shared name now raises** instead of returning whichever
   class registered last (`get_class`, and `resolve_class(strict=True)` — which
   the construction path uses). `resolve_class` stays non-raising by default, so
@@ -102,7 +144,6 @@ All notable changes to confluid are documented here. The format follows
   has always matched on the registered name.
 - **A re-registration that changes a tag no longer leaves the class indexed
   under the old value.**
-
 
 ## [0.2.0] — 2026-07-27
 

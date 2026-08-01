@@ -7,11 +7,17 @@ The second half shows a scope block nested INSIDE a ``!class:`` marker — the w
 to offer an alternative for a single slot without lifting it to the document
 root. A marker's kwargs are a mapping like any other, so the wrapper splices at
 its own position and the later write wins.
+
+The last part asks a document which values it offers, and shows what happens
+when you ask for one it does not have.
 """
 
 from typing import Any, Dict
 
-from confluid import configurable, load
+import yaml
+
+from confluid import ScopeError, configurable, discover_dimension_values, load
+from confluid.loader import ConfluidLoader
 
 DOC = """
 log_level: INFO
@@ -107,6 +113,22 @@ def main() -> None:
     full = load(BODY_DOC, scopes=["extra=yes"])
     assert full["ops"] == ["always_first", "extra_a", "extra_b", 42, "always_last"]
     print(f"{'ops: extra=yes':<28} {full['ops']}")
+
+    # What does this document offer? Ask the RAW parse — `load()` has already
+    # spliced the blocks away, so there is nothing left to discover in its result.
+    raw = yaml.load(DOC, Loader=ConfluidLoader)
+    offered = discover_dimension_values(raw)
+    assert offered == {"task": {"classification"}}
+    print(f"{'declared dimensions':<28} {offered}")
+
+    # Asking for a value it does NOT offer is an error naming the ones it does,
+    # rather than a silent fall-through to the unscoped defaults.
+    try:
+        load(DOC, scopes=["task=classifcation"])  # typo, on purpose
+    except ScopeError as exc:
+        print(f"{'typo rejected':<28} {exc}")
+    else:  # pragma: no cover - the raise is the point of the example
+        raise AssertionError("an undeclared scope value must raise")
 
 
 if __name__ == "__main__":

@@ -66,7 +66,7 @@ from confluid.schema import (
     parse_param_docs,
     shortest_unique_paths,
 )
-from confluid.scopes import discover_dimensions
+from confluid.scopes import discover_dimension_values, discover_dimensions
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
 
 __all__ = [
@@ -131,6 +131,7 @@ __all__ = [
     "get_configurable_attrs",
     "to_pydantic",
     "confluid_class_of",
+    "discover_dimension_values",
     "discover_dimensions",
     "accepts_key",
     "accepts_broadcast",

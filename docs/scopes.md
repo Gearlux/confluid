@@ -91,6 +91,49 @@ trainer = load("experiment.yaml", scopes=["debug", "task=classification"])
 A CLI framework can forward scope activations straight from command-line
 flags (e.g. `--scope debug` / `--task classification`) into `load(scopes=...)`.
 
+## Asking for a variant that does not exist
+
+A keyed activation must name a value the document actually carries. Asking for
+one it does not is a `ScopeError` that lists the real values:
+
+```python
+load("experiment.yaml", scopes=["task=classifcation"])   # note the typo
+# ScopeError: No scope block matches task='classifcation'. This document declares
+# task with: classification, segmentation. Either use one of those values, or add
+# a `!scope:task=classifcation` block.
+```
+
+Without the check a typo resolved to the document's *unscoped* keys — the run
+proceeded on the default and reported nothing, which reads exactly like success
+until the outputs are inspected.
+
+The rule is narrow, and three neighbouring cases stay silent on purpose:
+
+| Situation | Outcome |
+|-----------|---------|
+| the dimension is **not declared** at all | inert no-op — a CLI may pass a dimension a config has not grown into yet |
+| the dimension is **not activated** | the document's unscoped keys apply (the default) |
+| the dimension carries **any** `!notscope:` block | every value is accepted — see below |
+
+That last row follows from what a negation means: `!notscope:task=segmentation`
+is activated by *every* value except `segmentation`, and deactivated by that one.
+Both outcomes are meaningful, so no value can be rejected.
+
+To ask a document which values it offers, use `discover_dimension_values` — the
+same walk the check runs, useful for building a picker or validating a form:
+
+```python
+from confluid import discover_dimension_values, load_config
+
+discover_dimension_values(load_config("experiment.yaml"))
+# {"task": {"classification", "segmentation"}, "model": {"convnet"}}
+```
+
+Note it takes the **raw** document (`load_config`), not a `load()` result — by
+the time `load()` returns, the blocks have already been spliced away. A dimension
+declared only by negated blocks maps to an empty set: it is a real dimension a
+CLI must bind, but it offers nothing to *select*.
+
 ## Runnable example
 
 [`examples/scopes.py`](../examples/scopes.py) loads one document under three
