@@ -85,28 +85,43 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
     Returns:
         A new structure with every ``ScopeBlock`` resolved. Top-level
         ``scope_aliases`` and ``scopes`` metadata keys are stripped if present.
+
+    Raises:
+        ScopeError: An active keyed scope names a dimension the document
+            declares, with a value no block carries — see
+            :func:`_check_active_values_are_declared`.
     """
     logger.debug(f"Resolving scopes: {active}")
+    _check_active_values_are_declared(config, active)
     resolved = _resolve_value(config, active)
     if isinstance(resolved, dict):
         resolved = {k: v for k, v in resolved.items() if k not in ("scope_aliases", "scopes")}
     return resolved
 
 
-def discover_dimensions(config: Any) -> Set[str]:
-    """Return the set of *keyed* scope dimension names appearing anywhere in ``config``.
+def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
+    """The ONE dimension walker: ``(positive values per key, keys carrying a negation)``.
 
-    Walks dicts, lists, ``ScopeBlock.contents``, and :class:`confluid.fluid.Fluid`
-    kwargs. Boolean scopes (``value is None``) are not dimensions and are not
-    returned. Liquifai uses this to learn which ``--KEY VAL`` flags should bind
-    to scope activation rather than confluid overrides.
+    Walks dicts, lists, ``ScopeBlock.contents`` and :class:`confluid.fluid.Fluid`
+    kwargs — the same node kinds :func:`_resolve_value` walks, which is the
+    invariant they must keep (a dimension advertised but not resolvable is the
+    bug class this module's docstring already records). Both public discovery
+    functions and the activation check read this; do not add a second traversal.
+
+    Positive and negated blocks are separated because they say OPPOSITE things
+    about which values are meaningful — see :func:`_check_active_values_are_declared`.
     """
-    found: Set[str] = set()
+    positive: Dict[str, Set[str]] = {}
+    negated: Set[str] = set()
 
     def walk(node: Any) -> None:
         if isinstance(node, ScopeBlock):
             if node.value is not None:
-                found.add(node.key)
+                values = positive.setdefault(node.key, set())
+                if node.negate:
+                    negated.add(node.key)
+                else:
+                    values.add(node.value)
             walk(node.contents)
             return
         if isinstance(node, dict):
@@ -123,7 +138,75 @@ def discover_dimensions(config: Any) -> Set[str]:
             return
 
     walk(config)
-    return found
+    return positive, negated
+
+
+def discover_dimension_values(config: Any) -> Dict[str, Set[str]]:
+    """Return every *keyed* scope dimension in ``config``, mapped to its selectable values.
+
+    ``{"framework": {"torch", "keras"}, "model": {"convnet"}}`` for a document
+    carrying ``!scope:framework=torch`` / ``!scope:framework=keras`` /
+    ``!scope:model=convnet`` blocks. Boolean scopes (``value is None``) declare no
+    value and are absent entirely.
+
+    A dimension declared ONLY by negated blocks maps to an EMPTY set, not to the
+    values those blocks name: ``!notscope:task=segmentation`` is activated by every
+    value EXCEPT ``segmentation``, so its value is the one thing that does not
+    select it. The key is still present — it is a real dimension a CLI must bind.
+
+    Answers "what may I ask for?", which is why the values are the positive ones.
+    """
+    return _walk_dimensions(config)[0]
+
+
+def discover_dimensions(config: Any) -> Set[str]:
+    """Return the set of *keyed* scope dimension names appearing anywhere in ``config``.
+
+    Boolean scopes (``value is None``) are not dimensions and are not returned.
+    Liquifai uses this to learn which ``--KEY VAL`` flags should bind to scope
+    activation rather than confluid overrides.
+
+    Derived from :func:`_walk_dimensions` rather than traversing again — two
+    walkers over the same node kinds is exactly how the pre-2026-08 asymmetry
+    with :func:`_resolve_value` arose.
+    """
+    return set(_walk_dimensions(config)[0])
+
+
+def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[str]]) -> None:
+    """Raise when an active keyed scope asks for a variant the document does not have.
+
+    Without this, asking for a variant that does not exist silently produced the
+    DEFAULT: a typo'd ``--framework kears`` ran the default backend and said
+    nothing, which is indistinguishable from success until the artifacts are read.
+
+    The rule is deliberately narrow. It fires only when the dimension is declared
+    by POSITIVE blocks alone and the requested value matches none of them. Three
+    neighbouring cases stay silent, each by design:
+
+    * an *undeclared* dimension (``--scope framework=keras`` against a config with
+      no ``!scope:framework=…`` block at all) is an inert no-op, which is what lets
+      a CLI pass a dimension unconditionally while a config grows into it;
+    * an *unset* dimension resolves to whatever the document's unscoped keys say;
+    * a dimension carrying ANY negated block accepts EVERY value, because that is
+      what a negation means — ``!notscope:task=segmentation`` fires for
+      ``task=classification`` precisely because the value differs, and it is
+      deactivated by ``task=segmentation``. Both outcomes are meaningful, so there
+      is no value left to reject.
+    """
+    if not active:
+        return
+    positive, negated = _walk_dimensions(config)
+    for key, value in active.items():
+        if value is None or key in negated or not positive.get(key):
+            continue
+        if value not in positive[key]:
+            known = ", ".join(sorted(positive[key]))
+            raise ScopeError(
+                f"No scope block matches {key}={value!r}. "
+                f"This document declares {key} with: {known}. "
+                f"Either use one of those values, or add a `!scope:{key}={value}` block."
+            )
 
 
 def _is_active(block: ScopeBlock, active: Dict[str, Optional[str]]) -> bool:

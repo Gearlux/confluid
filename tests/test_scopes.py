@@ -17,7 +17,7 @@ from typing import Any, Dict, cast
 import pytest
 
 import confluid
-from confluid import configurable, discover_dimensions, get_registry, load, load_config
+from confluid import configurable, discover_dimension_values, discover_dimensions, get_registry, load, load_config
 from confluid.exceptions import ScopeError
 from confluid.fluid import ScopeBlock
 from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
@@ -801,6 +801,105 @@ root: !class:Knob
     )
     raw = load_config(yaml_path)
     assert "size" in discover_dimensions(raw)
+
+
+# ---------------------------------------------------------------------------
+# An active value must be one the document declares
+# ---------------------------------------------------------------------------
+# Asking for a variant that does not exist used to resolve to the DEFAULT and say
+# nothing — a typo'd `--framework kears` ran the default backend and looked like
+# success until the artifacts were read.
+
+_TWO_VARIANTS = """
+runnable: default
+torch: !scope:framework=torch
+  runnable: torch
+keras: !scope:framework=keras
+  runnable: keras
+"""
+
+
+def _unresolved(text: str) -> Any:
+    """Parse WITHOUT resolving scopes — `load()` has already spliced them away.
+
+    Discovery reads the raw document, which is also what `resolve_scopes` is handed.
+    """
+    import yaml
+
+    from confluid.loader import ConfluidLoader
+
+    return yaml.load(text, Loader=ConfluidLoader)
+
+
+def test_dimension_values_are_discovered_per_dimension() -> None:
+    raw = _unresolved(_TWO_VARIANTS + "big: !scope:size=large\n  n: 1\n")
+    assert discover_dimension_values(raw) == {"framework": {"torch", "keras"}, "size": {"large"}}
+
+
+def test_discover_dimensions_reads_the_same_walkers_keys() -> None:
+    """One walker: the key-only view is derived, never a second traversal."""
+    raw = _unresolved(_TWO_VARIANTS)
+    assert discover_dimensions(raw) == set(discover_dimension_values(raw))
+
+
+def test_a_boolean_scope_declares_no_value() -> None:
+    raw = _unresolved("dbg: !scope:debug\n  verbose: true\n")
+    assert discover_dimension_values(raw) == {}
+
+
+def test_a_negated_block_declares_the_dimension_but_no_selectable_value() -> None:
+    """`!notscope:framework=torch` is activated by every value EXCEPT `torch`.
+
+    So its value is the one thing that does not SELECT it — the dimension is real
+    (a CLI must still bind `--framework`) but there is nothing to offer as a choice.
+    """
+    raw = _unresolved("alt: !notscope:framework=torch\n  runnable: other\n")
+    assert discover_dimension_values(raw) == {"framework": set()}
+    assert discover_dimensions(raw) == {"framework"}
+
+
+def test_a_negation_makes_every_value_meaningful_so_nothing_is_rejected() -> None:
+    """The check must not fire where a negation is what the value is read against."""
+    text = "postproc: base\nunless_seg: !notscope:task=segmentation\n  postproc: default\n"
+    assert cast(Dict[str, Any], load(text, flow=False, scopes=["task=classification"]))["postproc"] == "default"
+    assert cast(Dict[str, Any], load(text, flow=False, scopes=["task=segmentation"]))["postproc"] == "base"
+
+
+def test_an_undeclared_value_on_a_declared_dimension_raises() -> None:
+    with pytest.raises(ScopeError) as ei:
+        load(_TWO_VARIANTS, flow=False, scopes=["framework=kears"])
+
+    message = str(ei.value)
+    assert "framework='kears'" in message
+    assert "keras, torch" in message, "the error must list the values that DO exist"
+
+
+def test_an_undeclared_DIMENSION_stays_an_inert_no_op() -> None:
+    """The narrow rule: a CLI may pass a dimension a config has not grown into yet."""
+    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS, flow=False, scopes=["hardware=gpu"]))
+    assert loaded["runnable"] == "default"
+
+
+def test_a_declared_value_resolves_as_before() -> None:
+    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS, flow=False, scopes=["framework=keras"]))
+    assert loaded["runnable"] == "keras"
+
+
+def test_no_scopes_at_all_resolves_to_the_documents_own_keys() -> None:
+    assert cast(Dict[str, Any], load(_TWO_VARIANTS, flow=False))["runnable"] == "default"
+
+
+def test_a_boolean_activation_is_never_value_checked() -> None:
+    """`--scope debug` carries no value, so there is nothing to check it against."""
+    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS + "dbg: !scope:debug\n  verbose: true\n", scopes=["debug"]))
+    assert loaded["verbose"] is True
+
+
+def test_the_check_reaches_a_dimension_declared_inside_a_markers_kwargs() -> None:
+    """The value walker and the resolver agree on node kinds — including Fluid kwargs."""
+    text = "root: !class:Knob\n  model: a\n  alt: !scope:model=convnet\n    model: b\n"
+    with pytest.raises(ScopeError, match="convnet"):
+        load(text, flow=False, scopes=["model=resnet"])
 
 
 def test_repr_format() -> None:
