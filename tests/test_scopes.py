@@ -18,6 +18,7 @@ import pytest
 
 import confluid
 from confluid import configurable, discover_dimensions, get_registry, load, load_config
+from confluid.exceptions import ScopeError
 from confluid.fluid import ScopeBlock
 from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
 
@@ -399,6 +400,161 @@ if_heavy: !scope:variant=heavy
     assert getattr(heavy["Trainer"]["model"], "target", None) == "ComplexModel"
 
 
+def test_keyed_scope_inside_a_markers_own_kwargs_swaps_the_slot() -> None:
+    """A `!scope:` sibling INSIDE a `!class:` block splices into that marker's kwargs.
+
+    The natural way to offer a per-slot alternative is to write it next to the
+    slot it replaces, inside the parent marker rather than at the document root::
+
+        runnable: !class:Trainer
+          model: !class:SimpleModel
+          alt: !scope:model=complex
+            model: !class:ComplexModel
+
+    A marker's kwargs are a mapping like any other, so the wrapper must resolve
+    there exactly as it does in a plain dict — document order, last write wins.
+    Regression: `resolve_scopes` walked dicts and lists but NOT `Fluid.kwargs`,
+    so the nested wrapper survived untouched (and was passed to the constructor
+    as a stray `alt=` kwarg) while `discover_dimensions` — which has always
+    walked `Fluid.kwargs` — still advertised `model` as a dimension. A CLI
+    therefore accepted `--model complex` and silently dropped it.
+    """
+
+    @configurable
+    class SimpleModel:
+        def __init__(self, layers: int = 3) -> None:
+            self.layers = layers
+
+    @configurable
+    class ComplexModel:
+        def __init__(self, layers: int = 10) -> None:
+            self.layers = layers
+
+    @configurable
+    class Trainer:
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    yaml_text = """
+runnable: !class:Trainer
+  model: !class:SimpleModel()
+  alt: !scope:model=complex
+    model: !class:ComplexModel()
+"""
+    base = cast(Dict[str, Any], load(yaml_text, flow=False))
+    assert getattr(base["runnable"].kwargs["model"], "target", None) == "SimpleModel"
+    # The inactive wrapper is dropped outright — it never reaches the constructor.
+    assert "alt" not in base["runnable"].kwargs
+
+    active = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["model=complex"]))
+    assert getattr(active["runnable"].kwargs["model"], "target", None) == "ComplexModel"
+    assert "alt" not in active["runnable"].kwargs
+
+    # And it survives materialization: the flowed trainer holds the swapped model.
+    # (`!class:Trainer` without parens is a deferred stub — the consumer flows it.)
+    built = confluid.flow(active["runnable"])
+    assert isinstance(built.model, ComplexModel)
+    assert not hasattr(built, "alt")
+
+
+def test_scope_nested_in_a_dict_inside_a_markers_kwargs_resolves() -> None:
+    """The Fluid walk is recursive — a scope one level deeper still splices."""
+
+    @configurable
+    class Knob:
+        def __init__(self, inner: Any = None) -> None:
+            self.inner = inner
+
+    yaml_text = """
+root: !class:Knob
+  inner:
+    base: 1
+    if_large: !scope:size=large
+      base: 99
+"""
+    small = cast(Dict[str, Any], load(yaml_text, flow=False))
+    assert small["root"].kwargs["inner"] == {"base": 1}
+
+    large = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["size=large"]))
+    assert large["root"].kwargs["inner"] == {"base": 99}
+
+
+def test_scope_inside_a_lazy_markers_kwargs_resolves() -> None:
+    """`!lazy:` is a Fluid too — deferring construction doesn't defer scope resolution."""
+
+    @configurable
+    class Knob:
+        def __init__(self, n: int = 1) -> None:
+            self.n = n
+
+    yaml_text = """
+slot: !lazy:Knob
+  n: 1
+  if_big: !scope:size=big
+    n: 42
+"""
+    resolved = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["size=big"]))
+    assert resolved["slot"].kwargs["n"] == 42
+    assert "if_big" not in resolved["slot"].kwargs
+
+
+def test_scope_in_a_list_inside_a_markers_kwargs_resolves() -> None:
+    """List-valued marker kwargs (an ops chain) reach the list walker through the Fluid.
+
+    Both body shapes are exercised: a MAPPING body appends one entry, a SEQUENCE
+    body extends with several.
+    """
+
+    @configurable
+    class Chain:
+        def __init__(self, steps: Any = None) -> None:
+            self.steps = steps
+
+    yaml_text = """
+chain: !class:Chain
+  steps:
+    - {op: a}
+    - !scope:extra=yes
+      op: b
+    - !scope:extra=yes
+      - {op: b2}
+      - {op: b3}
+    - {op: c}
+"""
+    plain = cast(Dict[str, Any], load(yaml_text, flow=False))
+    assert plain["chain"].kwargs["steps"] == [{"op": "a"}, {"op": "c"}]
+
+    extra = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["extra=yes"]))
+    assert extra["chain"].kwargs["steps"] == [
+        {"op": "a"},
+        {"op": "b"},
+        {"op": "b2"},
+        {"op": "b3"},
+        {"op": "c"},
+    ]
+
+
+def test_notscope_inside_a_markers_kwargs_uses_the_unset_convention() -> None:
+    """The negative twin resolves in marker kwargs under the same unset-⇒-active rule."""
+
+    @configurable
+    class Knob:
+        def __init__(self, n: int = 1) -> None:
+            self.n = n
+
+    yaml_text = """
+slot: !class:Knob
+  unless_big: !notscope:size=big
+    n: 7
+"""
+    unset = cast(Dict[str, Any], load(yaml_text, flow=False))
+    assert unset["slot"].kwargs["n"] == 7
+
+    matched = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["size=big"]))
+    assert "n" not in matched["slot"].kwargs
+    assert "unless_big" not in matched["slot"].kwargs
+
+
 def test_round_trip_with_scopes(tmp_path: Path) -> None:
     """load → dump → load preserves the materialized graph after scope resolution."""
 
@@ -496,6 +652,140 @@ def test_scope_block_in_list_with_scalar_contents() -> None:
     block = ScopeBlock(key="debug", value=None, negate=False, contents="literal")
     out = resolve_scopes(["a", block, "b"], {"debug": None})
     assert out == ["a", "literal", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Body shapes — a block's YAML body may be a mapping, a sequence or a scalar.
+# ---------------------------------------------------------------------------
+
+
+def test_sequence_body_extends_the_surrounding_list() -> None:
+    """A SEQUENCE body is the only way to write a conditional list ITEM.
+
+    Regression: `loader._build_scope` built contents from a MappingNode only and
+    silently gave everything else `{}`, so such a block was a no-op with no
+    diagnostic — while `_resolve_list`'s list branch (which extends) had been
+    written for it all along and was simply unreachable from YAML.
+    """
+    yaml_text = """
+ops:
+  - a
+  - !scope:extra=yes
+    - b1
+    - b2
+  - c
+"""
+    plain = cast(Dict[str, Any], load(yaml_text))
+    assert plain["ops"] == ["a", "c"]
+
+    extra = cast(Dict[str, Any], load(yaml_text, scopes=["extra=yes"]))
+    assert extra["ops"] == ["a", "b1", "b2", "c"]
+
+
+def test_scalar_body_substitutes_one_item_and_is_type_coerced() -> None:
+    """A SCALAR body is one conditional VALUE, coerced like an inline `!class:` kwarg."""
+    yaml_text = """
+ops:
+  - a
+  - !scope:extra=yes c
+  - !scope:extra=yes 42
+  - d
+"""
+    assert cast(Dict[str, Any], load(yaml_text))["ops"] == ["a", "d"]
+
+    extra = cast(Dict[str, Any], load(yaml_text, scopes=["extra=yes"]))
+    assert extra["ops"] == ["a", "c", 42, "d"]
+    assert isinstance(extra["ops"][2], int)  # `parse_value`, not the raw string
+
+
+def test_empty_body_declares_nothing_and_stays_inert() -> None:
+    """`if_x: !scope:debug` with no body is a placeholder, active or not.
+
+    An empty scalar node must keep yielding `{}` rather than splicing `""` —
+    "declares nothing" is a real state, and the sequence/scalar branches must not
+    turn a pre-existing placeholder into a value.
+    """
+    yaml_text = """
+base: 1
+placeholder: !scope:debug
+"""
+    assert cast(Dict[str, Any], load(yaml_text)) == {"base": 1}
+    assert cast(Dict[str, Any], load(yaml_text, scopes=["debug"])) == {"base": 1}
+
+
+def test_notscope_sequence_body_uses_the_unset_convention() -> None:
+    """The negative twin carries a sequence body under the same activation rule."""
+    yaml_text = """
+ops:
+  - a
+  - !notscope:extra=yes
+    - fallback1
+    - fallback2
+"""
+    assert cast(Dict[str, Any], load(yaml_text))["ops"] == ["a", "fallback1", "fallback2"]
+    assert cast(Dict[str, Any], load(yaml_text, scopes=["extra=yes"]))["ops"] == ["a"]
+
+
+def test_non_mapping_body_at_a_dict_slot_raises_when_active() -> None:
+    """A sequence/scalar body has no KEYS, so a mapping slot cannot splice it.
+
+    The wrapper key is inert scaffolding and cannot stand in for the missing keys,
+    so there is no coherent result — a located `ScopeError` beats the bare
+    `AttributeError: 'list' object has no attribute 'items'` this used to become.
+    """
+    yaml_text = """
+root:
+  base: 1
+  oops: !scope:extra=yes
+    - b
+"""
+    with pytest.raises(ScopeError) as excinfo:
+        load(yaml_text, scopes=["extra=yes"])
+    message = str(excinfo.value)
+    assert "'oops'" in message and "list body" in message and "mapping body" in message
+
+    scalar_text = "root:\n  oops: !scope:extra=yes literal\n"
+    with pytest.raises(ScopeError):
+        load(scalar_text, scopes=["extra=yes"])
+
+
+def test_non_mapping_body_at_a_dict_slot_is_dropped_when_inactive() -> None:
+    """An INACTIVE block is dropped without its contents being examined.
+
+    That is the existing rule for every block (an inactive body may name classes
+    this install does not have), so the shape check must not fire ahead of it.
+    """
+    yaml_text = """
+root:
+  base: 1
+  oops: !scope:extra=yes
+    - b
+"""
+    assert cast(Dict[str, Any], load(yaml_text)) == {"root": {"base": 1}}
+
+
+def test_sequence_body_survives_a_round_trip_through_includes(tmp_path: Path) -> None:
+    """`loader._process_includes_recursive` walks a non-mapping body too.
+
+    It assumed `ScopeBlock.contents` was a dict and did `.items()` on it, so the
+    moment the loader started building sequence bodies, merely LOADING such a file
+    raised. All three walkers over a block's contents must agree on the shapes.
+    """
+    inc = tmp_path / "inc.yaml"
+    inc.write_text("shared: 1\n")
+    main = tmp_path / "main.yaml"
+    main.write_text(
+        """
+include: inc.yaml
+ops:
+  - a
+  - !scope:extra=yes
+    - b
+"""
+    )
+    loaded = cast(Dict[str, Any], load(main, scopes=["extra=yes"]))
+    assert loaded["shared"] == 1
+    assert loaded["ops"] == ["a", "b"]
 
 
 def test_discover_dimensions_inside_fluid_kwargs(tmp_path: Path) -> None:

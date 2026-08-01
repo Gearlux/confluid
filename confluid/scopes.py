@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loggair import get_logger
 
 from confluid.exceptions import ScopeError
-from confluid.fluid import ScopeBlock
+from confluid.fluid import Fluid, ScopeBlock, format_yaml_loc
 
 logger = get_logger("confluid.scopes")
 
@@ -101,8 +101,6 @@ def discover_dimensions(config: Any) -> Set[str]:
     returned. Liquifai uses this to learn which ``--KEY VAL`` flags should bind
     to scope activation rather than confluid overrides.
     """
-    from confluid.fluid import Fluid
-
     found: Set[str] = set()
 
     def walk(node: Any) -> None:
@@ -145,13 +143,28 @@ def _is_active(block: ScopeBlock, active: Dict[str, Optional[str]]) -> bool:
 def _resolve_value(value: Any, active: Dict[str, Optional[str]]) -> Any:
     """Recursively resolve scope blocks inside ``value``.
 
-    Dicts and lists are walked. A ``ScopeBlock`` encountered as a list element
-    or top-level value is resolved by replacing it with its contents (when
-    active) or dropping it (when inactive). Inside dicts, the splice happens
-    in place at the wrapper's slot.
+    Dicts, lists and :class:`Fluid` kwargs are walked. A ``ScopeBlock``
+    encountered as a list element or top-level value is resolved by replacing it
+    with its contents (when active) or dropping it (when inactive). Inside dicts
+    (and inside a marker's kwargs), the splice happens in place at the wrapper's
+    slot.
+
+    The ``Fluid`` arm matters because a marker's kwargs are a mapping like any
+    other — ``model: !class:Foo`` with a sibling ``alt: !scope:model=bar`` INSIDE
+    the parent ``!class:`` block is the natural way to write a per-slot
+    alternative. Without it the nested wrapper survived resolution untouched and
+    the scope silently did nothing, while ``discover_dimensions`` (which has
+    always walked ``Fluid.kwargs``) still advertised the dimension — so the CLI
+    accepted ``--model bar`` and dropped it on the floor. The two walkers must
+    agree on which nodes carry scope blocks.
     """
     if isinstance(value, dict):
         return _resolve_dict(value, active)
+    if isinstance(value, Fluid):
+        # Mutated in place, matching the sibling walker `loader._process_includes_recursive`
+        # — a marker is a node, not a container the caller can rebuild around.
+        value.kwargs = _resolve_dict(value.kwargs, active)
+        return value
     if isinstance(value, list):
         return _resolve_list(value, active)
     if isinstance(value, ScopeBlock):
@@ -167,6 +180,21 @@ def _resolve_dict(d: Dict[str, Any], active: Dict[str, Optional[str]]) -> Dict[s
     for k, v in d.items():
         if isinstance(v, ScopeBlock):
             if _is_active(v, active):
+                if v.contents and not isinstance(v.contents, dict):
+                    # A sequence/scalar body has no KEYS to splice, and the wrapper key
+                    # is inert scaffolding that cannot stand in for them — so there is no
+                    # coherent result here (in a LIST the same body is meaningful; see
+                    # `_resolve_list`). Raised only when ACTIVE, matching the rule that an
+                    # inactive block is dropped without its contents being examined.
+                    loc = format_yaml_loc(v)
+                    where = f" at {loc}" if loc else ""
+                    raise ScopeError(
+                        f"Scope block {v.key!r} under key {k!r}{where} has a "
+                        f"{type(v.contents).__name__} body, but a block spliced into a mapping "
+                        f"must carry a mapping body (its keys are what get spliced). "
+                        f"Write the block's contents as `key: value` pairs, or move the block "
+                        f"into a list if you meant to add list entries."
+                    )
                 resolved_contents = _resolve_dict(v.contents, active) if v.contents else {}
                 for bk, bv in resolved_contents.items():
                     out[bk] = bv
