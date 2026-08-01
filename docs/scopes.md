@@ -25,6 +25,62 @@ unless_debug: !notscope:debug
   log_level: WARNING
 ```
 
+## Where a scope block may live
+
+Anywhere a mapping key does — the document root, a nested dict, a list item,
+**and inside a `!class:` / `!lazy:` marker's own block**. The last one is how you
+offer an alternative for a single slot without lifting it out to the root:
+
+```yaml
+runnable: !class:Trainer
+  model: !lazy:TimmModel
+    model_name: efficientvit_b0
+  # Same slot, different value — `--model convnet` swaps it in.
+  alt: !scope:model=convnet
+    model: !lazy:TorchConvNet
+```
+
+A marker's kwargs are a mapping like any other, so the same rule applies: the
+active block's contents are spliced at the wrapper's position and later writes
+win over earlier ones. Here `alt:` sits *after* `model:`, so an active
+`model=convnet` overrides the default; put it before and the default would win.
+An inactive wrapper is dropped entirely — the key never reaches the constructor.
+
+Which slot a block replaces is decided by its **contents**, not by its key — the
+wrapper key (`alt`, `if_debug`, …) is inert scaffolding.
+
+## What a block's body may be
+
+Three shapes, and the shape decides what "splice" means:
+
+| Body | In a mapping | In a list |
+|------|--------------|-----------|
+| **mapping** | its keys are spliced at the wrapper's slot | appended as one entry |
+| **sequence** | *error* — no keys to splice | the list is **extended** with the entries |
+| **scalar** | *error* — no keys to splice | substituted as one entry |
+| *empty* | nothing (an inert placeholder) | nothing |
+
+A sequence body is the only way to write a conditional list *item*, since a
+mapping body cannot express "add these entries here":
+
+```yaml
+ops:
+  - always_first
+  - !scope:extra=yes          # extends: two entries, not one nested list
+    - extra_a
+    - extra_b
+  - !scope:verbose trace_it    # a scalar body: one conditional entry
+  - always_last
+```
+
+Scalar bodies are type-coerced the way inline `!class:Foo(n=7)` kwargs are, so
+`!scope:x=y 42` splices the integer `42`.
+
+A sequence or scalar body at a *mapping* slot raises `ScopeError` naming the file
+and line — the wrapper key cannot stand in for the keys the body doesn't have.
+The check fires only when the block is **active**, matching the rule that an
+inactive block is dropped without its contents being examined at all.
+
 Resolve them by passing `scopes=` to `load()`:
 
 ```python

@@ -244,10 +244,36 @@ def _register_constructors() -> None:
         return tag_suffix, None
 
     def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
+        """Construct a ``ScopeBlock`` from any of the three YAML body shapes.
+
+        The body shape decides what a splice MEANS, and ``scopes._resolve_dict`` /
+        ``_resolve_list`` have always handled all three:
+
+        * **mapping** — keys spliced at the wrapper's slot (a dict, or a marker's kwargs);
+          appended whole when the wrapper is a list item.
+        * **sequence** — the surrounding list is EXTENDED with these entries. This is the
+          only way to write a conditional list ITEM, and a mapping body cannot express it.
+        * **scalar** — one conditional VALUE, substituted at the wrapper's position.
+
+        Until 2026-08-01 only the mapping branch was built and everything else became
+        ``{}``: a sequence- or scalar-bodied block was a silent no-op with no diagnostic,
+        and the matching branches in ``_resolve_list`` were unreachable from YAML. An
+        EMPTY body (``if_x: !scope:debug`` with nothing under it) still yields ``{}`` —
+        "declares nothing" is a real state, and it is what keeps such a placeholder inert
+        rather than splicing an empty string.
+        """
         key, value = _parse_scope_suffix(tag_suffix)
+        contents: Any
         if isinstance(node, yaml.nodes.MappingNode):
-            contents: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-        else:
+            contents = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+        elif isinstance(node, yaml.nodes.SequenceNode):
+            contents = loader.construct_sequence(node, deep=True)
+        elif isinstance(node, yaml.nodes.ScalarNode):
+            # Coerced through `parse_value` for the same reason inline `!class:Foo(n=7)`
+            # kwargs are — a tagged scalar should reach the config as `7`, not `"7"`.
+            raw = loader.construct_scalar(node)
+            contents = parse_value(raw) if raw else {}
+        else:  # pragma: no cover - PyYAML has no fourth node kind
             contents = {}
         return _stamp(
             ScopeBlock(key=key, value=value, negate=negate, contents=contents),
@@ -385,9 +411,17 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
         data.kwargs = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.kwargs.items()}
         return data
 
-    # Scope blocks: walk their contents so nested includes still process.
+    # Scope blocks: walk their contents so nested includes still process. The body may
+    # be a mapping, a sequence or a scalar (see `_build_scope`), so only the mapping
+    # shape is walked key-wise — the others delegate to the branches above, which is
+    # also what keeps a block's OWN `include:` key unprocessed, as it always was.
     if isinstance(data, ScopeBlock):
-        data.contents = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.contents.items()}
+        if isinstance(data.contents, dict):
+            data.contents = {
+                k: _process_includes_recursive(v, current_path, _included) for k, v in data.contents.items()
+            }
+        else:
+            data.contents = _process_includes_recursive(data.contents, current_path, _included)
         return data
 
     if not isinstance(data, dict):
