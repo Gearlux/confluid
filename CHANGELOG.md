@@ -177,6 +177,35 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A `**kwargs` constructor no longer drops every runtime kwarg.** `_ctor_params`
+  reports the VAR_KEYWORD parameter's own name, which is truthy — so `flow()`'s
+  constructor-kwarg filter kept only keys literally named `kwargs` and built the
+  target with nothing:
+
+  ```python
+  class Forwarding(SomeBase):
+      def __init__(self, **kwargs): super().__init__(**kwargs)
+
+  flow(LazyClass(Forwarding), model=net, args=training_args)
+  # was: Forwarding()  -> "requires either a `model` or `model_init` argument"
+  # now: Forwarding(model=net, args=training_args)
+  ```
+
+  What such a constructor receives follows the **addressing** — the same split
+  the accept-list predicates draw:
+
+  | The key | Reaches |
+  |---|---|
+  | written on the marker (`!lazy:Forwarding(tag=x)`), or in a block naming it | the constructor |
+  | injected at flow time (`flow(node, model=…)`) | the constructor |
+  | bare, cascading (a top-level `name:`) | a post-init attribute |
+
+  A `**kwargs` class has no accept-list to filter with, so *every* bare key in
+  the document reaches it — passing those on would turn permissive broadcasting
+  into "called with whatever the document happens to contain". Nothing is applied
+  twice: the post-init step now gates on what the constructor actually received
+  rather than on the declared parameter names.
+
 - **`flow()` now solidifies an ALREADY-LIVE object.** The documented promise —
   "domain code does not need to manually trigger solidification, `flow(model)`
   handles it transparently" — held only on the marker path: the hook ran after

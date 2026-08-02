@@ -265,3 +265,130 @@ def test_positional_args_on_a_configurable_bare_type_raise() -> None:
 def test_positional_args_survive_the_solidify_suppression_re_entry() -> None:
     marker = confluid.LazyClass(_Bundle, label="L")
     assert flow(marker, "a", "b", solidify=False).items == ["a", "b"]
+
+
+# ---- `**kwargs` targets: a runtime kwarg is a call ARGUMENT ------------------ #
+# A `**kwargs` signature names no parameter for a runtime kwarg, so the constructor
+# filter dropped every one of them and built the target with NOTHING. The config half
+# is deliberately untouched: a bare broadcast key still lands as a post-init attribute
+# on a `**kwargs` @configurable class (docs/broadcasting.md, pinned in
+# test_broadcast_scoping.py and examples/broadcasting.py).
+
+
+class _Forwarder:
+    """The real-world shape: a subclass declaring ``**kwargs`` and forwarding them on."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.received = dict(kwargs)
+
+
+def test_a_runtime_kwarg_reaches_a_var_keyword_constructor() -> None:
+    built = flow(confluid.LazyClass(_Forwarder), model="resnet", batch_size=4)
+
+    assert built.received == {"model": "resnet", "batch_size": 4}
+
+
+def test_a_var_keyword_constructor_used_to_be_built_with_nothing() -> None:
+    """The regression in the terms it was found in: the object must not come back empty.
+
+    A ``transformers.Trainer`` subclass declaring ``def __init__(self, **kwargs)`` was
+    constructed with no arguments and died as *"`Trainer` requires either a `model` or
+    `model_init` argument"* — a message pointing nowhere near confluid.
+    """
+
+    class _NeedsAModel:
+        def __init__(self, **kwargs: Any) -> None:
+            if "model" not in kwargs:
+                raise RuntimeError("requires either a `model` or `model_init` argument")
+            self.model = kwargs["model"]
+
+    assert flow(confluid.LazyClass(_NeedsAModel), model="a-model").model == "a-model"
+
+
+def test_a_declared_param_and_an_extra_both_arrive() -> None:
+    """The mixed signature: the named parameter binds, the rest ride ``**kwargs``."""
+
+    class _Mixed:
+        def __init__(self, name: str = "", **kwargs: Any) -> None:
+            self.name, self.extra = name, dict(kwargs)
+
+    built = flow(confluid.LazyClass(_Mixed), name="run", depth=3)
+
+    assert built.name == "run" and built.extra == {"depth": 3}
+
+
+def test_a_runtime_kwarg_is_not_ALSO_set_as_an_attribute() -> None:
+    """Taken by the constructor means taken — never applied twice.
+
+    ``_apply_post_init_attrs`` gates on what the ctor actually received rather than on
+    the declared parameter names, which is what keeps the two from diverging here.
+    """
+
+    @configurable(validate=False)
+    class _Recording:
+        def __init__(self, **kwargs: Any) -> None:
+            self.options = dict(kwargs)
+            self.assigned_after: list = []
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            # `__confluid_*` is the engine's own round-trip bookkeeping, not a config key.
+            if "assigned_after" in self.__dict__ and not name.startswith("__confluid_"):
+                self.assigned_after.append(name)
+            object.__setattr__(self, name, value)
+
+    built = flow(confluid.LazyClass(_Recording), model="resnet")
+
+    assert built.options == {"model": "resnet"}
+    assert built.assigned_after == [], "the ctor took it; a post-init setattr would double-apply"
+
+
+def test_a_kwarg_written_ON_the_marker_reaches_the_constructor() -> None:
+    """``!lazy:Forwarder(tag=…)`` is the author saying what to BUILD this node with.
+
+    A forwarding subclass would otherwise never see it — the value would land as an
+    attribute on the built object and quietly do nothing.
+    """
+    built = flow(confluid.LazyClass(_Forwarder, tag="from-config"))
+
+    assert built.received == {"tag": "from-config"}
+
+
+def test_a_BARE_broadcast_key_does_not_reach_the_constructor() -> None:
+    """The other half of the addressing rule, and the reason it is a rule.
+
+    A ``**kwargs`` class has an unknowable accept-list, so confluid errs permissive and
+    EVERY bare top-level key reaches it. Feeding those to the constructor would turn
+    permissive broadcasting into "called with whatever the document happens to
+    contain" — so they keep landing as post-init attributes.
+    """
+
+    @configurable(validate=False)
+    class _Passthrough:
+        def __init__(self, **kwargs: Any) -> None:
+            self.options = dict(kwargs)
+
+    graph = load(
+        """
+sink: !class:_Passthrough(tag=addressed)
+name: run-42
+"""
+    )
+    sink = graph["sink"]
+
+    assert sink.options == {"tag": "addressed"}, "the marker's own kwarg is an argument"
+    assert sink.name == "run-42", "the bare cascading key is an attribute"
+    assert "name" not in sink.options
+
+
+def test_a_plain_class_is_unaffected_by_the_var_keyword_path() -> None:
+    """No `**kwargs`, so a runtime kwarg outside the signature still becomes an attribute."""
+
+    @configurable(validate=False)
+    class _Declared:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    built = flow(confluid.LazyClass(_Declared), lr=0.5, note="extra")
+
+    assert built.lr == 0.5
+    assert built.note == "extra"

@@ -1341,6 +1341,14 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         }
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs
+        # Keep the ADDRESSED/BARE split the pass above computed. `resolved_kwargs`
+        # is a plain dict on purpose (a `_View` would leak a dict SUBCLASS into
+        # `resolve()` output, `dump()` and anything that pickles a marker), so the
+        # provenance rides as a frozenset of names instead. Its one reader routes a
+        # `**kwargs` constructor's arguments — see `_flow_target`.
+        res_obj._addressed_keys = frozenset(
+            k for k in resolved_kwargs if merged_kwargs.scope_of(k) is not _KeyScope.BARE
+        )
         if flow_memo is not None:
             flow_memo[raw_id] = res_obj
         return res_obj
@@ -1603,7 +1611,9 @@ def _flow_target(
     params = _ctor_params(target)
     if params is None:
         return obj  # class without a resolvable __init__ — leave the marker as-is
-    ctor = {k: v for k, v in merged.items() if k in params} if params else merged
+    ctor = {k: v for k, v in merged.items() if k in params} if params else dict(merged)
+    if _takes_var_keyword(target):
+        ctor.update(_var_keyword_extras(obj, merged, runtime_kwargs))
 
     instance = _construct(target, runtime_args, ctor, obj)
 
@@ -1631,7 +1641,7 @@ def _flow_target(
         except (TypeError, AttributeError):
             pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
 
-    _apply_post_init_attrs(instance, target, merged, params)
+    _apply_post_init_attrs(instance, target, merged, ctor)
     _broadcast_onto_instance(instance, params, ctor, context, broadcast_ctx)
     _maybe_solidify(instance)
     return instance
@@ -1762,16 +1772,29 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     callable itself. Using ``target.__init__`` for a function resolves
     ``object.__init__`` → ``(*args, **kwargs)``, so the ctor kwarg filter would
     keep only keys named ``args``/``kwargs`` — dropping EVERY real kwarg and
-    silently building the function's defaults. Returns ``None`` when a class
-    has no ``__init__`` at all (caller leaves the marker unbuilt); an
-    un-introspectable signature returns the empty set (caller passes every
-    kwarg to the call).
+    silently building the function's defaults.
+
+    Returns ``None`` when a class has no ``__init__`` at all (caller leaves the
+    marker unbuilt); an un-introspectable signature returns the empty set (caller
+    passes every kwarg to the call).
 
     A ``*args`` (VAR_POSITIONAL) parameter is EXCLUDED: its name can never be
     passed by keyword, so keeping it would let a config key that happens to
     match it (``loaders`` for ``DataLoaders(*loaders, …)``) through the filter
     and into a ``TypeError`` from the call itself. Those inputs arrive as
     ``flow()``'s positional runtime args instead.
+
+    A ``**kwargs`` (VAR_KEYWORD) parameter is deliberately KEPT, and the
+    asymmetry with ``*args`` is load-bearing rather than an oversight: its
+    presence is what makes the returned set non-empty, and a non-empty set is
+    what routes every unmatched key to a post-init ``setattr`` — which IS the
+    documented behaviour of a ``**kwargs`` ``@configurable`` class (every bare
+    broadcast key lands as an attribute; ``docs/broadcasting.md`` → "Classes with
+    ``**kwargs`` constructors", pinned by ``tests/test_broadcast_scoping.py``
+    and ``examples/broadcasting.py``). Dropping it would silently redirect those
+    keys into the constructor. What such a target ALSO needs — its runtime
+    kwargs, which are call arguments rather than config keys — is handled by
+    :func:`_takes_var_keyword` at the one call site in :func:`_flow_target`.
     """
     try:
         if inspect.isclass(target):
@@ -1788,6 +1811,59 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
         }
     except (ValueError, TypeError):
         return set()
+
+
+def _takes_var_keyword(target: Any) -> bool:
+    """Whether the target's own signature accepts arbitrary keywords (``**kwargs``).
+
+    Such a signature names no parameter for any of its inputs, so the
+    constructor-kwarg filter in :func:`_flow_target` drops every one of them and
+    builds the target with NOTHING. Measured against a ``transformers.Trainer``
+    subclass declaring ``def __init__(self, **kwargs)``: it died as *"`Trainer`
+    requires either a `model` or `model_init` argument"* — a message pointing
+    nowhere near confluid. :func:`_var_keyword_extras` says what to pass instead.
+    """
+    try:
+        sig = inspect.signature(target.__init__ if inspect.isclass(target) else target)
+    except (ValueError, TypeError):
+        return False
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+
+def _var_keyword_extras(
+    obj: Any,
+    merged: Dict[str, Any],
+    runtime_kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """What a ``**kwargs`` constructor receives beyond its named parameters.
+
+    The rule is ADDRESSING, and it is the same rule the accept-list uses (see
+    ``docs/broadcasting.md`` → "Asking whether a key may land"): a key aimed AT
+    this node is an argument; a key that merely cascaded past it is not.
+
+    * **Runtime kwargs** — ``flow(node, model=…)`` — are call arguments by
+      construction and always pass.
+    * **Addressed config keys** — written on the marker (``!lazy:Trainer(a=1)``)
+      or delivered by a block naming it — are what the author asked this node to
+      be built with, so they pass too. Without this a forwarding subclass never
+      sees a config key: it would land as an ATTRIBUTE on the built object and
+      quietly do nothing.
+    * **Bare broadcast keys** — a top-level ``name:`` cascading into every
+      accepting node — do NOT. A ``**kwargs`` class has an unknowable accept-list,
+      so confluid errs permissive and every bare key reaches it; feeding those to
+      the constructor would turn "permissive broadcasting" into "the constructor
+      is called with whatever the document happens to contain". They keep landing
+      as post-init attributes, which is the documented behaviour (pinned by
+      ``tests/test_broadcast_scoping.py`` and ``examples/broadcasting.py``).
+
+    ``obj._addressed_keys`` is ``None`` for a marker that was never merged against
+    a document — a hand-built one, or a direct ``flow(marker)`` — where every
+    kwarg is by definition the marker's own.
+    """
+    addressed: Optional[frozenset[str]] = getattr(obj, "_addressed_keys", None)
+    extras = {k: v for k, v in merged.items() if not _is_glob_key(k) and (addressed is None or k in addressed)}
+    extras.update({k: v for k, v in runtime_kwargs.items() if not _is_glob_key(k)})
+    return extras
 
 
 def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: Any) -> Any:
@@ -1822,8 +1898,14 @@ def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: An
             raise ConstructionError(msg) from exc
 
 
-def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], params: Set[str]) -> None:
-    """Assign non-constructor kwargs as attributes on a configurable instance.
+def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], ctor: Dict[str, Any]) -> None:
+    """Assign kwargs the CONSTRUCTOR did not take as attributes on a configurable instance.
+
+    The gate is ``ctor`` — what was actually passed — rather than the declared
+    parameter names, so a key can never be applied twice. The two agree wherever
+    the ctor dict is the name-filtered one; they diverge exactly where a
+    ``**kwargs`` target took a runtime kwarg no parameter is named for (see
+    :func:`_takes_var_keyword`), which must NOT then also be set as an attribute.
 
     Post-init attrs land on a live instance — if the value is still a Fluid
     marker (e.g. a nested ``!class:X`` that broadcasting carried in), it is
@@ -1852,7 +1934,7 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], p
     for k, v in merged.items():
         if _is_glob_key(k):
             continue  # glob routing metadata — never an attribute
-        if params and k not in params:
+        if k not in ctor:
             member = getattr(target, k, None)
             if isinstance(member, property) and member.fset is None:
                 continue

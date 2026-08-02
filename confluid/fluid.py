@@ -25,6 +25,14 @@ class Fluid:
         # messages can point at the offending YAML node. Not part of the
         # serialization contract — copy()/dump() preserve it best-effort.
         self._yaml_loc: Optional[YamlLoc] = None
+        # Which of ``kwargs`` were ADDRESSED at this node (written on the marker
+        # itself, or delivered by a block naming it) rather than cascaded in as
+        # bare broadcasts. Stamped by the engine's broadcast pass, which is the
+        # only place that knows; ``None`` means "not merged against a document,
+        # so every kwarg is the marker's own" — the state a hand-built marker
+        # and a direct ``flow(marker)`` are in. Read for exactly one decision:
+        # what a ``**kwargs`` constructor receives (see ``engine._flow_target``).
+        self._addressed_keys: Optional[frozenset[str]] = None
 
     def __repr__(self) -> str:
         name = self.target if isinstance(self.target, str) else getattr(self.target, "__name__", str(self.target))
