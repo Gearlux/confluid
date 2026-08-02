@@ -1,14 +1,15 @@
 """Tags & deferred initialization — the runnable companion to ``docs/tags.md``.
 
 Covers the tag family end-to-end: ``!class:Name`` (deferred ``Class`` stub) vs
-``!class:Name(...)`` (eager ``Instance``), ``!lazy:`` + ``flow()`` runtime injection,
-the Python-side ``Lazy[T]`` annotation (typed with the interface the slot flows
-into), and ``!ref:`` (shared instance) vs ``!clone:`` (deep copy).
+``!class:Name(...)`` (eager ``Instance``), ``!lazy:`` + ``flow()`` runtime injection
+(keyword AND positional), the Python-side ``Lazy[T]`` annotation (typed with the
+interface the slot flows into), post-flow ``solidify()``, and ``!ref:`` (shared
+instance) vs ``!clone:`` (deep copy).
 """
 
-from typing import Optional
+from typing import Any, List, Optional
 
-from confluid import Class, Lazy, configurable, flow, load
+from confluid import Class, Lazy, LazyClass, configurable, flow, load
 
 
 @configurable
@@ -87,6 +88,45 @@ ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
     spare = flow(garage.spare, fuel="e85")  # runtime kwarg injected at flow time
     assert isinstance(spare, Engine) and (spare.cylinders, spare.fuel) == (3, "e85")
     print(f"Lazy[Engine] slot flowed on demand: {spare.cylinders} cylinders on {spare.fuel}")
+
+    # --- positional runtime injection: inputs a keyword cannot carry --------------------
+    # `Fleet(*cars, depot=...)` takes its cars POSITIONALLY, so no marker kwarg could
+    # deliver them — flow()'s positional args are the channel. The config still owns
+    # every knob (`depot`), which is the whole point of deferring the slot.
+    class Fleet:
+        def __init__(self, *cars: Any, depot: str = "central") -> None:
+            self.cars, self.depot = list(cars), depot
+
+    fleet_slot: Lazy[Fleet] = LazyClass(Fleet, depot="north")
+    fleet = flow(fleet_slot, Engine(cylinders=2), Engine(cylinders=3))
+    assert [engine.cylinders for engine in fleet.cars] == [2, 3]
+    assert fleet.depot == "north", "the stored knob survives positional injection"
+    print(f"positional injection: {len(fleet.cars)} engines into the {fleet.depot} depot")
+
+    # --- post-flow solidify(): build-once-and-cache, live objects included ---------------
+    @configurable
+    class Turbo:
+        def __init__(self, stages: int = 2) -> None:
+            """A turbo whose blades are built lazily, never in the constructor.
+
+            Args:
+                stages: Number of compressor stages.
+            """
+            self.stages = stages
+            self.blades: Optional[List[int]] = None
+
+        def solidify(self) -> List[int]:
+            """Build the blades once; later calls are a free cache hit."""
+            if self.blades is None:
+                self.blades = list(range(self.stages))
+            return self.blades
+
+    live_turbo = Turbo(stages=3)  # constructed directly: nothing built yet
+    assert live_turbo.blades is None
+    assert flow(live_turbo) is live_turbo, "a live object flows to itself"
+    assert live_turbo.blades == [0, 1, 2], "...and is solidified on the way through"
+    assert flow(live_turbo, solidify=False) is live_turbo
+    print(f"solidify() built {len(live_turbo.blades)} blades on a live object")
 
     # --- !ref: vs !clone: shared identity vs deep copy ----------------------------------
     identity = load(

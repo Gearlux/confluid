@@ -66,11 +66,19 @@ _RANGE_MARK_TYPES: Tuple[type, ...] = (Interval, Ge, Gt, Le, Lt)
 # Container origins whose numeric elements a relocated range mark applies to.
 _RANGE_CONTAINER_ORIGINS: Set[Any] = {tuple, list, set, frozenset}
 
-# Abstract iterator/sequence types that pydantic insists on validating as
-# generators (wrapping inputs in ``ValidatorIterator``) — which strips the
-# original Python identity. For the confluid use case (passthrough
-# wrappers), we coerce these to ``Any`` so the original object survives
-# validation untouched.
+# Abstract types pydantic validates LAZILY — it wraps the input in a
+# ``ValidatorIterator``, which is one-shot: the first iteration yields the items and
+# every later one yields NOTHING. A slot read twice (a wrapper that both counts and
+# forwards its inputs) would silently see an empty collection the second time, so these
+# are coerced to ``Any`` and the caller's object survives validation untouched.
+#
+# The list is deliberately NARROWER than "every abstract collection", and the boundary
+# is measured rather than assumed (2026-08-02): only the types whose CONTRACT permits a
+# generator get the lazy treatment. ``Sequence`` / ``MutableSequence`` / ``Collection`` /
+# ``Container`` validate to a real ``list`` and ``Mapping`` / ``MutableMapping`` to a real
+# ``dict`` — re-iterable, holding the IDENTICAL element objects — so coercing those bought
+# no protection and cost the element type: a ``Sequence[Metric]`` slot reached a form spec
+# as a bare ``Any``, which is precisely what the annotation was written to prevent.
 _ITER_TYPES_AS_ANY: Set[Any] = {
     collections.abc.Iterable,
     collections.abc.Iterator,
@@ -78,12 +86,6 @@ _ITER_TYPES_AS_ANY: Set[Any] = {
     collections.abc.AsyncIterable,
     collections.abc.AsyncIterator,
     collections.abc.AsyncGenerator,
-    collections.abc.Sequence,
-    collections.abc.Mapping,
-    collections.abc.MutableMapping,
-    collections.abc.MutableSequence,
-    collections.abc.Collection,
-    collections.abc.Container,
 }
 
 
