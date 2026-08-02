@@ -10,6 +10,33 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`flow(node, *args, **kwargs)` — positional runtime injection.** A marker
+  carries keyword arguments only (that is all a YAML tag can express), but the
+  constructor being deferred is somebody else's, and a variadic signature has no
+  keyword for its inputs at all. Such a slot could not be deferred: the object
+  had to be built inline, and every knob beside the inputs became unreachable
+  from config.
+
+  ```python
+  class Loaders:
+      def __init__(self, *loaders, device=None): ...
+
+  slot = LazyClass(Loaders, device="cuda")   # the config owns the knobs
+  flow(slot, train_dl, valid_dl)             # the run supplies the inputs
+  ```
+
+  Positional args are runtime-only — never stored on a marker, never emitted by
+  `dump()` — the same status the `params=` / `dataset=` kwargs already had. They
+  suppress `Instance` memoization (they override the stored spec), are dropped
+  for an already-live object (matching the runtime-kwarg convention), and raise
+  `ConstructionError` for a registry-configurable bare type, which materializes
+  through a synthesized marker.
+
+  `_ctor_params` now excludes `VAR_POSITIONAL` names: `inspect.signature` lists
+  `*loaders` under the name `loaders`, so a config key of that name used to pass
+  the constructor-kwarg filter and reach the call as a keyword, where Python
+  rejects it.
+
 - **`discover_dimension_values(config)`** — every keyed scope dimension in a raw
   document mapped to the values it offers:
 
@@ -126,8 +153,43 @@ All notable changes to confluid are documented here. The format follows
 - `ConfluidRegistry._classes` is gone, replaced by `_entries` (name → entries)
   and `_by_key` (canonical key → entry). The five tag indices now hold entry
   keys rather than names.
+- **`to_pydantic` keeps the element type of a re-iterable collection slot.**
+  `Sequence[X]`, `MutableSequence[X]`, `Collection[X]`, `Container[X]`,
+  `Mapping[K, V]` and `MutableMapping[K, V]` now generate a field of that type
+  instead of a bare `Any`, so a slot annotated to say what it holds actually
+  says so in the generated schema — the JSON-Schema / form-spec surface saw
+  `Any` for every one of them before.
+
+  ```python
+  class Runner:
+      def __init__(self, metrics: Optional[Sequence[Metric]] = None): ...
+
+  to_pydantic(Runner).model_fields["metrics"].annotation
+  # was: Optional[Any]        now: Optional[Sequence[Metric]]
+  ```
+
+  `Iterable`, `Iterator`, `Generator` and the three async kinds are still
+  coerced to `Any`, and the split is the point: pydantic validates those lazily,
+  wrapping the input in a one-shot `ValidatorIterator` whose second iteration
+  yields nothing, so keeping their element type would trade a schema detail for
+  silently-empty collections. The six above validate into a real `list` / `dict`
+  holding the identical element objects, so they never had that problem.
 
 ### Fixed
+
+- **`flow()` now solidifies an ALREADY-LIVE object.** The documented promise —
+  "domain code does not need to manually trigger solidification, `flow(model)`
+  handles it transparently" — held only on the marker path: the hook ran after
+  *construction*, below `flow()`'s already-live early return. An object built
+  eagerly (`!class:Model()`) or handed in from Python came back with its lazy
+  state never finalized, and nothing raised; the failure surfaced elsewhere, as
+  an optimizer flowed with `params=model.parameters()` receiving an empty
+  parameter list.
+
+  `flow(obj, solidify=False)` still suppresses the hook, live objects included.
+  Because a live object may be flowed repeatedly, `solidify()` is now expected
+  to be idempotent (build once, cache, return the cache) — the convention the
+  lazy-initialization rules already require.
 
 - **A duplicate registration with nothing to tell it apart now warns.** Same
   name, same tags, different class: last-write-wins is preserved, but it is no

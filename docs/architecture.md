@@ -97,3 +97,89 @@ load(raw, scopes=["task=classifcation"])
 prevents a real regression, and narrowing any of them turns a working pattern into an error at
 load time for every consumer at once. A new discovery view belongs on `_walk_dimensions`, never
 in a fourth traversal.
+
+---
+
+## 2. `flow()` finishes the object, whichever way it arrived
+
+*2026-08-02*
+
+**Context.** Two promises about `flow()` were narrower in the code than in the docstring, and
+both gaps had the same shape: they were invisible at the call site and surfaced somewhere else.
+
+*Auto-solidification.* The documented contract is "domain code does not need to manually trigger
+solidification — `flow(model)` handles it transparently". It held only on the marker path:
+`flow()` opens with an idempotency check that returns any already-live object, and
+`_maybe_solidify` ran after *construction*, below that return. So an object that reached the
+slot already built — `!class:Model()` (eager, parens), or one handed in from Python — was
+returned with its lazy state never finalized. Nothing raised. The consequence landed one step
+later and read as an unrelated bug: an optimizer flowed with `params=model.parameters()` got an
+empty parameter list, because the backbone `solidify()` would have built did not exist yet.
+Consumers papered over it with `build = getattr(model, "solidify", None); build and build()` at
+the call site — hand-rolling the engine's own hook because the engine declined to run it.
+
+*Runtime injection.* A marker carries **kwargs** only, because a YAML tag can express nothing
+else, and `flow(node, **runtime_kwargs)` matched that shape. But the constructor being deferred
+is somebody else's, and a target may take its inputs **positionally** — a variadic
+`DataLoaders(*loaders, path=…, device=…)` has no keyword for them at all. Such a slot simply
+could not be deferred: `LazyClass(DataLoaders)` had no way to receive the loaders, so callers
+constructed it inline and every knob beside the inputs (`device`) became unreachable from
+config. The deferral mechanism failed on a signature shape, not on a semantic distinction.
+
+**Decision.** `flow()` covers both.
+
+1. The idempotency return calls `_maybe_solidify(obj)` before handing the object back, so the
+   hook fires whichever way the object arrived. It still honours the `suppress_solidify` flag,
+   so `flow(obj, solidify=False)` / `materialize(..., solidify=False)` leave a live object inert
+   exactly as they leave a constructed one.
+2. `flow(obj, *runtime_args, solidify=True, **runtime_kwargs)` threads positional args to the
+   call: `target(*runtime_args, **merged_kwargs)`. They are runtime-only — never stored on a
+   marker, never round-tripped by `dump()` — which is the same status the `params=` / `dataset=`
+   kwargs already had.
+
+**Consequences.**
+
+- **`solidify()` must be idempotent.** It always could be called twice (two `flow()` calls on
+  one marker), but a live object now makes that the *normal* path. The convention the lazy-init
+  rules already require — build once, cache, return the cache — is what makes the re-fire free.
+  A hook with side effects per call is now wrong in a way it was only latently wrong before.
+- **`_ctor_params` drops `VAR_POSITIONAL` names.** `inspect.signature` lists `*loaders` under the
+  name `loaders`, so a config key of that name passed the kwarg filter and reached the call as a
+  keyword — where Python rejects it. The name can never be passed by keyword, so it is not a
+  keyword slot.
+- **Positional args suppress `Instance` memoization**, for the reason runtime kwargs already did:
+  they override the stored spec, so the result is not the shared object the marker names.
+- **One path cannot take them.** A registry-*configurable* bare type (`flow(MyClass, …)`)
+  materializes through a synthesized marker so broadcasting applies, and a marker is kwargs-only.
+  That raises `ConstructionError` naming the two ways out rather than silently dropping the args.
+- **Live objects drop them**, matching the existing convention for runtime kwargs. This is what
+  keeps `flow(slot, train, valid)` safe when a config wired a live object into that slot.
+
+**Example.**
+
+```python
+class Loaders:                                  # somebody else's variadic signature
+    def __init__(self, *loaders, device=None): ...
+
+@configurable
+class Model:
+    def __init__(self, width: int = 8):
+        self.width, self.backbone = width, None  # ctor does no functional work
+
+    def solidify(self):                          # build once, cache, return the cache
+        if self.backbone is None:
+            self.backbone = build_backbone(self.width)
+        return self.backbone
+
+slot: Lazy[Loaders] = LazyClass(Loaders, device="cuda")   # config owns the knobs
+flow(slot, train_dl, valid_dl)                            # the run owns the inputs
+
+model = Model(width=16)                          # never went through a marker
+flow(model)                                      # ...still built: parameters() is ready
+```
+
+**What you may change.** The positional channel is deliberately runtime-only — do not add a way
+to *store* positional args on a marker. Round-tripping is built on `dump()` emitting keyword
+kwargs a tag can carry; positional args have no names, so a stored one could not be dumped,
+diffed, or overridden by key. If a target's positional inputs need to come from config, give the
+target a keyword.

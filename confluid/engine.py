@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Type
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Type
 
 from loggair import get_logger
 
@@ -1395,24 +1395,38 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     return data
 
 
-def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
+def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     """Instantiate a deferred object (Class, Reference, string tag) into a live instance.
 
     Idempotent: already-live objects are returned unchanged.
     Accepts runtime kwargs that merge with stored kwargs (runtime wins).
 
+    **Positional runtime args.** A marker carries KWARGS only (that is all a YAML
+    tag can express), but a target may take its inputs POSITIONALLY — the case
+    that forced this is a variadic signature, ``DataLoaders(*loaders, path=…,
+    device=…)``, where the loaders have no keyword to arrive under. So
+    ``flow(node, a, b, key=value)`` calls ``target(a, b, **merged_kwargs)``: the
+    positional half is runtime-only injection (never stored on a marker, never
+    round-tripped by ``dump()``), exactly like the ``params=`` / ``dataset=``
+    kwargs a deferred slot is flowed with. Passing them to a target that takes
+    none is the target's own ``TypeError``, raised through the located
+    construction wrapper.
+
     Within a ``materialize()`` pass, the same ``Instance`` marker (reached
     directly or via ``!ref:``) produces a single live object — subsequent
     ``flow()`` calls on the same marker return the cached instance.
 
-    **Auto-solidification:** After instantiation, if the returned object has a
-    ``solidify()`` method, it is called automatically. This enables lazy
-    initialization patterns where an object defers materialization of internal
-    state until after construction is complete. Domain code does not need to
-    manually trigger solidification — ``flow(model)`` handles it transparently.
+    **Auto-solidification:** if the object has a ``solidify()`` method, it is
+    called — after instantiation for a marker, and on the pass-through for an
+    ALREADY-LIVE object, because "``flow(model)`` handles it transparently" has
+    to hold whichever way the model reached the slot. A live model wired with
+    ``!class:Model()`` (or handed in from Python) otherwise arrives unbuilt, and
+    the failure lands far away: an optimizer flowed with ``params=`` gets an
+    empty parameter list. ``solidify()`` is therefore expected to be IDEMPOTENT
+    (build-once-and-cache), since a live object may be flowed more than once.
 
-    Pass ``solidify=False`` to SUPPRESS that post-flow ``solidify()`` for this
-    whole subtree — for static introspection that must build the object cheaply
+    Pass ``solidify=False`` to SUPPRESS that ``solidify()`` for this whole
+    subtree — for static introspection that must build the object cheaply
     without paying for the expensive finalize (e.g. a model backbone). The
     suppression rides a thread-local flag, so every nested ``flow()`` inherits
     it; ``materialize(..., solidify=False)`` uses the same channel.
@@ -1426,12 +1440,16 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     if not solidify:
         token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), suppress_solidify=True))
         try:
-            return flow(obj, **runtime_kwargs)
+            return flow(obj, *runtime_args, **runtime_kwargs)
         finally:
             _ENGINE_STATE.reset(token)
 
-    # Idempotency — already-live objects pass through.
+    # Idempotency — already-live objects pass through, still solidified (see the
+    # docstring). Runtime args/kwargs are DROPPED here rather than raising: the
+    # object is already built, and a slot flowed with `flow(slot, train, valid)`
+    # must stay safe when a config wired a live object into it.
     if not isinstance(obj, (Fluid, str, type, dict)):
+        _maybe_solidify(obj)
         return obj
 
     # An EXPLICIT ``flow(lazy)`` call builds the Lazy — even with no runtime
@@ -1451,23 +1469,23 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     # when no runtime kwargs override the stored ones (overrides must yield a
     # fresh object).
     instance_memo = _ENGINE_STATE.get().instance_memo
-    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
+    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs and not runtime_args:
         cached = instance_memo.get(id(obj))
         if cached is not None:
             return cached
 
     if isinstance(obj, (Class, Instance)):
-        return _flow_target(obj, context, instance_memo, runtime_kwargs)
+        return _flow_target(obj, context, instance_memo, runtime_args, runtime_kwargs)
     if isinstance(obj, type):
-        return _flow_bare_type(obj, context, runtime_kwargs)
+        return _flow_bare_type(obj, context, runtime_args, runtime_kwargs)
     if isinstance(obj, Reference):
-        return _flow_reference(obj, context, runtime_kwargs)
+        return _flow_reference(obj, context, runtime_args, runtime_kwargs)
     if isinstance(obj, Clone):
-        return _flow_clone(obj, runtime_kwargs)
+        return _flow_clone(obj, runtime_args, runtime_kwargs)
     if isinstance(obj, Fluid):
-        return _flow_generic_fluid(obj, runtime_kwargs)
+        return _flow_generic_fluid(obj, runtime_args, runtime_kwargs)
     if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
-        return _flow_string_tag(obj, context, runtime_kwargs)
+        return _flow_string_tag(obj, context, runtime_args, runtime_kwargs)
     return obj
 
 
@@ -1536,14 +1554,16 @@ def _flow_target(
     obj: Any,
     context: Optional[Dict[str, Any]],
     instance_memo: Optional[Dict[int, Any]],
+    runtime_args: Tuple[Any, ...],
     runtime_kwargs: Dict[str, Any],
 ) -> Any:
     """Materialize a ``Class`` / ``Instance`` / ``Lazy`` marker into a live object.
 
     The phase sequence: resolve the target callable → merge + resolve kwargs →
     split constructor kwargs from post-init attrs → construct (under the YAML
-    validation mode) → memoize + stamp origin → apply post-init attrs →
-    broadcast onto remaining Fluid-valued instance attrs → auto-solidify.
+    validation mode, with any positional runtime args ahead of the kwargs) →
+    memoize + stamp origin → apply post-init attrs → broadcast onto remaining
+    Fluid-valued instance attrs → auto-solidify.
     """
     target = _resolve_target_callable(obj.target)
 
@@ -1585,11 +1605,12 @@ def _flow_target(
         return obj  # class without a resolvable __init__ — leave the marker as-is
     ctor = {k: v for k, v in merged.items() if k in params} if params else merged
 
-    instance = _construct(target, ctor, obj)
+    instance = _construct(target, runtime_args, ctor, obj)
 
     # Memoize so a second flow() of the same Instance marker returns this
-    # exact object (see module docstring).
-    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
+    # exact object (see module docstring). Positional runtime args override the
+    # stored spec exactly as kwargs do, so they suppress memoization too.
+    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs and not runtime_args:
         instance_memo[id(obj)] = instance
 
     # Preserve Confluid origin for serialization round-trip. The dumper reads
@@ -1745,6 +1766,12 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     has no ``__init__`` at all (caller leaves the marker unbuilt); an
     un-introspectable signature returns the empty set (caller passes every
     kwarg to the call).
+
+    A ``*args`` (VAR_POSITIONAL) parameter is EXCLUDED: its name can never be
+    passed by keyword, so keeping it would let a config key that happens to
+    match it (``loaders`` for ``DataLoaders(*loaders, …)``) through the filter
+    and into a ``TypeError`` from the call itself. Those inputs arrive as
+    ``flow()``'s positional runtime args instead.
     """
     try:
         if inspect.isclass(target):
@@ -1754,13 +1781,17 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
             sig = inspect.signature(init_method)
         else:
             sig = inspect.signature(target)
-        return {p for p in sig.parameters if p not in ("self", "cls")}
+        return {
+            p.name
+            for p in sig.parameters.values()
+            if p.name not in ("self", "cls") and p.kind is not inspect.Parameter.VAR_POSITIONAL
+        }
     except (ValueError, TypeError):
         return set()
 
 
-def _construct(target: Any, ctor: Dict[str, Any], obj: Any) -> Any:
-    """Call the target with the ctor kwargs under the YAML validation mode.
+def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: Any) -> Any:
+    """Call the target with the positional runtime args + ctor kwargs, in YAML validation mode.
 
     YAML-driven materialization honours ``policy.yaml`` instead of
     ``policy.init`` so direct-Python instantiation and YAML loads can be tuned
@@ -1770,12 +1801,16 @@ def _construct(target: Any, ctor: Dict[str, Any], obj: Any) -> Any:
     (TypeError / ValueError / …); classes that can't be rebuilt from a plain
     string (pydantic's ``ValidationError``) fall back to ``ConstructionError``,
     chaining the original via ``__cause__``.
+
+    ``args`` comes from ``flow(node, a, b)`` and is empty for every marker built
+    from YAML — a tag carries kwargs only, so positional injection is a
+    runtime-only channel (see :func:`flow`).
     """
     from confluid.validation import get_policy, override_init_mode
 
     try:
         with override_init_mode(get_policy().yaml):
-            return target(**ctor)
+            return target(*args, **ctor)
     except Exception as exc:
         target_name = getattr(target, "__name__", str(target))
         loc = format_yaml_loc(obj)
@@ -1903,7 +1938,12 @@ def _maybe_solidify(instance: Any) -> None:
             solidify_method()
 
 
-def _flow_bare_type(obj: type, context: Optional[Dict[str, Any]], runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_bare_type(
+    obj: type,
+    context: Optional[Dict[str, Any]],
+    runtime_args: Tuple[Any, ...],
+    runtime_kwargs: Dict[str, Any],
+) -> Any:
     """A bare type passed directly (e.g. ``flow(MyClass, x=1)``).
 
     A registry-configurable type is wrapped in an ``Instance`` marker (kwargs
@@ -1912,13 +1952,27 @@ def _flow_bare_type(obj: type, context: Optional[Dict[str, Any]], runtime_kwargs
     a plain type is just called.
     """
     if get_registry().is_configurable(obj):
+        if runtime_args:
+            # A marker carries kwargs only, and the broadcast pass reads it — so
+            # there is nowhere for positional args to ride. Wrap the class in a
+            # `Class`/`LazyClass` marker and flow THAT if you need both.
+            raise ConstructionError(
+                f"flow({obj.__name__}, <positional args>) is not supported for a registry-configurable "
+                "class: it materializes through a marker, which carries keyword arguments only. "
+                "Pass the arguments by keyword, or flow a Class/LazyClass marker instead."
+            )
         marker = Instance(obj)
         marker.kwargs.update(runtime_kwargs)
         return materialize(marker, context=context)
-    return obj(**runtime_kwargs)
+    return obj(*runtime_args, **runtime_kwargs)
 
 
-def _flow_reference(obj: Any, context: Optional[Dict[str, Any]], runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_reference(
+    obj: Any,
+    context: Optional[Dict[str, Any]],
+    runtime_args: Tuple[Any, ...],
+    runtime_kwargs: Dict[str, Any],
+) -> Any:
     """Resolve a ``Reference``: exact context key → rich path resolver → structural fallback.
 
     The exact whole-object key flows the referenced value (sharing identity);
@@ -1927,7 +1981,7 @@ def _flow_reference(obj: Any, context: Optional[Dict[str, Any]], runtime_kwargs:
     nested paths. Unresolvable → typed ``ReferenceResolutionError``.
     """
     if context and obj.target in context:
-        return flow(context[obj.target], **runtime_kwargs)
+        return flow(context[obj.target], *runtime_args, **runtime_kwargs)
     if context:
         dotted = resolve_reference_path(obj.target, context)
         if dotted is not None:
@@ -1935,22 +1989,22 @@ def _flow_reference(obj: Any, context: Optional[Dict[str, Any]], runtime_kwargs:
     resolver = Resolver(context=context or {})
     resolved = resolver._resolve_ref(obj.target)
     if resolved is not None and resolved != f"!ref:{obj.target}":
-        return flow(resolved, **runtime_kwargs)
+        return flow(resolved, *runtime_args, **runtime_kwargs)
     raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
 
 
-def _flow_clone(obj: Any, runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_clone(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
     """Resolve a ``Clone``: flow the referenced value, deepcopy it, apply overrides."""
     from copy import deepcopy
 
-    resolved = flow(Reference(obj.target), **runtime_kwargs)
+    resolved = flow(Reference(obj.target), *runtime_args, **runtime_kwargs)
     cloned = deepcopy(resolved)
     for k, v in obj.kwargs.items():
         setattr(cloned, k, v)
     return cloned
 
 
-def _flow_generic_fluid(obj: Any, runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
     """Generic ``Fluid`` fallback — treat as a Class when the target resolves."""
     target = obj.target
     if isinstance(target, str):
@@ -1959,12 +2013,17 @@ def _flow_generic_fluid(obj: Any, runtime_kwargs: Dict[str, Any]) -> Any:
         resolved = resolve_class(target, strict=True, context=get_active_context())
         if resolved is not None:
             base_kwargs = {**obj.kwargs, **runtime_kwargs}
-            return resolved(**base_kwargs)
+            return resolved(*runtime_args, **base_kwargs)
         raise UnknownClassError(f"Class '{target}' not found in registry.")
-    return flow(target, **{**obj.kwargs, **runtime_kwargs})
+    return flow(target, *runtime_args, **{**obj.kwargs, **runtime_kwargs})
 
 
-def _flow_string_tag(obj: str, context: Optional[Dict[str, Any]], runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_string_tag(
+    obj: str,
+    context: Optional[Dict[str, Any]],
+    runtime_args: Tuple[Any, ...],
+    runtime_kwargs: Dict[str, Any],
+) -> Any:
     """String tags (``"!class:Name"`` / ``"!ref:path"``) — resolve then flow.
 
     An unresolvable tag string is returned verbatim (deferred for a later
@@ -1974,7 +2033,7 @@ def _flow_string_tag(obj: str, context: Optional[Dict[str, Any]], runtime_kwargs
     resolved = resolver.resolve(obj)
     if isinstance(resolved, str) and (resolved.startswith("!class:") or resolved.startswith("!ref:")):
         return obj
-    return flow(resolved, **runtime_kwargs)
+    return flow(resolved, *runtime_args, **runtime_kwargs)
 
 
 def cast(obj: Any, cls: Type[T], **runtime_kwargs: Any) -> T:

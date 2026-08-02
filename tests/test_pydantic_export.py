@@ -15,7 +15,21 @@ Coverage targets:
 * ``confluid_class_of`` and ``lazy_param_names_of`` helpers
 """
 
-from typing import Any, Dict, Generic, List, Literal, Optional, Tuple, TypeVar, Union, get_args
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+    get_args,
+)
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -602,3 +616,89 @@ def test_to_pydantic_non_range_metadata_on_container_left_untouched() -> None:
 
     model = to_pydantic(_Op)
     assert model(pair=(3.0, 4.0)).pair == (3.0, 4.0)
+
+
+# ---------------------------------------------------------------------------
+# Abstract collection annotations: re-iterable kinds keep their element type
+# ---------------------------------------------------------------------------
+
+
+def test_a_sequence_slot_keeps_its_element_type() -> None:
+    """``Sequence[X]`` must reach the schema as ``Sequence[X]``, not a bare ``Any``.
+
+    A slot is annotated ``Sequence[Metric]`` precisely so a form-spec / MCP schema knows
+    what it holds; coercing it to ``Any`` silently defeats the annotation. ``Sequence`` is
+    safe to keep because pydantic validates it into a real ``list`` — see the re-iterability
+    test below for the property that distinguishes it from ``Iterable``.
+    """
+
+    @configurable
+    class _Metric:
+        def __init__(self, name: str = "acc") -> None:
+            self.name = name
+
+    @configurable
+    class _Runner:
+        def __init__(self, metrics: Optional[Sequence[_Metric]] = None) -> None:
+            self.metrics = metrics
+
+    field = to_pydantic(_Runner).model_fields["metrics"]
+    assert "Any" not in str(field.annotation), f"element type was discarded: {field.annotation}"
+    assert _Metric.__name__ in str(field.annotation)
+
+
+def test_a_mapping_slot_keeps_its_key_and_value_types() -> None:
+    """``Mapping[str, str]`` (the shape a `tags` knob takes) survives as itself."""
+
+    @configurable
+    class _Tagged:
+        def __init__(self, tags: Optional[Mapping[str, str]] = None) -> None:
+            self.tags = tags
+
+    field = to_pydantic(_Tagged).model_fields["tags"]
+    assert "Any" not in str(field.annotation), f"element types were discarded: {field.annotation}"
+
+
+def test_an_iterable_slot_is_still_coerced_to_any() -> None:
+    """``Iterable[X]`` MUST stay coerced — pydantic validates it lazily.
+
+    The coercion is not stylistic: pydantic wraps an ``Iterable[X]`` input in a one-shot
+    ``ValidatorIterator``, so a slot read twice sees an EMPTY collection the second time.
+    Coercing to ``Any`` hands the caller's own object back untouched. This test is the
+    boundary of the narrowing — it fails if someone "completes the set" by dropping the
+    remaining lazy kinds too.
+    """
+
+    @configurable
+    class _Streamer:
+        def __init__(self, rows: Optional[Iterable[str]] = None) -> None:
+            self.rows = rows
+
+    assert to_pydantic(_Streamer).model_fields["rows"].annotation == Optional[Any]
+
+
+def test_a_validated_sequence_is_re_iterable_while_an_iterable_is_not() -> None:
+    """The measured property the split is based on, pinned against pydantic itself.
+
+    If a future pydantic validated ``Sequence`` lazily too, keeping its element type would
+    reintroduce the one-shot bug — this fails first and says why.
+    """
+
+    class _Thing:
+        pass
+
+    @configurable
+    class _Both:
+        def __init__(
+            self,
+            seq: Optional[Sequence[int]] = None,
+            it: Optional[Iterable[int]] = None,
+        ) -> None:
+            self.seq = seq
+            self.it = it
+
+    model = to_pydantic(_Both)
+    built = model(seq=[1, 2], it=[1, 2])
+    assert list(built.seq) == [1, 2] and list(built.seq) == [1, 2], "Sequence must be re-iterable"
+    # `it` is coerced to Any, so it is handed back as the original list untouched.
+    assert built.it == [1, 2]

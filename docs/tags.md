@@ -253,6 +253,63 @@ The body scan reads `__init__` source, so it is empty in a compiled / frozen /
 zip-imported deployment — the same packaged-mode caveat as broadcasting, with the
 same fix (`confluid-bake`).
 
+### Runtime injection that has no keyword: `flow(node, *args)`
+
+A tag carries keyword arguments only, so a marker does too. Some targets take
+their inputs **positionally** — a variadic signature has no keyword for them at
+all — and such a slot could not be deferred without a positional channel. So
+`flow()` takes runtime *args* as well as runtime *kwargs*:
+
+```python
+class Loaders:
+    def __init__(self, *loaders, device=None):   # the inputs have no keyword
+        self.loaders, self.device = list(loaders), device
+
+@configurable
+class Trainer:
+    def __init__(self, batch_size: int = 32):
+        self.loaders: Lazy[Loaders] = LazyClass(Loaders)   # a config can set device=
+
+    def run(self, train, valid):
+        loaders = flow(self.loaders, train, valid)         # target(train, valid, **stored)
+```
+
+```yaml
+loaders: !lazy:Loaders(device=cuda)   # YAML sets the knobs; the run supplies the inputs
+```
+
+The positional half is **runtime-only**: it is never stored on a marker and never
+round-trips through `dump()` — exactly like the `params=` / `dataset=` kwargs
+above. Live objects follow the same convention as runtime kwargs: passing args to
+an already-built object drops them rather than raising, so a slot flowed
+`flow(slot, train, valid)` stays safe when a config wired a live object into it.
+
+### Post-flow `solidify()`
+
+If the flowed object has a **`solidify()`** method, `flow()` calls it — after
+construction for a marker, and on the pass-through for an object that was
+*already* live. That second case is what makes the guarantee usable: an object
+built eagerly (`!class:Model()`) or handed in from Python never went through the
+marker path, so its lazy state was never finalized, and the failure surfaces far
+from its cause (an optimizer flowed with `params=` receiving an empty parameter
+list). Because a live object can be flowed more than once, `solidify()` is
+expected to **build once and cache**:
+
+```python
+@configurable
+class Model:
+    def __init__(self, width: int = 8):
+        self.width, self.backbone = width, None   # ctor does no functional work
+
+    def solidify(self):                            # idempotent: build-once-and-cache
+        if self.backbone is None:
+            self.backbone = build_backbone(self.width)
+        return self.backbone
+```
+
+`flow(obj, solidify=False)` suppresses the hook for the whole subtree, live
+objects included — see [Introspection](introspection.md).
+
 ## `!ref:` vs `!clone:` — shared instance vs. deep copy
 
 Both point at another node in the same document; the difference is identity.
