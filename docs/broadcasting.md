@@ -114,7 +114,32 @@ class Passthrough:
 # name: "x" / lr: 0.1 / ANY other bare top-level key now lands on Passthrough
 ```
 
-If that soaks up keys you didn't intend, the opt-outs above are the fix:
+**Where such a key lands follows the addressing**, the same split the two
+predicates below describe — and for a `**kwargs` class the difference is visible,
+because the constructor would take either:
+
+| The key | Reaches | Why |
+|---|---|---|
+| written on the marker (`!class:Passthrough(tag=x)`), or in a block naming it | the **constructor** (`kwargs`) | it says what to build this node *with* |
+| injected at flow time (`flow(node, model=…)`) | the **constructor** (`kwargs`) | a call argument by construction |
+| bare, cascading (`name: "x"` at the top level) | a post-init **attribute** | it was aimed at the whole document, not at this node |
+
+```python
+graph = load("""
+sink: !class:Passthrough(tag=addressed)
+name: run-42
+""")
+graph["sink"].options   # {"tag": "addressed"}  — addressed at the node
+graph["sink"].name      # "run-42"              — cascaded past it
+```
+
+The asymmetry is deliberate. A `**kwargs` class has no accept-list to filter
+with, so *every* bare key in the document reaches it; passing those to the
+constructor would turn permissive broadcasting into "called with whatever the
+document happens to contain". A key the author addressed to this node carries no
+such ambiguity.
+
+If the cascade soaks up keys you didn't intend, the opt-outs above are the fix:
 `@configurable(broadcast=False)` shields the whole class from cascade keys
 (addressed blocks still work), or declare the real parameters explicitly so
 the accept-list exists. The permissive path announces itself once per class at

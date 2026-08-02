@@ -141,14 +141,21 @@ def kwargs_catch_all() -> None:
     """
     graph = load(
         """
-sink: !class:Passthrough()
+sink: !class:Passthrough(tag=addressed)
 name: run-42
 strength: 0.75
 """
     )
     sink = graph["sink"]
     assert sink.name == "run-42" and sink.strength == 0.75, "every bare key broadcast in"
+    # WHERE a key lands follows the addressing: one written on the marker is an
+    # argument (the constructor would take it either way), one that merely cascaded
+    # past is an attribute — otherwise the ctor would be called with whatever the
+    # document happens to contain.
+    assert sink.options == {"tag": "addressed"}, "the marker's own kwarg reached **kwargs"
+    assert "name" not in sink.options, "a bare cascading key did not"
     print(f"Passthrough (**kwargs): received name={sink.name!r} strength={sink.strength} (unfiltered)")
+    print(f"Passthrough (**kwargs): ctor got the ADDRESSED kwarg only: {sink.options}")
 
 
 def settability_predicates() -> None:
