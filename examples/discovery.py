@@ -137,5 +137,37 @@ def main() -> None:
     print(f"parse_param_docs(StandardizeOp): {docs}")
 
 
+def registering_a_class_you_do_not_own() -> None:
+    """`register()` carries the accept-list controls, because a decorator cannot reach here.
+
+    A class you own can be shielded from cascade keys by declaring its parameters
+    or adding a decorator argument. A third-party class can be shielded by
+    neither — and a `**kwargs` constructor is exactly the case with no accept-list
+    at all, so every bare key in the document would otherwise reach it.
+    """
+
+    class Vendor:  # imagine this comes from a library you cannot edit
+        def __init__(self, path: str = "out") -> None:
+            self.path = path
+
+    class VendorFrozen:
+        def __init__(self) -> None:
+            self.scanned = 1
+
+    confluid.register(Vendor, name="ExampleVendor", broadcast=False)
+    confluid.register(VendorFrozen, name="ExampleVendorFrozen", broadcast_attrs=["declared"])
+
+    # Addressed writes still land; only the cascade is shut off.
+    assert confluid.accepts_key(Vendor, "path")
+    assert not confluid.accepts_broadcast(Vendor, "path")
+
+    # A declaration UNIONS with the scan — it can only add.
+    assert confluid.accepts_key(VendorFrozen, "declared")
+    assert confluid.accepts_key(VendorFrozen, "scanned")
+
+    print("register(broadcast=False): addressed yes, bare no — for a class you cannot decorate")
+
+
 if __name__ == "__main__":
     main()
+    registering_a_class_you_do_not_own()
