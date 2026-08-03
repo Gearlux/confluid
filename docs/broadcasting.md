@@ -149,12 +149,12 @@ the trace-logging snippet above).
 ## Asking whether a key may land
 
 The rules above — the accept-list, plus the two opt-outs — are also available
-as two predicates, so code that delivers configuration from *outside* a YAML
+as predicates, so code that delivers configuration from *outside* a YAML
 document (a CLI layer turning `--lr 0.1` into a config change, a form editor,
 an RPC surface) can ask confluid instead of re-deriving them:
 
 ```python
-from confluid import accepts_broadcast, accepts_key, configurable, NoBroadcast
+from confluid import accepts_any_key, accepts_broadcast, accepts_key, configurable, NoBroadcast
 
 @configurable(broadcast=False)
 class Pinned:
@@ -164,6 +164,7 @@ class Pinned:
 accepts_key(Pinned, "lr")         # True  — `Pinned: {lr: …}` sets it
 accepts_broadcast(Pinned, "lr")   # False — a bare `lr:` must not cascade in
 accepts_key(Pinned, "typo")       # False — nothing to set
+accepts_any_key(Pinned)           # False — it has an accept-list to filter with
 ```
 
 Which predicate to use follows the addressing, not the source:
@@ -173,11 +174,42 @@ Which predicate to use follows the addressing, not the source:
 | names its receiver (`ClassName:` block, exact dotted path, a marker's own kwargs) | `accepts_key` | the accept-list |
 | is bare and cascades | `accepts_broadcast` | the accept-list **and** both opt-outs |
 
-Both accept a class, a live instance, or the dotted string a `!class:` marker
+All accept a class, a live instance, or the dotted string a `!class:` marker
 carries; an unresolvable target accepts nothing. Re-deriving this yourself is
 the mistake they exist to prevent — a hand-rolled accept-list typically misses
 `**kwargs` targets, `__init__`-body slots, and both opt-outs, so a class that
 declared "no bare key may land on me" quietly accepts one anyway.
+
+### Declaring a key vs being unable to refuse it
+
+The two predicates above answer *"may this key land here?"*. `accepts_any_key`
+answers the prior question — *"does this target discriminate between keys at
+all?"* — and it exists because for a [`**kwargs` class](#classes-with-kwargs-constructors)
+the other two say **yes to every key**, including keys the class has never heard of:
+
+```python
+@configurable
+class Forwards:
+    def __init__(self, **kwargs): ...
+
+accepts_key(Forwards, "run_name")   # True  — it cannot refuse it ...
+accepts_any_key(Forwards)           # True  — ... precisely because it has no accept-list
+```
+
+That difference decides how an external front-end should **deliver** the key.
+Writing it into a marker's own kwargs is the *addressed* channel, so it becomes a
+**constructor argument**; a key the target merely cannot refuse was never aimed
+there, and must be left to cascade so it lands as a post-init **attribute**
+instead. Deliver it as an argument and you call somebody else's constructor with
+whatever the document happened to contain — a strict library then rejects a key
+it never asked for, from a call site nowhere near the config:
+
+```python
+if accepts_any_key(cls):
+    ...          # leave it in the document; let broadcasting deliver it BARE
+elif accepts_broadcast(cls, key):
+    marker.kwargs[key] = value   # the class declares it — an argument is correct
+```
 
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 
