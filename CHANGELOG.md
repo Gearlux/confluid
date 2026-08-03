@@ -30,6 +30,23 @@ All notable changes to confluid are documented here. The format follows
   diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
   target that module.
 
+### Added
+
+- **A DEBUG line when a value is overridden.** The merge's single write path now
+  reports a key whose value is REPLACED, with both sides and which scope won:
+
+  ```
+  override: 'lr' 0.5 -> 0.9 (exact value replaced by a bare one;
+                             document order decides — the later spec wins)
+  ```
+
+  Overriding is normal operation — a sweep's `lr:` reaching every node is the
+  point of bare keys — so this is DEBUG, not a warning, and an uncontested value
+  is silent. It exists because every configuration defect fixed in this release
+  looked identical from outside: the run used a value the author did not write at
+  the node they wrote it on, with nothing in the log. "My knob did not take" is
+  now one grep (`LOGGAIR_CONSOLE_LEVEL=DEBUG`) instead of a bisect.
+
 ### Fixed
 
 - **Precedence is document order for EVERY spelling, not just some.** Confluid has

@@ -411,7 +411,24 @@ class _View(dict):
             self.scopes.update(args[0].scopes)
 
     def set(self, key: str, value: Any, scope: _KeyScope) -> None:
-        """Assign ``key`` (keeping its position if present) with a scope tag."""
+        """Assign ``key`` (keeping its position if present) with a scope tag.
+
+        The ONE write path into a merged view, and therefore the one place that
+        can see a value being replaced. Every silent misconfiguration in this area
+        has looked identical from outside — the run uses a value the author did not
+        write at the node they wrote it on, and nothing says so — so an overwrite
+        that CHANGES the value is logged with both sides and the scope that won.
+
+        DEBUG, not warning: overwriting is normal operation and the point of bare
+        keys (a sweep's ``lr:`` overriding per-node defaults is the feature). This
+        exists so "my knob did not take" is one grep instead of a bisect.
+        """
+        if key in self and self[key] != value:
+            logger.debug(
+                f"override: {key!r} {self[key]!r} -> {value!r} "
+                f"({self.scope_of(key).value} value replaced by a {scope.value} one; "
+                f"document order decides — the later spec wins)"
+            )
         self[key] = value
         if scope is _KeyScope.BARE:
             self.scopes.pop(key, None)

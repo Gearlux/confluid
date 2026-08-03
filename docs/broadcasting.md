@@ -268,6 +268,26 @@ Two points worth knowing:
   exactly as it would override a constructor default. This is also why a CLI
   override always takes effect: it is applied after the whole file.
 
+### When a knob "did not take"
+
+Because the later spec wins, a value you wrote at a node can be replaced by a
+key further down the file — which is the feature, but it looks the same as a
+setting that never applied. Confluid reports every replaced value at DEBUG:
+
+```
+LOGGAIR_CONSOLE_LEVEL=DEBUG python train.py config.yaml
+```
+
+```
+override: 'lr' 0.5 -> 0.9 (exact value replaced by a bare one;
+                           document order decides — the later spec wins)
+```
+
+An uncontested value logs nothing, so anything you see here is a real contest.
+The fix is usually to move the document-wide key *above* the node you want to
+keep. For the complementary question — which keys matched nothing at all — use
+[`collect_report()`](report.md).
+
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 
 Broadcasting discovers post-init body attributes (`self.loss_fn = …` inside

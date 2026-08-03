@@ -16,6 +16,7 @@ both orderings; a spelling that ignores position fails exactly one of them,
 which is what makes the pair — rather than either test alone — the real pin.
 """
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -208,6 +209,48 @@ def test_configure_does_not_build_a_deferred_slot() -> None:
 
     assert isinstance(car.engine, LazyClass(OrderedEngine).__class__)
     assert car.engine.kwargs["power"] == 50
+
+
+def test_an_overridden_value_is_reported_at_debug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "My knob did not take" must be one grep, not a bisect.
+
+    Every silent misconfiguration in this area looked the same from outside: the run
+    used a value the author did not write at the node they wrote it on, with nothing
+    in the log. The merge's single write path reports a value being REPLACED — at
+    DEBUG, because overriding is normal operation and the point of bare keys.
+    """
+    import confluid.broadcast as broadcast_module
+
+    seen: list = []
+    monkeypatch.setattr(
+        broadcast_module,
+        "logger",
+        SimpleNamespace(debug=seen.append, trace=lambda m: None, warning=lambda m: None),
+    )
+
+    _power(f"{SPELLINGS['marker']}\n{BARE}\n")  # the bare key is later, so it replaces
+
+    assert any("'power'" in m and "50" in m and "99" in m for m in seen), seen
+
+
+def test_an_uncontested_value_reports_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The diagnostic must stay quiet on the ordinary path, or it is noise.
+
+    Negative assertions check the collected list, never `caplog` — loggair does not
+    propagate into stdlib logging, so an empty `caplog` is a false green.
+    """
+    import confluid.broadcast as broadcast_module
+
+    seen: list = []
+    monkeypatch.setattr(
+        broadcast_module,
+        "logger",
+        SimpleNamespace(debug=seen.append, trace=lambda m: None, warning=lambda m: None),
+    )
+
+    _power(f"{SPELLINGS['marker']}\n")  # nothing competes with the slot value
+
+    assert not [m for m in seen if "override" in m], seen
 
 
 def test_the_rule_holds_for_a_non_numeric_key() -> None:
