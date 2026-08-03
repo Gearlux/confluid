@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 
 import confluid
-from confluid import Instance, configurable, flow, load, materialize
+from confluid import Instance, configurable, flow, get_registry, load, materialize
 
 
 def _inst(target: str, /, **kwargs: Any) -> Instance:
@@ -392,3 +392,65 @@ def test_a_plain_class_is_unaffected_by_the_var_keyword_path() -> None:
 
     assert built.lr == 0.5
     assert built.note == "extra"
+
+
+# --- a zero-parameter constructor is configurable ---------------------------- #
+
+
+def test_a_zero_parameter_constructor_still_takes_config() -> None:
+    """`def __init__(self)` + body slots must be configurable, not a TypeError.
+
+    The class-design convention encourages a MINIMAL constructor with the
+    dependencies as `__init__`-body slots. Taken to its limit that is no parameters
+    at all — and such a class died on any config key with
+    `TypeError: got an unexpected keyword argument`, from inside its own
+    constructor, which points nowhere near the config that caused it.
+
+    Cause: `_ctor_params` returned a plain `set()` both when the signature could not
+    be READ and when it was read and found EMPTY. Those need opposite handling —
+    pass everything vs pass nothing — and the caller's truthiness fallback picked
+    the wrong one for the second.
+    """
+
+    @configurable
+    class ZeroArgHost:
+        def __init__(self) -> None:
+            self.slot: Any = None
+
+    get_registry().register_class(ZeroArgHost, name="ZeroArgHost")
+
+    obj = load("o: !class:ZeroArgHost()\n  slot: 42\n")["o"]
+
+    assert obj.slot == 42
+
+
+def test_an_unreadable_signature_still_receives_every_kwarg() -> None:
+    """The other side of the same distinction — do not fix one by breaking it.
+
+    When `inspect.signature` raises there is no accept-list to filter with, so the
+    best effort is to pass everything and let the call decide. `_UNKNOWN_PARAMS`
+    carries that state; a plain empty set cannot, which is the whole point.
+
+    Asserted against the sentinel rather than a class with an unreadable signature:
+    every builtin checked (dict/list/int/object/memoryview/range) introspects fine
+    under CPython 3.12, so a "realistic" fixture would silently stop exercising the
+    branch. Pinning the two properties the caller depends on — identity is
+    distinguishable, and it still behaves as a set — is what actually holds.
+    """
+    from confluid.engine import _UNKNOWN_PARAMS, _ctor_params
+
+    # A genuinely readable zero-arg signature is NOT the unknown sentinel.
+    assert _ctor_params(ZeroArgReadable) is not _UNKNOWN_PARAMS
+    assert _ctor_params(ZeroArgReadable) == set()
+
+    # ...and the sentinel is still an ordinary set for every reader of it.
+    assert isinstance(_UNKNOWN_PARAMS, set)
+    assert "anything" not in _UNKNOWN_PARAMS
+
+
+@configurable
+class ZeroArgReadable:
+    """Module-level so its signature is introspectable the normal way."""
+
+    def __init__(self) -> None:
+        self.slot: Any = None
