@@ -171,7 +171,7 @@ def test_round_trip_of_marked_class() -> None:
 def test_broadcast_trace_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     """A bare broadcast emits the trace diagnostic (patched logger — loggair
     is not caplog-capturable)."""
-    import confluid.engine as engine_module
+    import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 
     traces: list[str] = []
     monkeypatch.setattr(

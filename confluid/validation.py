@@ -88,7 +88,7 @@ def _contains_fluid(value: Any, fluid_cls: type) -> bool:
     Only descends into the three built-in container shapes that confluid's
     YAML loader actually produces — that's enough to catch
     ``stores=[Class(...)]`` (list-of-Fluids), ``data={"train": Class(...)}``
-    (dict-of-Fluids), and the various ``tuple``-typed kwargs marainer
+    (dict-of-Fluids), and the various ``tuple``-typed kwargs matrainer
     pipelines use. Other custom containers fall back to "concrete" — they
     don't appear in YAML-driven configurations.
     """
