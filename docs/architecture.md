@@ -183,3 +183,103 @@ to *store* positional args on a marker. Round-tripping is built on `dump()` emit
 kwargs a tag can carry; positional args have no names, so a stored one could not be dumped,
 diffed, or overridden by key. If a target's positional inputs need to come from config, give the
 target a keyword.
+
+---
+
+## 3. One precedence rule, in one module
+
+*2026-08-03*
+
+**Context.** Confluid has a single precedence rule — values apply in document order and the
+last spec wins — and it was implemented twice. Once in the engine, merging a document onto
+markers before construction; once in the post-construction configurator, applying the same
+document to live objects. Two implementations of one rule is a standing invitation to drift,
+and they drifted.
+
+Four divergences were measured in a single day, all in the same shape and three of the four
+silent:
+
+| | engine | configurator |
+|---|---|---|
+| a mapping at a *declared* key | value (own kwargs) / routing (named block) — inconsistent with **itself** | recursed *into* the marker |
+| a `Lazy` in the eager-flow branch | excluded | **included** — deferred slots built eagerly |
+| a bare key → a deferred slot | merged into the marker's kwargs | applied to a throwaway, discarded |
+| ordering | positional | none — the bare key won either way |
+
+Each produced a plausible-looking run. A trainer's `optimizer: {lr: 0.5}` left the code default
+and trained at the wrong rate; a `!lazy:` slot was constructed without the runtime argument it
+exists to wait for. Nothing raised, and nothing appeared in the log.
+
+A fifth divergence was a matter of time. The fault is not carelessness — it is that two files
+had to agree on a rule neither of them owned.
+
+**Decision.** The rule and its machinery live in **one module**, `confluid/broadcast.py`, which
+both callers import: the scope tags, the tagged view, the ordered merge, the child-view splice,
+the accept-lists, and the settability predicates. The layering is
+
+    fluid → state → broadcast → engine → loader
+
+`broadcast` **materializes nothing** — no `flow`, no `_flow_recursive`. That prohibition is not
+tidiness; it is what makes the dependency one-directional and therefore what makes the module
+importable by both the marker path and the live-object path. Code that needs to *build* an
+object belongs in `engine`.
+
+`state` exists for one reason: the ordered merge reads the ambient `ConfigurationReport` off the
+engine's `ContextVar`, so leaving that state in `engine` would have made the two modules import
+each other. Lifting it is the smallest cut that breaks the cycle.
+
+**Consequences.**
+
+- `engine.py` went from 2,294 lines to 1,178. That is an effect, not the goal — a 2,294-line
+  module with one owner would have been fine.
+- Every moved name is re-exported from `engine`, so no existing import breaks. New code should
+  import from the real home.
+- Diagnostics from the merge now originate in `confluid.broadcast`. A test that captures them by
+  monkeypatching a logger must target that module; four did and were updated.
+- The divergences above are now unrepresentable rather than merely fixed. That is the whole
+  return on the change.
+
+**Example.**
+
+```python
+# both paths, one implementation
+from confluid.broadcast import _prepare_kwargs        # engine: markers, pre-construction
+from confluid.broadcast import _get_acceptable_keys   # configurator: live objects
+```
+
+```yaml
+lr: 0.9                              # a document-wide default ...
+runnable: !class:Trainer()
+  optimizer: !lazy:AdamW(lr=0.5)     # ... overridden per-slot below it   -> 0.5
+```
+
+Move the bare `lr:` below the block and it wins instead. Four spellings reach that slot —
+a marker, a mapping, a dotted key, a class-name block — and all four order identically,
+because one module decides for all of them.
+
+**What you may change.** Not the no-materialization rule: an import of `flow` into `broadcast`
+re-creates the cycle and, with it, the pressure to keep a second copy of the rule somewhere
+convenient.
+
+A reasonable review of this module recommends splitting it further — scope types, predicates,
+and merge engine as three files — on the strength of its size (~1,100 lines). **Do not, without
+a stronger reason than size.** The three parts are not three concerns; they are one rule and its
+vocabulary, and the failure this record exists to prevent came from that rule living in more
+than one place. Split it when a *seam* appears — a part with its own callers and its own
+invariants — not when a line count crosses a threshold. If the module is hard to read, the
+first move is better ordering and narrative comments within it.
+
+The AST scan behind post-init slot discovery (`introspect.py`) is a fair target for reduction:
+it is cached per class and cleared per pass, so it is not a hot-path cost, but it does read
+source at runtime and needs the build-time bake step in frozen deployments. Encouraging explicit
+slot declarations in new code shrinks the reliance without removing the fallback that existing
+code depends on.
+
+One rough edge is known and deliberate: a **non-`@configurable`** class registered via
+`register()` whose constructor takes `**kwargs` has no accept-list, so every bare key in the
+document reaches it. The dangerous half is already closed — such keys land as post-init
+*attributes*, never as constructor arguments, so a strict library can no longer be called with
+whatever the document happens to contain (measured: the constructor receives `{}`). What remains
+is that unrelated top-level keys become attributes on a third-party object. Narrowing that means
+deciding whether `register()` should imply the same accept-list contract `@configurable` does —
+a real question, and a separate one from this record.
