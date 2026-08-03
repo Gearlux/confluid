@@ -26,12 +26,24 @@ from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Type
+from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple, Type
 
 from loggair import get_logger
 
 from confluid.exceptions import ConfigurationError, ConstructionError, ReferenceResolutionError, UnknownClassError
-from confluid.fluid import Class, Clone, Fluid, Instance, Lazy, Reference, T, format_yaml_loc
+from confluid.fluid import (
+    Class,
+    Clone,
+    Fluid,
+    Instance,
+    Lazy,
+    Reference,
+    T,
+    addressed_keys_of,
+    format_yaml_loc,
+    is_order_resolved,
+    late_bare_keys_of,
+)
 from confluid.introspect import baked_init_attrs, init_setattr_names, init_source_available
 from confluid.merger import expand_dotted_keys
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
@@ -843,6 +855,33 @@ def _expand_block_keys(block: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _late_bare_keys_per_slot(child_ctx: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, FrozenSet[str]]:
+    """For each dict-valued kwarg, the BARE keys positioned AFTER it in the document.
+
+    A mapping addressed at a slot (``optimizer: {lr: 0.5}``) is the one addressing
+    form that cannot be ordered where every other form is. A marker gets its own
+    :func:`_prepare_kwargs` pass against ``child_ctx`` and so competes with bare
+    keys by position; a plain dict is not a marker, is applied only after
+    construction (the first moment the slot's deferred default is knowable), and
+    carries no position of its own — dicts take no attributes.
+
+    So the contest is settled HERE, while the ordering is still in hand, and only
+    its OUTCOME is carried forward: the bare keys that sit later than the slot and
+    therefore beat it. A slot with an empty set wins outright. ``child_ctx`` is the
+    spliced view, whose key order IS document order, which is what makes an index
+    comparison meaningful across the two levels.
+
+    Returns an empty mapping when nothing needs it — the overwhelmingly common
+    case, and the one that must stay allocation-free.
+    """
+    slots = [k for k, v in kwargs.items() if isinstance(v, dict) and not _is_glob_key(k) and k in child_ctx]
+    if not slots:
+        return {}
+    order = {k: i for i, k in enumerate(child_ctx)}
+    bare = [(k, i) for k, i in order.items() if _scope_of(child_ctx, k) is _KeyScope.BARE]
+    return {slot: frozenset(k for k, i in bare if i > order[slot]) for slot in slots}
+
+
 def _splice_kwargs_at_slot(
     parent_context: Dict[str, Any],
     self_key: Optional[str],
@@ -1250,6 +1289,22 @@ def _prepare_kwargs(
                 _consume_block(bv, origin=f"block {bk!r}", gated=False)
                 continue
             if isinstance(bv, dict) and not _accepts(bk, bv):
+                # A dict at a key the receiver DECLARES is a value aimed at that slot,
+                # not a path segment — the rule ``_apply_own`` already applies to the inline
+                # spelling (``!class:Trainer()`` + a nested ``optimizer:``). The two
+                # disagreed, and only this branch used the stricter ``_accepts`` test,
+                # which admits a dict ONLY for a dict-TYPED param. A deferred body slot
+                # is not dict-typed, so ``Trainer: {optimizer: {lr: 0.5}}`` was hoisted
+                # as routing for the children and never reached the slot at all — the
+                # run kept the code default with nothing competing and nothing logged.
+                # Restricted to the ADDRESSED path: a glob-delivered dict (``gated``)
+                # is genuinely routing, and a floating ``'**'`` rider keeps floating.
+                if not gated and not floating and acceptable is not None and bk in acceptable:
+                    logger.trace(f"broadcast: {bk!r} -> {cls_name} ({origin}, slot value)")
+                    merged.set(bk, bv, _KeyScope.EXACT)
+                    if report is not None:
+                        origins[bk] = origin
+                    continue
                 if not floating:
                     _hoist_routing(bk, bv)  # deeper path segment → direct children
                 continue
@@ -1391,6 +1446,13 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         res_obj._addressed_keys = frozenset(
             k for k in resolved_kwargs if merged_kwargs.scope_of(k) is not _KeyScope.BARE
         )
+        # `_prepare_kwargs` above walked `parent_context` in DOCUMENT ORDER and
+        # unrolled this marker's own kwargs at its own slot's position, so an own
+        # kwarg competing with a bare key of the same name has already been settled
+        # by position — last spec wins. Record that, so the later broadcast pass
+        # leaves the outcome alone instead of re-applying the bare key blind.
+        res_obj._order_resolved = True
+        res_obj._late_bare_keys = _late_bare_keys_per_slot(child_ctx, resolved_kwargs)
         if flow_memo is not None:
             flow_memo[raw_id] = res_obj
         return res_obj
@@ -1683,7 +1745,7 @@ def _flow_target(
         except (TypeError, AttributeError):
             pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
 
-    _apply_post_init_attrs(instance, target, merged, ctor)
+    _apply_post_init_attrs(instance, target, merged, ctor, obj, context, broadcast_ctx)
     _broadcast_onto_instance(instance, params, ctor, context, broadcast_ctx)
     _maybe_solidify(instance)
     return instance
@@ -1763,23 +1825,29 @@ def _resolve_kwarg_value(
             v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
         )
         inner_blocked = _broadcast_blocked_keys(inner_target_cls)
-        # A kwarg the DOCUMENT put on this marker is the author addressing this node,
-        # and a bare key must not overrule it. A kwarg set in CODE — a ctor default
-        # `engine: Any = Class(Engine, power=7)`, or a body slot
-        # `self.optimizer = LazyClass(AdamW, lr=1e-4)` — is a DEFAULT, and defaults are
-        # what broadcasting exists to override: a plain `def __init__(self, power=7)`
-        # already loses to a bare `power:`, so a marker kwarg holding out made WHERE the
-        # default was written decide whether config could reach it at all. That is how a
-        # consumer's optimizer became untunable — `lr:` and `--lr` both silently no-ops,
-        # the run training at the hard-coded rate and reporting nothing.
-        # `_yaml_loc` is the discriminator and needs no new bookkeeping: the loader stamps
-        # it on every marker it parses, and it is None for one built in Python.
-        authored_in_yaml = getattr(v, "_yaml_loc", None) is not None
+        # Confluid has ONE precedence rule — document order, last spec wins — and this
+        # pass is NOT where it is decided. `_flow_recursive` already merged this marker's
+        # own kwargs against the surrounding bare keys BY POSITION and stamped
+        # `_order_resolved`; re-applying a bare key here would overwrite that outcome
+        # unconditionally, which is a specificity tier by another name.
+        #
+        # So the question is only "has the ordered merge run for this marker yet?".
+        # It has not for a marker built in CODE (a ctor default `engine: Any =
+        # Class(Engine, power=7)`, a body slot `self.optimizer = LazyClass(AdamW,
+        # lr=1e-4)`) — those are defaults that never appeared in the document and so
+        # never took a position; broadcasting exists to override exactly those, which is
+        # why a plain `def __init__(self, power=7)` loses to a bare `power:` too.
+        #
+        # This used to test `_yaml_loc is not None` — a PROXY for the same question that
+        # answered wrong for one shape: a marker the document only TUNED (`engine: {power:
+        # 50}`) inherits the code marker's empty location, so its author-written value was
+        # read as a default and any bare key beat it regardless of where either sat.
+        already_ordered = is_order_resolved(v)
         for bk, bv in broadcast_ctx.items():
             if isinstance(bv, (dict, list)):
                 continue
-            if bk in broadcasted and authored_in_yaml:
-                continue  # addressed at this node in the document — bare keys lose
+            if bk in broadcasted and already_ordered:
+                continue  # position already decided this key — do not re-run the contest
             if inner_blocked is None or bk in inner_blocked:
                 continue  # NoBroadcast param / broadcast=False class — bare keys never land
             if isinstance(bv, Fluid):
@@ -1928,7 +1996,7 @@ def _var_keyword_extras(
     a document — a hand-built one, or a direct ``flow(marker)`` — where every
     kwarg is by definition the marker's own.
     """
-    addressed: Optional[frozenset[str]] = getattr(obj, "_addressed_keys", None)
+    addressed = addressed_keys_of(obj)
     extras = {k: v for k, v in merged.items() if not _is_glob_key(k) and (addressed is None or k in addressed)}
     extras.update({k: v for k, v in runtime_kwargs.items() if not _is_glob_key(k)})
     return extras
@@ -1966,7 +2034,15 @@ def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: An
             raise ConstructionError(msg) from exc
 
 
-def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], ctor: Dict[str, Any]) -> None:
+def _apply_post_init_attrs(
+    instance: Any,
+    target: Any,
+    merged: Dict[str, Any],
+    ctor: Dict[str, Any],
+    obj: Any = None,
+    context: Optional[Dict[str, Any]] = None,
+    broadcast_ctx: Optional[Dict[str, Any]] = None,
+) -> None:
     """Assign kwargs the CONSTRUCTOR did not take as attributes on a configurable instance.
 
     The gate is ``ctor`` — what was actually passed — rather than the declared
@@ -2033,6 +2109,20 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], c
                 tuned = copy(existing)
                 tuned.kwargs = {**existing.kwargs, **v}
                 tuned._yaml_loc = getattr(existing, "_yaml_loc", None)
+                # The mapping is an ADDRESSED value like any other, so document order
+                # decides it against a competing bare key — but it reaches here with no
+                # position of its own (see :func:`_late_bare_keys_per_slot`). The winner
+                # was worked out during the ordered merge and handed over as the set of
+                # bare keys that sit LATER than this slot; apply exactly those, through
+                # the normal resolver so the accept-list and NoBroadcast gates still run.
+                late = late_bare_keys_of(obj).get(k, frozenset())
+                pool = {bk: bv for bk, bv in (broadcast_ctx or {}).items() if bk in late}
+                if pool:
+                    tuned = _resolve_kwarg_value(tuned, context=context, broadcast_ctx=pool)
+                # Settled either way now — a later bare key has been applied, an earlier
+                # one has lost. Mark it so the broadcast pass below does not re-run the
+                # contest and hand the win to whichever key it happens to visit.
+                tuned._order_resolved = True
                 logger.trace(f"slot-tune: {k!r} -> {existing.target} merged {sorted(v)} into the deferred marker")
                 v = tuned
             setattr(instance, k, v)

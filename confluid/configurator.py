@@ -33,12 +33,14 @@ inside a :func:`confluid.collect_report` block the ambient report is adopted,
 so a load-then-configure pass aggregates into one report.
 """
 
+from copy import copy
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, FrozenSet, Optional, Set, Union
 
 import yaml
 from loggair import get_logger
 
+from confluid.fluid import Class, Lazy
 from confluid.merger import expand_dotted_keys
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver
@@ -154,6 +156,15 @@ def _walk(
         return
 
     from confluid.engine import flow
+    from confluid.fluid import Lazy
+
+    if isinstance(obj, Lazy):
+        # A deferred slot is NOT walked into, and is NOT tuned here either — its OWNER
+        # tunes it (see ``_apply``), because only the owner's scan knows where each of
+        # its blocks sat relative to the bare keys. Flowing it would build the target
+        # early (an optimizer with no ``params``) and configure an object that is never
+        # written back to the attribute, discarding every key applied to it.
+        return
 
     obj = flow(obj)
 
@@ -183,6 +194,47 @@ def _walk(
         for attr_val in list(obj_dict.values()):
             if not callable(attr_val):
                 _walk(attr_val, child_view, context, visited, report)
+
+
+def _tune_deferred(
+    marker: Any, view: Dict[str, Any], report: ConfigurationReport, beaten: FrozenSet[str] = frozenset()
+) -> None:
+    """Merge the bare keys a deferred slot did NOT already beat into its kwargs.
+
+    The live-object analogue of the engine's nested-``Class`` broadcast. Two rules
+    carry over unchanged and both are load-bearing:
+
+    * the target's accept-list gates what may land (a bare key the class never
+      declared is not silently attached), as do the NoBroadcast opt-outs;
+    * ``beaten`` — the keys a block addressed at this slot out-positioned, computed
+      by the caller's scan and passed in — are skipped, because document order
+      already settled them. Everything else is a bare key written LATER than the
+      block, so it wins. It is a PARAMETER rather than marker state on purpose: a
+      verdict about one document must not survive into the next ``configure()``.
+
+    A kwarg the marker already carries and that nothing beat is left alone only when
+    the bare key lost; otherwise last-spec-wins applies and the bare key overwrites.
+    """
+    from confluid.engine import _broadcast_blocked_keys, _get_acceptable_keys, _KeyScope, _scope_of
+    from confluid.registry import resolve_class
+
+    target_cls = marker.target if isinstance(marker.target, type) else resolve_class(marker.target)
+    if target_cls is None:
+        return
+    acceptable = _get_acceptable_keys(target_cls)
+    blocked = _broadcast_blocked_keys(target_cls)
+    if blocked is None:  # @configurable(broadcast=False) — no bare key ever lands
+        return
+    for key, value in view.items():
+        if isinstance(value, dict) or key in beaten or key in blocked:
+            continue
+        if _scope_of(view, key) is not _KeyScope.BARE:
+            continue  # an ancestor's addressed value — visible for ordering only
+        if acceptable is not None and key not in acceptable:
+            continue
+        logger.trace(f"configure: {key!r} -> {getattr(target_cls, '__name__', marker.target)} (deferred slot)")
+        marker.kwargs[key] = value
+        report.mark_used(key)
 
 
 def _apply(
@@ -232,6 +284,16 @@ def _apply(
     # effective assignment.
     assignments: Dict[str, Any] = {}
     origins: Dict[str, str] = {}
+    # Document positions, for the one contest this path has to settle by hand: a
+    # mapping addressed at a DEFERRED slot versus a bare key of the same name.
+    # ``_bare_positions`` holds the non-dict (broadcast-eligible) view keys;
+    # ``_block_pos`` is a one-cell box the scan loop below updates as it walks, so
+    # ``_consume_block`` can read the position of the block it is unrolling.
+    _bare_positions: Dict[str, int] = {k: i for i, (k, v) in enumerate(view.items()) if not isinstance(v, dict)}
+    _block_pos = [0]
+    # attr name -> the bare keys a block addressed at that DEFERRED slot out-positioned.
+    # Call-scoped by construction: it lives and dies with this scan.
+    beaten_per_slot: Dict[str, FrozenSet[str]] = {}
 
     def _mark_used(key: str, origin: str) -> None:
         report.mark_used(f"**.{key}" if origin == "glob '**'" else f"*.{key}" if origin == "glob '*'" else key)
@@ -262,7 +324,33 @@ def _apply(
                 continue
             if isinstance(bv, dict):
                 if _settable(bk):
-                    if _is_configurable(getattr(obj, bk, None)):
+                    existing = obj.__dict__.get(bk)
+                    if isinstance(existing, Class):
+                        # A deferred marker slot (``self.optimizer = LazyClass(...)``).
+                        # A Fluid reports ``__confluid_configurable__``, so the check
+                        # below took it for a live configurable child and recursed INTO
+                        # the marker — setting attributes on the marker OBJECT, where
+                        # nothing reads them, instead of merging into the kwargs the
+                        # target is eventually built with. The value simply vanished.
+                        # Tune the marker instead, which is the engine's rule for the
+                        # identical spelling (``engine._apply_post_init_attrs``).
+                        tuned = copy(existing)
+                        tuned.kwargs = {**existing.kwargs, **bv}
+                        # Record which bare keys this block BEAT on position — as a LOCAL
+                        # of this scan, never on the marker. A bare key never passes a
+                        # broadcast gate on this path (``_walk`` would flow the marker and
+                        # configure a throwaway), so the contest has to be settled here,
+                        # which is the one moment the block's position is known. Stamping
+                        # the verdict on the marker instead would outlive the call that
+                        # computed it: a second ``configure()`` carrying only a bare key
+                        # would find that key still marked "lost" against a document it
+                        # never saw, and silently keep the first call's value.
+                        beaten_per_slot[bk] = frozenset(
+                            key for key, pos in _bare_positions.items() if pos < _block_pos[0]
+                        )
+                        assignments[bk] = tuned
+                        origins[bk] = origin
+                    elif _is_configurable(getattr(obj, bk, None)):
                         recursions[bk] = bv
                     else:
                         assignments[bk] = bv  # a plain dict-typed attribute value
@@ -287,7 +375,8 @@ def _apply(
                 logger.warning(f"configure(): {cls_name} block has no attribute {bk!r} — ignored")
                 report.record_failed(bk, target_label, "unknown-attribute")
 
-    for k, v in view.items():
+    for _pos, (k, v) in enumerate(view.items()):
+        _block_pos[0] = _pos
         scope = _scope_of(view, k)
         if scope is _KeyScope.EXACT:
             continue  # an ancestor's addressed value — ordering visibility only
@@ -317,6 +406,14 @@ def _apply(
             report.mark_used(k)
 
     _assign(obj, assignments, context, report, origins, target_label)
+
+    # Deferred slots are tuned by their OWNER, here, because only this scan knows where
+    # each block sat relative to the bare keys. ``_walk`` deliberately does not touch a
+    # Lazy. Every deferred slot is visited — not only those a block addressed — since a
+    # bare key with nothing competing must still reach one.
+    for attr_name, slot in list(vars(obj).items()):
+        if isinstance(slot, Lazy):
+            _tune_deferred(slot, view, report, beaten=beaten_per_slot.get(attr_name, frozenset()))
 
     # Splice this object's addressed blocks into the subtree view at their
     # positions (the live-object analogue of ``_splice_kwargs_at_slot``):
@@ -351,7 +448,7 @@ def _assign(
     """
     from confluid.engine import _ctor_params
     from confluid.engine import flow as _flow
-    from confluid.fluid import Class, Instance
+    from confluid.fluid import Class, Instance, Lazy
     from confluid.resolver import parse_value
     from confluid.validation import get_policy, validate_setattr
 
@@ -380,7 +477,13 @@ def _assign(
             resolved_val = parse_value(resolved_val)
         # Materialize class markers (e.g. a "!class:Model(...)" string value
         # resolved to an Instance/Class Fluid) into live instances before setattr.
-        if isinstance(resolved_val, (Class, Instance)):
+        # A ``Lazy`` is EXCLUDED, exactly as it is in ``engine._apply_post_init_attrs``:
+        # it is a deliberate runtime-injection point the owning class flows when it has
+        # the missing argument, so building it here produces the wrong object (an
+        # optimizer with no ``params``) and destroys the slot. `Lazy` subclasses `Class`,
+        # so the isinstance test above caught it and configure() ALONE built it eagerly —
+        # a straight divergence from the load path for the identical config.
+        if isinstance(resolved_val, (Class, Instance)) and not isinstance(resolved_val, Lazy):
             resolved_val = _flow(resolved_val)
         # Post-construction overrides honour the same per-field schema as the
         # constructor — re-uses ``policy.init`` because configure() is the

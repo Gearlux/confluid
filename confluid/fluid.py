@@ -1,4 +1,4 @@
-from typing import Any, Callable, Generic, Optional, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Generic, Optional, Tuple, Union
 
 from typing_extensions import TypeVar
 
@@ -33,10 +33,75 @@ class Fluid:
         # and a direct ``flow(marker)`` are in. Read for exactly one decision:
         # what a ``**kwargs`` constructor receives (see ``engine._flow_target``).
         self._addressed_keys: Optional[frozenset[str]] = None
+        # True once this marker's kwargs have been through the engine's ORDERED
+        # merge (``engine._prepare_kwargs``), which resolves an own-kwarg against
+        # a competing bare key by DOCUMENT POSITION — last spec wins. The later
+        # broadcast pass reads it to know the contest is already settled and must
+        # not be re-run (re-running it would apply the bare key unconditionally,
+        # discarding the ordering). ``False`` means no ordered pass has happened:
+        # a hand-built marker, or one tuned out-of-band by a mapping addressed at
+        # its slot. Never serialized — copy()/dump() ignore it.
+        self._order_resolved: bool = False
+        # Per dict-valued kwarg, the BARE keys sitting LATER in the document than
+        # that kwarg. A mapping addressed at a deferred slot (``optimizer: {lr:
+        # 0.5}``) is tuned into the slot's marker after construction — the only
+        # moment the slot's default is knowable — by which point the ordered merge
+        # is long past and the mapping has no position of its own to be judged by
+        # (a plain dict cannot carry one). So the position contest is DECIDED here,
+        # where the ordering is still visible, and recorded as its outcome: the
+        # bare keys that beat this slot. Empty ⇒ the slot wins outright.
+        self._late_bare_keys: Dict[str, FrozenSet[str]] = {}
 
     def __repr__(self) -> str:
         name = self.target if isinstance(self.target, str) else getattr(self.target, "__name__", str(self.target))
         return f"{self.__class__.__name__}({name}, {self.kwargs})"
+
+
+# --------------------------------------------------------------------------- #
+# Engine bookkeeping — read these, never ``getattr`` the fields
+#
+# The three ``_addressed_keys`` / ``_order_resolved`` / ``_late_bare_keys`` fields
+# above are ENGINE state that happens to live on the marker, because the marker is
+# the only thing that survives between the passes that write and read them. Every
+# reader is handed a value that may NOT be a Fluid — a bare type, a live instance,
+# a plain dict — so each read needs a default, and the defaults were being restated
+# at each call site as an inline ``getattr(x, "_field", ...)``. Three loose copies
+# of a contract is how they drift; these accessors are the one place each default
+# is written down.
+#
+# Anything reading this state MUST go through these. A new field belongs here too.
+# --------------------------------------------------------------------------- #
+
+
+def addressed_keys_of(obj: Any) -> Optional[FrozenSet[str]]:
+    """Which kwargs were ADDRESSED at ``obj``, or ``None`` if it never met a document.
+
+    ``None`` is not "no addressed keys" — it means the marker was never merged
+    against a document (hand-built, or a direct ``flow(marker)``), so every kwarg
+    it carries is its own. Callers must keep the two apart.
+    """
+    keys: Optional[FrozenSet[str]] = getattr(obj, "_addressed_keys", None)
+    return keys
+
+
+def is_order_resolved(obj: Any) -> bool:
+    """Whether ``obj``'s kwargs have been through the engine's ORDERED merge.
+
+    False for anything that is not a marker, and for a marker that has not yet met
+    ``_prepare_kwargs`` — in both cases no position contest has been settled, so a
+    caller must not assume one.
+    """
+    return bool(getattr(obj, "_order_resolved", False))
+
+
+def late_bare_keys_of(obj: Any) -> Dict[str, FrozenSet[str]]:
+    """Per dict-valued kwarg of ``obj``, the bare keys positioned AFTER it.
+
+    Empty for anything that is not a marker and for a marker with no dict-valued
+    kwargs — which is the overwhelmingly common case, so this stays allocation-free.
+    """
+    late: Optional[Dict[str, FrozenSet[str]]] = getattr(obj, "_late_bare_keys", None)
+    return late or {}
 
 
 def format_yaml_loc(obj: Any) -> str:
