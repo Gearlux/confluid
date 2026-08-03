@@ -830,11 +830,14 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
       constructor with the dependencies as ``__init__``-body slots, taken to its
       limit of no parameters at all.
 
-    A ``*args`` (VAR_POSITIONAL) parameter is EXCLUDED: its name can never be
-    passed by keyword, so keeping it would let a config key that happens to
-    match it (``loaders`` for ``DataLoaders(*loaders, …)``) through the filter
-    and into a ``TypeError`` from the call itself. Those inputs arrive as
-    ``flow()``'s positional runtime args instead.
+    ``*args`` (VAR_POSITIONAL) and POSITIONAL_ONLY parameters are both EXCLUDED,
+    for one reason: their names can never be passed by keyword, so keeping them
+    would let a config key that happens to match one (``loaders`` for
+    ``DataLoaders(*loaders, …)``; ``k`` for ``__init__(self, k, /)``) through the
+    filter and into a ``TypeError`` from the call itself. A ``*args`` input arrives
+    as one of ``flow()``'s positional runtime args instead; a positional-only
+    parameter falls through to a post-init ``setattr``, which is what
+    ``configure()`` has always done for it — so both paths now agree.
 
     A ``**kwargs`` (VAR_KEYWORD) parameter is deliberately KEPT, and the
     asymmetry with ``*args`` is load-bearing rather than an oversight: its
@@ -859,7 +862,8 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
         return {
             p.name
             for p in sig.parameters.values()
-            if p.name not in ("self", "cls") and p.kind is not inspect.Parameter.VAR_POSITIONAL
+            if p.name not in ("self", "cls")
+            and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.POSITIONAL_ONLY)
         }
     except (ValueError, TypeError):
         return _UNKNOWN_PARAMS
@@ -1000,7 +1004,14 @@ def _apply_post_init_attrs(
                 continue
             if getattr(member, "__confluid_ignore__", False):
                 continue
-            existing = instance.__dict__.get(k)
+            # A ``__slots__`` / immutable target has no ``__dict__`` and may refuse the
+            # attribute outright. "Last path that fits wins": the constructor was the
+            # earlier path and did not take this key, so a setattr is the only one left —
+            # and if it does not fit either, say so HERE, naming the key, the target and
+            # the YAML position. Letting the raw ``AttributeError`` out reports
+            # ``'S' object has no attribute '__dict__'`` from a line the author never
+            # wrote, which points at the engine instead of at their config.
+            existing = getattr(instance, "__dict__", {}).get(k)
             if isinstance(v, Fluid) and not isinstance(v, Lazy):
                 if type(v) is Class and isinstance(existing, Lazy):
                     logger.warning(
@@ -1041,7 +1052,21 @@ def _apply_post_init_attrs(
                 tuned._order_resolved = True
                 logger.trace(f"slot-tune: {k!r} -> {existing.target} merged {sorted(v)} into the deferred marker")
                 v = tuned
-            setattr(instance, k, v)
+            try:
+                setattr(instance, k, v)
+            except AttributeError as exc:
+                # No path fits: the constructor did not take this key and the object
+                # refuses the attribute (``__slots__`` without a matching slot, a frozen
+                # dataclass, a C type). Raise WHERE the config can be seen — the raw
+                # AttributeError names ``__dict__`` or a read-only field and reads as an
+                # engine fault rather than a misconfigured key.
+                loc = format_yaml_loc(obj)
+                raise ConstructionError(
+                    f"{getattr(target, '__name__', target)} cannot accept {k!r}"
+                    f"{f' (set at {loc})' if loc else ''}: it is not a constructor "
+                    f"parameter and the object does not allow the attribute to be set "
+                    f"({exc}). Add it to the constructor, or remove it from the config."
+                ) from exc
             extra_keys.append(k)
     try:
         instance.__confluid_extra__ = extra_keys

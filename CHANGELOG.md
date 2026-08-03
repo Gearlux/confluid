@@ -67,6 +67,29 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Positional-only constructor parameters are configurable.** `def __init__(self,
+  k, /)` rejected every document path with a `ConstructionError` while
+  `configure()` set it fine — the same engine/configurator split, from the same
+  cause as `*args`: a name that can never be passed by keyword was left in the
+  constructor-kwarg filter, so a matching config key reached the call and Python
+  refused it. Both kinds are now excluded; the value arrives as a post-init
+  attribute, which is what the post-construction path always did.
+
+- **A target that can accept a key nowhere now says so.** An addressed key aimed at
+  a `__slots__` class with no matching slot (or any object refusing the attribute)
+  escaped as a raw `AttributeError` — `'S' object has no attribute '__dict__'`,
+  from a line the author never wrote. It is now a located `ConstructionError`
+  naming the key, the target and the YAML position, and saying what to do:
+
+  ```
+  ConstructionError: S cannot accept 'k' (set at config.yaml:4:3): it is not a
+  constructor parameter and the object does not allow the attribute to be set.
+  Add it to the constructor, or remove it from the config.
+  ```
+
+  A *bare* key nothing declares is still dropped silently — it was aimed at the
+  whole document, so a node that cannot take it is the normal case, not a mistake.
+
 - **A zero-parameter constructor is configurable again.** A `@configurable` class
   whose `__init__` takes no parameters at all died on any config key:
 
