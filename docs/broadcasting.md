@@ -211,6 +211,47 @@ elif accepts_broadcast(cls, key):
     marker.kwargs[key] = value   # the class declares it — an argument is correct
 ```
 
+## Deferred (`!lazy:`) slots are configured, not skipped
+
+A slot that needs a runtime argument is declared deferred, typically in code:
+
+```python
+@configurable
+class Trainer:
+    def __init__(self, model=None) -> None:
+        self.model = model
+        # cannot be built yet — `params=` only exists once the model does
+        self.optimizer: Lazy[Optimizer] = LazyClass(AdamW, lr=1e-4, weight_decay=0.05)
+
+    def configure_optimizers(self):
+        return flow(self.optimizer, params=self.model.parameters())
+```
+
+Being deferred means confluid will not **build** it. It does not mean confluid
+will not **configure** it — merging keys into a marker's `kwargs` constructs
+nothing. So all three spellings reach it, and the marker stays deferred:
+
+```yaml
+lr: 0.5                     # bare — cascades like any other key
+
+trainer: !class:Trainer()
+  optimizer:                # a block TUNES the marker ...
+    lr: 0.5                 # ... `weight_decay: 0.05` survives untouched
+  optimizer.lr: 0.5         # the dotted form, same effect
+```
+
+Two points worth knowing:
+
+- **A block merges, it does not replace.** `optimizer: {lr: 0.5}` keeps every
+  kwarg you did not mention. To replace the marker outright — a different
+  optimizer class, say — write one: `optimizer: !lazy:torch.optim.SGD(lr=0.5)`.
+  That form starts from scratch, so restate what you need.
+- **A kwarg you write in the document wins over a bare key.** `lr: 1e-4` set in
+  *code* is a default and a bare `lr:` overrides it, exactly as it would override
+  a constructor default. But `optimizer: !lazy:AdamW(lr=0.5)` written in the
+  *document* is you addressing that node, and a bare `lr:` elsewhere leaves it
+  alone.
+
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 
 Broadcasting discovers post-init body attributes (`self.loss_fn = …` inside
