@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-import confluid.engine as engine_module
+import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 from confluid import configurable, flow, load, materialize
 from confluid.engine import _get_acceptable_keys, _get_post_init_attrs
 from confluid.introspect import init_source_available

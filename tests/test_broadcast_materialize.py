@@ -219,7 +219,7 @@ def test_unregistered_class_broadcast_filtering() -> None:
 def test_broadcast_into_body_assigned_class_attribute() -> None:
     """Broadcasting reaches Class attrs assigned in __init__'s body.
 
-    Mirrors the Marainer Trainer pattern: deferred injection points are
+    Mirrors the Matrainer Trainer pattern: deferred injection points are
     assigned inside __init__ rather than pre-declared in the constructor
     signature. The broadcaster must reach them just like it does for
     constructor defaults.

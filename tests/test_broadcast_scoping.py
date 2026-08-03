@@ -666,7 +666,7 @@ def test_var_keyword_class_receives_every_bare_key(monkeypatch: pytest.MonkeyPat
     broadcasts in. The permissive path announces itself once at TRACE."""
     from types import SimpleNamespace
 
-    import confluid.engine as engine_module
+    import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 
     traces: List[str] = []
     real_logger = engine_module.logger

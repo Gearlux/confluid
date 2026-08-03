@@ -337,7 +337,7 @@ def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
     the root until disambiguation is reached.
 
     Used by display/logging layers (``liquifai.report.show_configuration``,
-    the marainer hyperparameter logger) that want to surface paths without
+    the matrainer hyperparameter logger) that want to surface paths without
     the noisy root-class prefix unless it is needed to tell two values apart.
     """
     display_map: Dict[str, str] = {}

@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List
 
 import pytest
 
-import confluid.engine as engine_module
+import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 import confluid.introspect as introspect_module
 from confluid import flow, load
 from confluid.bake import bake_broadcast_attrs, baked_module_path, main, render_baked_module, scan_package

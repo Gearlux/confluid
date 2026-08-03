@@ -8,6 +8,28 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — 2026-08-01
 
+### Changed
+
+- **`confluid.state` and `confluid.broadcast` split out of `confluid.engine`.**
+  The layering is now `fluid → state → broadcast → engine → loader`. `broadcast`
+  owns the one precedence rule and its machinery — scope tags, the tagged view,
+  the ordered merge, the child-view splice, the accept-lists, and the three
+  `accepts_*` predicates; `state` holds the engine ContextVar and exists so
+  `broadcast` can read the ambient report without importing the engine.
+
+  The reason is not file size. The rule was implemented twice — in `engine` and,
+  over live objects, in `configurator` — and the two copies diverged four separate
+  ways, three of them silently. One module both callers import is what stops the
+  fifth. `broadcast` deliberately materializes nothing, which is what keeps the
+  dependency one-directional.
+
+  **No import you have breaks.** Every moved name is re-exported from
+  `confluid.engine`, so `from confluid.engine import accepts_key` (and the
+  internal `_prepare_kwargs` / `active_context` / … spellings) keeps working. New
+  code should import from the real home. One caveat for test suites: broadcast
+  diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
+  target that module.
+
 ### Fixed
 
 - **Precedence is document order for EVERY spelling, not just some.** Confluid has

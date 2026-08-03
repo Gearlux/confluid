@@ -65,7 +65,7 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         report; otherwise a fresh report is returned and its unused-keys
         DEBUG summary logged here.
     """
-    from confluid.engine import _active_report
+    from confluid.state import _active_report
 
     ambient = _active_report()
     report = ambient if ambient is not None else ConfigurationReport()
@@ -215,7 +215,7 @@ def _tune_deferred(
     A kwarg the marker already carries and that nothing beat is left alone only when
     the bare key lost; otherwise last-spec-wins applies and the bare key overwrites.
     """
-    from confluid.engine import _broadcast_blocked_keys, _get_acceptable_keys, _KeyScope, _scope_of
+    from confluid.broadcast import _broadcast_blocked_keys, _get_acceptable_keys, _KeyScope, _scope_of
     from confluid.registry import resolve_class
 
     target_cls = marker.target if isinstance(marker.target, type) else resolve_class(marker.target)
@@ -257,7 +257,13 @@ def _apply(
     if not isinstance(instance_name, str):
         instance_name = None
 
-    from confluid.engine import _broadcast_blocked_keys, _expand_block_keys, _get_acceptable_keys, _KeyScope, _scope_of
+    from confluid.broadcast import (
+        _broadcast_blocked_keys,
+        _expand_block_keys,
+        _get_acceptable_keys,
+        _KeyScope,
+        _scope_of,
+    )
 
     acceptable = _get_acceptable_keys(cls)
     own_attrs = {k for k in vars(obj) if not k.startswith("_")}
@@ -516,7 +522,7 @@ def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) 
     * inherited STRICT entries and ``'*'`` glob blocks are dropped — their
       one level is spent at this object.
     """
-    from confluid.engine import _KeyScope, _scope_of, _View
+    from confluid.broadcast import _KeyScope, _scope_of, _View
 
     block_keys = {cls_name, instance_name} - {None}
     has_block = any(
@@ -559,7 +565,7 @@ def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) 
 
 def _hoist_routing_from(out: Any, block: Dict[str, Any], instance_name: Optional[str]) -> None:
     """Hoist a matched block's routing contents ('**'/'*'/named sub-blocks) into ``out``."""
-    from confluid.engine import _expand_block_keys, _KeyScope
+    from confluid.broadcast import _expand_block_keys, _KeyScope
 
     for bk, bv in _expand_block_keys(block).items():
         if bk == instance_name and isinstance(bv, dict):
@@ -579,7 +585,7 @@ def _hoist_routing_from(out: Any, block: Dict[str, Any], instance_name: Optional
 
 
 def _hoist_strict(out: Any, key: str, block: Dict[str, Any]) -> None:
-    from confluid.engine import _KeyScope, _scope_of
+    from confluid.broadcast import _KeyScope, _scope_of
 
     prev = out.get(key)
     if isinstance(prev, dict) and _scope_of(out, key) is _KeyScope.STRICT:
@@ -595,7 +601,7 @@ def _spliced_at(view: Dict[str, Any], key: str, sub_block: Dict[str, Any]) -> Di
     (later than earlier broadcasts → they win for the child, as authored).
     The entries are ADDRESSED — consumed by that one child, spent below it.
     """
-    from confluid.engine import _KeyScope, _scope_of, _View
+    from confluid.broadcast import _KeyScope, _scope_of, _View
 
     out = _View()
     placed = False

@@ -155,7 +155,7 @@ def test_deferred_instance_marker_flow() -> None:
 class BodyAssigned:
     """Post-construction attr: ``self.nested = Class(Engine)`` — no ctor param for it.
 
-    Mirrors the Marainer Trainer pattern where nested deferred objects are
+    Mirrors the Matrainer Trainer pattern where nested deferred objects are
     assigned inside __init__ rather than declared in the signature.
     """
 

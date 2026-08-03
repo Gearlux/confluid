@@ -22,7 +22,7 @@ from confluid.loader import _get_acceptable_keys, _get_post_init_attrs
 
 @configurable
 class _Trainerish:
-    """Mirrors the marainer.Trainer pattern: ctor has ``model`` only, but the
+    """Mirrors the matrainer.Trainer pattern: ctor has ``model`` only, but the
     body wires several post-init attributes that users may want to override."""
 
     def __init__(self, model: str = "default_model") -> None:
