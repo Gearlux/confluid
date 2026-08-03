@@ -10,6 +10,31 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`accepts_any_key(target)` — the third settability predicate.** `accepts_key`
+  and `accepts_broadcast` answer *"may this key land here?"*; this one answers
+  the prior question, *"does this target discriminate between keys at all?"*. It
+  is `True` for a `**kwargs` constructor, where both of the others return `True`
+  for **every** key — including keys the class has never heard of.
+
+  ```python
+  class Forwards:
+      def __init__(self, **kwargs): ...
+
+  accepts_key(Forwards, "run_name")   # True — it cannot refuse it ...
+  accepts_any_key(Forwards)           # True — ... because it has no accept-list
+  ```
+
+  An external config front-end needs the difference to decide how to *deliver* a
+  key: writing it into a marker's own kwargs is the ADDRESSED channel, so it
+  becomes a **constructor argument**, and that claim is only justified when the
+  class declares the key. One a target merely cannot refuse must be left to
+  cascade, landing as a post-init attribute — the same split `flow()` already
+  applies to a document's own keys. Without the distinction, a CLI `--run_name x`
+  reaches a metric's constructor and a strict library rejects a keyword it never
+  asked for, from a call site nowhere near the config. See
+  [docs/broadcasting.md](docs/broadcasting.md) → "Declaring a key vs being unable
+  to refuse it".
+
 - **`flow(node, *args, **kwargs)` — positional runtime injection.** A marker
   carries keyword arguments only (that is all a YAML tag can express), but the
   constructor being deferred is somebody else's, and a variadic signature has no

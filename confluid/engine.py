@@ -1052,6 +1052,48 @@ def accepts_broadcast(target: Any, key: str) -> bool:
     return key not in blocked
 
 
+def accepts_any_key(target: Any) -> bool:
+    """True if ``target`` has NO accept-list, so it cannot refuse any key.
+
+    The two predicates above answer "may this key land here?"; this one answers the
+    prior question "does this target discriminate between keys at all?". It is True
+    for a ``**kwargs`` constructor (and for the rarer target whose signature cannot
+    be read), where :func:`accepts_key` and :func:`accepts_broadcast` return True for
+    EVERY key — including keys the target has never heard of.
+
+    An external front-end needs that distinction, because "the class declares this
+    key" and "the class cannot refuse this key" justify different deliveries: only
+    the first says the key was aimed here, and therefore only the first may be
+    written into a marker's own kwargs, which is the ADDRESSED channel — a
+    constructor argument. A key that merely fits through a ``**kwargs`` signature
+    must be left to cascade as a BARE key and land as a post-init attribute, which
+    is the same split :func:`flow` applies to a document's own keys (see
+    docs/broadcasting.md → "Classes with ``**kwargs`` constructors"). Skipping this
+    check is how a CLI ``--run_name x`` reached a metric's constructor and raised
+    ``Unexpected keyword arguments`` from inside a library that never asked for it.
+
+    An unresolvable target is False — it accepts nothing, not everything, matching
+    :func:`accepts_key`.
+
+    Example::
+
+        class Declares:
+            def __init__(self, lr: float = 0.1) -> None: ...
+
+        class Forwards:
+            def __init__(self, **kwargs: Any) -> None: ...
+
+        accepts_key(Declares, "run_name")        # False — nothing to set
+        accepts_key(Forwards, "run_name")        # True  — cannot refuse it
+        accepts_any_key(Declares)                # False — it has an accept-list
+        accepts_any_key(Forwards)                # True  — it has none
+    """
+    cls = _settability_target(target)
+    if cls is None:
+        return False
+    return _get_acceptable_keys(cls) is None
+
+
 def _settability_target(target: Any) -> Any:
     """Normalize a class / instance / dotted-name into the class to introspect."""
     if target is None:

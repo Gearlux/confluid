@@ -6,7 +6,7 @@ last write wins), addressed keys stopping exactly at their node, the ``*`` /
 ``NoBroadcast[str]`` marker and the class-level
 ``@configurable(broadcast=False)``), the ``**kwargs``-constructor caveat
 (an unknowable accept-list broadcasts permissively), and the two public
-predicates (``accepts_key`` / ``accepts_broadcast``) that let code outside a
+predicates (``accepts_key`` / ``accepts_broadcast`` / ``accepts_any_key``) that let code outside a
 YAML document ask the same question the engine asks.
 
 For the same rules applied at scenario scale — a four-level service tree
@@ -16,7 +16,7 @@ configured with zero parameter-threading code — see
 
 from typing import Any, Optional
 
-from confluid import NoBroadcast, accepts_broadcast, accepts_key, configurable, load
+from confluid import NoBroadcast, accepts_any_key, accepts_broadcast, accepts_key, configurable, load
 
 
 @configurable
@@ -182,7 +182,17 @@ def settability_predicates() -> None:
     assert accepts_broadcast(Passthrough, "anything_at_all")
     assert not accepts_key(Transform, "typo")
 
+    # DECLARING a key is not the same as being unable to REFUSE it, and the two
+    # above cannot tell them apart: both say yes to every key on a **kwargs class.
+    # A front-end needs the difference to decide HOW to deliver the key — writing
+    # it into a marker's own kwargs makes it a CONSTRUCTOR ARGUMENT, which is only
+    # justified when the class actually declares it.
+    assert accepts_key(Passthrough, "run_name"), "it cannot refuse the key ..."
+    assert accepts_any_key(Passthrough), "... precisely because it has no accept-list"
+    assert not accepts_any_key(Transform), "a declared signature IS an accept-list"
+
     print("predicates: Reporter.strength addressed=True bare=False; Transform.name bare=False")
+    print("predicates: Passthrough has no accept-list (accepts_any_key=True) — deliver bare, never as an argument")
 
 
 if __name__ == "__main__":

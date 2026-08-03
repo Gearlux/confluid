@@ -19,6 +19,7 @@ from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
 from confluid.engine import (
+    accepts_any_key,
     accepts_broadcast,
     accepts_key,
     active_context,
@@ -135,6 +136,7 @@ __all__ = [
     "discover_dimensions",
     "accepts_key",
     "accepts_broadcast",
+    "accepts_any_key",
     "ValidationMode",
     "ValidationPolicy",
     "get_policy",

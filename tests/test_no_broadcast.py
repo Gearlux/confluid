@@ -13,6 +13,7 @@ import pytest
 
 from confluid import (
     NoBroadcast,
+    accepts_any_key,
     accepts_broadcast,
     accepts_key,
     configurable,
@@ -221,6 +222,40 @@ def test_accepts_key_is_true_for_kwargs_constructor() -> None:
     """A **kwargs ctor makes the accept-list unknowable -> accept everything."""
     assert accepts_key(_PredicateKwargs, "whatever")
     assert accepts_broadcast(_PredicateKwargs, "whatever")
+
+
+def test_accepts_any_key_separates_declaring_from_being_unable_to_refuse() -> None:
+    """The distinction the other two predicates cannot express.
+
+    Both return True for EVERY key on a `**kwargs` target, so a caller asking
+    "may this land?" gets the same yes whether the class declared the key or
+    merely has no way to say no. An external front-end deciding whether a key was
+    ADDRESSED here needs the difference — see docs/broadcasting.md.
+    """
+    assert accepts_key(_PredicateKwargs, "run_name")  # cannot refuse it ...
+    assert accepts_any_key(_PredicateKwargs)  # ... precisely because it has no accept-list
+
+    assert not accepts_key(_PredicateBodySlot, "run_name")  # nothing to set
+    assert not accepts_any_key(_PredicateBodySlot)  # it has an accept-list
+
+
+def test_accepts_any_key_normalizes_like_its_siblings() -> None:
+    """Same target normalization, and an unresolvable target accepts NOTHING."""
+    assert accepts_any_key(_PredicateKwargs())  # a live instance
+    assert not accepts_any_key("no.such.ClassAnywhere")
+    assert not accepts_any_key(None)
+
+
+def test_accepts_any_key_matches_what_the_constructor_actually_receives() -> None:
+    """Drift pin: the predicate answers the question the engine acts on.
+
+    A bare key reaches a declaring class's CONSTRUCTOR and a `**kwargs` class's
+    ATTRIBUTES, which is exactly the split `accepts_any_key` reports.
+    """
+    doc = load("a: 42\nslot: !class:_PredicateBodySlot()\nkw: !class:_PredicateKwargs()\n")
+    assert doc["slot"].a == 42  # declared -> a constructor argument
+    assert doc["kw"].kw == {}  # no accept-list -> NOT a constructor argument ...
+    assert doc["kw"].a == 42  # ... a post-init attribute instead
 
 
 def test_accepts_key_normalizes_class_instance_and_dotted_name() -> None:
