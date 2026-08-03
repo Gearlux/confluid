@@ -391,3 +391,84 @@ a script keys as `__main__.Name`, which is meaningless to any other process.
 Always-dotted additionally costs readability in every dumped document and breaks the explicit pin
 that a unique name round-trips as itself. Reopen this only with evidence that namesake collisions
 outnumber refactors in practice — the measurement above, not intuition, is what should move it.
+
+---
+
+## 5. Deferral withholds construction, not configuration
+
+*2026-08-03*
+
+**Context.** Some dependencies cannot be built when the config is read, because an argument they
+need does not exist yet. The canonical one is an optimizer: it takes the model's parameters, and
+the model is built by the same pass that would build the optimizer. A config engine that
+instantiates everything it finds cannot express that object at all — it either constructs it
+without the argument (wrong, and the failure lands far away, at first use) or forces the
+dependency out of the config entirely, taking every knob beside it (`lr`, `weight_decay`) with it.
+
+So there has to be a way to say "this one is built later, by its owner". That is `!lazy:` in YAML
+and `Lazy[T]` / `LazyClass(...)` in Python.
+
+The subtlety, and the thing that was wrong for a long time, is what "later" is allowed to defer.
+Deferring construction is the point. Deferring *configuration* looks like the same thing and is
+not: a marker's kwargs are a plain mapping, so merging a key into them **builds nothing**. The
+two statements are independent, and conflating them made a slot that a consumer declared in
+code — `self.optimizer = LazyClass(AdamW, lr=1e-4)` — unreachable from configuration entirely.
+Every spelling failed, and the run trained at the hard-coded rate and reported nothing.
+
+**Decision.** Deferral withholds **construction only**. A deferred marker is broadcast into,
+addressed, tuned and ordered exactly like an eager one; the single thing withheld is the terminal
+build.
+
+Three rules follow, and they are load-bearing together:
+
+1. **Nothing auto-builds a `Lazy`.** Not the recursive descent of a materialization pass, not the
+   post-init attribute step, not an external deep-flow walker. A bare `Class` stub in the same
+   position *is* built eagerly — that difference is the whole distinction between the two markers,
+   and it is why a slot needing a runtime argument must be `!lazy:` and not `!class:`.
+2. **An explicit `flow()` builds it, deliberately.** `flow()` means "build this now", so the
+   owner calls it when it has the missing piece. The Lazy-ness defers *automatic* construction,
+   never a direct request.
+3. **It is configured like anything else.** Broadcast keys merge into its kwargs; a mapping
+   addressed at its slot tunes it rather than replacing it; a kwarg set in code is a default and
+   loses to a later document key, exactly as a constructor default does.
+
+**Consequences.**
+
+- The knobs beside the runtime argument stay in configuration. That is the whole return: `lr`
+  is tunable from YAML and from a CLI override even though the object cannot be built yet.
+- A slot's declaration is a promise about *timing*, not about reachability. A reader seeing
+  `LazyClass(...)` in an `__init__` body knows it is built later, not that it is beyond config.
+- `solidify()` must be idempotent, because an owner may flow the same slot more than once.
+- The cost: the object does not exist until someone flows it, so an error in its construction
+  surfaces at that call rather than at load. That is inherent — the argument genuinely is not
+  available earlier — and it is why the deferred target should still be cheap to build once its
+  input arrives.
+
+**Example.**
+
+```python
+@configurable
+class Trainer:
+    def __init__(self) -> None:
+        self.optimizer = LazyClass(Optimizer, lr=1e-4)   # a default, not a decision
+
+trainer = load("lr: 0.5\nt: !class:Trainer()\n")["t"]
+type(trainer.optimizer)            # Lazy — the pass did NOT build it
+trainer.optimizer.kwargs           # {"lr": 0.5} — but it DID configure it
+flow(trainer.optimizer)            # ValueError: Optimizer needs params
+flow(trainer.optimizer, params=p)  # built, at lr=0.5, when the owner has the model
+```
+
+The third and fourth lines are the record in miniature: the same marker is fully configured and
+still unbuildable, and only the caller that holds `params` can finish it.
+
+**What you may change.** Not rule 1, and specifically not by re-adding an early return for
+`Lazy` in the kwarg-resolution path. That is the shape the original bug had: it read as "leave
+deferred values alone", which is right about building and wrong about configuring, and the
+result was that an identical marker behaved differently depending on whether it was written in a
+document or created in code. If a future change needs a value left entirely untouched, that is a
+*different* marker with a different name — do not overload this one.
+
+Rule 2's asymmetry with rule 1 is deliberate and worth keeping explicit: automatic walkers skip a
+`Lazy`, a direct `flow()` does not. Making `flow()` also skip it would leave no way to build the
+object at all.
