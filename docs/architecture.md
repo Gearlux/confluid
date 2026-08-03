@@ -285,3 +285,93 @@ controls the decorator does (``broadcast=False``, ``broadcast_attrs=[...]``). A 
 own is precisely the one you cannot fix by declaring parameters or adding a decorator, so
 withholding those controls from ``register()`` had it backwards.
 
+---
+
+## 4. A registered name may map to more than one class
+
+*2026-08-03*
+
+**Context.** The registry was a flat `name -> class` dict. A second registration under a name
+already taken silently replaced the first: the displaced class vanished from every picker, and
+*which* one survived depended on import order — so the same program could resolve a name
+differently between runs for reasons nothing in the config could express.
+
+Two real shapes hit this, and they are not exotic:
+
+- **The same operation per engine.** One name, two implementations, distinguished by the
+  presentation/engine tag they already carry.
+- **A library publishing one name in two roles.** Several well-known loss functions are exported
+  under identical names as both a *loss* and a *metric*. Registering both spellings replaced each
+  loss with its metric namesake — invisibly, since both are legitimate configurables for the same
+  task.
+
+The naive fix — "make the name unique by convention" — pushes the problem onto every author and
+fails for classes you do not own, which is exactly where the collisions come from.
+
+**Decision.** A name maps to a **list of entries**, and the discriminator is the **full tag
+tuple**, never one privileged axis:
+
+    _entries: Dict[str, List[_ClassEntry]]   # name -> registrations, in order
+    _by_key:  Dict[str, _ClassEntry]         # canonical dotted key -> entry (unique by construction)
+
+Three decisions inside that shape carry the design:
+
+1. **The five reverse indices store entry KEYS, not names.** A name becomes ambiguous at the
+   *second* registration — an index keyed by name would have to be rewritten across five dicts at
+   that moment. An entry key never changes, so the ambiguity is resolved on *read* instead
+   (`_public_key`: the bare name while it is unique, the dotted key once it is shared).
+2. **`list_classes()` always returns something `get_class()` accepts.** That is the contract the
+   enumerate-then-look-up idiom rests on; breaking it does not raise, it silently empties pickers.
+   So the returned identifier changes shape when a name becomes shared, rather than becoming
+   invalid.
+3. **A bare lookup of a shared name raises `AmbiguousClassError`** — a *sibling* of
+   `UnknownClassError`, not a subclass. Code that catches "unknown" to fall back to an import
+   must not swallow "ambiguous": the first means *try something else*, the second means *say
+   which one*. Making it a subclass would have turned a question into a silent wrong answer.
+
+**Consequences.**
+
+- Ambiguity is disambiguated in config without spelling out a module path, via a tag selector
+  on the target (`@axis=value`), resolved at flow time so it also works for a target nested
+  inside another marker's kwargs.
+- `key_for(cls)` is computed live, never stamped. A name becomes ambiguous when the first class
+  is already registered, so a stamp taken at registration time would be stale exactly when it
+  matters. The dumper asks it, so a round-trip reloads *this* class rather than a namesake.
+- **A cost, and it is real:** an identifier's spelling depends on global registry state at the
+  moment it is read. A document written while a name was unique holds the bare name; if an
+  unrelated package later registers a namesake, that document now names an ambiguous class and
+  raises. The trade was made knowingly — always emitting dotted keys would cost readability in
+  every document to protect against a collision most never see — but a consumer that persists
+  configs for a long time should know it exists.
+- Clobbering is now a spectrum rather than a silent overwrite: the same class object re-registers
+  silently (a snapshot restore does that on every bootstrap), a genuinely different class with
+  *identical* tags warns and last-write-wins, and anything with a differing tag coexists.
+
+**Example.**
+
+```python
+@configurable(task="classification", role="loss", framework="torch")
+class Hinge: ...
+
+@configurable(name="Hinge", task="classification", role="metric", framework="torch")
+class HingeMetric: ...
+
+get_class("Hinge")                 # AmbiguousClassError, listing both with their tags
+get_class("Hinge", role="metric")  # -> HingeMetric
+```
+
+```yaml
+loss:   !class:Hinge@role=loss
+metric: !class:Hinge@role=metric
+```
+
+**What you may change.** Not the discriminator. It is the full tag tuple because the two real
+collision shapes differ on *different* axes — picking either one as "the" disambiguator solves
+half the problem and looks finished.
+
+Not the `AmbiguousClassError` / `UnknownClassError` sibling relationship, for the reason above.
+
+The persistence trade-off in the third consequence is genuinely open: emitting the dotted key
+unconditionally from `dump()` would make written configs immune to future namesakes, at the cost
+of readability everywhere. If long-lived stored configs become a primary use case, that balance
+should be revisited — and the decision recorded here rather than made implicitly.
