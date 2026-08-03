@@ -20,6 +20,7 @@ from confluid import (
     configure,
     load,
     no_broadcast_param_names,
+    register,
 )
 
 # No per-file registry clear: the module-level @configurable classes below must
@@ -284,3 +285,46 @@ def test_accepts_broadcast_matches_what_materialization_actually_does() -> None:
     assert doc["opted"].size == 1  # accepts_broadcast(OptedOut, "size") is False
     assert doc["marked"].name == "default"  # accepts_broadcast(MarkedParam, "name") is False
     assert doc["marked"].strength == 2.0  # accepts_broadcast(MarkedParam, "strength") is True
+
+
+# --- register() carries the same accept-list controls as @configurable ------ #
+
+
+def test_register_can_opt_a_third_party_class_out_of_broadcasting() -> None:
+    """`register(cls, broadcast=False)` must work, because you cannot decorate a class you don't own.
+
+    The accept-list controls existed only on `@configurable`, so a class you own
+    could be shielded from cascade keys and a third-party one could not — exactly
+    backwards. A library constructor taking `**kwargs` has NO accept-list, so
+    confluid errs permissive and every bare key in the document reaches it; its
+    author never chose that, having never seen confluid. `register` is the only
+    place the person wiring it up can say otherwise.
+    """
+
+    class ThirdParty:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    register(ThirdParty, name="ThirdPartyPinned", broadcast=False)
+
+    assert accepts_key(ThirdParty, "lr"), "an addressed block must still reach it"
+    assert not accepts_broadcast(ThirdParty, "lr"), "a bare key must not cascade in"
+
+
+def test_register_can_declare_body_slots_for_a_third_party_class() -> None:
+    """`register(cls, broadcast_attrs=[...])` — the frozen-deployment escape hatch.
+
+    Body slots are found by AST-scanning `__init__` SOURCE, which is absent in
+    compiled / frozen / zip deployments. The declaration is the documented fix and
+    was reachable only through the decorator, so a class you don't own had no fix
+    at all. Declared names UNION with the scan, so this can never lose one.
+    """
+
+    class ThirdPartyBody:
+        def __init__(self) -> None:
+            self.scanned = 1
+
+    register(ThirdPartyBody, name="ThirdPartyBodyPinned", broadcast_attrs=["declared_only"])
+
+    assert accepts_key(ThirdPartyBody, "declared_only"), "the declaration reached the accept-list"
+    assert accepts_key(ThirdPartyBody, "scanned"), "and did NOT replace what the scan found"

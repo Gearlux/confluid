@@ -275,11 +275,13 @@ source at runtime and needs the build-time bake step in frozen deployments. Enco
 slot declarations in new code shrinks the reliance without removing the fallback that existing
 code depends on.
 
-One rough edge is known and deliberate: a **non-`@configurable`** class registered via
-`register()` whose constructor takes `**kwargs` has no accept-list, so every bare key in the
-document reaches it. The dangerous half is already closed — such keys land as post-init
-*attributes*, never as constructor arguments, so a strict library can no longer be called with
-whatever the document happens to contain (measured: the constructor receives `{}`). What remains
-is that unrelated top-level keys become attributes on a third-party object. Narrowing that means
-deciding whether `register()` should imply the same accept-list contract `@configurable` does —
-a real question, and a separate one from this record.
+The permissive treatment of a ``**kwargs`` constructor is deliberate and unchanged: such a
+class declares no accept-list, so confluid errs permissive and every bare key in the document
+reaches it. The dangerous half is already closed — those keys land as post-init *attributes*,
+never as constructor arguments, so a strict library can no longer be called with whatever the
+document happens to contain. What is left is a policy question, and the answer is that the
+person wiring the class up decides: ``register()`` therefore carries the same accept-list
+controls the decorator does (``broadcast=False``, ``broadcast_attrs=[...]``). A class you do not
+own is precisely the one you cannot fix by declaring parameters or adding a decorator, so
+withholding those controls from ``register()`` had it backwards.
+
