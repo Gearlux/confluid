@@ -146,6 +146,15 @@ the accept-list exists. The permissive path announces itself once per class at
 TRACE level (`accept-list unknown for <Class> (**kwargs constructor)` — see
 the trace-logging snippet above).
 
+**For a class you don't own**, neither of those is available to you — you cannot
+edit its signature and you cannot decorate it. `register()` carries the same two
+controls for exactly that reason: see
+[Discovery](discovery.md#registering-a-class-you-dont-own).
+
+```python
+register(SomeLibraryClass, name="Sink", broadcast=False)
+```
+
 ## Asking whether a key may land
 
 The rules above — the accept-list, plus the two opt-outs — are also available
