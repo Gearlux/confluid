@@ -600,7 +600,10 @@ def _flow_target(
     params = _ctor_params(target)
     if params is None:
         return obj  # class without a resolvable __init__ — leave the marker as-is
-    ctor = {k: v for k, v in merged.items() if k in params} if params else dict(merged)
+    # Filter to the declared parameters. The ONLY case that passes everything is an
+    # unreadable signature — an EMPTY set is a real answer ("takes nothing") and must
+    # filter to nothing, or a zero-parameter constructor receives every config key.
+    ctor = dict(merged) if params is _UNKNOWN_PARAMS else {k: v for k, v in merged.items() if k in params}
     if _takes_var_keyword(target):
         ctor.update(_var_keyword_extras(obj, merged, runtime_kwargs))
 
@@ -785,6 +788,21 @@ def _resolve_kwarg_value(
     return v
 
 
+class _UnknownParams(Set[str]):
+    """A set that means "the signature could not be read", not "it takes nothing".
+
+    A plain ``set()`` cannot carry that distinction, and the two need OPPOSITE
+    handling: unreadable means pass every kwarg through (best effort), while a
+    genuinely empty parameter list means pass none. Subclasses ``set`` so it stays a
+    valid ``Set[str]`` for every reader; callers tell it apart by IDENTITY against
+    :data:`_UNKNOWN_PARAMS`, never by truthiness.
+    """
+
+
+#: The single instance of :class:`_UnknownParams` — compare with ``is``.
+_UNKNOWN_PARAMS = _UnknownParams()
+
+
 def _ctor_params(target: Any) -> Optional[Set[str]]:
     """Constructor-parameter names of the target's OWN signature.
 
@@ -795,9 +813,22 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     keep only keys named ``args``/``kwargs`` — dropping EVERY real kwarg and
     silently building the function's defaults.
 
-    Returns ``None`` when a class has no ``__init__`` at all (caller leaves the
-    marker unbuilt); an un-introspectable signature returns the empty set (caller
-    passes every kwarg to the call).
+    Three outcomes, and they must stay distinguishable — conflating the last two is
+    what made a zero-parameter constructor unconfigurable:
+
+    * ``None`` — the class has no ``__init__`` at all; the caller leaves the marker
+      unbuilt.
+    * :data:`_UNKNOWN_PARAMS` — the signature could not be read, so no filtering is
+      possible and the caller passes every kwarg through as a best effort.
+    * a set (possibly EMPTY) — the signature WAS read. An empty one means the target
+      genuinely takes no parameters, so the caller must pass none. Returning a plain
+      ``set()`` for the unreadable case made those two indistinguishable, and the
+      caller's ``if params else pass-everything`` fallback then fired for
+      ``def __init__(self)`` — handing every config key to a constructor that accepts
+      none (``TypeError: ZeroArg.__init__() got an unexpected keyword argument``).
+      That shape is one the class-design convention actively encourages: a minimal
+      constructor with the dependencies as ``__init__``-body slots, taken to its
+      limit of no parameters at all.
 
     A ``*args`` (VAR_POSITIONAL) parameter is EXCLUDED: its name can never be
     passed by keyword, so keeping it would let a config key that happens to
@@ -831,7 +862,7 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
             if p.name not in ("self", "cls") and p.kind is not inspect.Parameter.VAR_POSITIONAL
         }
     except (ValueError, TypeError):
-        return set()
+        return _UNKNOWN_PARAMS
 
 
 def _takes_var_keyword(target: Any) -> bool:

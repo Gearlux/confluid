@@ -123,15 +123,22 @@ def test_every_docs_page_is_listed_in_the_readme_index() -> None:
     assert not (present - listed), f"docs pages missing from the README index: {sorted(present - listed)}"
 
 
-def test_the_slug_rule_matches_a_heading_this_repo_actually_has() -> None:
-    """Guard the slug helper itself — a wrong rule would pass every test above vacuously.
+def test_the_slug_rule_matches_githubs() -> None:
+    """Guard the slug helper itself — a wrong rule makes every test above vacuous.
 
-    If `_slug` silently stopped stripping punctuation, every anchor would fail to
-    match and the tests would report dead links everywhere; if it over-stripped, they
-    would match nothing and pass. This pins it against a real heading with an
-    apostrophe, which is the case that motivated the rule.
+    If `_slug` stopped stripping punctuation, every anchor would fail to match and
+    the suite would report dead links everywhere; if it over-stripped, nothing would
+    match and everything would pass. Either way the failure is in the helper the
+    other tests trust, so it needs assertions that do not depend on them.
+
+    Deliberately literal rather than read from this repo's headings: the same file
+    is used across projects, and a fixture that names a particular page would make
+    it non-portable for no gain.
+
+    The three cases are the punctuation classes that actually occur in headings —
+    an apostrophe, code backticks with parens, and a comma plus an em dash (which
+    leaves a double hyphen, matching GitHub).
     """
-    headings = _headings(_DOCS / "discovery.md")
-
-    assert "registering-a-class-you-dont-own" in headings
+    assert _slug("Registering a class you don't own") == "registering-a-class-you-dont-own"
     assert _slug("`flow()` finishes the object") == "flow-finishes-the-object"
+    assert _slug("Bare, addressed, glob — the scoping model") == "bare-addressed-glob--the-scoping-model"

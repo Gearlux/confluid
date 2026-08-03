@@ -67,6 +67,35 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A zero-parameter constructor is configurable again.** A `@configurable` class
+  whose `__init__` takes no parameters at all died on any config key:
+
+  ```python
+  @configurable
+  class Host:
+      def __init__(self) -> None:      # no parameters
+          self.slot = None             # ...but a body slot to configure
+  ```
+  ```
+  ConstructionError: Host.__init__() got an unexpected keyword argument 'slot'
+  ```
+
+  The error came from inside the class's own constructor and pointed nowhere near
+  the config that caused it. The shape is one the class-design convention actively
+  encourages — a minimal constructor with the dependencies as `__init__`-body
+  slots — taken to its limit.
+
+  `_ctor_params` returned a plain `set()` for two different states: the signature
+  could not be *read*, and the signature was read and found *empty*. Those need
+  opposite handling (pass every kwarg through as a best effort, versus pass none),
+  and the caller's truthiness fallback picked the first for both. The unreadable
+  case now returns a distinct `_UNKNOWN_PARAMS` sentinel — still an ordinary
+  `set` for every reader, told apart by identity — so an empty parameter list
+  means what it says.
+
+  Pre-existing, not introduced this cycle.
+
+
 - **Precedence is document order for EVERY spelling, not just some.** Confluid has
   one precedence rule — last spec wins — and two of the four ways to address a
   value at a deferred slot did not follow it. A mapping (`optimizer: {lr: 0.5}`)
