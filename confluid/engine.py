@@ -1735,17 +1735,26 @@ def _resolve_kwarg_value(
     A ``Lazy`` (a ``Class`` subclass) is a runtime-injection point: keep it
     deferred through materialization regardless of ``eager_classes`` — an
     explicit ``flow()`` by domain code builds it later; the auto-flow walkers
-    here must never instantiate it. ``Instance`` flows now; a ``Class`` stub
-    receives broadcasting from ``broadcast_ctx`` (with the self-broadcast and
-    Fluid-through-**kwargs guards) and stays deferred unless ``eager_classes``;
-    ``Reference`` flows when a context is active (unresolvable → kept deferred);
-    containers recurse.
+    here must never instantiate it. **It still receives broadcasting**, though,
+    because "do not BUILD it" and "do not CONFIGURE it" are different
+    statements and only the first is what deferral means: merging broadcast
+    keys into a marker's ``kwargs`` constructs nothing, which is exactly why the
+    ``Class`` branch below can do it and still hand back a deferred stub. A
+    ``Lazy`` therefore takes that same branch (it IS a ``Class``) and only the
+    terminal ``eager_classes`` flow is withheld from it.
+
+    This was a real gap until 2026-08-03: an early ``return v`` here meant a
+    ``!lazy:`` marker written in the DOCUMENT received bare keys while an
+    identical one created in an ``__init__`` BODY did not — same marker type,
+    two answers. A consumer declaring ``self.optimizer = LazyClass(AdamW,
+    lr=1e-4)`` could not be retuned by ``lr:`` (or ``--lr``) at all: the run
+    trained at the hard-coded default and reported nothing, which is the silent
+    class of failure. ``Instance`` flows now; ``Reference`` flows when a context
+    is active (unresolvable → kept deferred); containers recurse.
     """
-    if isinstance(v, Lazy):
-        return v
     if isinstance(v, Instance):
         return flow(v)
-    if isinstance(v, Class):
+    if isinstance(v, Class):  # Lazy included — it is a Class subclass
         # Apply broadcasting: pull matching keys from full context
         report = _ENGINE_STATE.get().report
         broadcasted = dict(v.kwargs)
@@ -1754,9 +1763,23 @@ def _resolve_kwarg_value(
             v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
         )
         inner_blocked = _broadcast_blocked_keys(inner_target_cls)
+        # A kwarg the DOCUMENT put on this marker is the author addressing this node,
+        # and a bare key must not overrule it. A kwarg set in CODE — a ctor default
+        # `engine: Any = Class(Engine, power=7)`, or a body slot
+        # `self.optimizer = LazyClass(AdamW, lr=1e-4)` — is a DEFAULT, and defaults are
+        # what broadcasting exists to override: a plain `def __init__(self, power=7)`
+        # already loses to a bare `power:`, so a marker kwarg holding out made WHERE the
+        # default was written decide whether config could reach it at all. That is how a
+        # consumer's optimizer became untunable — `lr:` and `--lr` both silently no-ops,
+        # the run training at the hard-coded rate and reporting nothing.
+        # `_yaml_loc` is the discriminator and needs no new bookkeeping: the loader stamps
+        # it on every marker it parses, and it is None for one built in Python.
+        authored_in_yaml = getattr(v, "_yaml_loc", None) is not None
         for bk, bv in broadcast_ctx.items():
-            if bk in broadcasted or isinstance(bv, (dict, list)):
+            if isinstance(bv, (dict, list)):
                 continue
+            if bk in broadcasted and authored_in_yaml:
+                continue  # addressed at this node in the document — bare keys lose
             if inner_blocked is None or bk in inner_blocked:
                 continue  # NoBroadcast param / broadcast=False class — bare keys never land
             if isinstance(bv, Fluid):
@@ -1783,7 +1806,10 @@ def _resolve_kwarg_value(
         v_copy = copy(v)
         v_copy.kwargs = broadcasted
         v_copy._yaml_loc = getattr(v, "_yaml_loc", None)
-        if eager_classes:
+        # A Lazy is configured like any stub but NEVER built here — the whole
+        # point of the marker is that domain code supplies the missing runtime
+        # argument later (`flow(self.optimizer, params=...)`).
+        if eager_classes and not isinstance(v, Lazy):
             return flow(v_copy)
         return v_copy
     if isinstance(v, Reference) and context:
@@ -1982,8 +2008,8 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], c
                 continue
             if getattr(member, "__confluid_ignore__", False):
                 continue
+            existing = instance.__dict__.get(k)
             if isinstance(v, Fluid) and not isinstance(v, Lazy):
-                existing = instance.__dict__.get(k)
                 if type(v) is Class and isinstance(existing, Lazy):
                     logger.warning(
                         f"Config slot {k!r} on {getattr(target, '__name__', target)} received a "
@@ -1994,6 +2020,21 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], c
                     v = Lazy(v.target, **v.kwargs)
                 else:
                     v = flow(v)
+            elif isinstance(v, dict) and isinstance(existing, Class):
+                # A mapping addressed at a slot that already holds a deferred marker
+                # TUNES that marker — it does not replace it. Assigning the raw dict
+                # was the old behaviour and it destroyed the slot silently: the
+                # canonical `optimizer: {lr: 0.5}` left a plain dict where an
+                # optimizer belonged, so the value the user set was the only thing
+                # that survived and the target class was simply gone. Merging keeps
+                # the kwargs they did NOT mention (a `weight_decay` set in code
+                # stays set), which is the whole reason to spell it as a block
+                # rather than restating the marker.
+                tuned = copy(existing)
+                tuned.kwargs = {**existing.kwargs, **v}
+                tuned._yaml_loc = getattr(existing, "_yaml_loc", None)
+                logger.trace(f"slot-tune: {k!r} -> {existing.target} merged {sorted(v)} into the deferred marker")
+                v = tuned
             setattr(instance, k, v)
             extra_keys.append(k)
     try:

@@ -8,7 +8,32 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — 2026-08-01
 
-### Added
+### Fixed
+
+- **A deferred (`!lazy:`) slot declared in code is now configurable.** Three
+  separate rules combined to make a `self.optimizer = LazyClass(AdamW, lr=1e-4)`
+  slot unreachable from config — every natural spelling failed, and all but one
+  failed *silently*:
+
+  | what you write | before | after |
+  |---|---|---|
+  | `lr: 0.5` (bare) | ignored — trains at `1e-4` | applied |
+  | `optimizer: {lr: 0.5}` | slot replaced by a raw `dict` | applied, `weight_decay` kept |
+  | `optimizer.lr: 0.5` | slot replaced by a raw `dict` | applied, `weight_decay` kept |
+
+  The three causes: (1) `_resolve_kwarg_value` returned a `Lazy` untouched, so it
+  received no broadcasting at all — but deferral means "do not BUILD it", and
+  merging keys into a marker's `kwargs` builds nothing, which is precisely what
+  the `Class` branch beside it already did. A `Lazy` **is** a `Class`, so it now
+  takes that branch and only the terminal eager flow is withheld. (2) A mapping
+  addressed at a slot holding a deferred marker was assigned verbatim, destroying
+  the marker; it now **merges into the marker's kwargs**, so the kwargs you did
+  not mention survive. (3) A kwarg set in **code** blocked a bare key, while a
+  constructor default with the same value did not — so *where* a default was
+  written decided whether config could reach it. Code-set marker kwargs are now
+  treated as the defaults they are. A kwarg written on the marker in the
+  **document** still wins over a bare key (provenance via `_yaml_loc`), so
+  addressed-beats-bare is unchanged.
 
 - **`accepts_any_key(target)` — the third settability predicate.** `accepts_key`
   and `accepts_broadcast` answer *"may this key land here?"*; this one answers
