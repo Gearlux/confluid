@@ -53,6 +53,40 @@ It is indexed (`list_classes(framework=…)`, `list_frameworks()`) and deliberat
 untagged are absent from the index, so a `framework` filter returns only what
 explicitly claims that engine — probe without the filter to see everything.
 
+## Registering a class you don't own
+
+`register()` is the entry point for off-the-shelf classes and builder functions —
+it stamps the discovery tags without wrapping validation, so nothing about the
+class's own behaviour changes.
+
+It also carries the two **accept-list controls** the decorator has, and that is
+not a symmetry nicety. A class you own can be shielded from broadcast keys two
+ways: declare its parameters, or add a decorator argument. A class you *don't*
+own can be shielded by neither — and a third-party constructor taking `**kwargs`
+is exactly the case with no accept-list at all, so confluid errs permissive and
+every bare top-level key in the document reaches it (see
+[Broadcasting](broadcasting.md) → "Classes with `**kwargs` constructors"). Its
+author never chose that; they never saw confluid. `register()` is where you can:
+
+```python
+from confluid import register
+
+# No bare or glob key ever cascades in. Addressed blocks still work:
+# `Sink: {path: out}` and `sink.path: out` configure it normally.
+register(SomeLibraryClass, name="Sink", role="sink", broadcast=False)
+
+# Declare `__init__`-body slots the AST scan cannot see. Body slots are found by
+# reading `__init__` SOURCE, which is absent in compiled / frozen / zip
+# deployments — and you cannot add a decorator to a class you do not own.
+register(VendorTrainer, name="VendorTrainer", broadcast_attrs=["optimizer", "scheduler"])
+```
+
+`broadcast_attrs` **unions** with whatever the scan finds, so declaring can never
+lose a scanned name — it only adds.
+
+The parameter-level opt-out `NoBroadcast[T]` needs no registration support: it is
+an annotation, so it works wherever the annotation can be written.
+
 ## When two classes share a name
 
 A registered name is not required to be unique. Two classes legitimately share one when a
