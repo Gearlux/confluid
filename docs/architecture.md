@@ -371,7 +371,23 @@ half the problem and looks finished.
 
 Not the `AmbiguousClassError` / `UnknownClassError` sibling relationship, for the reason above.
 
-The persistence trade-off in the third consequence is genuinely open: emitting the dotted key
-unconditionally from `dump()` would make written configs immune to future namesakes, at the cost
-of readability everywhere. If long-lived stored configs become a primary use case, that balance
-should be revisited — and the decision recorded here rather than made implicitly.
+The persistence trade-off in the third consequence was revisited and **decided: `dump()` keeps
+emitting the public key.** The obvious alternative — always emit the dotted key, so a written
+config is immune to a future namesake — was implemented and measured, and it does not buy
+durability. It trades one failure for a more common one:
+
+| what changed after the config was written | bare name | dotted key |
+|---|---|---|
+| an unrelated package registers a namesake, tags differ | `AmbiguousClassError` (loud, at load) | resolves |
+| ...namesake with identical tags | resolves to the namesake — but the clobber **warns at registration** | resolves |
+| **the class moves module** (an ordinary refactor) | resolves, the class is still registered | `UnknownClassError` |
+
+Both spellings are handles into a live registry, not import paths — neither survives an
+environment that has not registered the class. The only axis they differ on is *which* change
+breaks them, and a class changing module is far more routine than an unrelated package claiming
+its name. The dotted form also loses the one case with no diagnostic anywhere: a class defined in
+a script keys as `__main__.Name`, which is meaningless to any other process.
+
+Always-dotted additionally costs readability in every dumped document and breaks the explicit pin
+that a unique name round-trips as itself. Reopen this only with evidence that namesake collisions
+outnumber refactors in practice — the measurement above, not intuition, is what should move it.

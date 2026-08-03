@@ -696,3 +696,31 @@ def test_dump_of_a_unique_name_still_emits_the_bare_name() -> None:
             self.n = n
 
     assert "!class:Solo()" in confluid.dump(Solo(n=1))
+
+
+def test_a_dumped_bare_name_survives_the_class_moving_module() -> None:
+    """The evidence behind "dump() keeps the public key" (docs/architecture.md §4).
+
+    Emitting the dotted key unconditionally would make a written config immune to a
+    future namesake — the obvious-looking fix. It is not, because both spellings are
+    handles into a live registry rather than import paths, and they differ only in
+    WHICH change breaks them. A class moving module is an ordinary refactor; an
+    unrelated package claiming its name is not. The bare name survives the first and
+    a stale dotted key does not, which is what decided it.
+    """
+    from confluid import UnknownClassError, load
+
+    registry = get_registry()
+
+    class Moved:
+        def __init__(self, size: int = 1) -> None:
+            self.size = size
+
+    registry.register_class(Moved, name="MovedWidget")
+    Moved.__module__ = "somewhere.new"  # the refactor
+    registry.register_class(Moved, name="MovedWidget")
+
+    assert load("w: !class:MovedWidget()\n  size: 3\n")["w"].size == 3
+
+    with pytest.raises(UnknownClassError):
+        load("w: !class:oldpkg.legacy.MovedWidget()\n")
