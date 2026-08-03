@@ -236,6 +236,8 @@ def register(
     lazy: bool = False,
     eager: bool = False,
     capture: bool = True,
+    broadcast: bool = True,
+    broadcast_attrs: Optional[Sequence[str]] = None,
 ) -> C:
     """Register a class OR callable (e.g. a third-party class or builder function) as configurable.
 
@@ -266,6 +268,21 @@ def register(
             (``__confluid_kwargs__``), so heavy/disposable constructor args are
             not kept alive by reference. Costs dump fidelity for transformed
             params. See :func:`configurable`.
+        broadcast: When ``False``, stamp ``__confluid_no_broadcast__`` — no bare
+            or glob-delivered key ever cascades onto instances of this class,
+            while addressed ``ClassName:`` blocks, exact dotted paths and
+            ``configure()`` keep working. The reason this is on ``register`` and
+            not only on :func:`configurable`: a class you do NOT own is exactly
+            the one you cannot fix by declaring parameters. A third-party
+            constructor taking ``**kwargs`` has no accept-list, so confluid errs
+            permissive and every bare key in the document reaches it — and its
+            author never chose that, because they never saw confluid. This is
+            the control that lets the person registering it decide.
+        broadcast_attrs: Explicit ``__init__``-body attribute names to treat as
+            broadcast targets, UNIONED with the AST scan (declaring can never
+            lose scanned names). Same rationale: the scan reads ``__init__``
+            source, which is absent in compiled / frozen / zip deployments, and
+            you cannot add a decorator to a class you do not own.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
     # ``register_class`` stamps the discovery markers (incl. ``__confluid_lazy__``)
@@ -281,6 +298,8 @@ def register(
         lazy=lazy,
         eager=eager,
         no_capture=not capture,
+        no_broadcast=not broadcast,
+        broadcast_attrs=broadcast_attrs,
     )
     return cls
 

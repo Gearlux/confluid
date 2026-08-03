@@ -32,6 +32,24 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`register()` carries the accept-list controls the decorator does** —
+  `broadcast=False` and `broadcast_attrs=[...]`. They existed only on
+  `@configurable`, which had it backwards: a class you own can be shielded from
+  cascade keys by declaring parameters or adding a decorator argument; a class you
+  do **not** own can be shielded by neither. A third-party constructor taking
+  `**kwargs` has no accept-list, so confluid errs permissive and every bare key in
+  the document reaches it — a choice its author never made, having never seen
+  confluid. `register()` is the one place the person wiring it up can decide.
+
+  ```python
+  register(SomeLibraryClass, name="Sink", broadcast=False)     # no bare key cascades in
+  register(Frozen, name="Frozen", broadcast_attrs=["slot"])    # body slots in packaged mode
+  ```
+
+  `broadcast_attrs` unions with the AST scan exactly as on the decorator, so
+  declaring can never lose a scanned name.
+
+
 - **A DEBUG line when a value is overridden.** The merge's single write path now
   reports a key whose value is REPLACED, with both sides and which scope won:
 
