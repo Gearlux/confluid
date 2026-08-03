@@ -16,7 +16,25 @@ configured with zero parameter-threading code — see
 
 from typing import Any, Optional
 
-from confluid import NoBroadcast, accepts_any_key, accepts_broadcast, accepts_key, configurable, load
+from confluid import LazyClass, NoBroadcast, accepts_any_key, accepts_broadcast, accepts_key, configurable, flow, load
+
+
+@configurable
+class Optimizer:
+    """A runtime-injection dependency: it needs `params=` that only the run has."""
+
+    def __init__(self, lr: float = 1e-4, params: Any = None) -> None:
+        self.lr = lr
+        self.params = params
+
+
+@configurable
+class Fitter:
+    """Declares its optimizer slot in CODE — the minimal-constructor pattern."""
+
+    def __init__(self, name: str = "fit") -> None:
+        self.name = name
+        self.optimizer: Any = LazyClass(Optimizer, lr=1e-4)
 
 
 @configurable
@@ -195,5 +213,29 @@ def settability_predicates() -> None:
     print("predicates: Passthrough has no accept-list (accepts_any_key=True) — deliver bare, never as an argument")
 
 
+def deferred_slot_ordering() -> None:
+    """A deferred slot is ordered against a bare key like anything else.
+
+    The knob lives in CODE (`LazyClass(Optimizer, lr=1e-4)`), which is the shape a
+    consumer's trainer uses so the slot can be flowed later with a runtime argument.
+    A code-set kwarg has no position in the document, so it is a DEFAULT; the two
+    document sources compete on position alone. Every way of aiming a value at the
+    slot behaves the same — the marker form is shown, the mapping / dotted /
+    class-block forms order identically.
+    """
+    slot = "runnable: !class:Fitter()\n  optimizer: !lazy:Optimizer(lr=0.5)"
+    bare = "lr: 0.9"
+
+    def built(document: str) -> float:
+        return float(flow(load(document)["runnable"].optimizer).lr)
+
+    assert built(f"{slot}\n") == 0.5, "nothing competes — the slot value stands"
+    assert built(f"{bare}\n{slot}\n") == 0.5, "the slot is written later — it wins"
+    assert built(f"{slot}\n{bare}\n") == 0.9, "the bare key is written later — it wins"
+
+    print("deferred slot: code default 1e-4; document order decides 0.5 vs 0.9 — no priority tiers")
+
+
 if __name__ == "__main__":
     main()
+    deferred_slot_ordering()

@@ -10,6 +10,85 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Precedence is document order for EVERY spelling, not just some.** Confluid has
+  one precedence rule — last spec wins — and two of the four ways to address a
+  value at a deferred slot did not follow it. A mapping (`optimizer: {lr: 0.5}`)
+  and a dotted key (`runnable.optimizer.lr: 0.5`) lost to a bare `lr:` **wherever
+  it sat**, while the equivalent `optimizer: !lazy:AdamW(lr=0.5)` correctly won
+  when written later:
+
+  | spelling | bare key above it | bare key below it |
+  |---|---|---|
+  | `optimizer: !lazy:AdamW(lr=0.5)` | slot wins | bare wins |
+  | `optimizer: {lr: 0.5}` | *was* bare wins → now slot wins | bare wins |
+  | `runnable.optimizer.lr: 0.5` | *was* bare wins → now slot wins | bare wins |
+
+  The cause was a guard testing `_yaml_loc is not None` — a source location, i.e.
+  a *diagnostic* — as a stand-in for "was this addressed by the author?". Tuning a
+  code-declared slot copies the code marker's empty location, so the author's own
+  value was recorded as a default and any bare key beat it.
+
+  The guard's real question is narrower: *has the ordered merge already settled
+  this key?* `_prepare_kwargs` resolves a marker's own kwargs against surrounding
+  bare keys **by position** and the later broadcast pass must not re-run that
+  contest. That is now stamped explicitly as `Fluid._order_resolved`, and
+  `_yaml_loc` is back to being diagnostics only.
+
+  A mapping addressed at a slot is applied post-construction — the first moment
+  the slot's default is knowable — and a plain dict cannot carry a position, so
+  its contest is decided during the ordered merge and carried forward as its
+  outcome (`Fluid._late_bare_keys`: the bare keys sitting later than that slot).
+
+- **A class-name block now reaches an `__init__`-body slot.**
+  `Trainer: {optimizer: {lr: 0.5}}` left the constructor default even with nothing
+  competing — the value was silently dropped — while the inline spelling of the
+  same thing worked. Two paths were involved and each had its own reason:
+
+  - **Loading:** `_consume_block` admitted a dict only for a dict-*typed* param,
+    where `_apply_own` admits one at any *declared* key. A deferred body slot is
+    not dict-typed, so the mapping was hoisted as routing for the children and
+    never applied. `_consume_block` now follows the same rule on the addressed
+    path; a glob-delivered or floating dict stays routing.
+  - **`configure()`:** the same block recursed *into* the marker. A `Fluid`
+    reports `__confluid_configurable__`, so it looked like a live configurable
+    child, and attributes were set on the marker object where nothing reads them.
+    It now tunes `marker.kwargs`, matching the load path.
+
+- **`configure()` no longer builds a deferred slot, and no longer discards what you
+  aim at one.** Two further divergences from the load path, both on the
+  post-construction side:
+
+  - `_assign` materialized the marker, because `Lazy` subclasses `Class`. A `!lazy:`
+    slot exists precisely so its owner can flow it later *with* the runtime argument
+    (`params=model.parameters()`), so building it here produced an object
+    constructed without that argument — and the failure landed far from the cause.
+    `Lazy` is now excluded, matching `engine._apply_post_init_attrs`.
+  - `_walk` then flowed the slot again to recurse into it and configured the
+    resulting object, which is never written back to the attribute. Every bare key
+    aimed at a deferred slot was applied to a throwaway and silently lost. A `Lazy`
+    is now tuned in place — merged into `marker.kwargs` under the same accept-list
+    and `NoBroadcast` gates the engine applies — so the value is there when the
+    owner flows it.
+
+  With those, **both paths now order identically** across all four spellings.
+
+- **An ordering verdict no longer outlives the document that produced it.**
+  `configure()` recorded which bare keys a slot-addressed block had out-positioned
+  *on the marker*, so a second call carrying only a bare key found that key still
+  marked "lost" against a document it never saw:
+
+  ```python
+  configure(car, config="power: 99\nCar: {engine: {power: 50}}")   # -> 50, correct
+  configure(car, config="power: 77")                               # -> 50, WRONG
+  ```
+
+  Layering a base config then an override is ordinary usage, and it silently kept
+  the first call's value. The verdict is now a local of the scan that computes it
+  and is passed to the tuning step, so it cannot escape the call. Deferred slots
+  are also tuned by their owner's scan rather than during the graph walk — the
+  owner is the only place that knows where each block sat relative to the bare
+  keys.
+
 - **A deferred (`!lazy:`) slot declared in code is now configurable.** Three
   separate rules combined to make a `self.optimizer = LazyClass(AdamW, lr=1e-4)`
   slot unreachable from config — every natural spelling failed, and all but one

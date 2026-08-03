@@ -1,0 +1,223 @@
+"""Last spec wins — the ONE precedence rule, across every spelling.
+
+Confluid's stated rule (AGENTS.md → "Flat-View Ordered Matching"): values are
+applied in document order and the last write wins. There is no
+"explicit kwargs > broadcast" priority and no specificity tiers — a key aimed at
+a node and a key broadcasting past it are ordered by POSITION alone.
+
+These tests burn that in. Each case writes the same value two ways, in both
+orderings, and asserts that whichever appears LATER in the file is the one that
+takes effect. Nothing here is specific to a learning rate: the knob is a generic
+`power` on a generic engine slot, because the rule is about ordering, not about
+any particular parameter.
+
+The matrix is (spelling × ordering). A spelling that honours the rule passes
+both orderings; a spelling that ignores position fails exactly one of them,
+which is what makes the pair — rather than either test alone — the real pin.
+"""
+
+from typing import Any
+
+import pytest
+
+from confluid import LazyClass, configurable, configure, flow, load
+from confluid.registry import get_registry
+
+
+@configurable
+class OrderedEngine:
+    """The deferred dependency. `power` is the contested knob."""
+
+    def __init__(self, power: int = 1, fuel: str = "petrol") -> None:
+        self.power = power
+        self.fuel = fuel
+
+
+@configurable
+class OrderedCar:
+    """Declares its engine slot IN CODE, the minimal-constructor pattern."""
+
+    def __init__(self, name: str = "car") -> None:
+        self.name = name
+        self.engine: Any = LazyClass(OrderedEngine, power=1)
+
+
+@pytest.fixture(autouse=True)
+def _register() -> None:
+    registry = get_registry()
+    registry.register_class(OrderedEngine, name="OrderedEngine")
+    registry.register_class(OrderedCar, name="OrderedCar")
+
+
+# The slot-addressed spelling, in every form the grammar offers. Each sets `power`
+# to 50 at the engine slot; `BARE` sets it to 99 tree-wide. All four must order
+# identically — that they are four spellings of ONE operation is the point.
+BARE = "power: 99"
+SPELLINGS = {
+    "marker": "vehicle: !class:OrderedCar()\n  engine: !lazy:OrderedEngine(power=50)",
+    "mapping": "vehicle: !class:OrderedCar()\n  engine:\n    power: 50",
+    "dotted": "vehicle: !class:OrderedCar()\nvehicle.engine.power: 50",
+    "class_block": "vehicle: !class:OrderedCar()\nOrderedCar:\n  engine:\n    power: 50",
+}
+
+
+def _power(document: str) -> int:
+    """Build the deferred engine the way a consumer's `run()` would, and read the knob."""
+    return int(flow(load(document)["vehicle"].engine).power)
+
+
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_a_bare_key_written_BEFORE_the_slot_loses_to_it(spelling: str) -> None:
+    """The slot-addressed value comes later, so the slot wins.
+
+    This is the half that protects an explicit per-node choice from a
+    document-wide default declared above it.
+    """
+    document = f"{BARE}\n{SPELLINGS[spelling]}\n"
+
+    assert _power(document) == 50
+
+
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_a_bare_key_written_AFTER_the_slot_overrides_it(spelling: str) -> None:
+    """The bare key comes later, so the bare key wins.
+
+    This is the half that keeps a document-wide default useful as an override —
+    the same reason a CLI `--power 99`, applied last of all, always takes effect.
+    Without it, an addressed value would become unreachable rather than merely
+    earlier, which is a specificity tier by another name.
+    """
+    document = f"{SPELLINGS[spelling]}\n{BARE}\n"
+
+    assert _power(document) == 99
+
+
+def test_the_rule_is_position_not_provenance() -> None:
+    """The two orderings of ONE spelling must disagree — that IS the rule.
+
+    Stated as a single assertion so a regression that makes a spelling
+    order-INSENSITIVE (whichever constant it freezes on) fails here even if
+    somebody "fixes" one of the two parametrized halves to match the frozen
+    value.
+    """
+    marker = SPELLINGS["marker"]
+
+    assert _power(f"{BARE}\n{marker}\n") != _power(f"{marker}\n{BARE}\n")
+
+
+def test_untouched_marker_kwargs_survive_either_ordering() -> None:
+    """Ordering decides the CONTESTED key only; it never discards the rest.
+
+    `fuel` is set once, at the slot, and nothing competes with it — so it stands
+    whichever side of it the bare `power` is written on. This is what separates
+    "last write wins per key" from "the last source replaces the value wholesale".
+    """
+    spelling = "vehicle: !class:OrderedCar()\n  engine: !lazy:OrderedEngine(power=50,fuel=diesel)"
+
+    for document in (f"{BARE}\n{spelling}\n", f"{spelling}\n{BARE}\n"):
+        assert flow(load(document)["vehicle"].engine).fuel == "diesel"
+
+
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_every_spelling_reaches_the_slot_with_nothing_competing(spelling: str) -> None:
+    """DELIVERY, pinned apart from precedence: does the value arrive at all?
+
+    Written with NOTHING competing, so a failure here can only mean the value never
+    arrived — which is the failure the ordering tests cannot distinguish from losing
+    a contest. It is a real distinction: `class_block` used to leave the constructor
+    default (`power=1`) because `_consume_block` admitted a dict only for a
+    dict-TYPED param, so a mapping aimed at a deferred body slot was hoisted as
+    routing for the children and silently dropped, while the inline spelling of the
+    same thing worked. Two paths, one grammar, two answers.
+    """
+    assert _power(f"{SPELLINGS[spelling]}\n") == 50
+
+
+def test_configure_delivers_a_class_block_to_a_deferred_slot() -> None:
+    """The post-construction path must reach a deferred body slot too.
+
+    `configure()` used to recurse INTO the marker — a `Fluid` reports
+    `__confluid_configurable__`, so it looked like a live configurable child — and
+    set attributes on the marker object, where nothing reads them. The value
+    vanished with no diagnostic, exactly as it did on the load path.
+    """
+    car = OrderedCar()
+
+    configure(car, config="OrderedCar:\n  engine:\n    power: 50\n")
+
+    assert flow(car.engine).power == 50
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        ("power: 99\nOrderedCar:\n  engine:\n    power: 50\n", 50),
+        ("OrderedCar:\n  engine:\n    power: 50\npower: 99\n", 99),
+    ],
+    ids=["bare_before_the_block_loses", "bare_after_the_block_wins"],
+)
+def test_configure_follows_document_order_like_the_load_path(document: str, expected: int) -> None:
+    """The same contest as the matrix above, over a live object instead of markers.
+
+    This is the parity `configurator.py`'s docstring claims ("whichever assignment
+    comes LAST in document order wins — no priority tiers"), and it did not hold:
+    the bare key won either way. Two separate causes, both fixed —
+
+    * `_assign` flowed the tuned marker, because `Lazy` subclasses `Class`, so a
+      deferred slot was built EAGERLY on this path alone;
+    * `_walk` then flowed the slot again to walk into it and configured the
+      resulting object, which is never written back — so every bare key applied to
+      a deferred slot was discarded. It is now tuned into the marker's kwargs, which
+      is where the load path puts it.
+    """
+    car = OrderedCar()
+
+    configure(car, config=document)
+
+    assert flow(car.engine).power == expected
+
+
+def test_a_second_configure_is_not_bound_by_the_first_ones_verdict() -> None:
+    """An ordering verdict must not outlive the document that produced it.
+
+    Layering a base config then an override is ordinary usage. The first call decides
+    `power` is beaten by a block; if that verdict is stamped on the marker rather than
+    scoped to the call, the second call's bare `power` arrives already marked "lost"
+    against a document it never saw, and silently keeps the first value.
+    """
+    car = OrderedCar()
+
+    configure(car, config="power: 99\nOrderedCar:\n  engine:\n    power: 50\n")
+    assert flow(car.engine).power == 50  # the block out-positioned the bare key
+
+    configure(car, config="power: 77\n")  # nothing competes now
+
+    assert flow(car.engine).power == 77
+
+
+def test_configure_does_not_build_a_deferred_slot() -> None:
+    """`configure()` must leave a `!lazy:` slot deferred, exactly as loading does.
+
+    The whole point of the slot is that the owner flows it later WITH the runtime
+    argument (`params=model.parameters()`). Building it here yields an object
+    constructed without that argument — the failure lands far away, at use.
+    """
+    car = OrderedCar()
+
+    configure(car, config="OrderedCar:\n  engine:\n    power: 50\n")
+
+    assert isinstance(car.engine, LazyClass(OrderedEngine).__class__)
+    assert car.engine.kwargs["power"] == 50
+
+
+def test_the_rule_holds_for_a_non_numeric_key() -> None:
+    """Nothing about this is arithmetic — a string knob orders identically.
+
+    Guards against a fix that special-cases numbers (a "take the smaller/later
+    number" heuristic would pass every test above and fail this one).
+    """
+    slot = "vehicle: !class:OrderedCar()\n  engine: !lazy:OrderedEngine(fuel=diesel)"
+    bare = "fuel: kerosene"
+
+    assert flow(load(f"{bare}\n{slot}\n")["vehicle"].engine).fuel == "diesel"
+    assert flow(load(f"{slot}\n{bare}\n")["vehicle"].engine).fuel == "kerosene"
