@@ -816,8 +816,17 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     Three outcomes, and they must stay distinguishable — conflating the last two is
     what made a zero-parameter constructor unconfigurable:
 
-    * ``None`` — the class has no ``__init__`` at all; the caller leaves the marker
-      unbuilt.
+    * ``None`` — the class has no callable ``__init__``; the caller leaves the marker
+      unbuilt. This looks unreachable (every class inherits ``object.__init__``) and
+      is not: ``__init__ = None`` is a legal class attribute, and ``getattr`` then
+      returns ``None``. Such a class cannot be constructed by anyone — ``Nulled()``
+      raises ``TypeError: 'NoneType' object is not callable`` — so handing the marker
+      back unbuilt is a deliberate graceful degradation. Deleting the branch as dead
+      code would fall through to ``inspect.signature(None)``, which raises, yielding
+      :data:`_UNKNOWN_PARAMS` and a call to ``None(**kwargs)``: the same failure with
+      a worse message. (A located error might be better still than returning a
+      marker; that is a behaviour change, not a cleanup, and is deliberately not made
+      here.)
     * :data:`_UNKNOWN_PARAMS` — the signature could not be read, so no filtering is
       possible and the caller passes every kwarg through as a best effort.
     * a set (possibly EMPTY) — the signature WAS read. An empty one means the target

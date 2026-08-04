@@ -454,3 +454,31 @@ class ZeroArgReadable:
 
     def __init__(self) -> None:
         self.slot: Any = None
+
+
+def test_a_class_with_no_callable_init_is_left_unbuilt() -> None:
+    """`_ctor_params` returning None is NOT dead code — pinned so it survives a cleanup.
+
+    Every class inherits `object.__init__`, so the branch reads as unreachable. It is
+    not: `__init__ = None` is a legal class attribute and `getattr` then returns
+    `None`. Such a class cannot be constructed by anyone (`Nulled()` raises
+    `TypeError: 'NoneType' object is not callable`), so confluid hands the marker back
+    unbuilt rather than crashing.
+
+    Deleting the branch would fall through to `inspect.signature(None)`, which raises,
+    yielding `_UNKNOWN_PARAMS` and a call to `None(**kwargs)` — the same failure with a
+    worse message and no marker to inspect.
+    """
+    from confluid.engine import _ctor_params
+
+    class Nulled:
+        __init__ = None  # type: ignore[assignment]
+
+    get_registry().register_class(Nulled, name="NulledInit")
+
+    assert _ctor_params(Nulled) is None
+
+    result = load("o: !class:NulledInit()\n  k: 1\n")["o"]
+
+    assert isinstance(result, Instance)  # handed back as a marker, not constructed
+    assert result.kwargs["k"] == 1  # ...with its configuration intact
