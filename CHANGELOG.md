@@ -90,6 +90,28 @@ All notable changes to confluid are documented here. The format follows
   A *bare* key nothing declares is still dropped silently — it was aimed at the
   whole document, so a node that cannot take it is the normal case, not a mistake.
 
+- **Every published registry key is now a legal YAML tag.** `_entry_key` strips
+  `<locals>` precisely so keys survive a `!class:` tag, but `<lambda>` reached it
+  unhandled. Registering two anonymous callables under one name published
+  `__main__.<lambda>` — a key `list_classes()` returned and the loader rejected:
+
+  ```
+  ScannerError: while scanning a tag
+  ```
+
+  Registering an anonymous callable is legitimate (a one-line metric, a builder
+  factory) and works until the *name* becomes ambiguous, at which point the public
+  key switches to the dotted form and becomes unusable. So the key is made
+  tag-legal rather than the registration refused.
+
+  The two bracketed shapes get opposite treatment, because they mean opposite
+  things: `<locals>` names a *scope* and is dropped (`outer.<locals>.Inner` →
+  `outer.Inner`, still identifying the class), while `<lambda>` *is* the name and is
+  unwrapped (`__main__.lambda`) — dropping it would leave a bare trailing dot,
+  identical for every lambda in the module. Same-module collisions fall to the
+  existing `~N` suffix, `~` being a legal tag character. The rule is general, so
+  `<listcomp>` / `<genexpr>` / `<module>` are covered too.
+
 - **A zero-parameter constructor is configurable again.** A `@configurable` class
   whose `__init__` takes no parameters at all died on any config key:
 
