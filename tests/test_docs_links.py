@@ -13,6 +13,8 @@ Three rules, one per failure mode:
 * README links are absolute GitHub blob URLs, because the README doubles as the
   PyPI landing page where relative links do not resolve.
 
+Fenced code blocks are excluded from the scan — see :func:`_strip_code`.
+
 The CI workflow is generated and must not be hand-edited, so these live as tests
 — which is also where they belong: they run locally on the same command.
 """
@@ -50,8 +52,28 @@ def _markdown_files() -> List[Path]:
     return sorted(_DOCS.glob("*.md")) + [_README]
 
 
+def _strip_code(text: str) -> str:
+    """Blank out fenced code blocks before scanning for links.
+
+    Python subscript-then-call — `LazyClass[Metric](SomeClass)` — is
+    indistinguishable from a markdown link to a regex, so a code sample containing
+    one gets reported as a link to a file named `SomeClass`. Found exactly that way:
+    the first run of this check against another project's docs produced a false
+    positive, which in a link checker is worse than a miss, because it trains the
+    reader to ignore it.
+    """
+    out, fenced = [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append("")
+            continue
+        out.append("" if fenced else line)
+    return "\n".join(out)
+
+
 def _links(path: Path) -> List[str]:
-    return _RELATIVE_LINK.findall(path.read_text())
+    return _RELATIVE_LINK.findall(_strip_code(path.read_text()))
 
 
 @pytest.mark.parametrize("path", _markdown_files(), ids=lambda p: p.name)
