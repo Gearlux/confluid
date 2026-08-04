@@ -22,6 +22,7 @@ configuration so the choice is written once; see :func:`parse_target_spec`.
 """
 
 import importlib
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
 
@@ -72,16 +73,31 @@ def _entry_key(cls: Callable[..., Any]) -> str:
     flag: a bare name never has a dot. ``builtins`` / ``__main__`` are deliberately NOT
     stripped for that reason.
 
-    ``<locals>`` IS stripped, because the key has to survive a YAML tag: ``<`` is not a
-    legal tag character, so a key built straight from the qualname of a class defined
-    inside a function would make :func:`confluid.dump` emit a document that cannot be
-    parsed back. Such a class was never importable anyway — the key is a HANDLE the
-    registry resolves before the import fallback, not a promise of importability — and
-    two locals that flatten to the same spelling are separated by :meth:`_claim_key`.
+    The no-``<`` invariant is what makes the key usable: ``<`` is not a legal YAML tag
+    character, so a key carrying one is a key :meth:`list_classes` can advertise and
+    ``!class:`` cannot parse. Such a target was never importable anyway — the key is a
+    HANDLE the registry resolves before the import fallback, not a promise of
+    importability — so the qualname is made tag-legal rather than kept faithful.
+
+    Two shapes need it, and they need OPPOSITE treatment:
+
+    * ``<locals>`` is DROPPED with its dot (``outer.<locals>.Inner`` → ``outer.Inner``);
+      the segment names a scope, and the surrounding names still identify the target.
+    * every other bracketed segment is UNWRAPPED (``<lambda>`` → ``lambda``), because it
+      IS the name — dropping it would leave a bare trailing dot, identical for every
+      lambda in the module. Unwrapping keeps them distinct from each other and lets
+      :meth:`_claim_key` separate same-module collisions with its ``~N`` suffix, ``~``
+      being a legal tag character.
+
+    ``<lambda>`` reached here unhandled until 2026-08-04: registering two lambdas under
+    one name published ``__main__.<lambda>``, which ``list_classes`` returned and
+    ``!class:`` rejected with a ``ScannerError``. The same applies to ``<listcomp>`` /
+    ``<genexpr>`` / ``<module>``, so the rule is general rather than a lambda special case.
     """
     module = getattr(cls, "__module__", None) or "builtins"
     qualname = getattr(cls, "__qualname__", None) or getattr(cls, "__name__", None) or repr(cls)
-    return f"{module}.{qualname}".replace("<locals>.", "")
+    tag_legal = re.sub(r"<(\w+)>", r"\1", qualname.replace("<locals>.", ""))
+    return f"{module}.{tag_legal}"
 
 
 def parse_target_spec(spec: str) -> Tuple[str, Dict[str, str]]:

@@ -724,3 +724,48 @@ def test_a_dumped_bare_name_survives_the_class_moving_module() -> None:
 
     with pytest.raises(UnknownClassError):
         load("w: !class:oldpkg.legacy.MovedWidget()\n")
+
+
+def test_every_published_key_is_a_legal_yaml_tag() -> None:
+    """`list_classes()` must never advertise a key `!class:` cannot parse.
+
+    `_entry_key` strips `<locals>` specifically so keys survive a YAML tag, but
+    `<lambda>` reached it unhandled: registering two lambdas under one name published
+    `__main__.<lambda>`, which `list_classes` returned and the loader rejected with a
+    `ScannerError` — `<` is not a legal tag character.
+
+    Registering an anonymous callable is legitimate (a one-line metric, a builder), and
+    it works until the NAME becomes ambiguous — at which point the public key switches
+    to the dotted form and becomes unusable. So the fix is to make the key tag-legal,
+    not to refuse the registration.
+    """
+    from confluid import load
+
+    registry = get_registry()
+    registry.register_class(lambda: "A", name="AnonMetric", role="metric", framework="torch")
+    registry.register_class(lambda: "B", name="AnonMetric", role="metric", framework="keras")
+
+    keys = sorted(registry.list_classes(role="metric"))
+
+    assert not any("<" in k or ">" in k for k in keys), keys
+    assert [load(f"o: !class:{k}()")["o"] for k in keys] == ["A", "B"]
+
+
+def test_a_locals_scope_is_dropped_while_a_lambda_name_is_unwrapped() -> None:
+    """The two bracketed shapes need opposite treatment, so both are pinned.
+
+    `<locals>` NAMES A SCOPE — dropping it leaves `outer.Inner`, which still identifies
+    the class. `<lambda>` IS the name — dropping it would leave a bare trailing dot,
+    identical for every lambda in the module, so it is unwrapped instead and same-module
+    collisions fall to `_claim_key`'s `~N` suffix (`~` being a legal tag character).
+    """
+    from confluid.registry import _entry_key
+
+    def outer() -> type:
+        class Inner:
+            pass
+
+        return Inner
+
+    assert _entry_key(outer()).endswith("outer.Inner")
+    assert _entry_key(lambda: None).endswith(".lambda")
