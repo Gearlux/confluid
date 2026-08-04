@@ -424,9 +424,14 @@ class _View(dict):
         exists so "my knob did not take" is one grep instead of a bisect.
         """
         if key in self and self[key] != value:
+            # The article is chosen from the WINNING scope's name because two of
+            # the four (``exact``, ``addressed``) start with a vowel: a hardcoded
+            # "a" reads as a typo in the very line an operator greps to explain a
+            # value they did not expect.
+            article = "an" if scope.value[0] in "aeiou" else "a"
             logger.debug(
                 f"override: {key!r} {self[key]!r} -> {value!r} "
-                f"({self.scope_of(key).value} value replaced by a {scope.value} one; "
+                f"({self.scope_of(key).value} value replaced by {article} {scope.value} one; "
                 f"document order decides — the later spec wins)"
             )
         self[key] = value
