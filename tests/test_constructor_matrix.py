@@ -11,10 +11,13 @@ allows. Each delivery path sets it to 42. Every cell must arrive: a shape that
 cannot be configured through a path the grammar offers is a gap, whether it raises
 (loud) or silently keeps the default (worse).
 
-Three further axes are covered at the end of the file — inheritance, `!ref:`/
-`!clone:`, and scopes — because each is a different ROUTE to the same slot, and a
-route is exactly where a delivery rule diverges. All three passed on first run; the
-tests exist to keep it that way, not because they found something.
+Four further axes are covered at the end of the file — inheritance, `!ref:`/
+`!clone:`, scopes, and `configure()` crossed with the first two — because each is a
+different ROUTE to the same slot, and a route is exactly where a delivery rule
+diverges. All four passed on first run; the tests exist to keep it that way, not
+because they found something. That is worth stating: the load and post-construction
+paths have diverged four separate times, so "they agree today" is a fact with a
+short shelf life unless it is pinned.
 
 Deliberately NOT covered here, and why:
 
@@ -395,3 +398,75 @@ def test_a_scope_block_delivers_like_any_other_source(label: str, document: str)
     sibling (`test_document_order.py`) exists for.
     """
     assert load(document, scopes=["mode=fast"])["o"].k == 42
+
+
+# --------------------------------------------------------------------------- #
+# The last untested corner: configure() crossed with inheritance and with
+# aliased nodes. The load path covers both above; this is the post-construction
+# path over the same shapes, and the two have diverged four times already.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("shape", INHERITANCE, ids=lambda c: c.__name__)
+@pytest.mark.parametrize("style", ["class_block", "bare_key"], ids=str)
+def test_configure_reaches_every_inheritance_shape(shape: type, style: str) -> None:
+    """A subclass must be as configurable post-construction as it is at load.
+
+    `ShadowsBodySlot` is the case worth having: the child re-assigns the parent's
+    slot after `super().__init__()`, so a walker reading the child's own body would
+    see a plain string where the parent declared a configurable slot.
+    """
+    obj = shape()
+    config = f"{shape.__name__}:\n  k: 42\n" if style == "class_block" else "k: 42\n"
+
+    configure(obj, config=config)
+
+    assert obj.k == 42
+
+
+@configurable
+class AliasHolder:
+    """Holds two slots so a ref/clone pair can be reached through one parent."""
+
+    def __init__(self, a: Any = None, b: Any = None) -> None:
+        self.a, self.b = a, b
+
+
+def test_configure_reaches_a_shared_ref_once_and_both_names_see_it() -> None:
+    """`!ref:` makes two names for one object — configuring it must not depend on which.
+
+    The graph walk carries a visited set, so the second name is skipped; the pin is
+    that skipping it does not mean the value fails to arrive.
+    """
+    get_registry().register_class(AliasHolder, name="AliasHolder")
+    graph = load("a: !class:InheritBase()\nb: !ref:a\n")
+    assert graph["a"] is graph["b"]
+
+    configure(AliasHolder(a=graph["a"], b=graph["b"]), config="k: 42\n")
+
+    assert graph["a"].k == 42 and graph["b"].k == 42
+
+
+def test_configure_reaches_both_halves_of_a_clone() -> None:
+    """`!clone:` makes two distinct objects — BOTH must be configured.
+
+    The complement of the test above: there the visited set must not lose the value,
+    here it must not mistake two objects for one.
+    """
+    get_registry().register_class(AliasHolder, name="AliasHolder")
+    graph = load("a: !class:InheritBase()\nb: !clone:a\n")
+    assert graph["a"] is not graph["b"]
+
+    configure(AliasHolder(a=graph["a"], b=graph["b"]), config="k: 42\n")
+
+    assert graph["a"].k == 42 and graph["b"].k == 42
+
+
+def test_configure_reaches_a_child_through_an_addressed_block_on_its_parent() -> None:
+    """A `ClassName:` block finds the child by class name, not by being top level."""
+    get_registry().register_class(AliasHolder, name="AliasHolder")
+    graph = load("a: !class:InheritBase()\n")
+
+    configure(AliasHolder(a=graph["a"]), config="InheritBase:\n  k: 42\n")
+
+    assert graph["a"].k == 42
