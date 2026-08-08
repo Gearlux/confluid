@@ -14,8 +14,7 @@ through to the late-bound ``Reference`` flow, which is where the user's
 
 from typing import Any, Dict
 
-from confluid import configurable
-from confluid.loader import load, materialize
+from confluid import configurable, load, materialize
 from confluid.resolver import Resolver, _parse_path_segments
 
 # ---------- Tokenizer ------------------------------------------------------

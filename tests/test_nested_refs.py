@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from confluid import configurable
-from confluid.loader import load, materialize
+from confluid import configurable, load, materialize
 
 
 @configurable

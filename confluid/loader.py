@@ -11,7 +11,7 @@ from loggair import get_logger
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import Resolver, parse_value
-from confluid.scopes import normalize_active, resolve_scopes
+from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
@@ -236,12 +236,9 @@ def _register_constructors() -> None:
         paren = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
         if paren:
             return paren.group(1), paren.group(2).strip()
-        # ``KEY=VALUE`` — assignment form. Split on the first ``=``.
-        if "=" in tag_suffix:
-            key, value = tag_suffix.split("=", 1)
-            return key.strip(), value.strip()
-        # Bare ``KEY`` — boolean scope.
-        return tag_suffix, None
+        # ``KEY=VALUE`` / bare ``KEY`` — the same grammar as a CLI activation
+        # string, so the ONE splitter (``scopes.parse_scope_arg``) serves both.
+        return parse_scope_arg(tag_suffix)
 
     def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
         """Construct a ``ScopeBlock`` from any of the three YAML body shapes.
@@ -517,20 +514,10 @@ def load(
     return materialize(data, context=context or data, solidify=solidify)
 
 
-# --- compat re-exports ---------------------------------------------------
-# The materialization engine moved to ``confluid.engine`` (2026-07). These
-# names stay importable from ``confluid.loader`` for backward compatibility
-# (downstream reach-ins + tests); NEW code should import from the engine.
-from confluid.engine import (  # noqa: F401,E402  (re-exports; placed after loader defs)
-    _deep_flow,
-    _flow_recursive,
-    _get_acceptable_keys,
-    _get_param_kinds,
-    _get_post_init_attrs,
-    _prepare_kwargs,
-    _same_target,
-    get_active_context,
-    get_configurable_attrs,
-    materialize,
-    resolve,
-)
+# ``materialize`` is a REAL dependency of ``load()`` above, imported after the
+# defs because the engine's ``resolve()`` body-imports ``load`` (the sanctioned
+# lazy seam) — a top placement would still work, but this keeps the seam's two
+# ends visually paired. The old blanket compat re-export block that rode here
+# was pruned 2026-08-08: zero users remained workspace-wide (tests were
+# retargeted to the real homes).
+from confluid.engine import materialize  # noqa: E402
