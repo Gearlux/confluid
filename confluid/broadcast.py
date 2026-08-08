@@ -28,15 +28,18 @@ from typing import Any, Callable, Dict, FrozenSet, Optional, Set
 from loggair import get_logger
 
 from confluid.fluid import Fluid, Reference
-from confluid.introspect import baked_init_attrs, init_setattr_names, init_source_available
+from confluid.introspect import baked_init_attrs, init_callable, init_setattr_names, init_source_available
 from confluid.registry import resolve_class
 from confluid.state import _ENGINE_STATE
 
 logger = get_logger("confluid.broadcast")
 
-# Introspection caches, keyed by class name. They live here rather than in
-# ``engine`` because every reader is in this module; ``engine`` only clears them,
-# once per ``materialize`` / ``resolve`` pass, through the re-export.
+# Introspection caches, keyed by class name. They live here because the merge
+# machinery is their main reader; ``engine`` clears them once per
+# ``materialize`` / ``resolve`` pass through the re-export, and ALSO derives
+# its parent-attr blacklist into ``_post_init_attrs_cache`` under suffixed
+# ``…#parent_blacklist`` keys (``engine._get_parent_attr_blacklist``) — so the
+# per-pass clear covers both families.
 _acceptable_keys_cache: Dict[str, Optional[FrozenSet[str]]] = {}
 _post_init_attrs_cache: Dict[str, FrozenSet[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
@@ -184,7 +187,11 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     silently inheriting one another's accept-list.
     """
     target: Any
-    if isinstance(cls_or_name, type):
+    if isinstance(cls_or_name, type) or callable(cls_or_name):
+        # A class OR an already-resolved callable target (a registered builder
+        # FUNCTION) — introspect it directly. Round-tripping a callable through
+        # resolve_class returns None (its passthrough branch is type-only), which
+        # cached "accepts everything" for every function target.
         target = cls_or_name
     else:
         # Always resolve the string first so the cache key is module-qualified.
@@ -207,7 +214,11 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
 
     keys: Set[str] = set()
     try:
-        init_method = getattr(target, "__init__", None)
+        # Class → its __init__; plain callable (a registered builder FUNCTION) →
+        # the callable itself. Reading ``target.__init__`` unconditionally gave a
+        # function ``object.__init__`` = ``(*args, **kwargs)``, so every builder
+        # function answered "accepts everything" (see introspect.init_callable).
+        init_method = init_callable(target)
         if init_method is None:
             _acceptable_keys_cache[cache_key] = None
             return None
@@ -228,7 +239,10 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
         _acceptable_keys_cache[cache_key] = None
         return None
 
-    if getattr(target, "__confluid_configurable__", False):
+    # Class-only extras: settable class attributes and __init__-body slots.
+    # A plain callable has neither (its function attributes are not config
+    # slots, and there is no body to setattr into post-construction).
+    if isinstance(target, type) and getattr(target, "__confluid_configurable__", False):
         for name in dir(target):
             if name.startswith("_") or name in keys:
                 continue
@@ -243,7 +257,7 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
 
         # Fold in attribute names assigned in __init__'s body (AST scan).
         # These are instance attributes not visible via dir(cls), but the
-        # post-init injection loop in confluid.fluid.flow already assigns
+        # post-init injection loop in confluid.engine.flow already assigns
         # any matching kwarg via setattr — broadcasting just needs to know
         # the names so a top-level YAML key can flow into them.
         keys.update(_get_post_init_attrs(target))
@@ -269,11 +283,9 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
     import typing
 
     target: Any
-    if isinstance(cls_or_name, type):
+    if isinstance(cls_or_name, type) or callable(cls_or_name):
         target = cls_or_name
     else:
-        from confluid.registry import resolve_class
-
         target = resolve_class(cls_or_name)
         if target is None:
             return {}
@@ -284,7 +296,9 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
 
     kinds: Dict[str, Optional[str]] = {}
     try:
-        init_method = getattr(target, "__init__", None)
+        # Same class-vs-callable dispatch as _get_acceptable_keys — a builder
+        # function's own signature, never object.__init__ (see init_callable).
+        init_method = init_callable(target)
         if init_method is None:
             _param_kind_cache[cache_key] = kinds
             return kinds
@@ -812,12 +826,21 @@ def accepts_any_key(target: Any) -> bool:
 
 
 def _settability_target(target: Any) -> Any:
-    """Normalize a class / instance / dotted-name into the class to introspect."""
+    """Normalize a class / callable / instance / dotted-name into the target to introspect.
+
+    A plain routine (a registered builder FUNCTION) is returned AS-IS — taking
+    ``type(func)`` (= ``function``, whose ``__init__`` takes ``**kwargs``) made
+    all three predicates answer yes-to-everything for function targets, the
+    exact failure ``accepts_any_key`` exists to prevent. A live instance still
+    normalizes to its class.
+    """
     if target is None:
         return None
     if isinstance(target, str):
         return resolve_class(target)
-    return target if isinstance(target, type) else type(target)
+    if isinstance(target, type) or inspect.isroutine(target):
+        return target
+    return type(target)
 
 
 def _prepare_kwargs(

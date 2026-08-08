@@ -48,7 +48,14 @@ class ValidationModeError(ConfigurationError):
 
 
 class ScopeError(ConfigurationError):
-    """A scope alias chain is circular."""
+    """A scope declaration or activation is unusable.
+
+    Three conditions raise it: a circular scope-alias chain; an ACTIVE keyed
+    block whose body shape cannot splice at its slot (a sequence/scalar body at
+    a mapping position); and an activation naming a DECLARED dimension with a
+    value no block carries (the error lists the declared values). See
+    docs/scopes.md and docs/errors.md.
+    """
 
 
 class ConfigFileNotFoundError(ConfluidError, FileNotFoundError):

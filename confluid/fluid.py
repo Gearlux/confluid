@@ -34,7 +34,7 @@ class Fluid:
         # what a ``**kwargs`` constructor receives (see ``engine._flow_target``).
         self._addressed_keys: Optional[frozenset[str]] = None
         # True once this marker's kwargs have been through the engine's ORDERED
-        # merge (``engine._prepare_kwargs``), which resolves an own-kwarg against
+        # merge (``broadcast._prepare_kwargs``), which resolves an own-kwarg against
         # a competing bare key by DOCUMENT POSITION — last spec wins. The later
         # broadcast pass reads it to know the contest is already settled and must
         # not be re-run (re-running it would apply the bare key unconditionally,

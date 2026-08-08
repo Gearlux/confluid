@@ -431,3 +431,33 @@ def test_to_pydantic_and_lazy_param_names_agree_on_body_slots() -> None:
 
     # `lazy_param_names_of` reads the marker off the GENERATED model, so build it first.
     assert lazy_param_names(_T) == set(lazy_param_names_of(to_pydantic(_T))) == {"optimizer"}
+
+
+def test_lazy_param_cache_is_per_class_never_inherited() -> None:
+    """The per-class cache must not leak across the MRO — in either direction.
+
+    It was read with ``getattr``, which walks the MRO: a subclass queried after
+    its parent returned the PARENT's stamped answer (measured: a Sub declaring
+    ``opt: Lazy[Any]`` reported ``set()`` because Base was queried first), and a
+    subclass overriding ``__init__`` withOUT markers inherited the parent's
+    non-empty set. The read is now the class's OWN ``__dict__``, the same guard
+    the registry uses for ``__confluid_name__``.
+    """
+
+    class _Base:
+        def __init__(self, x: int = 1) -> None: ...
+
+    class _Sub(_Base):
+        def __init__(self, opt: Lazy[Any] = None, x: int = 1) -> None: ...
+
+    assert lazy_param_names(_Base) == set()  # parent primed FIRST — the failing order
+    assert lazy_param_names(_Sub) == {"opt"}
+
+    class _Marked:
+        def __init__(self, opt: Lazy[Any] = None) -> None: ...
+
+    class _Plain(_Marked):
+        def __init__(self, plain: int = 3) -> None: ...
+
+    assert lazy_param_names(_Marked) == {"opt"}
+    assert lazy_param_names(_Plain) == set()  # its own __init__ declares no Lazy slot

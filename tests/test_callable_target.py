@@ -238,3 +238,40 @@ def test_configurable_function_round_trips(clean_registry: Any) -> None:
     marker = LazyClass("rt_builder", size=5, color="blue")
     reloaded = load(dump(marker), flow=False)  # !lazy:rt_builder → resolved via registry
     assert flow(reloaded) == flow(marker) == {"size": 5, "color": "blue"}
+
+
+def test_settability_predicates_read_a_functions_own_signature(clean_registry: Any) -> None:
+    """A registered builder FUNCTION answers the predicates from its OWN signature.
+
+    Reading ``target.__init__`` unconditionally resolved a function to
+    ``object.__init__`` — signature ``(*args, **kwargs)`` — so all three
+    predicates answered True for EVERY key (measured: ``accepts_key(builder,
+    "run_name")`` was True on a builder declaring only ``weights`` /
+    ``num_classes``), defeating for function targets the exact stray-CLI-key
+    failure ``accepts_any_key`` exists to prevent.
+    """
+    from confluid import accepts_any_key, accepts_broadcast, accepts_key, register
+
+    def build_widget(weights: str = "default", num_classes: int = 91) -> Dict[str, Any]:
+        return {"weights": weights, "num_classes": num_classes}
+
+    register(build_widget, task="detection", role="model")
+
+    assert accepts_key(build_widget, "weights")
+    assert accepts_broadcast(build_widget, "num_classes")
+    assert not accepts_key(build_widget, "run_name")
+    assert not accepts_broadcast(build_widget, "run_name")
+    assert not accepts_any_key(build_widget)
+
+
+def test_a_var_keyword_function_still_cannot_refuse_any_key(clean_registry: Any) -> None:
+    """The ``**kwargs`` permissiveness is a signature fact, and a function may have it too."""
+    from confluid import accepts_any_key, accepts_key, register
+
+    def forwards(**kwargs: Any) -> Dict[str, Any]:
+        return dict(kwargs)
+
+    register(forwards)
+
+    assert accepts_any_key(forwards)
+    assert accepts_key(forwards, "anything")

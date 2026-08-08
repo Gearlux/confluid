@@ -78,7 +78,9 @@ def mandatory_param_names(cls: type) -> Set[str]:
     call. Returns an empty set if ``cls`` has no resolvable ``__init__`` or no
     Mandatory params.
     """
-    cached = getattr(cls, "__confluid_mandatory_params__", None)
+    # Own-__dict__ read, never getattr: an MRO walk served a parent's cached
+    # answer to every subclass (see the twin comment in confluid.lazy).
+    cached = cls.__dict__.get("__confluid_mandatory_params__") if hasattr(cls, "__dict__") else None
     if cached is not None:
         return cached  # type: ignore[no-any-return]
     init = getattr(cls, "__init__", None)

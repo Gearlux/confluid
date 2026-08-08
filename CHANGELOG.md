@@ -6,7 +6,7 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.0] — 2026-08-01
+## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
 ### Changed
 
@@ -66,6 +66,54 @@ All notable changes to confluid are documented here. The format follows
   now one grep (`LOGGAIR_CONSOLE_LEVEL=DEBUG`) instead of a bisect.
 
 ### Fixed
+
+- **The settability predicates read a builder FUNCTION's own signature.**
+  `accepts_key` / `accepts_broadcast` / `accepts_any_key` answered True for
+  EVERY key on a registered builder function (measured: `accepts_key(builder,
+  "run_name")` on a builder declaring only `weights`/`num_classes`): the
+  accept-list machinery read `target.__init__` unconditionally, which for a
+  function is `object.__init__` — `(*args, **kwargs)` — so every function
+  target looked like a `**kwargs` constructor. That defeated, for function
+  targets, the exact stray-CLI-key failure `accepts_any_key` exists to
+  prevent. The class-vs-callable dispatch every signature reader must make now
+  lives in ONE helper (`introspect.init_callable`), used by the accept-lists,
+  the param-kind scan, and the engine's constructor filter alike.
+
+- **The per-class marker caches no longer leak across the MRO.**
+  `lazy_param_names` / `mandatory_param_names` / `no_broadcast_param_names`
+  read their cache with `getattr`, which walks the MRO: a subclass queried
+  after its parent returned the PARENT's stamped answer (measured: a subclass
+  declaring `opt: Lazy[Any]` reported an empty set), and in the other
+  direction a subclass overriding `__init__` without markers inherited the
+  parent's — for `NoBroadcast`, silently blocking bare keys the subclass never
+  opted out of. The read is now the class's OWN `__dict__`, the same guard the
+  registry has always used for `__confluid_name__`.
+
+- **`materialize()` interpolates.** docs/interpolation.md promises `${...}`
+  substitution "at materialization — `load()`, `materialize()`, or
+  `resolve()`"; measured, `materialize()` was the one entry point that skipped
+  the Resolver pass, so the literal `${key.path}` rode into values silently
+  (`configure()` resolves too). It now runs the same pass `load()` runs —
+  idempotent on the load path, which has already substituted.
+
+- **`${...}` inside a marker's kwarg block interpolates — all spellings agree.**
+  The Resolver returned any Fluid whole, so a placeholder written in a
+  `!class:`/`!lazy:` tag's mapping body stayed the LITERAL string on every path
+  (measured: `input_dir: "${DATA_ROOT}/files"` reached the constructed object
+  verbatim, silently) — while the quoted-string spelling of the same target
+  interpolated, because `_parse_class_string` resolves per kwarg. Marker kwargs
+  are now walked by the same load-time pass, in place (marker identity is
+  load-bearing for the flow memo and `!ref:` sharing) and text-only: a
+  `"!ref:"`/`"!class:"` string keeps its prefix for flow-time parsing, a
+  `Reference` fluid stays late-bound, nested markers recurse, and sibling
+  kwargs act as the local scope. Substituted values BURN IN — `dump()` emits
+  them and a deferred `!lazy:` slot flowed later sees them; a slot that must
+  stay late-bound uses `!ref:` to a plain key.
+
+- **The override DEBUG line picks its article from the winning scope's name** —
+  "replaced by an exact one", not "a exact one". Cosmetic, but the line exists
+  to be grepped by an operator explaining a value they did not expect, and a
+  typo there reads as a bug in the very diagnostic meant to build trust.
 
 - **Positional-only constructor parameters are configurable.** `def __init__(self,
   k, /)` rejected every document path with a `ConstructionError` while

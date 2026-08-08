@@ -128,3 +128,9 @@ are **reconfigured after construction** or **built incrementally by tools**:
 
 If your usage is "load a YAML, get working objects, maybe dump them back" — plain eager classes are
 the simpler choice, and confluid supports them first-class.
+
+## Runnable example
+
+[`examples/eager_classes.py`](../examples/eager_classes.py) loads, configures,
+and round-trips a plain eager class — required params, real `__init__` work —
+including the `capture=False` opt-out and the `eager=True` staleness warning.

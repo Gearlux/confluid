@@ -230,7 +230,7 @@ each other. Lifting it is the smallest cut that breaks the cycle.
 
 **Consequences.**
 
-- `engine.py` went from 2,294 lines to 1,178. That is an effect, not the goal — a 2,294-line
+- `engine.py` went from ~2,300 lines to ~1,200. That is an effect, not the goal — a 2,300-line
   module with one owner would have been fine.
 - Every moved name is re-exported from `engine`, so no existing import breaks. New code should
   import from the real home.

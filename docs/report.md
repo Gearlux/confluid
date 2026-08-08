@@ -83,3 +83,10 @@ Nesting is safe: an inner `collect_report()` reuses the outer block's report.
 The report is the structured counterpart of the per-key TRACE stream
 described in [Broadcasting & Ordered Matching](broadcasting.md) — use TRACE
 to watch matching live, the report to assert on the outcome.
+
+## Runnable example
+
+[`examples/report.py`](../examples/report.py) applies a document with applied,
+failed, and unused keys to a small object graph, then prints the report both
+paths return — `configure()`'s return value and a `collect_report()` block
+around a `load()`.

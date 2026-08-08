@@ -3,7 +3,7 @@
 Applies a config document to ALREADY-CONSTRUCTED object graphs, in place —
 the Post-Construction Paradigm. Matching follows confluid's ONE rule:
 **flat-view, document-order, last-write-wins** (the same rule the YAML
-materialization path applies via ``engine._prepare_kwargs``), scanned over
+materialization path applies via ``broadcast._prepare_kwargs``), scanned over
 live objects instead of Fluid markers:
 
 * a ``ClassName:`` / ``<instance-name>:`` dict block is unrolled inline at
@@ -246,7 +246,7 @@ def _apply(
     dict-valued child recursions, and the subtree view. Assignment values are
     resolved, string-coerced via ``parse_value``, ``Class``/``Instance``
     markers flowed, then validated + setattr'd. Scope tags (see
-    ``engine._KeyScope``) gate what applies: EXACT entries are an ancestor's
+    ``broadcast._KeyScope``) gate what applies: EXACT entries are an ancestor's
     addressed values (inert here), STRICT entries are one-level routing
     blocks (matched by name or skipped), glob blocks apply gated like bare
     keys.
@@ -509,7 +509,7 @@ def _assign(
 def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) -> Dict[str, Any]:
     """Return the subtree view: routing hoisted from matched blocks, spent levels dropped.
 
-    The live-object analogue of ``engine._splice_kwargs_at_slot``:
+    The live-object analogue of ``broadcast._splice_kwargs_at_slot``:
 
     * a matched (floating) block STAYS in the view — a deeper node with the
       same class/instance name matches it again (``**.name`` anchoring); its

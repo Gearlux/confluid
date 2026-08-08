@@ -658,7 +658,7 @@ def resolve_class(
     ``timm.create_model``, …) are first-class targets. The module-path branch
     therefore accepts any **callable** attribute (class or function), not only
     ``isinstance(_, type)``. (``flow()`` then builds it by introspecting the
-    callable's own signature — see :func:`confluid.fluid.flow`.)
+    callable's own signature — see :func:`confluid.engine.flow`.)
 
     Args:
         strict: Raise on an ambiguous name or a malformed selector instead of returning

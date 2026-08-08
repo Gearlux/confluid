@@ -86,7 +86,7 @@ from confluid.fluid import (
     is_order_resolved,
     late_bare_keys_of,
 )
-from confluid.introspect import init_setattr_names
+from confluid.introspect import init_callable, init_setattr_names
 from confluid.merger import expand_dotted_keys
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
@@ -143,7 +143,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     sharing with an explicit deepcopy.
 
     ``solidify=False`` suppresses the post-flow ``solidify()`` hook for every
-    object built in this pass (see :func:`confluid.fluid.flow`) — for static
+    object built in this pass (see :func:`flow`) — for static
     introspection that needs live objects but must NOT pay for the expensive
     finalize (e.g. building a model backbone). The objects are still fully
     constructed (``__init__`` only stores values per the zero-arg / lazy-init
@@ -152,6 +152,21 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     _acceptable_keys_cache.clear()
     _post_init_attrs_cache.clear()
     _param_kind_cache.clear()
+    # ``${...}`` interpolation — the same Resolver pass ``load()`` runs
+    # (docs/interpolation.md promises it "at materialization"; measured, this
+    # entry point skipped it and the literal ``${...}`` rode into values
+    # silently — configure() resolves, so materialize() was the one odd path).
+    # Idempotent after load(): substituted strings carry no placeholders left,
+    # and a miss keeps the literal either way. Marker KWARGS interpolate too
+    # (in place, text-only — see Resolver._interpolate_fluid_kwargs).
+    interp_context = context if context is not None else (data if isinstance(data, dict) else None)
+    resolver = Resolver(context=interp_context or {})
+    resolved_data = resolver.resolve(data)
+    if context is data:
+        context = resolved_data  # keep the "context IS the document" identity
+    elif context is not None:
+        context = resolver.resolve(context)
+    data = resolved_data
     if context:
         context = expand_dotted_keys(context)
     report = _active_report()  # carry the ambient report through the fresh state
@@ -310,7 +325,7 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
     declared, a post-construction setattr the user did themselves, or one
     Confluid's broadcast/Enable machinery wrote on the instance.
 
-    See [confluid/confluid/loader.py:_get_parent_attr_blacklist] for the
+    See :func:`_get_parent_attr_blacklist` (this module) for the
     blacklist construction.
     """
     cls = obj.__class__
@@ -319,14 +334,11 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
 
 
 # ---------------------------------------------------------------------------
-# Public settability predicates
+# Marker materialization
 # ---------------------------------------------------------------------------
-# The accept-list and the broadcast overlay above are the engine's answer to
-# "may this key set this attribute?". External config front-ends (a CLI layer
-# turning `--lr 0.1` into a config change) need the SAME answer, and any
-# re-derivation of it drifts: a hand-rolled accept-list misses `**kwargs`
-# targets, `__init__`-body slots, and both broadcast opt-outs. These two
-# predicates are that answer, exported so there is exactly one implementation.
+# (The public settability predicates this section once introduced moved to
+# ``confluid.broadcast`` — ``accepts_key`` / ``accepts_broadcast`` /
+# ``accepts_any_key`` — and are re-exported above for compatibility.)
 
 
 def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
@@ -861,13 +873,10 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     :func:`_takes_var_keyword` at the one call site in :func:`_flow_target`.
     """
     try:
-        if inspect.isclass(target):
-            init_method = getattr(target, "__init__", None)
-            if init_method is None:
-                return None
-            sig = inspect.signature(init_method)
-        else:
-            sig = inspect.signature(target)
+        init_method = init_callable(target)
+        if init_method is None:
+            return None
+        sig = inspect.signature(init_method)
         return {
             p.name
             for p in sig.parameters.values()
@@ -889,7 +898,10 @@ def _takes_var_keyword(target: Any) -> bool:
     nowhere near confluid. :func:`_var_keyword_extras` says what to pass instead.
     """
     try:
-        sig = inspect.signature(target.__init__ if inspect.isclass(target) else target)
+        init_method = init_callable(target)
+        if init_method is None:
+            return False
+        sig = inspect.signature(init_method)
     except (ValueError, TypeError):
         return False
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())

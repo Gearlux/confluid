@@ -257,3 +257,19 @@ def test_mandatory_marker_does_not_leak_into_pydantic_schema() -> None:
     schema = to_pydantic(Runner).model_json_schema()
     # The marker string must not appear anywhere in the generated JSON Schema.
     assert "__confluid_mandatory__" not in str(schema)
+
+
+def test_mandatory_param_cache_is_per_class_never_inherited() -> None:
+    """Twin of the lazy/no-broadcast cache pins: the MRO ``getattr`` read served
+    the parent's stamped answer to every subclass; the read is now the class's
+    OWN ``__dict__``."""
+    from confluid import Mandatory, mandatory_param_names
+
+    class _Base:
+        def __init__(self, x: Mandatory[int] = 0) -> None: ...
+
+    class _Sub(_Base):
+        def __init__(self, y: int = 1) -> None: ...
+
+    assert mandatory_param_names(_Base) == {"x"}  # parent primed FIRST
+    assert mandatory_param_names(_Sub) == set()
