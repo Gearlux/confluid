@@ -139,3 +139,41 @@ def test_interpolate_non_scalar_target_left_literal() -> None:
     """Embedding a dict/list config value is a no-op (stays literal)."""
     resolver = Resolver(context={"cfg": {"nested": {"x": 1}}})
     assert resolver.resolve("prefix-${cfg.nested}") == "prefix-${cfg.nested}"
+
+
+def test_resolver_interpolates_marker_kwargs_in_place_and_keeps_references_late_bound(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """The kwargs walk substitutes text IN PLACE (identity kept) and touches nothing deferred."""
+    import pytest  # noqa: F401  (annotation only)
+
+    from confluid.fluid import Class, Reference
+    from confluid.resolver import Resolver
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    marker = Class("Whatever")
+    marker.kwargs.update(
+        path="${CONFLUID_TEST_ROOT}/x",
+        ref=Reference("elsewhere"),
+        raw="!ref:${CONFLUID_TEST_ROOT}",  # string keeps its prefix — parsed at flow time
+    )
+    out = Resolver(context={}).resolve(marker)
+    assert out is marker  # identity preserved — the flow memo keys on id()
+    assert marker.kwargs["path"] == "/store/x"
+    assert isinstance(marker.kwargs["ref"], Reference)  # late-bound, untouched
+    assert marker.kwargs["raw"] == "!ref:/store"  # interpolate first, parse later
+    # Idempotent: a second pass changes nothing.
+    Resolver(context={}).resolve(marker)
+    assert marker.kwargs["path"] == "/store/x"
+
+
+def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
+    """A marker whose kwargs reach itself is walked once, not forever."""
+    from confluid.fluid import Class
+    from confluid.resolver import Resolver
+
+    a = Class("A")
+    b = Class("B")
+    a.kwargs["child"] = b
+    b.kwargs["parent"] = a  # cycle
+    assert Resolver(context={}).resolve(a) is a

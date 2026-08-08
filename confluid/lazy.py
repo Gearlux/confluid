@@ -107,7 +107,13 @@ def lazy_param_names(cls: type) -> Set[str]:
     re-introspect on every visit. Returns an empty set if ``cls`` has no resolvable
     ``__init__`` or no Lazy slots.
     """
-    cached = getattr(cls, "__confluid_lazy_params__", None)
+    # Read the cache from the class's OWN __dict__, never getattr — getattr
+    # walks the MRO, so a subclass queried after its parent returned the
+    # PARENT's cached answer (measured: a Sub declaring ``opt: Lazy[Any]``
+    # reported set() after Base was queried first, and the reverse direction
+    # inherited markers the subclass never declared). Same guard the registry
+    # uses for ``__confluid_name__``.
+    cached = cls.__dict__.get("__confluid_lazy_params__") if hasattr(cls, "__dict__") else None
     if cached is not None:
         return cached  # type: ignore[no-any-return]
     names: Set[str] = set()

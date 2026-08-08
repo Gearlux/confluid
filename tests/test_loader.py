@@ -326,3 +326,100 @@ def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) ->
     )
     result = load(doc, flow=False)
     assert result["data_dir"] == "/store/RFUAV/v3/data"
+
+
+def test_materialize_interpolates_config_keys_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``materialize()`` runs the same Resolver pass ``load()`` runs.
+
+    docs/interpolation.md promises interpolation "at materialization" naming
+    ``load()`` / ``materialize()`` / ``resolve()``; measured, ``materialize()``
+    skipped it and the literal ``${...}`` rode into values silently while the
+    other two (and ``configure()``) resolved. Idempotent on the load() path,
+    which has already substituted.
+    """
+    from confluid import materialize
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    out = materialize({"run": {"name": "exp42"}, "output_dir": "${CONFLUID_TEST_ROOT}/runs/${run.name}"})
+    assert out["output_dir"] == "/store/runs/exp42"
+
+
+def test_materialize_resolves_against_a_separate_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A distinct ``context=`` dict is the interpolation source, and is itself resolved."""
+    from confluid import materialize
+
+    monkeypatch.delenv("db", raising=False)
+    out = materialize({"port_str": "port=${db.port}"}, context={"db": {"port": 5432}})
+    assert out["port_str"] == "port=5432"
+
+
+def test_interpolation_reaches_a_markers_kwarg_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${ENV}`` and ``${key.path}`` inside a tag's mapping body substitute at load.
+
+    Measured before the fix: ``Resolver.resolve`` returned Fluids whole, so the
+    literal ``${...}`` rode into the constructed object silently on EVERY path,
+    while the quoted-string spelling of the same target interpolated — two
+    spellings, two answers. Nested plain dicts inside the kwargs interpolate too.
+    """
+    from confluid import configurable, load
+
+    @configurable
+    class _InterpSrc:
+        def __init__(self, input_dir: str = "", tag: str = "", extras: dict = None) -> None:  # type: ignore[assignment]
+            self.input_dir, self.tag, self.extras = input_dir, tag, extras
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    cfg = load(
+        "run:\n"
+        "  name: exp42\n"
+        "src: !class:_InterpSrc()\n"
+        '  input_dir: "${CONFLUID_TEST_ROOT}/files"\n'
+        '  tag: "${run.name}"\n'
+        "  extras:\n"
+        '    nested: "${run.name}-x"\n'
+    )
+    assert cfg["src"].input_dir == "/store/files"
+    assert cfg["src"].tag == "exp42"
+    assert cfg["src"].extras == {"nested": "exp42-x"}
+
+
+def test_interpolation_matches_across_marker_spellings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mapping-body, quoted-string, and Fluid-ROOT spellings substitute identically."""
+    from confluid import configurable, load
+
+    @configurable
+    class _SpellSrc:
+        def __init__(self, input_dir: str = "") -> None:
+            self.input_dir = input_dir
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    body = load('src: !class:_SpellSrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/files"\n')["src"]
+    quoted = load('src: "!class:_SpellSrc(input_dir=${CONFLUID_TEST_ROOT}/files)"')["src"]
+    root = load('!class:_SpellSrc()\ninput_dir: "${CONFLUID_TEST_ROOT}/files"')
+    assert body.input_dir == quoted.input_dir == root.input_dir == "/store/files"
+
+
+def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``!lazy:`` kwarg substitutes at LOAD (burn-in) while construction stays deferred.
+
+    Round-trip half of the pin: the dumped marker carries the SUBSTITUTED value,
+    so a reload in a different environment reproduces this run — a slot that must
+    stay late-bound uses ``!ref:`` instead.
+    """
+    from confluid import configurable, dump, load
+    from confluid.fluid import Lazy
+
+    @configurable
+    class _LazySrc:
+        def __init__(self, input_dir: str = "") -> None:
+            self.input_dir = input_dir
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    marker = load('opt: !lazy:_LazySrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/opt"\n')["opt"]
+    assert isinstance(marker, Lazy)  # construction still deferred
+    assert marker.kwargs["input_dir"] == "/store/opt"
+    dumped = dump({"opt": marker})
+    assert "/store/opt" in dumped and "${" not in dumped
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/elsewhere")
+    reloaded = load(dumped)["opt"]
+    assert reloaded.kwargs["input_dir"] == "/store/opt"  # burned in — reload reproduces

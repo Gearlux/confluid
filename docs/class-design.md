@@ -20,9 +20,26 @@ to construct. Four rules:
    change. Read-only properties are invisible to Confluid's config surface — never set by
    `configure`, never `dump`ed, rebuilt after `load()`. Cache (into a private `_field`) **only** an
    expensive external materialization whose inputs are stable by first use.
-4. **Params stay in the constructor**, documented in the `Args:` docstring — so they remain visible
-   to static introspection (`to_pydantic`, `parse_param_docs` — the schema/help surface GUIs and
-   agents read).
+4. **Configurable slots live in the constructor signature OR as `__init__`-body attributes —
+   both are introspected.** The classic form keeps every knob in the signature (defaulted,
+   documented in the `Args:` docstring). A class with *many* deferred dependencies may instead
+   take a **minimal constructor** (only the genuinely required inputs and identity scalars) and
+   assign the rest as body attributes — `self.optimizer = LazyClass(Adam, lr=1e-3)` — reconfigured
+   after construction by YAML, broadcasting, or a subclass. Body slots are not hidden state:
+   the schema surface (`to_pydantic`) scans the `__init__` body and surfaces every non-underscore
+   `self.<name> = …` slot as an optional field, so the schema/help surface GUIs and agents read
+   still enumerates them. Three rules for body slots:
+   - a slot that needs a **runtime-injected** argument (`params=`, `dataset=`) must hold a
+     `LazyClass(...)` value (`!lazy:` in YAML) — a bare `Class(...)` body value is eagerly built
+     during parent materialization and would crash a target missing its runtime argument;
+   - give the slot a **type annotation** in the body (`self.optimizer: Lazy[Optimizer] = …`) so
+     the generated schema can type it (un-annotated slots degrade to `Any`);
+   - assign a **fresh `LazyClass(...)` per instance** in the body — never a shared mutable default.
+
+   The body scan reads `__init__` *source*, so a compiled/frozen/zip deployment needs the
+   build-time bake step (`confluid-bake <package>`) or an explicit
+   `@configurable(broadcast_attrs=[...])` declaration — see
+   [Extending Discovery](extending-discovery.md) for the packaged-mode details.
 
 ```python
 from typing import Any, Optional

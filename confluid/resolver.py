@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
 from loggair import get_logger
@@ -320,6 +320,13 @@ class Resolver:
             return value
 
         if isinstance(value, (Class, Fluid)):
+            # A marker passes through WHOLE — its kwargs are the engine's to
+            # consume — but its kwarg STRINGS get ``${...}`` substituted first.
+            # Before this, a placeholder written in a tag's mapping body stayed
+            # the literal string on every path (measured 2026-08-08), while the
+            # quoted-string spelling of the same target interpolated via
+            # ``_parse_class_string`` — two spellings, two answers.
+            self._interpolate_fluid_kwargs(value)
             return value
 
         # 3. Handle Dictionaries — recurse, passing the current dict as local_context
@@ -330,6 +337,59 @@ class Resolver:
         if isinstance(value, list):
             return [self.resolve(item, local_context) for item in value]
 
+        return value
+
+    def _interpolate_fluid_kwargs(self, fluid: Any, _seen: Optional[Set[int]] = None) -> None:
+        """Substitute ``${...}`` inside a marker's kwargs, IN PLACE — text only.
+
+        The interpolation-restricted twin of :meth:`resolve` for marker kwargs:
+        strings are ``_interpolate``-d (a ``"!ref:"``/``"!class:"`` STRING keeps
+        its prefix for flow-time parsing, matching the top-level order —
+        interpolate first, parse later), a ``Reference`` fluid stays late-bound
+        untouched, nested markers recurse, and containers are rewritten in
+        place. Sibling kwargs act as the local scope, exactly as a plain dict's
+        keys do in :meth:`resolve`.
+
+        IN PLACE on purpose: marker identity is load-bearing — the engine's
+        flow memo and ``!ref:`` sharing key on ``id()`` — and the broadcast
+        layer's ``_expand_block_keys`` already extends marker kwargs by
+        reference. Substitution burns the value in at load time (the documented
+        single-pass contract); a slot that must stay late-bound uses ``!ref:``.
+        ``_seen`` guards hand-built marker cycles; a marker reached twice in one
+        document is walked once per entry, which is idempotent either way.
+        """
+        seen = _seen if _seen is not None else set()
+        if id(fluid) in seen:
+            return
+        seen.add(id(fluid))
+        kwargs = fluid.kwargs
+        for key in list(kwargs):
+            kwargs[key] = self._interpolate_only(kwargs[key], kwargs, seen)
+
+    def _interpolate_only(self, value: Any, local_context: Optional[Dict[str, Any]], seen: Set[int]) -> Any:
+        """The kwargs-walk value step: interpolate strings, recurse containers/markers.
+
+        Deliberately NOT :meth:`resolve` — that would also parse ``"!ref:"`` /
+        ``"!class:"`` strings and eagerly resolve ``Reference`` fluids, changing
+        WHEN deferred values bind. Only text substitution happens here.
+        """
+        from confluid.fluid import Fluid, Reference
+
+        if isinstance(value, str):
+            return self._interpolate(value, local_context)
+        if isinstance(value, Reference):
+            return value  # late-bound by design — flow() resolves it
+        if isinstance(value, Fluid):
+            self._interpolate_fluid_kwargs(value, seen)
+            return value
+        if isinstance(value, dict):
+            for key in list(value):
+                value[key] = self._interpolate_only(value[key], value, seen)
+            return value
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                value[index] = self._interpolate_only(item, local_context, seen)
+            return value
         return value
 
     def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Any:

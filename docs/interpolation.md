@@ -24,6 +24,14 @@ Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps mea
 > `materialize()`, or `resolve()`. The raw parse returned by `load_config` /
 > `load_config_with_paths` still carries the literal `${...}` placeholders.
 
+> **Marker kwargs interpolate too — and burn in.** A `${...}` written inside a
+> `!class:` / `!lazy:` tag's mapping body (or its quoted-string form) is
+> substituted in the same load-time pass as any plain key. The substituted
+> value is what the marker then carries — `dump()` emits it, and a later
+> `flow()` of a deferred `!lazy:` slot sees it, even if the environment changed
+> in between. A slot that must stay **late-bound** uses `!ref:` to a plain key
+> instead of `${...}`.
+
 ## Capturing the YAML include tree
 
 `load_config_with_paths(path)` returns both the loaded dict AND the ordered

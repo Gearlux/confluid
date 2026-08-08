@@ -50,11 +50,11 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
   subscript with the **interface the slot flows into**. The canonical spellings:
 
   ```python
-  model: Mandatory[nn.Module] = Class(TimmModel)               # required dependency slot
-  optimizer: Mandatory[Lazy[Optimizer]] = Class(Adam, lr=1e-3)  # required AND deferred
+  model: Mandatory[nn.Module] = Class(VisionModel)                 # required dependency slot
+  optimizer: Mandatory[Lazy[Optimizer]] = LazyClass(Adam, lr=1e-3)  # required AND deferred
   ```
 
-  The `Fluid` arm lets the deferred `Class(...)` default type-check under strict
+  The `Fluid` arm lets the deferred `LazyClass(...)` default type-check under strict
   mypy (previously this had to be spelled `Mandatory[Union[nn.Module, Fluid]]`
   by hand), and `Mandatory[Lazy[T]]` is the composed form for a required slot
   that must also stay deferred for runtime injection. `NoBroadcast[T]`

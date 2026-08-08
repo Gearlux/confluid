@@ -65,7 +65,12 @@ def no_broadcast_param_names(cls: Any) -> FrozenSet[str]:
     callables included — a builder function's params can carry the marker too,
     resolved via the callable's own hints).
     """
-    cached = getattr(cls, "__confluid_no_broadcast_params__", None)
+    # Own-__dict__ read, never getattr: an MRO walk served a parent's cached
+    # answer to every subclass — here that silently BLOCKED bare keys on a
+    # subclass that never declared NoBroadcast (see the twin comment in
+    # confluid.lazy). ``cls`` may be a plain callable; a function's __dict__
+    # is its own, so the same read works.
+    cached = cls.__dict__.get("__confluid_no_broadcast_params__") if hasattr(cls, "__dict__") else None
     if cached is not None:
         return cached  # type: ignore[no-any-return]
     target = getattr(cls, "__init__", None) if isinstance(cls, type) else cls

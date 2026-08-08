@@ -60,6 +60,32 @@ class BodySlot(NamedTuple):
     value: Optional[ast.AST]  # assigned-value node, else None
 
 
+def init_callable(target: Any) -> Optional[Any]:
+    """The callable whose signature governs CALLING ``target``.
+
+    For a class, its ``__init__``; for any other callable (a registered builder
+    FUNCTION, per the "A Target May Be ANY Callable" mandate), the callable
+    itself. Returns ``None`` for a class whose ``__init__`` is literally
+    ``None`` — a legal class attribute that makes the class unconstructable.
+
+    This is the ONE class-vs-callable dispatch every signature reader must go
+    through. Reading ``getattr(target, "__init__")`` unconditionally resolves a
+    plain function's ``__init__`` to ``object.__init__`` — signature
+    ``(*args, **kwargs)`` — which made the accept-list machinery answer
+    "accepts everything" for every registered builder function (measured:
+    ``accepts_key(builder, "run_name")`` was True for a builder declaring only
+    ``weights``/``num_classes``). ``engine._ctor_params`` carried the correct
+    branch while ``broadcast`` did not; this helper is where the four copies
+    were unified so they cannot diverge again.
+
+    Callers still read the signature / type hints themselves (their filtering
+    and error handling differ); this helper only answers WHOSE signature.
+    """
+    if inspect.isclass(target):
+        return getattr(target, "__init__", None)
+    return target
+
+
 def init_source_available(init_func: Any) -> bool:
     """True when ``inspect.getsource`` can read this ``__init__``'s source.
 

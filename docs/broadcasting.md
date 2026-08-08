@@ -85,9 +85,9 @@ To see exactly what broadcast where, enable trace logging:
 
 ```bash
 LOGGAIR_CONSOLE_LEVEL=TRACE python train.py config/train.yaml
-# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
-# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (glob '**')
-# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (block 'trainer')
+# ... TRACE | confluid.broadcast:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
+# ... TRACE | confluid.broadcast:_prepare_kwargs | broadcast: 'lr' -> Transform (glob '**')
+# ... TRACE | confluid.broadcast:_prepare_kwargs | broadcast: 'lr' -> Transform (block 'trainer')
 ```
 
 For a structured, assertable version of the same information — every applied

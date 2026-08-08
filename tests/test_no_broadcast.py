@@ -328,3 +328,28 @@ def test_register_can_declare_body_slots_for_a_third_party_class() -> None:
 
     assert accepts_key(ThirdPartyBody, "declared_only"), "the declaration reached the accept-list"
     assert accepts_key(ThirdPartyBody, "scanned"), "and did NOT replace what the scan found"
+
+
+def test_no_broadcast_cache_is_per_class_never_inherited() -> None:
+    """A subclass overriding ``__init__`` without the marker must not inherit the block.
+
+    The cache was read with ``getattr`` (an MRO walk), so after the parent was
+    queried a bare key was silently blocked on every subclass — including one
+    whose own constructor never declared ``NoBroadcast``. Own-``__dict__`` read
+    now; a subclass that INHERITS the parent's constructor still computes the
+    parent's markers, which is the semantically correct answer.
+    """
+    from confluid import NoBroadcast, no_broadcast_param_names
+
+    class _Base:
+        def __init__(self, n: NoBroadcast[int] = 0) -> None: ...
+
+    class _Sub(_Base):
+        def __init__(self, n: int = 0) -> None: ...
+
+    class _Inherits(_Base):
+        pass
+
+    assert no_broadcast_param_names(_Base) == frozenset({"n"})  # parent primed FIRST
+    assert no_broadcast_param_names(_Sub) == frozenset()
+    assert no_broadcast_param_names(_Inherits) == frozenset({"n"})

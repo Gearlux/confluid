@@ -17,7 +17,7 @@
 
 ## Documentation
 
-Each topic has its own guide, and every guide has a runnable companion script in [`examples/`](https://github.com/Gearlux/confluid/tree/main/examples):
+Each topic has its own guide, and every guide except the architecture notes has a runnable companion script in [`examples/`](https://github.com/Gearlux/confluid/tree/main/examples):
 
 | Guide | What it covers | Example |
 |---|---|---|
