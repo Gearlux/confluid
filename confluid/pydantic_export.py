@@ -142,18 +142,6 @@ def _is_opaque_type(anno: Any) -> bool:
     return False
 
 
-def _unwrap_annotated(anno: Any) -> Any:
-    """Strip ``Annotated[X, ...]`` wrappers (incl. ``Lazy[X]``) down to ``X``.
-
-    Pydantic 2 handles ``Annotated`` natively, but we want the field type to be
-    plain ``X`` so nested ``@configurable`` detection works. The lazy marker is
-    preserved on the source class via :func:`confluid.lazy.lazy_param_names`.
-    """
-    while get_origin(anno) is Annotated:
-        anno = get_args(anno)[0]
-    return anno
-
-
 def _convert_annotation(anno: Any) -> Any:
     """Recursively replace ``@configurable`` types inside ``anno`` with generated models.
 

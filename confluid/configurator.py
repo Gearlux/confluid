@@ -40,10 +40,23 @@ from typing import Any, Dict, FrozenSet, Optional, Set, Union
 import yaml
 from loggair import get_logger
 
-from confluid.fluid import Class, Lazy
+from confluid.broadcast import (
+    _broadcast_blocked_keys,
+    _expand_block_keys,
+    _get_acceptable_keys,
+    _KeyScope,
+    _scope_of,
+    _View,
+)
+from confluid.engine import _ctor_params, flow
+from confluid.fluid import Class, Instance, Lazy
+from confluid.loader import ConfluidLoader, load_config
 from confluid.merger import expand_dotted_keys
+from confluid.registry import resolve_class
 from confluid.report import ConfigurationReport
-from confluid.resolver import Resolver
+from confluid.resolver import Resolver, parse_value
+from confluid.state import _active_report
+from confluid.validation import get_policy, validate_setattr
 
 logger = get_logger("confluid.configurator")
 
@@ -65,8 +78,6 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         report; otherwise a fresh report is returned and its unused-keys
         DEBUG summary logged here.
     """
-    from confluid.state import _active_report
-
     ambient = _active_report()
     report = ambient if ambient is not None else ConfigurationReport()
 
@@ -77,8 +88,6 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         # Parse with ConfluidLoader so tag-carrying strings (e.g. "!class:Model")
         # construct Fluid markers. Plain yaml.safe_load would raise on the tags —
         # the global SafeLoader deliberately knows nothing about them.
-        from confluid.loader import ConfluidLoader
-
         config = yaml.load(config, Loader=ConfluidLoader)
 
     if not isinstance(config, dict):
@@ -131,8 +140,6 @@ def configure_from_file(
     Raises:
         confluid.ConfigFileNotFoundError: If ``path`` does not exist.
     """
-    from confluid.loader import load_config
-
     return configure(*instances, config=load_config(path), context=context)
 
 
@@ -154,9 +161,6 @@ def _walk(
     """
     if obj is None:
         return
-
-    from confluid.engine import flow
-    from confluid.fluid import Lazy
 
     if isinstance(obj, Lazy):
         # A deferred slot is NOT walked into, and is NOT tuned here either — its OWNER
@@ -215,9 +219,6 @@ def _tune_deferred(
     A kwarg the marker already carries and that nothing beat is left alone only when
     the bare key lost; otherwise last-spec-wins applies and the bare key overwrites.
     """
-    from confluid.broadcast import _broadcast_blocked_keys, _get_acceptable_keys, _KeyScope, _scope_of
-    from confluid.registry import resolve_class
-
     target_cls = marker.target if isinstance(marker.target, type) else resolve_class(marker.target)
     if target_cls is None:
         return
@@ -256,14 +257,6 @@ def _apply(
     instance_name = getattr(obj, "name", None)
     if not isinstance(instance_name, str):
         instance_name = None
-
-    from confluid.broadcast import (
-        _broadcast_blocked_keys,
-        _expand_block_keys,
-        _get_acceptable_keys,
-        _KeyScope,
-        _scope_of,
-    )
 
     acceptable = _get_acceptable_keys(cls)
     own_attrs = {k for k in vars(obj) if not k.startswith("_")}
@@ -452,12 +445,6 @@ def _assign(
     applied key with its last-write origin from ``origins`` (plus the
     eager-class staleness note when it fires).
     """
-    from confluid.engine import _ctor_params
-    from confluid.engine import flow as _flow
-    from confluid.fluid import Class, Instance, Lazy
-    from confluid.resolver import parse_value
-    from confluid.validation import get_policy, validate_setattr
-
     cls = obj.__class__
     resolver = Resolver(context=context)
 
@@ -490,7 +477,7 @@ def _assign(
         # so the isinstance test above caught it and configure() ALONE built it eagerly —
         # a straight divergence from the load path for the identical config.
         if isinstance(resolved_val, (Class, Instance)) and not isinstance(resolved_val, Lazy):
-            resolved_val = _flow(resolved_val)
+            resolved_val = flow(resolved_val)
         # Post-construction overrides honour the same per-field schema as the
         # constructor — re-uses ``policy.init`` because configure() is the
         # moral equivalent of "instantiate this attribute with this value",
@@ -522,8 +509,6 @@ def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) 
     * inherited STRICT entries and ``'*'`` glob blocks are dropped — their
       one level is spent at this object.
     """
-    from confluid.broadcast import _KeyScope, _scope_of, _View
-
     block_keys = {cls_name, instance_name} - {None}
     has_block = any(
         k in view and isinstance(view[k], dict) and _scope_of(view, k) is not _KeyScope.EXACT for k in block_keys
@@ -565,8 +550,6 @@ def _spliced(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) 
 
 def _hoist_routing_from(out: Any, block: Dict[str, Any], instance_name: Optional[str]) -> None:
     """Hoist a matched block's routing contents ('**'/'*'/named sub-blocks) into ``out``."""
-    from confluid.broadcast import _expand_block_keys, _KeyScope
-
     for bk, bv in _expand_block_keys(block).items():
         if bk == instance_name and isinstance(bv, dict):
             _hoist_routing_from(out, bv, instance_name)  # Cls.inst.attr form unrolls inline
@@ -585,8 +568,6 @@ def _hoist_routing_from(out: Any, block: Dict[str, Any], instance_name: Optional
 
 
 def _hoist_strict(out: Any, key: str, block: Dict[str, Any]) -> None:
-    from confluid.broadcast import _KeyScope, _scope_of
-
     prev = out.get(key)
     if isinstance(prev, dict) and _scope_of(out, key) is _KeyScope.STRICT:
         block = {**prev, **block}
@@ -601,8 +582,6 @@ def _spliced_at(view: Dict[str, Any], key: str, sub_block: Dict[str, Any]) -> Di
     (later than earlier broadcasts → they win for the child, as authored).
     The entries are ADDRESSED — consumed by that one child, spent below it.
     """
-    from confluid.broadcast import _KeyScope, _scope_of, _View
-
     out = _View()
     placed = False
     for k, v in view.items():

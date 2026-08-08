@@ -214,14 +214,16 @@ class Lazy(Class, Generic[T]):
 
 
 def __getattr__(name: str) -> Any:
-    """Compat: ``flow`` / ``cast`` moved to ``confluid.engine`` (2026-07).
+    """Compat: ``flow`` moved to ``confluid.engine`` (2026-07).
 
     Served lazily so ``from confluid.fluid import flow`` keeps working for
     downstream code without reintroducing a fluid→engine import cycle at
     module-load time (engine imports fluid's markers at its top level).
+    The ``cast`` arm was pruned 2026-08-08 — zero users workspace-wide;
+    import it from ``confluid`` (public) or ``confluid.engine``.
     """
-    if name in ("flow", "cast"):
+    if name == "flow":
         from confluid import engine
 
-        return getattr(engine, name)
+        return engine.flow
     raise AttributeError(f"module 'confluid.fluid' has no attribute {name!r}")

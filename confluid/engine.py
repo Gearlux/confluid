@@ -36,7 +36,7 @@ new code should import from here.
 import inspect
 from copy import copy
 from dataclasses import replace
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Type
 
 from loggair import get_logger
 
@@ -49,7 +49,6 @@ from confluid.broadcast import (  # noqa: F401
     _acceptable_keys_cache,
     _broadcast_blocked_keys,
     _broadcast_pool,
-    _classify_annotation,
     _expand_block_keys,
     _get_acceptable_keys,
     _get_param_kinds,
@@ -62,12 +61,8 @@ from confluid.broadcast import (  # noqa: F401
     _post_init_attrs_cache,
     _prepare_kwargs,
     _same_target,
-    _scope_of,
-    _settability_target,
     _splice_kwargs_at_slot,
     _View,
-    _warn_if_init_unscannable,
-    _warned_unscannable_inits,
     accepts_any_key,
     accepts_broadcast,
     accepts_key,
@@ -107,6 +102,13 @@ from confluid.state import (  # noqa: F401
 )
 
 logger = get_logger("confluid.engine")
+
+# Engine-owned introspection cache: non-@configurable ancestor attributes per
+# class (see _get_parent_attr_blacklist). Its OWN dict — it used to squat in
+# broadcast._post_init_attrs_cache under suffixed '#parent_blacklist' keys,
+# violating that module's stated cache ownership. Cleared once per
+# materialize()/resolve() pass alongside the broadcast caches.
+_parent_blacklist_cache: Dict[str, FrozenSet[str]] = {}
 
 
 def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any]) -> None:
@@ -152,6 +154,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     _acceptable_keys_cache.clear()
     _post_init_attrs_cache.clear()
     _param_kind_cache.clear()
+    _parent_blacklist_cache.clear()
     # ``${...}`` interpolation — the same Resolver pass ``load()`` runs
     # (docs/interpolation.md promises it "at materialization"; measured, this
     # entry point skipped it and the literal ``${...}`` rode into values
@@ -218,6 +221,7 @@ def resolve(
     _acceptable_keys_cache.clear()
     _post_init_attrs_cache.clear()
     _param_kind_cache.clear()
+    _parent_blacklist_cache.clear()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
     # untouched — resolve() never managed that flag (it builds no objects).
     token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}))
@@ -278,15 +282,15 @@ def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
     from ``vars(obj)`` so the configurable surface reflects only what the
     user (and Confluid's own broadcast machinery) put there.
     """
-    cache_key = f"{cls.__module__}.{cls.__qualname__}#parent_blacklist"
-    if cache_key in _post_init_attrs_cache:
-        return _post_init_attrs_cache[cache_key]
+    cache_key = f"{cls.__module__}.{cls.__qualname__}"
+    if cache_key in _parent_blacklist_cache:
+        return _parent_blacklist_cache[cache_key]
 
     blacklist: Set[str] = set()
     try:
         mro = cls.__mro__
     except AttributeError:
-        _post_init_attrs_cache[cache_key] = frozenset()
+        _parent_blacklist_cache[cache_key] = frozenset()
         return frozenset()
 
     for klass in mro:
@@ -308,7 +312,7 @@ def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
             blacklist.update(init_setattr_names(init))
 
     result = frozenset(blacklist)
-    _post_init_attrs_cache[cache_key] = result
+    _parent_blacklist_cache[cache_key] = result
     return result
 
 

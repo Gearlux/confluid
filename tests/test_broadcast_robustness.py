@@ -12,7 +12,7 @@ setattr).
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from confluid import Instance, configurable, flow, materialize, register
-from confluid.loader import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
+from confluid.broadcast import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
 
 
 def _inst(target: str, /, **kwargs: Any) -> Instance:
@@ -351,7 +351,7 @@ def test_same_target_uses_class_identity_not_name() -> None:
     skipped from broadcasting into a sibling class ``A`` defined in a
     different module.
     """
-    from confluid.loader import _same_target
+    from confluid.broadcast import _same_target
 
     @configurable
     class A:

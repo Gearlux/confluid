@@ -21,7 +21,9 @@ the dependency one-directional. Keep it that way: code that needs to BUILD an
 object belongs in ``engine``.
 """
 
+import collections.abc as cabc
 import inspect
+import typing
 from enum import Enum
 from typing import Any, Callable, Dict, FrozenSet, Optional, Set
 
@@ -34,12 +36,10 @@ from confluid.state import _ENGINE_STATE
 
 logger = get_logger("confluid.broadcast")
 
-# Introspection caches, keyed by class name. They live here because the merge
-# machinery is their main reader; ``engine`` clears them once per
-# ``materialize`` / ``resolve`` pass through the re-export, and ALSO derives
-# its parent-attr blacklist into ``_post_init_attrs_cache`` under suffixed
-# ``…#parent_blacklist`` keys (``engine._get_parent_attr_blacklist``) — so the
-# per-pass clear covers both families.
+# Introspection caches, keyed by class name. Every reader is in this module;
+# ``engine`` clears them once per ``materialize`` / ``resolve`` pass through
+# the re-export (its own ``_parent_blacklist_cache`` lives in ``engine`` and
+# is cleared alongside — cache ownership follows module ownership).
 _acceptable_keys_cache: Dict[str, Optional[FrozenSet[str]]] = {}
 _post_init_attrs_cache: Dict[str, FrozenSet[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
@@ -280,8 +280,6 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
     applies. ``typing.get_type_hints`` is wrapped in a try/except because
     forward references that can't be resolved would otherwise raise.
     """
-    import typing
-
     target: Any
     if isinstance(cls_or_name, type) or callable(cls_or_name):
         target = cls_or_name
@@ -336,8 +334,6 @@ def _classify_annotation(ann: Any) -> Optional[str]:
 
     Returns None for anything else (including bare ``Any`` and unannotated).
     """
-    import typing
-
     if ann is inspect.Parameter.empty:
         return None
 
@@ -353,20 +349,10 @@ def _classify_annotation(ann: Any) -> Optional[str]:
         if origin in (list, tuple, set, frozenset):
             return "list"
         # Abstract collections from typing/collections.abc.
-        try:
-            import collections.abc as cabc
-        except ImportError:  # pragma: no cover
-            cabc = None  # type: ignore[assignment]
-        if cabc is not None:
-            if origin in (cabc.Mapping, cabc.MutableMapping):
-                return "dict"
-            if origin in (
-                cabc.Sequence,
-                cabc.MutableSequence,
-                cabc.Iterable,
-                cabc.Collection,
-            ):
-                return "list"
+        if origin in (cabc.Mapping, cabc.MutableMapping):
+            return "dict"
+        if origin in (cabc.Sequence, cabc.MutableSequence, cabc.Iterable, cabc.Collection):
+            return "list"
         if origin is typing.Union:
             for arg in typing.get_args(ann):
                 kind = _classify_annotation(arg)

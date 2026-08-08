@@ -65,6 +65,34 @@ All notable changes to confluid are documented here. The format follows
   the node they wrote it on, with nothing in the log. "My knob did not take" is
   now one grep (`LOGGAIR_CONSOLE_LEVEL=DEBUG`) instead of a bisect.
 
+### Internal
+
+- **Dead compatibility shims pruned (private names, zero users verified
+  workspace-wide).** Five never-imported re-exports dropped from
+  `confluid.engine` (`_classify_annotation`, `_scope_of`, `_settability_target`,
+  `_warn_if_init_unscannable`, `_warned_unscannable_inits`); `confluid.loader`'s
+  blanket compat block reduced to its one real dependency (`materialize`);
+  `confluid.fluid.__getattr__`'s `cast` arm removed (`flow` stays — it has a
+  downstream consumer); the uncalled `pydantic_export._unwrap_annotated`
+  deleted. Public API is untouched.
+
+- **Cache ownership follows module ownership.** The engine's parent-attr
+  blacklist now rides its own `engine._parent_blacklist_cache` (cleared per
+  materialize/resolve pass like the others) instead of squatting in
+  `broadcast._post_init_attrs_cache` under suffixed `#parent_blacklist` keys —
+  the arrangement contradicted broadcast's stated cache ownership.
+
+- **Three small duplications folded to one implementation each:** the dumper's
+  target-name spelling (three verbatim copies → `_target_name`), the
+  `KEY=VALUE` scope split (`loader._parse_scope_suffix` now delegates to
+  `scopes.parse_scope_arg`), and `configurator`'s eleven function-local
+  import sites hoisted to the module top (no cycle ever required them).
+
+- **Architecture records 6 and 7 added** (`docs/architecture.md`): why
+  precedence is discriminated by `Fluid._order_resolved` and never `_yaml_loc`,
+  and why `${...}` interpolation burns in at load for every spelling (with the
+  rejected late-bound/copy-on-write alternatives on record).
+
 ### Fixed
 
 - **The settability predicates read a builder FUNCTION's own signature.**

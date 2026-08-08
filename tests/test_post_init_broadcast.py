@@ -12,7 +12,7 @@ class's block.
 import pytest
 
 from confluid import Instance, configurable, flow, load, materialize
-from confluid.loader import _get_acceptable_keys, _get_post_init_attrs
+from confluid.broadcast import _get_acceptable_keys, _get_post_init_attrs
 
 # ---------------------------------------------------------------------------
 # Fixtures: module-level @configurable classes (AST source must be importable,

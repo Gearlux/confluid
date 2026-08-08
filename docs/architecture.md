@@ -472,3 +472,117 @@ document or created in code. If a future change needs a value left entirely unto
 Rule 2's asymmetry with rule 1 is deliberate and worth keeping explicit: automatic walkers skip a
 `Lazy`, a direct `flow()` does not. Making `flow()` also skip it would leave no way to build the
 object at all.
+
+---
+
+## 6. Position is settled once, and the marker remembers
+
+*2026-08-03 (recorded 2026-08-08)*
+
+**Context.** Confluid has one precedence rule — document order, last spec wins — and the ordered
+merge that applies it runs once per marker, when `_prepare_kwargs` walks the surrounding context
+and unrolls the marker's own kwargs at its slot's position. But a later pass exists: the
+nested-marker broadcast in `engine._resolve_kwarg_value`, which fills markers that never met the
+document (a constructor default `Class(Engine, power=7)`, a body slot `LazyClass(AdamW, lr=1e-4)`).
+Left alone, that pass re-applies a bare key over a contest the ordered merge already settled —
+which is a specificity tier by another name, the exact thing the one rule forbids.
+
+Something must therefore say "this marker's kwargs are already ordered". The first discriminator
+was `_yaml_loc`: a marker carrying a source location was "authored", one without was "a code
+default". That answered wrong for one shape — a document that *tunes* a code-built marker
+(`optimizer: {lr: 0.5}`) merges into the code marker and inherits its **empty** location, so the
+author's value read as a default and lost to any bare key regardless of where either sat.
+
+**Decision.** An explicit engine flag, `Fluid._order_resolved`, stamped by `_flow_recursive` the
+moment the ordered merge has run for that marker; the broadcast pass skips any key the marker
+already carries once the flag is set. `_yaml_loc` is demoted to diagnostics — an error-message
+pointer, never a precedence input.
+
+Two corollaries carry the same idea to the places the flag cannot reach:
+
+- A **mapping addressed at a deferred slot** is applied post-construction and a plain dict
+  carries no position — so the contest is decided *where the ordering is still visible* and only
+  its outcome travels (`Fluid._late_bare_keys`: per dict-valued slot, the bare keys positioned
+  later than it).
+- On the **configure() path** the verdict is call-scoped — a `beaten` parameter computed by the
+  owner's scan — never marker state. It was briefly stamped on the marker, and a second
+  `configure()` carrying only a bare key found that key still marked "lost" against a document
+  it never saw.
+
+**Consequences.**
+
+- Engine bookkeeping lives on the marker (`_order_resolved`, `_late_bare_keys`,
+  `_addressed_keys`), because the marker is the only thing that survives between the passes that
+  write and read them. Every read goes through the `fluid.is_order_resolved` /
+  `late_bare_keys_of` / `addressed_keys_of` accessors, so each default is written down once.
+- The guard is load-bearing and measured: disabling it fails 7 tests, including a
+  document-authored marker losing to an *earlier* bare key.
+
+**Example.**
+
+```yaml
+lr: 0.9                                  # earlier bare key ...
+opt: !lazy:torch.optim.AdamW(lr=0.5)     # ... loses to the later own kwarg -> 0.5
+```
+
+Swap the two lines and the bare key wins instead. Without the flag, the broadcast pass would
+apply `lr: 0.9` in **both** orderings.
+
+**What you may change.** Not the discriminator: `_yaml_loc` must never again gate precedence
+(diagnostics drift toward absence — a merged, tuned, or hand-built marker legitimately has no
+location, and absence must not mean "default"). And never persist a configure()-path verdict on
+the marker — it would outlive the document that produced it.
+
+---
+
+## 7. Interpolation burns in — at load, for every spelling
+
+*2026-08-08*
+
+**Context.** `${...}` interpolation ran at load time for plain mapping and list values, but the
+Resolver returned any Fluid whole — so a placeholder written inside a `!class:`/`!lazy:` tag's
+mapping body stayed the literal string on every path, silently, while the quoted-string spelling
+of the same target (`"!class:Src(input_dir=${DATA_ROOT})"`) interpolated, because the
+string parser resolves per kwarg. Two spellings of one target, two answers — and the losing one
+was the spelling the docs recommended.
+
+**Decision.** The load-time Resolver pass walks a marker's kwargs too
+(`Resolver._interpolate_fluid_kwargs`) — **text-only** and **in place** — and the substituted
+value **burns in**.
+
+Three alternatives were rejected, each for a stated reason:
+
+- *Flow-time (late-bound) substitution* — it would break the single-pass contract, make a value
+  depend on *when* a deferred slot is built (an environment change between load and
+  `configure_optimizers` changes the run), and duplicate a channel that exists: `!ref:` to a
+  plain key is the late-binding mechanism, and stays it.
+- *A full `resolve()` walk of the kwargs* — that would also parse `"!ref:"`/`"!class:"` strings
+  and eagerly resolve `Reference` fluids, changing when deferred values bind. Only text
+  substitution happens; strings keep their prefixes for flow-time parsing, matching the
+  top-level order (interpolate first, parse later).
+- *Copy-on-write kwargs* — marker identity is load-bearing (the flow memo and `!ref:` sharing
+  key on `id()`), and a naive copy of a marker reached twice would split the one-marker-one-
+  instance guarantee. In-place follows the precedent `_expand_block_keys` set for marker kwargs.
+
+**Consequences.** `dump()` emits the substituted value, so a reload in a different environment
+reproduces this run — reproducibility over freshness, by design. A deferred `!lazy:` slot flowed
+later sees the load-time value. A hand-built marker passed through `materialize()` gets its
+kwargs rewritten in place; a template reused across environments would keep the first
+environment's values (accepted as exotic; see below).
+
+**Example.**
+
+```yaml
+run: {name: exp42}
+opt: !lazy:Sink()
+  out_dir: "${DATA_ROOT}/${run.name}"    # substitutes at load; construction stays deferred
+```
+
+`dump()` of the loaded marker emits `/store/exp42` — changing `DATA_ROOT` and reloading the dump
+reproduces the original run.
+
+**What you may change.** Not to a full `resolve()` of kwargs (it changes when deferred values
+bind), and not to flow-time substitution (it re-opens the two-answers problem as a
+*when*-you-flow dependence). A memoized-copy variant — one copy per marker per pass, preserving
+aliasing — is an acceptable refinement if in-place mutation of hand-built templates ever bites
+in practice.

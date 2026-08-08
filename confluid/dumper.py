@@ -46,6 +46,13 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
     return dumper.represent_scalar(f"!class:{name}", "")
 
 
+def _target_name(target: Any) -> str:
+    """A marker target's dumpable spelling: dotted path for a class/callable, verbatim string otherwise."""
+    if isinstance(target, type):
+        return f"{target.__module__}.{target.__qualname__}"
+    return str(target)
+
+
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
     from confluid.fluid import Class, Clone, Instance
@@ -64,11 +71,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # isinstance ladder must match it first to emit ``!lazy:`` instead of
     # ``!class:`` and preserve the deferred-construction contract on reload.
     if isinstance(data, LazyFluid):
-        target = data.target
-        if isinstance(target, type):
-            name = f"{target.__module__}.{target.__qualname__}"
-        else:
-            name = str(target)
+        name = _target_name(data.target)
         if data.kwargs:
             return dumper.represent_mapping(f"!lazy:{name}", data.kwargs)
         return dumper.represent_scalar(f"!lazy:{name}", "")
@@ -78,19 +81,11 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # Instance, `!class:X` for Class — so a reload reproduces the same
     # eager/deferred semantics.
     if isinstance(data, Instance):
-        target = data.target
-        if isinstance(target, type):
-            name = f"{target.__module__}.{target.__qualname__}"
-        else:
-            name = str(target)
+        name = _target_name(data.target)
         return dumper.represent_mapping(f"!class:{name}()", data.kwargs)
 
     if isinstance(data, Class):
-        target = data.target
-        if isinstance(target, type):
-            name = f"{target.__module__}.{target.__qualname__}"
-        else:
-            name = str(target)
+        name = _target_name(data.target)
         return dumper.represent_mapping(f"!class:{name}", data.kwargs)
 
     # Objects materialized via Confluid but not @configurable — use stored origin metadata
