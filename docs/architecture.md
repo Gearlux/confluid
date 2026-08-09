@@ -659,3 +659,48 @@ sanctioned duality, landed as Phase B: both live in ``broadcast`` as thin compos
 shared primitives ``_merge_rider`` / ``_merge_routing`` (the D1-adjudicated hoist policy) /
 ``_spent_at_boundary`` — never one mode-flagged function, because the marker splice's collision
 rules (``_parent_wins``, the glob shield) have no live analogue.
+
+---
+
+## 9. `!clone:` stays — the identity model's independence escape hatch
+
+*2026-08-09*
+
+**Context.** A dead-surface audit found `!clone:` used by no config anywhere in sight —
+a marker type, a tag constructor, a flow branch, a merge branch and two dump branches
+maintained for a feature with no caller. The audit recommended deletion; the ruling was
+KEEP, and this record is the reason, so the next audit stops at the "why" instead of
+re-litigating the grep.
+
+**Decision.** `!clone:` is retained as a first-class tag because the identity model is
+incomplete without it. Sharing is the DEFAULT everywhere: `!ref:` resolves to the one
+instance by identity, and the merge layer deliberately preserves Fluid identity when it
+copies (`merger._preserve_identity_copy` — its own docstring defers to `!clone:` as the
+opt-in for independence). Delete the tag and "a fan-out of INDEPENDENT instances from
+one spec" has no spelling in the language at all — the design's sharing-by-default
+posture is safe only while the escape hatch exists. Zero *current* users measures
+adoption, not load-bearing-ness: the tag is published surface (the tag table in the
+user docs), fully pinned, and has produced zero findings in any audit.
+
+**Consequences.**
+
+- Five small branches stay maintained across `fluid` / `loader` / `engine` / `merger` /
+  `dumper`. The cost has measured zero: no drift, no defect, no finding.
+- `_flow_clone` stays trivially thin: flow the referenced value, `deepcopy`, apply
+  overrides. Anything smarter (copy-on-write, partial sharing) is out of scope.
+
+**Example.**
+
+```yaml
+counter: !class:Counter()
+  count: 5
+shared:  !ref:counter      # the SAME live object — identity preserved
+copy:    !clone:counter    # an independent deep copy; mutations don't propagate
+tuned:   !clone:counter    # a clone may carry overrides
+  count: 9
+```
+
+**What you may change.** The deepcopy semantics are the contract (pinned in the clone
+test suite) — do not weaken them to a shallow copy for performance without a new record.
+Deleting the tag requires first answering where independent fan-out goes instead; a
+grep showing no users is not that answer.
