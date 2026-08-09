@@ -654,6 +654,8 @@ def _apply(obj, view, context, visited, report):          # configurator
 **What you may change.** Not the sink rule: the moment a sink branches on a key name or a
 scope, the rule has two homes again and this record's history restarts. A new cross-path
 behavior is a new receiver predicate — added to BOTH factories (even if one side is constant),
-with a pin per path. The splice pair (``_splice_kwargs_at_slot`` vs ``_spliced``) is the
-remaining sanctioned duality: two thin compositions over shared primitives (Phase B), never one
-mode-flagged function — the marker splice's collision rules have no live analogue.
+with a pin per path. The splice pair (``_splice_kwargs_at_slot`` vs ``_spliced_subtree_view``) is the ONE
+sanctioned duality, landed as Phase B: both live in ``broadcast`` as thin compositions over the
+shared primitives ``_merge_rider`` / ``_merge_routing`` (the D1-adjudicated hoist policy) /
+``_spent_at_boundary`` — never one mode-flagged function, because the marker splice's collision
+rules (``_parent_wins``, the glob shield) have no live analogue.
