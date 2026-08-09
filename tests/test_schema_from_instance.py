@@ -300,3 +300,63 @@ def test_configurable_parent_attrs_preserved() -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_both_walkers_find_docs_kept_at_class_level() -> None:
+    """The class-doc fallback applies on BOTH hierarchy walkers — one resolver.
+
+    ``get_hierarchy`` read ``__init__.__doc__`` alone, so a class keeping its
+    ``Args:`` block at class level (the common convention) had docs on the
+    instance walk and NONE on the class walk. Both now resolve through
+    ``schema.parse_param_docs``.
+    """
+    from confluid import configurable, get_hierarchy
+    from confluid.schema import get_hierarchy_from_instance
+
+    @configurable
+    class DocHost:
+        """Host.
+
+        Args:
+            rate: the contested knob's help text
+        """
+
+        def __init__(self, rate: float = 0.1) -> None:
+            self.rate = rate
+
+    by_class = get_hierarchy(DocHost)
+    by_instance = get_hierarchy_from_instance(DocHost())
+
+    assert by_class["DocHost.rate"][2] == "the contested knob's help text"
+    assert by_instance["DocHost.rate"][2] == "the contested knob's help text"
+
+
+def test_both_walkers_report_a_declared_name_param() -> None:
+    """A declared ``name`` ctor param is a knob on BOTH walkers — adjudicated 2026-08-09.
+
+    The class walker skipped ``name`` while the instance walker, ``to_pydantic``,
+    ``input_specs`` and the settability predicates all report it — so liquifai's
+    report view showed the row only when the config happened to be flowed, and
+    completion never offered ``--Cls.name`` although the override machinery
+    accepts it. Direction chosen: REPORT it everywhere (a row appears only for
+    classes that genuinely declare the param).
+    """
+    from confluid import configurable, get_hierarchy
+    from confluid.schema import get_hierarchy_from_instance
+
+    @configurable
+    class Named:
+        def __init__(self, name: str = "", rate: float = 0.1) -> None:
+            self.name = name
+            self.rate = rate
+
+    by_class = get_hierarchy(Named)
+    by_instance = get_hierarchy_from_instance(Named())
+
+    assert "Named.name" in by_class and "Named.rate" in by_class
+    assert "Named.name" in by_instance and "Named.rate" in by_instance
+
+    def builder(name: str = "b", k: int = 1) -> object:
+        return object()
+
+    assert "name" in get_hierarchy(builder)  # the callable branch skipped it too

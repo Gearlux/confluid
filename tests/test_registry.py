@@ -33,9 +33,3 @@ def test_third_party_registration() -> None:
     register(ExternalModel, name="Ext")
     assert "Ext" in get_registry().list_classes()
     assert get_registry().get_class("Ext") is ExternalModel
-
-
-def test_object_registration() -> None:
-    obj = {"key": "value"}
-    get_registry().register_object(obj, "MyObj")
-    assert get_registry().get_object("MyObj") is obj

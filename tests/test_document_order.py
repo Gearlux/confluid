@@ -264,3 +264,36 @@ def test_the_rule_holds_for_a_non_numeric_key() -> None:
 
     assert flow(load(f"{bare}\n{slot}\n")["vehicle"].engine).fuel == "diesel"
     assert flow(load(f"{slot}\n{bare}\n")["vehicle"].engine).fuel == "kerosene"
+
+
+# A single-segment address whose HEAD exists in no other key — the one shape
+# where the dotted spelling created its top-level block by APPENDING it
+# (``merger.expand_dotted_keys``), so the dotted form could never lose to
+# anything written after it while the block form of the same address could.
+FRESH_HEAD_SPELLINGS = {
+    "dotted": "OrderedEngine.power: 50",
+    "class_block": "OrderedEngine:\n  power: 50",
+}
+FRESH_HEAD_MARKER = "e: !class:OrderedEngine(power=10)"
+
+
+@pytest.mark.parametrize("spelling", sorted(FRESH_HEAD_SPELLINGS))
+def test_a_fresh_head_class_address_written_BEFORE_the_marker_loses(spelling: str) -> None:
+    """The marker's own kwargs sit later in the document, so the marker wins.
+
+    The dotted half of this pair is the regression pin: ``expand_dotted_keys``
+    used to append a fresh head at the END of the document, so ``Cls.attr``
+    written FIRST still beat everything — while ``Cls: {attr}`` in the same
+    position lost, splitting one documented rule into two answers.
+    """
+    document = f"{FRESH_HEAD_SPELLINGS[spelling]}\n{FRESH_HEAD_MARKER}\n"
+
+    assert int(load(document)["e"].power) == 10
+
+
+@pytest.mark.parametrize("spelling", sorted(FRESH_HEAD_SPELLINGS))
+def test_a_fresh_head_class_address_written_AFTER_the_marker_wins(spelling: str) -> None:
+    """Written later, either spelling overrides the marker's own kwargs."""
+    document = f"{FRESH_HEAD_MARKER}\n{FRESH_HEAD_SPELLINGS[spelling]}\n"
+
+    assert int(load(document)["e"].power) == 50

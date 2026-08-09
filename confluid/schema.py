@@ -3,6 +3,8 @@ import re
 import types
 from typing import Annotated, Any, Dict, List, Set, Tuple, TypedDict, Union, get_args, get_origin, get_type_hints
 
+from confluid.introspect import init_callable
+
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
     """
@@ -24,11 +26,10 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         try:
             sig = inspect.signature(obj)
             type_hints = get_type_hints(obj)
-            docstring = getattr(obj, "__doc__", "") or ""
-            param_docs = _parse_docstring(docstring)
+            param_docs = parse_param_docs(obj)
 
             for param_name, param in sig.parameters.items():
-                if param_name in ("self", "cls", "args", "kwargs", "name"):
+                if param_name in ("self", "cls", "args", "kwargs"):
                     continue
 
                 path = f"{prefix}.{param_name}" if prefix else param_name
@@ -67,10 +68,12 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         # If prefix is provided, it already contains the parameter/instance name
         current_prefix = prefix
 
-    # 2. Extract parameter documentation from docstring
+    # 2. Extract parameter documentation — through the ONE resolver, so the
+    # class-doc fallback applies here exactly as on the instance walk (this
+    # copy read ``__init__.__doc__`` alone and silently LOST the docs of every
+    # class that keeps its Args: block at class level).
     init_method = getattr(cls, "__init__", None)
-    docstring = getattr(init_method, "__doc__", "") or ""
-    param_docs = _parse_docstring(docstring)
+    param_docs = parse_param_docs(cls)
 
     # 3. Get type hints and defaults from __init__
     try:
@@ -80,7 +83,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         type_hints = get_type_hints(init_method)
 
         for param_name, param in sig.parameters.items():
-            if param_name in ("self", "cls", "args", "kwargs", "name"):
+            if param_name in ("self", "cls", "args", "kwargs"):
                 continue
 
             # Check visibility
@@ -210,9 +213,9 @@ def _walk_instance(
         return
 
     # Prefer __init__'s own docstring; fall back to the class docstring
-    # because user code commonly puts the Args: block at class level.
-    docstring = init_method.__doc__ or cls.__doc__ or ""
-    param_docs = _parse_docstring(docstring)
+    # because user code commonly puts the Args: block at class level — the
+    # ONE resolver both walkers and ``to_pydantic`` share.
+    param_docs = parse_param_docs(cls)
 
     ctor_param_names: set = set()
     for param_name, param in sig.parameters.items():
@@ -484,10 +487,14 @@ def output_specs(cls: type) -> List[OutputSpec]:
     return specs
 
 
-def input_specs(cls: type) -> List[InputSpec]:
-    """Enumerate a class's constructor inputs with their MANDATORY / NULLABLE contract.
+def input_specs(cls: Any) -> List[InputSpec]:
+    """Enumerate a target's constructor inputs with their MANDATORY / NULLABLE contract.
 
-    For each ``__init__`` parameter (skipping ``self`` / ``cls`` / ``*args`` /
+    ``cls`` may be a class OR any callable (a registered builder FUNCTION) —
+    the signature is resolved through ``introspect.init_callable``, mirroring
+    the "A Target May Be ANY Callable" rule everywhere else.
+
+    For each signature parameter (skipping ``self`` / ``cls`` / ``*args`` /
     ``**kwargs``) reports:
 
     * ``required`` — True when the parameter has no default OR is annotated
@@ -507,9 +514,10 @@ def input_specs(cls: type) -> List[InputSpec]:
     """
     from confluid.mandatory import is_mandatory_annotation
 
-    # Reach __init__ via getattr (mirrors lazy_param_names) — a direct ``cls.__init__`` trips mypy's
-    # "accessing __init__ on an instance is unsound" check.
-    init = getattr(cls, "__init__", None)
+    # The ONE class-vs-callable dispatch — reading ``__init__`` directly on a
+    # builder FUNCTION resolves to ``object.__init__`` (``*args, **kwargs``),
+    # which reported an EMPTY contract for every registered function target.
+    init = init_callable(cls)
     if init is None:
         return []
     try:

@@ -9,7 +9,7 @@ are broadcast-visible NAMES but never pydantic fields or lazy slots.
 from typing import Any
 
 from confluid import LazyClass, configurable
-from confluid.introspect import init_lazy_setattr_names, init_setattr_annotations, init_setattr_names, scan_init_body
+from confluid.introspect import init_lazy_setattr_names, init_setattr_names, scan_init_body
 
 
 class _AllKinds:
@@ -53,15 +53,6 @@ def test_scan_records_all_four_kinds_in_walk_order() -> None:
 def test_names_projection_is_the_widest() -> None:
     names = init_setattr_names(_AllKinds.__init__)
     assert {"plain", "annotated", "plain_first", "counter", "via_setattr", "nested"} <= names
-
-
-def test_annotations_projection_excludes_aug_and_setattr_and_is_first_wins() -> None:
-    annotations = init_setattr_annotations(_AllKinds.__init__)
-    assert "counter" not in annotations or annotations.get("counter") is None  # augassign never adds
-    assert "via_setattr" not in annotations
-    # plain Assign walked before the AnnAssign for the same name → None wins.
-    assert "plain_first" in annotations and annotations["plain_first"] is None
-    assert annotations["annotated"] is not None  # the int annotation node
 
 
 def test_lazy_projection_matches_bare_and_qualified_calls_only() -> None:

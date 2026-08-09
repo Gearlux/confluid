@@ -1,21 +1,22 @@
 """Stdlib-only source introspection shared across confluid.
 
-ONE AST scan of an ``__init__`` body (:func:`scan_init_body`) backs the three
-projections that used to be three near-identical scanners in ``loader`` and
+ONE AST scan of an ``__init__`` body (:func:`scan_init_body`) backs the
+projections that used to be near-identical scanners in ``loader`` and
 ``pydantic_export``:
 
 * :func:`init_setattr_names` — every assigned body-slot NAME (the broadcast /
   accept-list view; the widest — includes ``AugAssign`` and literal
   ``setattr(self, "x", …)``).
-* :func:`init_setattr_annotations` — ``{name: annotation AST node or None}``
-  for plain/annotated assignments (the ``to_pydantic`` body-slot typing view;
-  first assignment wins, in ``ast.walk`` order).
 * :func:`init_lazy_setattr_names` — names whose assigned VALUE is a
   ``LazyClass(...)`` / ``Lazy(...)`` call (deferred body slots — emitted as
   ``!lazy:`` by serializers).
 
+(``pydantic_export`` consumes :func:`scan_init_body` directly for its typed
+body-slot fields; an ``init_setattr_annotations`` projection existed for that
+role, was orphaned by the switch, and was deleted 2026-08-09.)
+
 The projections deliberately differ in which slot KINDS they see — that
-preserves the semantics of the three original scanners (``AugAssign`` and
+preserves the semantics of the original scanners (``AugAssign`` and
 ``setattr`` slots broadcast, but never become pydantic fields or lazy slots).
 
 This module imports ONLY the stdlib, so it is a dependency leaf: safe for the
@@ -36,7 +37,20 @@ import importlib
 import inspect
 import textwrap
 import types
-from typing import Annotated, Any, Dict, Literal, NamedTuple, Optional, Set, Tuple, Union, get_args, get_origin
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    Literal,
+    NamedTuple,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 SlotKind = Literal["assign", "annassign", "augassign", "setattr"]
 
@@ -222,22 +236,6 @@ def init_setattr_names(init_func: Any) -> Set[str]:
     return {slot.name for slot in scan_init_body(init_func)}
 
 
-def init_setattr_annotations(init_func: Any) -> Dict[str, Any]:
-    """``{name: annotation AST node or None}`` for assign/annassign slots.
-
-    First assignment per name wins (``ast.walk`` order) — a plain ``Assign``
-    seen first maps the name to ``None`` (→ typed ``Any``) even if a later
-    ``AnnAssign`` carries a type, matching the original scanner.
-    ``AugAssign``/``setattr`` slots are deliberately EXCLUDED (they never
-    become pydantic body-slot fields).
-    """
-    found: Dict[str, Any] = {}
-    for slot in scan_init_body(init_func):
-        if slot.kind in ("assign", "annassign"):
-            found.setdefault(slot.name, slot.annotation)
-    return found
-
-
 def init_lazy_setattr_names(init_func: Any) -> Set[str]:
     """Names of assign/annassign slots whose VALUE is a ``LazyClass(...)``/``Lazy(...)`` call.
 
@@ -285,6 +283,45 @@ def annotation_has_marker(annotation: Any, marker: str) -> bool:
     if origin is Union or origin is types.UnionType:
         return any(annotation_has_marker(arm, marker) for arm in get_args(annotation))
     return False
+
+
+def marked_param_names(target: Any, marker: str, cache_attr: Optional[str] = None) -> Set[str]:
+    """Signature-parameter names of ``target`` carrying ``marker`` — the ONE scan.
+
+    The scan-plus-cache behind ``lazy_param_names`` / ``mandatory_param_names`` /
+    ``no_broadcast_param_names``, which used to carry three near-identical copies
+    that had already drifted on callable support: two read
+    ``getattr(cls, "__init__")`` directly, so an identical ``Lazy[...]`` /
+    ``Mandatory[...]`` annotation was reported on a class and silently DROPPED on
+    a registered builder FUNCTION (whose ``__init__`` is ``object.__init__`` —
+    the exact failure :func:`init_callable` exists to prevent). Every reader goes
+    through :func:`init_callable` here, so classes and callables answer alike.
+
+    ``cache_attr`` names the per-target stamp to read/write (own ``__dict__``
+    only, never ``getattr`` — an MRO walk serves a parent's cached answer to
+    every subclass); pass ``None`` when the caller caches a superset itself
+    (``lazy_param_names`` caches the union with the body-slot scan). A hint
+    named ``return`` is excluded — it is a function's return annotation, not a
+    parameter.
+    """
+    if cache_attr is not None:
+        cached = target.__dict__.get(cache_attr) if hasattr(target, "__dict__") else None
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+    init = init_callable(target)
+    names: Set[str] = set()
+    if init is not None:
+        try:
+            hints = get_type_hints(init, include_extras=True)
+        except Exception:
+            hints = {}
+        names = {name for name, ann in hints.items() if name != "return" and annotation_has_marker(ann, marker)}
+    if cache_attr is not None:
+        try:
+            setattr(target, cache_attr, names)
+        except (AttributeError, TypeError):
+            pass
+    return names
 
 
 # NOTE — a shared "ctor params minus self/cls" helper was CONSIDERED here and

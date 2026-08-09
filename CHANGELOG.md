@@ -30,6 +30,20 @@ All notable changes to confluid are documented here. The format follows
   diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
   target that module.
 
+### Changed (behavior)
+
+- **`get_hierarchy` reports a declared `name` constructor param (2026-08-09
+  adjudication).** The class walker skipped `name` while the live-instance
+  walker, `to_pydantic`, `input_specs` and the settability predicates all
+  report it — so a CLI's report view showed the row only when the config
+  happened to be flowed, and shell completion never offered `--Cls.name`
+  although the override machinery accepts it (the "settable but undocumented"
+  trap). Both walkers (and the callable branch) now agree: a row appears for
+  targets that genuinely DECLARE the param. Display surface only — nothing
+  about bare-`name:` broadcasting changed; the `NoBroadcast[T]` guidance for
+  generically-named knobs stands. Pin:
+  `tests/test_schema_from_instance.py::test_both_walkers_report_a_declared_name_param`.
+
 ### Added
 
 - **`register()` carries the accept-list controls the decorator does** —
@@ -65,7 +79,48 @@ All notable changes to confluid are documented here. The format follows
   the node they wrote it on, with nothing in the log. "My knob did not take" is
   now one grep (`LOGGAIR_CONSOLE_LEVEL=DEBUG`) instead of a bisect.
 
+### Removed
+
+- **`ConfluidRegistry.register_object` / `get_object` and the `_objects`
+  store.** A write-only feature: no resolution path — not `!ref:`, not
+  `!class:`, not `resolve_class` — ever consulted the store, so a "registered"
+  object could never be reached from a config. Zero consumers workspace-wide
+  (Python, YAML, and notebooks all grepped); the only callers were two
+  put-then-get round-trip tests, deleted with it.
+
+- **`introspect.init_setattr_annotations`.** The `to_pydantic` body-slot
+  typing projection it was built for consumes `scan_init_body` directly, which
+  orphaned it — its only remaining caller was its own test.
+
+- **Three never-imported re-exports dropped from `confluid.engine`**
+  (`_broadcast_blocked_keys`, `_get_param_kinds`, `_same_target`) — same
+  criterion as the five pruned 2026-08-08: zero users anywhere, engine's own
+  body included; the real homes in `confluid.broadcast` are untouched.
+
+  (Considered and deliberately KEPT despite zero Python callers:
+  `confluid.env.load_workspace_env` — it has a real notebook consumer, which a
+  `.py`-only grep misses. Audits claiming "zero consumers" must grep
+  notebooks too.)
+
 ### Internal
+
+- **One grammar per concept in the introspection/grammar layer (2026-08-09).**
+  Three duplications the one-scanner plan's audit found one layer below
+  `broadcast`, each folded to a single implementation: (1) the dotted-key
+  expansion — `merger.expand_dotted_keys` (document top level) and
+  `broadcast._expand_block_keys` (in-block) are now the ONE
+  `merger.expand_dotted_mapping` under two copy-policy hooks (deep-copy with
+  Fluid identity + `deep_merge` vs share-by-reference + shallow last-write),
+  which also propagates the fresh-head position anchoring to in-block dotted
+  keys; (2) the `Target(...)` call grammar — `_TARGET_CALL_RE` moved to
+  `resolver` (with the `_split_inline_pairs` k=v splitter) and
+  `resolver._parse_class_string` matches it instead of a hand-rolled laxer
+  split, so the quoted-string form accepts exactly the spellings the tag form
+  does (an illegal name now yields a deferred `Class` marker rather than an
+  eager `Instance` under a name the registry can never resolve); (3) the
+  annotation-marker scan — `introspect.marked_param_names` (see Fixed).
+  Value-coercion policies (tag `parse_value` vs quoted context-resolve) are
+  deliberately NOT unified — they differ by design and stay at their callers.
 
 - **The two precedence-rule drivers now share ONE walk** (phases A2/A3 of the
   one-scanner plan; docs/architecture.md record 8). `broadcast._scan_view`
@@ -120,6 +175,65 @@ All notable changes to confluid are documented here. The format follows
   rejected late-bound/copy-on-write alternatives on record).
 
 ### Fixed
+
+- **The marker helpers and `input_specs` read a builder FUNCTION's own
+  signature.** `lazy_param_names` / `mandatory_param_names` reached for
+  `getattr(target, "__init__")` — on a function that is `object.__init__`
+  (`*args, **kwargs`) — so an identical `Lazy[...]` / `Mandatory[...]`
+  annotation was reported on a class and silently EMPTY on a registered
+  builder function (measured: `{'model'}` vs `set()`), and `input_specs`
+  reported an empty contract for every function target. All now dispatch
+  through `introspect.init_callable`; the scan-plus-cache itself is ONE
+  helper, `introspect.marked_param_names`, replacing three near-identical
+  copies that had already drifted on exactly this. Pins:
+  `tests/test_lazy.py::test_lazy_param_names_reads_a_builder_functions_own_signature`,
+  `tests/test_io_contract.py::test_input_specs_and_mandatory_read_a_builder_functions_signature`.
+
+- **`get_hierarchy` finds docs kept at class level.** The class walker read
+  `__init__.__doc__` alone while the instance walker fell back to the class
+  docstring, so a class keeping its `Args:` block at class level (the common
+  convention) had help text in one hierarchy and none in the other. All four
+  docstring-resolution copies (`get_hierarchy`, `get_hierarchy_from_instance`,
+  `to_pydantic`, `parse_param_docs`) now ARE `parse_param_docs` — whose
+  docstring always claimed `to_pydantic` resolved "the same way"; now it is
+  the same code. Pin:
+  `tests/test_schema_from_instance.py::test_both_walkers_find_docs_kept_at_class_level`.
+
+- **The direct-flow `'**'` receiver application runs the ONE cascade gate.**
+  `_pop_glob_routing` carried an inline copy of the bare-key gates that was
+  strictly weaker than `merge_bare_pool_into_kwargs` — no list skip, no
+  Fluid declared-key requirement, no `_same_target` self-broadcast guard — so
+  a list-valued or Fluid-valued `**.key` behaved differently on the
+  direct-flow path than on the materialize path (the same drift class the
+  D2/D3 adjudication closed for `configure()`). Both halves are now the one
+  function; glob contents still feed the nested-marker pool unchanged. Pin:
+  `tests/test_broadcast_robustness.py::test_pop_glob_routing_applies_the_one_cascade_gate`.
+
+- **A top-level dotted address orders at the position it was WRITTEN.**
+  `expand_dotted_keys` created a missing head key by plain assignment — i.e.
+  APPENDED at the end of the document — so `Model.layers: 3` written FIRST
+  still beat a marker's own `layers=10` below it, while the supposedly
+  identical `Model: {layers: 3}` in the same position lost. One documented
+  rule, two answers, split by spelling. A fresh head is now anchored at the
+  dotted key's own position; a head that exists as a real key keeps its own
+  position, unchanged. Pins: the fresh-head pair in
+  `tests/test_document_order.py`.
+
+- **The legacy colon-free `!class` spelling accepts a kwarg named `target`.**
+  `class_compat` was the one tag constructor still building its marker via
+  `Instance(name, **kwargs)` instead of `_make_fluid`, so
+  `!class Widget(target=x)` raised `got multiple values for argument
+  'target'` on a config the modern `!class:` form loads fine. Pin:
+  `tests/test_loader.py::test_kwarg_named_target_survives_the_legacy_class_spelling`.
+
+- **The override DEBUG diagnostic can no longer crash the merge.** `_View.set`
+  decided "did this write change the value?" with a bare `!=`, which raises on
+  any value whose comparison returns a non-boolean (a numpy/torch array's
+  `__eq__` returns an ARRAY) — a `ValueError` inside the merge's single write
+  path, far from the config that caused it. Comparison failures now fall back
+  to identity: a false "changed" on an equal-but-distinct array costs one
+  DEBUG line. Pin:
+  `tests/test_scanner.py::test_view_set_override_diagnostic_survives_array_valued_writes`.
 
 - **`configure()`'s deferred-slot tuning now applies the same cascade gates as
   the load path.** The two copies of the bare-pool merge had drifted apart

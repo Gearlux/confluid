@@ -177,3 +177,24 @@ def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
     a.kwargs["child"] = b
     b.kwargs["parent"] = a  # cycle
     assert Resolver(context={}).resolve(a) is a
+
+
+def test_quoted_class_string_uses_the_one_target_call_grammar() -> None:
+    """The quoted-string marker parser matches ``_TARGET_CALL_RE`` — one grammar.
+
+    It used to hand-roll ``"(" in s and s.endswith(")")``, accepting names no
+    tag can carry (spaces, braces). A legal spelling parses identically; an
+    illegal one now falls to a deferred ``Class`` marker instead of minting an
+    eager ``Instance`` under a name the registry can never resolve.
+    """
+    from confluid.fluid import Class, Instance
+
+    resolver = Resolver(context={})
+
+    legal = resolver.resolve("!class:a.b.Widget@role=metric(k=3)")
+    assert isinstance(legal, Instance)
+    assert legal.target == "a.b.Widget@role=metric"
+    assert legal.kwargs == {"k": 3}
+
+    illegal = resolver.resolve("!class:not a name(k=3)")
+    assert isinstance(illegal, Class) and not isinstance(illegal, Instance)

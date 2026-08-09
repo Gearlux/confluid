@@ -1,8 +1,11 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from confluid import configurable, get_registry, load, load_config
+from confluid.fluid import Instance
+from confluid.loader import ConfluidLoader
 
 
 def test_load_config_valid(tmp_path: Path) -> None:
@@ -52,6 +55,22 @@ def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> No
     wrapper = data["wrapper"]
     assert isinstance(wrapper, _Configurish) and wrapper.param == "low_level"
     assert isinstance(wrapper.target, _Configurish) and wrapper.target.param == "inner"
+
+
+def test_kwarg_named_target_survives_the_legacy_class_spelling() -> None:
+    """The colon-free ``!class`` compat constructor is collision-proof too.
+
+    It was the ONE tag constructor building its marker via
+    ``Instance(name, **kwargs)`` instead of ``_make_fluid``, so the legacy
+    spelling raised ``got multiple values for argument 'target'`` on a config
+    the modern ``!class:`` form loads fine.
+    """
+    data = yaml.load("x: !class Widget(target=inner, param=low)", Loader=ConfluidLoader)
+    marker = data["x"]
+
+    assert isinstance(marker, Instance)
+    assert marker.target == "Widget"
+    assert marker.kwargs == {"target": "inner", "param": "low"}
 
 
 def test_load_config_with_import() -> None:

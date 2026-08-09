@@ -48,7 +48,7 @@ from confluid.introspect import resolve_ast_annotation, scan_init_body
 from confluid.lazy import _LAZY_MARKER, body_slot_lazy_names, is_lazy_annotation
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
-from confluid.schema import _parse_docstring
+from confluid.schema import parse_param_docs
 
 _SKIP_PARAMS = {"self", "cls", "args", "kwargs"}
 
@@ -422,23 +422,24 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
             # Classes that don't override __init__ have no configurable params.
             sig = inspect.Signature(parameters=[])
             hints: Dict[str, Any] = {}
-            docstring = cls.__doc__ or ""
         else:
             try:
                 sig = inspect.signature(init)
                 hints = get_type_hints(init, include_extras=True)
             except (TypeError, ValueError, NameError) as exc:
                 raise IntrospectionError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
-            docstring = init.__doc__ or cls.__doc__ or ""
     else:
         try:
             sig = inspect.signature(cls)
             hints = get_type_hints(cls, include_extras=True)
         except (TypeError, ValueError, NameError) as exc:
             raise IntrospectionError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
-        docstring = cls.__doc__ or ""
 
-    param_docs = _parse_docstring(docstring)
+    # The ONE docstring resolver (init doc → class doc for a class; own __doc__
+    # for a callable) — this function used to re-implement it inline, and the
+    # copies had already drifted (a walker reading init.__doc__ alone lost the
+    # docs of every class keeping its Args: block at class level).
+    param_docs = parse_param_docs(cls)
     fields: Dict[str, Tuple[Any, Any]] = {}
 
     for param_name, param in sig.parameters.items():

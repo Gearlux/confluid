@@ -183,7 +183,6 @@ class ConfluidRegistry:
         # Canonical dotted key -> entry. Unique by construction, so this is what an
         # ambiguous name publishes and what an identity lookup goes through.
         self._by_key: Dict[str, _ClassEntry] = {}
-        self._objects: Dict[str, Any] = {}
         # Reverse indices: <tag value> → set of ENTRY KEYS. Keys, not names, because a
         # name can become ambiguous at a LATER registration — an index keyed by name
         # would have to be rewritten across five dicts at that moment, whereas an entry
@@ -546,7 +545,6 @@ class ConfluidRegistry:
     def clear(self) -> None:
         self._entries.clear()
         self._by_key.clear()
-        self._objects.clear()
         self._by_category.clear()
         self._by_group.clear()
         self._by_task.clear()
@@ -614,14 +612,6 @@ class ConfluidRegistry:
     def list_frameworks(self) -> Set[str]:
         """Return the set of framework names that have at least one registered class."""
         return set(self._by_framework.keys())
-
-    def register_object(self, obj: Any, name: str) -> None:
-        """Register an existing object instance."""
-        self._objects[name] = obj
-
-    def get_object(self, name: str) -> Optional[Any]:
-        """Retrieve a registered object by name."""
-        return self._objects.get(name)
 
 
 # Global Singleton instance
