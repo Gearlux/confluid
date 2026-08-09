@@ -586,3 +586,74 @@ bind), and not to flow-time substitution (it re-opens the two-answers problem as
 *when*-you-flow dependence). A memoized-copy variant — one copy per marker per pass, preserving
 aliasing — is an acceptable refinement if in-place mutation of hand-built templates ever bites
 in practice.
+
+---
+
+## 8. Two drivers, one scanner
+
+*2026-08-08*
+
+**Context.** Record 3 unified the precedence rule's *vocabulary* — one module both paths import
+for the scope tags, the tagged view, and the accept-lists. It deliberately stopped there, and
+within a week the audit found what stopping there costs: the two drivers still wrote their own
+*sentences*. The block-consumption ladder existed twice with a byte-identical comment on its
+third branch, and five NEW cross-path differences had accumulated (a routing-hoist merge
+condition, a list value tuning deferred slots on one path only, the Fluid self-broadcast guard
+missing on one path, and two grammar differences nobody had ever decided). Nothing but memory
+distinguished the deliberate ones from the drift.
+
+**Decision.** The walk itself exists once. ``_scan_view`` owns the main loop, the five-branch
+``_consume`` ladder, own-kwargs consumption, and position bookkeeping; it emits every gate
+outcome to a sink in document order. What may differ between the paths is confined to two
+declared seams:
+
+- a **receiver**, built ONLY by the two factories that sit side by side
+  (``_receiver_for_target`` / ``_receiver_for_instance``) — each kept cross-path difference is
+  a named predicate with a pin in ``tests/test_cross_path_pins.py``;
+- a **sink** (``_MergeSink`` for markers; ``configurator._LiveSink`` for live objects, which
+  stays in ``configurator`` because its outputs feed ``_assign``, which flows) — an effect
+  writer only. **A sink may not grow branches on keys or scopes**; a new rule belongs in the
+  scanner behind a receiver predicate, or nowhere.
+
+The rewrite was proven equal, not assumed: a verbatim copy of the old implementation was
+replayed against every real invocation captured over an 18-document corpus (values, key order,
+scope tags), then DELETED with the phase — a retained reference would be a third copy of the
+rule. Dispatch is a visitor, not a decision-object stream: a 2,500-marker pass emits tens of
+thousands of decisions, and method calls replace the old closure calls one-for-one (measured
+end state: materialize within 1%, configure ~19% faster after receiver caching and lazy
+position bookkeeping).
+
+**Consequences.**
+
+- A divergence in the WALK is now unrepresentable — there is one walk. A divergence in a
+  *predicate* is two adjacent functions in one diff, reviewed together.
+- The remaining cross-path differences are declared, not ambient: D4 (top-level dict is a value
+  on the load path, a block on configure) and D5 (a glob-delivered dict reaches a declared slot
+  on configure only) each carry twin pins that fail on drift in either direction. D5 is flagged
+  for its own adjudication — aligning it is a feature, not drift repair.
+- Receivers for marker targets are cached per pass (pure per spelling × target × instance
+  name); instance receivers are not (their predicates close over ``vars(obj)``).
+
+**Example.**
+
+```python
+# the ONE walk, two compositions
+def _prepare_kwargs(cls_name, own_kwargs, parent_context, target=None, self_obj=None):
+    receiver = _receiver_for_target(cls_name, own_kwargs, target)
+    sink = _MergeSink(receiver.cls_name)
+    _scan_view(parent_context, receiver, sink, own_kwargs=own_kwargs, self_obj=self_obj)
+    return sink.merged
+
+def _apply(obj, view, context, visited, report):          # configurator
+    receiver = _receiver_for_instance(obj)
+    sink = _LiveSink(obj, receiver.cls_name, target_label, report)
+    _scan_view(view, receiver, sink)
+    ...
+```
+
+**What you may change.** Not the sink rule: the moment a sink branches on a key name or a
+scope, the rule has two homes again and this record's history restarts. A new cross-path
+behavior is a new receiver predicate — added to BOTH factories (even if one side is constant),
+with a pin per path. The splice pair (``_splice_kwargs_at_slot`` vs ``_spliced``) is the
+remaining sanctioned duality: two thin compositions over shared primitives (Phase B), never one
+mode-flagged function — the marker splice's collision rules have no live analogue.

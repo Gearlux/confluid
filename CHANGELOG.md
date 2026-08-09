@@ -67,6 +67,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Internal
 
+- **The two precedence-rule drivers now share ONE walk** (phases A2/A3 of the
+  one-scanner plan; docs/architecture.md record 8). `broadcast._scan_view`
+  owns the main loop and the five-branch block ladder that previously existed
+  byte-for-byte in both `_prepare_kwargs` and `configurator._apply`; the
+  paths differ only in a declared receiver (`_receiver_for_target` /
+  `_receiver_for_instance`, side by side, every kept difference pinned in
+  `tests/test_cross_path_pins.py`) and an effect-writing sink (`_MergeSink` /
+  `configurator._LiveSink`). Behavior-preserving, proven by replaying a
+  verbatim copy of the old implementation against every real invocation over
+  an 18-document corpus (deleted with the phase); scanner branch pins live in
+  `tests/test_scanner.py`. Measured: materialize within 1% of baseline,
+  configure() ~19% faster.
+
 - **Dead compatibility shims pruned (private names, zero users verified
   workspace-wide).** Five never-imported re-exports dropped from
   `confluid.engine` (`_classify_annotation`, `_scope_of`, `_settability_target`,
