@@ -66,6 +66,7 @@ from confluid.broadcast import (  # noqa: F401
     accepts_any_key,
     accepts_broadcast,
     accepts_key,
+    merge_bare_pool_into_kwargs,
 )
 from confluid.exceptions import ConfigurationError, ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.fluid import (
@@ -724,11 +725,9 @@ def _resolve_kwarg_value(
         # Apply broadcasting: pull matching keys from full context
         report = _ENGINE_STATE.get().report
         broadcasted = dict(v.kwargs)
-        acceptable = _get_acceptable_keys(v.target)
         inner_target_cls = (
             v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
         )
-        inner_blocked = _broadcast_blocked_keys(inner_target_cls)
         # Confluid has ONE precedence rule — document order, last spec wins — and this
         # pass is NOT where it is decided. `_flow_recursive` already merged this marker's
         # own kwargs against the surrounding bare keys BY POSITION and stamped
@@ -747,34 +746,24 @@ def _resolve_kwarg_value(
         # 50}`) inherits the code marker's empty location, so its author-written value was
         # read as a default and any bare key beat it regardless of where either sat.
         already_ordered = is_order_resolved(v)
-        for bk, bv in broadcast_ctx.items():
-            if isinstance(bv, (dict, list)):
-                continue
-            if bk in broadcasted and already_ordered:
-                continue  # position already decided this key — do not re-run the contest
-            if inner_blocked is None or bk in inner_blocked:
-                continue  # NoBroadcast param / broadcast=False class — bare keys never land
-            if isinstance(bv, Fluid):
-                # Fluids only broadcast through an explicit accepted
-                # key — never via the **kwargs catchall (which would
-                # pull the outer Class into nested targets and loop).
-                if acceptable is None or bk not in acceptable:
-                    continue
-                # Self-broadcast guard: skip a Fluid whose target is
-                # the same class we're filling. Avoids infinite
-                # recursion when an inherited attribute (e.g.
-                # pl.LightningModule.trainer) makes the class's own
-                # name an acceptable broadcast target.
-                if inner_target_cls is not None:
-                    if _same_target(bv.target, inner_target_cls):
-                        continue
-            elif acceptable is not None and bk not in acceptable:
-                continue
-            logger.trace(f"broadcast: {bk!r} -> {getattr(inner_target_cls, '__name__', v.target)} (nested-class)")
-            broadcasted[bk] = bv
+        label = str(getattr(inner_target_cls, "__name__", v.target))
+
+        def _record_nested(bk: str) -> None:
             if report is not None:
-                report.record_applied(bk, str(getattr(inner_target_cls, "__name__", v.target)), "nested-class")
+                report.record_applied(bk, label, "nested-class")
                 report.mark_used(bk)
+
+        # The gates themselves (containers, NoBroadcast, the Fluid declared-key +
+        # self-target guard) live in the ONE cascade function both paths call —
+        # only the ordering verdict is computed here, because the ordering MODEL
+        # is per-caller (see broadcast.merge_bare_pool_into_kwargs).
+        merge_bare_pool_into_kwargs(
+            broadcasted,
+            broadcast_ctx,
+            v.target,
+            protected=frozenset(broadcasted) if already_ordered else frozenset(),
+            on_applied=_record_nested if report is not None else None,
+        )
         v_copy = copy(v)
         v_copy.kwargs = broadcasted
         v_copy._yaml_loc = getattr(v, "_yaml_loc", None)

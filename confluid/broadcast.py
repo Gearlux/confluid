@@ -1129,3 +1129,65 @@ def _broadcast_pool(ctx: Dict[str, Any]) -> Dict[str, Any]:
         else:
             pool[k] = v
     return pool
+
+
+def merge_bare_pool_into_kwargs(
+    marker_kwargs: Dict[str, Any],
+    pool: Dict[str, Any],
+    target: Any,
+    *,
+    protected: FrozenSet[str] = frozenset(),
+    on_applied: Optional[Callable[[str], None]] = None,
+    origin: str = "nested-class",
+) -> None:
+    """Merge a bare-key pool into a deferred marker's kwargs, IN PLACE — the ONE cascade gate.
+
+    Both paths fill un-ordered marker kwargs from a pool of bare keys: the
+    engine's nested-marker broadcast (``_resolve_kwarg_value``) and
+    ``configure()``'s deferred-slot tuning (``configurator._tune_deferred``).
+    The two used to carry separate copies of the gates and drifted twice —
+    a bare LIST tuned a deferred slot on the configure path only, and the
+    Fluid self-broadcast guard existed on the engine path only (adjudicated
+    2026-08-08 to the engine's stricter gates; pins in
+    ``tests/test_cross_path_pins.py``). This function is the single copy.
+
+    The gates, in order: container values (dict/list) never cascade; only
+    BARE-scoped pool keys apply (a plain-dict pool is all-BARE); ``protected``
+    keys are skipped — it carries the CALLER's ordering verdict, because the
+    ordering MODELS deliberately differ (the engine passes the marker's
+    already-settled keys when ``is_order_resolved``, per-materialize-pass;
+    ``configure()`` passes its call-scoped ``beaten`` set — see
+    docs/architecture.md record 6); the NoBroadcast opt-outs gate like bare
+    keys (a ``broadcast=False`` class takes nothing); a Fluid value requires a
+    DECLARED key (never the ``**kwargs`` catchall) and a different target
+    (``_same_target`` — self-broadcast would loop); a non-Fluid value passes
+    the accept-list.
+
+    ``on_applied`` receives each merged key — reporting stays caller-owned
+    (the report asymmetry between the paths is documented-deliberate).
+    ``origin`` labels the TRACE line only.
+    """
+    target_cls = target if isinstance(target, type) else resolve_class(target) if isinstance(target, str) else None
+    blocked = _broadcast_blocked_keys(target_cls)
+    if blocked is None:
+        return  # @configurable(broadcast=False) — nothing bare ever lands
+    acceptable = _get_acceptable_keys(target if target is not None else target_cls)
+    label = getattr(target_cls, "__name__", target)
+    for bk, bv in pool.items():
+        if isinstance(bv, (dict, list)):
+            continue  # containers are blocks/definitions, never cascade values
+        if _scope_of(pool, bk) is not _KeyScope.BARE:
+            continue  # an ancestor's addressed value — ordering visibility only
+        if bk in protected or bk in blocked:
+            continue
+        if isinstance(bv, Fluid):
+            if acceptable is None or bk not in acceptable:
+                continue  # Fluids never ride the **kwargs catchall
+            if target_cls is not None and _same_target(bv.target, target_cls):
+                continue  # self-broadcast guard — would loop on re-materialization
+        elif acceptable is not None and bk not in acceptable:
+            continue
+        logger.trace(f"broadcast: {bk!r} -> {label} ({origin})")
+        marker_kwargs[bk] = bv
+        if on_applied is not None:
+            on_applied(bk)

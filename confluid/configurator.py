@@ -47,6 +47,7 @@ from confluid.broadcast import (
     _KeyScope,
     _scope_of,
     _View,
+    merge_bare_pool_into_kwargs,
 )
 from confluid.engine import _ctor_params, flow
 from confluid.fluid import Class, Instance, Lazy
@@ -221,21 +222,19 @@ def _tune_deferred(
     """
     target_cls = marker.target if isinstance(marker.target, type) else resolve_class(marker.target)
     if target_cls is None:
+        # KEPT difference with the engine cascade (which merges accept-everything
+        # for an unresolvable target, serving resolve()-introspection of free
+        # inputs): a configure-path slot whose target this process cannot even
+        # resolve can never be flowed by it either — tuning would be noise.
         return
-    acceptable = _get_acceptable_keys(target_cls)
-    blocked = _broadcast_blocked_keys(target_cls)
-    if blocked is None:  # @configurable(broadcast=False) — no bare key ever lands
-        return
-    for key, value in view.items():
-        if isinstance(value, dict) or key in beaten or key in blocked:
-            continue
-        if _scope_of(view, key) is not _KeyScope.BARE:
-            continue  # an ancestor's addressed value — visible for ordering only
-        if acceptable is not None and key not in acceptable:
-            continue
-        logger.trace(f"configure: {key!r} -> {getattr(target_cls, '__name__', marker.target)} (deferred slot)")
-        marker.kwargs[key] = value
-        report.mark_used(key)
+    merge_bare_pool_into_kwargs(
+        marker.kwargs,
+        view,
+        target_cls,
+        protected=beaten,
+        on_applied=report.mark_used,
+        origin="deferred slot",
+    )
 
 
 def _apply(
