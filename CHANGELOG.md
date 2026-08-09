@@ -95,6 +95,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`configure()`'s deferred-slot tuning now applies the same cascade gates as
+  the load path.** The two copies of the bare-pool merge had drifted apart
+  twice: a bare LIST value tuned a deferred slot on the configure path only
+  (`stages: [1, 2]` silently rode into an optimizer marker's kwargs), and the
+  Fluid gates — declared-key-only (never the `**kwargs` catchall) plus the
+  `_same_target` self-broadcast guard — existed on the engine path only. Both
+  paths now call the ONE cascade function,
+  `broadcast.merge_bare_pool_into_kwargs`; the ordering verdicts stay
+  per-caller by design (the engine's per-pass `_order_resolved`, configure()'s
+  call-scoped `beaten` set). Pins: the D2/D3 group in
+  `tests/test_cross_path_pins.py`, alongside difference-pins for the
+  documented KEPT cross-path behaviors (D4/D5) so future drift in either
+  direction fails a named test.
+
 - **The settability predicates read a builder FUNCTION's own signature.**
   `accepts_key` / `accepts_broadcast` / `accepts_any_key` answered True for
   EVERY key on a registered builder function (measured: `accepts_key(builder,

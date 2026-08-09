@@ -251,6 +251,13 @@ trainer: !class:Trainer()
 
 Two points worth knowing:
 
+- **The cascade gates are identical on both paths.** Whether a bare key reaches
+  a deferred slot during YAML materialization or through post-construction
+  `configure()`, the same single function decides: container values (dicts,
+  lists) never cascade, the target's accept-list and the `NoBroadcast` opt-outs
+  gate what lands, and a marker value requires a *declared* key (never the
+  `**kwargs` catchall) with a different target than the slot's own — so a slot
+  can never be tuned with a copy of itself.
 - **A block merges, it does not replace.** `optimizer: {lr: 0.5}` keeps every
   kwarg you did not mention. To replace the marker outright — a different
   optimizer class, say — write one: `optimizer: !lazy:torch.optim.SGD(lr=0.5)`.
