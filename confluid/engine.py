@@ -60,6 +60,7 @@ from confluid.broadcast import (  # noqa: F401
     _pop_glob_routing,
     _post_init_attrs_cache,
     _prepare_kwargs,
+    _receiver_cache,
     _same_target,
     _splice_kwargs_at_slot,
     _View,
@@ -156,6 +157,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     _post_init_attrs_cache.clear()
     _param_kind_cache.clear()
     _parent_blacklist_cache.clear()
+    _receiver_cache.clear()
     # ``${...}`` interpolation — the same Resolver pass ``load()`` runs
     # (docs/interpolation.md promises it "at materialization"; measured, this
     # entry point skipped it and the literal ``${...}`` rode into values
@@ -223,6 +225,7 @@ def resolve(
     _post_init_attrs_cache.clear()
     _param_kind_cache.clear()
     _parent_blacklist_cache.clear()
+    _receiver_cache.clear()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
     # untouched — resolve() never managed that flag (it builds no objects).
     token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}))

@@ -25,7 +25,7 @@ import collections.abc as cabc
 import inspect
 import typing
 from enum import Enum
-from typing import Any, Callable, Dict, FrozenSet, Optional, Set
+from typing import Any, Callable, Dict, FrozenSet, Optional, Protocol, Set
 
 from loggair import get_logger
 
@@ -45,6 +45,12 @@ _post_init_attrs_cache: Dict[str, FrozenSet[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
 # as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
 _param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
+# Per-pass receiver cache: a _Receiver is a pure function of the (spelling,
+# target, instance-name) triple — its closures capture only per-pass-cached
+# accept-list data — so 2,500 same-class markers build ~one receiver instead
+# of 2,500. Cleared by engine.materialize/resolve alongside the attr caches.
+_receiver_cache: Dict[Any, "_Receiver"] = {}
+
 # Classes already warned about an unscannable ``__init__`` (compiled/frozen —
 # see :func:`_warn_if_init_unscannable`). Deliberately NOT cleared by
 # materialize/resolve: those clear the attr caches once per pass, which would
@@ -829,6 +835,355 @@ def _settability_target(target: Any) -> Any:
     return type(target)
 
 
+class _Receiver:
+    """What the scanner may ask about the node consuming a view.
+
+    Built ONLY by the factory functions below (kept side by side — a future
+    per-path divergence must be two adjacent functions in one diff, never a
+    branch inside the walk). The predicate fields are where the paths
+    legitimately differ; everything else is shared derivation from the same
+    accept-list machinery. See ``tests/test_cross_path_pins.py`` for the pinned
+    cross-path differences the predicates encode.
+    """
+
+    __slots__ = (
+        "cls_name",
+        "block_names",
+        "inner_names",
+        "instance_name",
+        "target_cls",
+        "acceptable",
+        "blocked",
+        "accepts_value",
+        "dict_slot",
+        "own_dict_routes",
+        "skip_bare_value",
+    )
+
+    def __init__(
+        self,
+        *,
+        cls_name: str,
+        block_names: FrozenSet[str],
+        inner_names: FrozenSet[str],
+        instance_name: Optional[str],
+        target_cls: Any,
+        acceptable: Optional[FrozenSet[str]],
+        blocked: Optional[FrozenSet[str]],
+        accepts_value: Callable[[str, Any], bool],
+        dict_slot: Callable[[str, bool, bool], bool],
+        own_dict_routes: Callable[[str], bool],
+        skip_bare_value: Callable[[Any], bool],
+    ) -> None:
+        self.cls_name = cls_name
+        self.block_names = block_names
+        self.inner_names = inner_names
+        self.instance_name = instance_name
+        self.target_cls = target_cls
+        self.acceptable = acceptable
+        self.blocked = blocked
+        self.accepts_value = accepts_value
+        self.dict_slot = dict_slot
+        self.own_dict_routes = own_dict_routes
+        self.skip_bare_value = skip_bare_value
+
+
+def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any = None) -> _Receiver:
+    """The MARKER-path receiver: a class/callable target being materialized.
+
+    Absorbs the name normalization, block-name derivation and the value-aware
+    ``_accepts`` predicate that used to live inline in ``_prepare_kwargs``.
+    A class-name block is matched by NAME, but ``cls_name`` is whatever the
+    target was SPELLED as — a dotted path or a tag-selector spelling must
+    still be reached by its ``Widget:`` block, so the resolved class's
+    registered name is matched alongside the literal spelling (which also
+    aligns this path with ``configure()``, keyed off ``__confluid_name__``).
+    """
+    if cls_name.endswith("()"):
+        cls_name = cls_name[:-2]
+    instance_name = own_kwargs.get("name")
+    instance_str = instance_name if isinstance(instance_name, str) else None
+
+    cache_key = (cls_name, id(target) if target is not None else 0, instance_str)
+    cached = _receiver_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    acceptable = _get_acceptable_keys(target or cls_name)
+    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
+    param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
+    blocked = _broadcast_blocked_keys(target_cls)
+    block_names = {cls_name}
+    if target_cls is not None:
+        registered = target_cls.__dict__.get("__confluid_name__") if hasattr(target_cls, "__dict__") else None
+        block_names.add(str(registered or getattr(target_cls, "__name__", "")))
+    block_names.discard("")
+
+    def _accepts(k: str, v: Any) -> bool:
+        if isinstance(v, Fluid):
+            if acceptable is None or k not in acceptable:
+                return False
+            # Skip same-target Fluids that are not self — broadcasting them
+            # in would loop on infinite re-materialization.
+            if target_cls is not None and _same_target(v.target, target_cls):
+                return False
+            return True
+        if isinstance(v, dict):
+            # Plain dict — a VALUE only when the target annotates the param as
+            # a dict/mapping; otherwise it is a block (routing / slot content).
+            if param_kinds.get(k) == "dict":
+                return acceptable is None or k in acceptable
+            return False
+        if isinstance(v, list):
+            if param_kinds.get(k) == "list":
+                return acceptable is None or k in acceptable
+            return False
+        if acceptable is not None and k not in acceptable:
+            return False
+        return True
+
+    def _dict_slot(k: str, gated: bool, floating: bool) -> bool:
+        # A dict at a key the receiver DECLARES is a slot value on the
+        # ADDRESSED path only — a glob-delivered dict is genuinely routing and
+        # a floating '**' rider keeps floating (the D5 kept difference: the
+        # live path ignores ``gated`` here — see tests/test_cross_path_pins.py).
+        return not gated and not floating and acceptable is not None and k in acceptable
+
+    def _own_dict_routes(k: str) -> bool:
+        # In own kwargs, a dict at a key that is NOT mine is a sub-block
+        # addressing a direct child by name (the expanded ``trainer.b.lr``).
+        return acceptable is not None and k not in acceptable
+
+    def _skip_bare(v: Any) -> bool:
+        # Same-target Fluid that isn't self — skip (would otherwise loop).
+        return isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls)
+
+    receiver = _Receiver(
+        cls_name=cls_name,
+        block_names=frozenset(block_names),
+        inner_names=frozenset(n for n in (cls_name, instance_str) if n),
+        instance_name=instance_str,
+        target_cls=target_cls,
+        acceptable=acceptable,
+        blocked=blocked,
+        accepts_value=_accepts,
+        dict_slot=_dict_slot,
+        own_dict_routes=_own_dict_routes,
+        skip_bare_value=_skip_bare,
+    )
+    _receiver_cache[cache_key] = receiver
+    return receiver
+
+
+class _ScanSink(Protocol):
+    """Effect writer for one :func:`_scan_view` pass — sinks apply, never gate.
+
+    The scanner owns ALL gating (accept-lists, NoBroadcast, scopes, ordering
+    positions) through the receiver; a sink only records outcomes. A sink
+    method MUST NOT grow branches on keys or scopes — a new rule belongs in
+    the scanner, behind a receiver predicate, or nowhere.
+    """
+
+    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool) -> None: ...
+
+    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None: ...
+
+    def route(self, key: str, block: Dict[str, Any]) -> None: ...
+
+    def unknown(self, key: str, value: Any, *, origin: str) -> None: ...
+
+    def matched(self, name: str) -> None: ...
+
+
+def _scan_view(
+    view: Dict[str, Any],
+    receiver: _Receiver,
+    sink: _ScanSink,
+    *,
+    own_kwargs: Optional[Dict[str, Any]] = None,
+    self_obj: Any = None,
+) -> None:
+    """The ONE walk of a document view for a receiving node — both paths.
+
+    Emits the outcome of every gate to ``sink`` in document order (last
+    emission per key wins downstream, which IS the precedence rule). The
+    five-branch block ladder, the glob semantics, the named-block matching and
+    the position bookkeeping exist exactly once, here; what differs between
+    the marker path and the live-object path is declared in the receiver's
+    predicates and in what each sink does with an emission — never in this
+    walk. (Predecessors: ``_prepare_kwargs``'s and ``configurator._apply``'s
+    separate ``_consume_block`` closures, which diverged four ways in one day
+    when the rule lived twice — docs/architecture.md records 3 and 8.)
+    """
+    accepts_value = receiver.accepts_value
+    blocked = receiver.blocked
+    apply = sink.apply
+    route = sink.route
+    unknown = sink.unknown
+    dict_at_slot = sink.dict_at_slot
+    current_pos = 0
+    _positions: Optional[Dict[str, int]] = None
+
+    def _bare_before() -> FrozenSet[str]:
+        # Lazy: only a dict-at-slot emission needs positions (the rare case),
+        # so the common pass never pays the extra view walk.
+        nonlocal _positions
+        if _positions is None:
+            _positions = {k: i for i, (k, v) in enumerate(view.items()) if not isinstance(v, dict)}
+        pos = current_pos
+        return frozenset(k for k, i in _positions.items() if i < pos)
+
+    def _consume(block: Dict[str, Any], *, origin: str, gated: bool, floating: bool = False) -> None:
+        """Unroll a block addressed to this node — the ONE branch ladder.
+
+        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
+        apply, like bare keys); named-block contents bypass them (addressed).
+        ``floating=True`` for ``'**'`` contents: nested named dicts are
+        matched-or-ignored (the riding ``'**'`` entry keeps them floating)
+        instead of being hoisted as one-level routing.
+        """
+        for bk, bv in _expand_block_keys(block).items():
+            if bk == "**" and isinstance(bv, dict):
+                _consume(bv, origin="glob '**'", gated=True, floating=True)
+                route("**", bv)
+                continue
+            if bk == "*" and isinstance(bv, dict):
+                route("*", bv)
+                continue
+            if isinstance(bv, dict) and bk in receiver.inner_names and (floating or not gated):
+                # Addressed to me again (``Cls.inst.attr`` form, or a named
+                # match while floating under '**') — unroll inline, ungated.
+                _consume(bv, origin=f"block {bk!r}", gated=False)
+                continue
+            if isinstance(bv, dict) and not accepts_value(bk, bv):
+                # Not a dict-typed VALUE. Either a slot content aimed at a
+                # declared key (the receiver's dict_slot predicate — the paths
+                # deliberately differ on when, see the D5 pin), or routing for
+                # the direct children (spent while floating).
+                if receiver.dict_slot(bk, gated, floating):
+                    dict_at_slot(bk, bv, origin, _bare_before())
+                    continue
+                if not floating:
+                    route(bk, bv)
+                continue
+            if gated:
+                if blocked is not None and bk not in blocked and accepts_value(bk, bv):
+                    apply(bk, bv, origin, _KeyScope.EXACT, False, True)
+                continue
+            if accepts_value(bk, bv):
+                apply(bk, bv, origin, _KeyScope.EXACT, False, False)
+            else:
+                unknown(bk, bv, origin=origin)
+
+    def _consume_own(kwargs: Dict[str, Any]) -> None:
+        """The receiver's own kwargs — addressed to me by definition, thus EXACT."""
+        for k, v in _expand_block_keys(kwargs).items():
+            if k == "**" and isinstance(v, dict):
+                _consume(v, origin="glob '**'", gated=True, floating=True)
+                route("**", v)
+            elif k == "*" and isinstance(v, dict):
+                route("*", v)
+            elif isinstance(v, dict) and receiver.own_dict_routes(k):
+                route(k, v)
+            else:
+                apply(k, v, "own", _KeyScope.EXACT, True, False)
+
+    self_unrolled = False
+    skip_bare_value = receiver.skip_bare_value
+    block_names = receiver.block_names
+    instance_name = receiver.instance_name
+    for pos, (k, v) in enumerate(view.items()):
+        current_pos = pos
+        # Receiving Fluid's own slot — unroll its kwargs at this position.
+        if self_obj is not None and v is self_obj and not self_unrolled:
+            if own_kwargs is not None:
+                _consume_own(own_kwargs)
+            self_unrolled = True
+            continue
+        if skip_bare_value(v):
+            continue
+        scope = _scope_of(view, k)
+        if scope is _KeyScope.EXACT:
+            continue  # an ancestor's addressed value — ordering/!ref: visibility only
+        if scope is _KeyScope.ADDRESSED:
+            # An attr-recursion delivered this entry to exactly this object
+            # (live path) — consume it like matched-block content.
+            _consume({k: v}, origin="addressed", gated=False)
+            continue
+        if k == "**" and isinstance(v, dict):
+            _consume(v, origin="glob '**'", gated=True, floating=True)
+            continue
+        if k == "*" and isinstance(v, dict):
+            _consume(v, origin="glob '*'", gated=True)
+            continue
+        if (k in block_names or k == instance_name) and isinstance(v, dict):
+            sink.matched(k)
+            _consume(v, origin=f"block {k!r}", gated=False)
+            continue
+        if scope is _KeyScope.STRICT:
+            continue  # routing block for a sibling name — not mine
+        # Plain broadcast — the only path the NoBroadcast opt-out gates.
+        if blocked is not None and k not in blocked and accepts_value(k, v):
+            apply(k, v, "bare", _KeyScope.BARE, False, True)
+
+    if not self_unrolled and own_kwargs is not None:
+        _consume_own(own_kwargs)
+
+
+class _MergeSink:
+    """The marker-path sink: decisions become the merged ``_View`` + report records.
+
+    Reproduces ``_prepare_kwargs``'s output contract exactly — the ``_View``
+    with its scope tags, the TRACE lines, and the report's origins/mark-used
+    conventions (own kwargs are definitions and erase an origin; ungated block
+    values record an origin but are never marked used; gated and bare applies
+    do both).
+    """
+
+    __slots__ = ("cls_name", "merged", "report", "origins")
+
+    def __init__(self, cls_name: str) -> None:
+        self.cls_name = cls_name
+        self.merged = _View()
+        self.report = _ENGINE_STATE.get().report
+        self.origins: Dict[str, str] = {}
+
+    def _mark_used(self, k: str, origin: str) -> None:
+        if self.report is not None:
+            self.report.mark_used(f"**.{k}" if origin == "glob '**'" else f"*.{k}" if origin == "glob '*'" else k)
+
+    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool) -> None:
+        self.merged.set(key, value, scope)
+        if own:
+            self.origins.pop(key, None)  # own kwargs are definitions, not overrides
+            return
+        logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin})")
+        if self.report is None:
+            return
+        self.origins[key] = origin
+        if gated:
+            self._mark_used(key, origin)
+
+    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
+        logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin}, slot value)")
+        self.merged.set(key, block, _KeyScope.EXACT)
+        if self.report is not None:
+            self.origins[key] = origin
+
+    def route(self, key: str, block: Dict[str, Any]) -> None:
+        prev = self.merged.get(key)
+        if isinstance(prev, dict):
+            block = {**prev, **block}
+        self.merged.set(key, block, _KeyScope.BARE if key == "**" else _KeyScope.STRICT)
+
+    def unknown(self, key: str, value: Any, *, origin: str) -> None:
+        pass  # constructor validation is this path's typo enforcement
+
+    def matched(self, name: str) -> None:
+        if self.report is not None:
+            self.report.mark_used(name)  # a named block is "used" once it matches
+
+
 def _prepare_kwargs(
     cls_name: str,
     own_kwargs: Dict[str, Any],
@@ -875,199 +1230,22 @@ def _prepare_kwargs(
     for parameter inspection (avoids name collisions). ``self_obj`` is the
     Fluid being materialized — passed so we can locate its slot in
     ``parent_context``.
+
+    Since 2026-08-08 this is a thin composition: the receiver factory answers
+    "who is consuming", :func:`_scan_view` performs the ONE walk, and
+    :class:`_MergeSink` writes the outcomes into the returned view.
     """
-    if cls_name.endswith("()"):
-        cls_name = cls_name[:-2]
-    instance_name = own_kwargs.get("name")
+    receiver = _receiver_for_target(cls_name, own_kwargs, target)
+    sink = _MergeSink(receiver.cls_name)
+    _scan_view(parent_context, receiver, sink, own_kwargs=own_kwargs, self_obj=self_obj)
 
-    acceptable = _get_acceptable_keys(target or cls_name)
-    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
-    param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
-    broadcast_blocked = _broadcast_blocked_keys(target_cls)
-    # A class-name block is matched by NAME, but `cls_name` is whatever the target was
-    # SPELLED as — which may be a dotted path (`!class:pkg.mod.Widget`) or carry a tag
-    # selector (`!class:Widget@framework=torch`). Both are spellings of the same class, so
-    # a `Widget:` block must still reach it; before this, a dotted target silently ignored
-    # its block (measured: the value stayed at the constructor default). The registered
-    # name of the resolved class is therefore matched alongside the literal spelling —
-    # which also aligns this path with `configure()`, which has always keyed off the
-    # stamped `__confluid_name__` (configurator._apply).
-    block_names = {cls_name}
-    if target_cls is not None:
-        registered = target_cls.__dict__.get("__confluid_name__") if hasattr(target_cls, "__dict__") else None
-        block_names.add(str(registered or getattr(target_cls, "__name__", "")))
-    block_names.discard("")
+    if sink.report is not None and sink.origins:
+        name = receiver.instance_name
+        label = f"{receiver.cls_name} {name!r}" if name is not None else receiver.cls_name
+        for k, origin in sink.origins.items():
+            sink.report.record_applied(k, label, origin)
 
-    def _accepts(k: str, v: Any) -> bool:
-        if isinstance(v, Fluid):
-            if acceptable is None or k not in acceptable:
-                return False
-            # Skip same-target Fluids that are not self — broadcasting them
-            # in would loop on infinite re-materialization.
-            if target_cls is not None and _same_target(v.target, target_cls):
-                return False
-            return True
-        if isinstance(v, dict):
-            # Plain dict — only broadcast IN when the target annotates the
-            # param as a dict/mapping. Otherwise keep the legacy behavior
-            # (recurse as a config sub-block, do NOT pull the dict in as
-            # a value).
-            if param_kinds.get(k) == "dict":
-                return acceptable is None or k in acceptable
-            return False
-        if isinstance(v, list):
-            if param_kinds.get(k) == "list":
-                return acceptable is None or k in acceptable
-            return False
-        if acceptable is not None and k not in acceptable:
-            return False
-        return True
-
-    merged = _View()
-    self_unrolled = False
-
-    # Ambient ConfigurationReport (collect_report). ``origins`` tracks the
-    # origin of the LAST write per key so overwrites collapse to one applied
-    # record (last-write-wins); own kwargs erase an entry (a marker's own
-    # kwargs are definitions, not overrides). None-guarded — zero-cost off.
-    report = _ENGINE_STATE.get().report
-    origins: Dict[str, str] = {}
-
-    def _mark_used(k: str, origin: str) -> None:
-        if report is not None:
-            report.mark_used(f"**.{k}" if origin == "glob '**'" else f"*.{k}" if origin == "glob '*'" else k)
-
-    def _apply_gated(k: str, v: Any, origin: str, scope: _KeyScope) -> None:
-        """Bare-style application: NoBroadcast opt-outs gate, accept-list filters."""
-        if broadcast_blocked is not None and k not in broadcast_blocked and _accepts(k, v):
-            logger.trace(f"broadcast: {k!r} -> {cls_name} ({origin})")
-            merged.set(k, v, scope)
-            if report is not None:
-                origins[k] = origin
-                _mark_used(k, origin)
-
-    def _hoist_routing(k: str, v: Dict[str, Any]) -> None:
-        """Keep a routing block ('**' floats, '*'/named sub-blocks are one-level)."""
-        prev = merged.get(k)
-        if isinstance(prev, dict):
-            v = {**prev, **v}
-        merged.set(k, v, _KeyScope.BARE if k == "**" else _KeyScope.STRICT)
-
-    def _consume_block(block: Dict[str, Any], *, origin: str, gated: bool, floating: bool = False) -> None:
-        """Unroll a block addressed to this node into ``merged``.
-
-        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
-        apply, like bare keys); named-block contents bypass them (addressed).
-        ``floating=True`` for ``'**'`` contents: nested named dicts are
-        matched-or-ignored (the riding ``'**'`` entry keeps them floating)
-        instead of being hoisted as one-level STRICT routing.
-        """
-        for bk, bv in _expand_block_keys(block).items():
-            if bk == "**" and isinstance(bv, dict):
-                _consume_block(bv, origin="glob '**'", gated=True, floating=True)
-                _hoist_routing("**", bv)
-                continue
-            if bk == "*" and isinstance(bv, dict):
-                _hoist_routing("*", bv)
-                continue
-            if isinstance(bv, dict) and bk in (cls_name, instance_name) and (floating or not gated):
-                # Addressed to me again (``Cls.inst.attr`` form, or a named
-                # match while floating under '**') — unroll inline, ungated.
-                _consume_block(bv, origin=f"block {bk!r}", gated=False)
-                continue
-            if isinstance(bv, dict) and not _accepts(bk, bv):
-                # A dict at a key the receiver DECLARES is a value aimed at that slot,
-                # not a path segment — the rule ``_apply_own`` already applies to the inline
-                # spelling (``!class:Trainer()`` + a nested ``optimizer:``). The two
-                # disagreed, and only this branch used the stricter ``_accepts`` test,
-                # which admits a dict ONLY for a dict-TYPED param. A deferred body slot
-                # is not dict-typed, so ``Trainer: {optimizer: {lr: 0.5}}`` was hoisted
-                # as routing for the children and never reached the slot at all — the
-                # run kept the code default with nothing competing and nothing logged.
-                # Restricted to the ADDRESSED path: a glob-delivered dict (``gated``)
-                # is genuinely routing, and a floating ``'**'`` rider keeps floating.
-                if not gated and not floating and acceptable is not None and bk in acceptable:
-                    logger.trace(f"broadcast: {bk!r} -> {cls_name} ({origin}, slot value)")
-                    merged.set(bk, bv, _KeyScope.EXACT)
-                    if report is not None:
-                        origins[bk] = origin
-                    continue
-                if not floating:
-                    _hoist_routing(bk, bv)  # deeper path segment → direct children
-                continue
-            if gated:
-                _apply_gated(bk, bv, origin, _KeyScope.EXACT)
-            elif _accepts(bk, bv):
-                logger.trace(f"broadcast: {bk!r} -> {cls_name} ({origin})")
-                merged.set(bk, bv, _KeyScope.EXACT)
-                if report is not None:
-                    origins[bk] = origin
-
-    def _apply_own(kwargs: Dict[str, Any]) -> None:
-        """Unroll the receiver's own kwargs — addressed to me, thus EXACT."""
-        for k, v in _expand_block_keys(kwargs).items():
-            if k == "**" and isinstance(v, dict):
-                _consume_block(v, origin="glob '**'", gated=True, floating=True)
-                _hoist_routing("**", v)
-            elif k == "*" and isinstance(v, dict):
-                _hoist_routing("*", v)
-            elif isinstance(v, dict) and acceptable is not None and k not in acceptable:
-                # Not a param/attr of mine — a sub-block addressing a direct
-                # child by name (e.g. the expanded form of ``trainer.b.lr``).
-                _hoist_routing(k, v)
-            else:
-                merged.set(k, v, _KeyScope.EXACT)
-                origins.pop(k, None)  # own kwargs are definitions, not overrides
-
-    for k, v in parent_context.items():
-        # Receiving Fluid's own slot — unroll its kwargs at this position.
-        if self_obj is not None and v is self_obj and not self_unrolled:
-            _apply_own(own_kwargs)
-            self_unrolled = True
-            continue
-
-        # Same-target Fluid that isn't self — skip (would otherwise loop).
-        if isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls):
-            continue
-
-        scope = _scope_of(parent_context, k)
-        if scope is _KeyScope.EXACT:
-            continue  # an ancestor's addressed value — ordering/!ref: visibility only
-
-        # '**' glob block — floats at every level; contents act like bare keys.
-        if k == "**" and isinstance(v, dict):
-            _consume_block(v, origin="glob '**'", gated=True, floating=True)
-            continue
-
-        # '*' glob block — introduced one level up; I am the "any child" it addresses.
-        if k == "*" and isinstance(v, dict):
-            _consume_block(v, origin="glob '*'", gated=True)
-            continue
-
-        # Class-name / instance-name dict block — unroll inline (addressed → ungated).
-        if (k in block_names or k == instance_name) and isinstance(v, dict):
-            if report is not None:
-                report.mark_used(k)  # a named block is "used" once it matches an object
-            _consume_block(v, origin=f"block {k!r}", gated=False)
-            continue
-
-        if scope is _KeyScope.STRICT:
-            continue  # routing block for a sibling name — not mine
-
-        # Plain broadcast — the only path the NoBroadcast opt-out gates:
-        # addressed blocks above always work. ``blocked is None`` means the
-        # class opted out entirely (@configurable(broadcast=False)).
-        _apply_gated(k, v, "bare", _KeyScope.BARE)
-
-    if not self_unrolled:
-        _apply_own(own_kwargs)
-
-    if report is not None and origins:
-        label = f"{cls_name} {instance_name!r}" if isinstance(instance_name, str) else cls_name
-        for k, origin in origins.items():
-            report.record_applied(k, label, origin)
-
-    return merged
+    return sink.merged
 
 
 def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
