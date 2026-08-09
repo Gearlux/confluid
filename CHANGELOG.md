@@ -80,6 +80,19 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_scanner.py`. Measured: materialize within 1% of baseline,
   configure() ~19% faster.
 
+- **The splice pair lives in one module over shared primitives** (phase B,
+  closing the one-scanner plan). `configurator`'s `_spliced` family moved to
+  `broadcast` (renamed `_spliced_subtree_view` / `_spliced_at_slot` /
+  `_hoist_block_routing`) beside the marker splice; the three byte-duplicated
+  idioms are now single functions — `_merge_rider` (the `'**'` merge),
+  `_merge_routing` (the routing hoist), `_spent_at_boundary` (the
+  one-level-spend rule). One adjudicated policy change rode along (D1): a
+  routing hoist now merges into an existing ROUTING entry only and REPLACES
+  anything else — the old marker-path variant merged unconditionally, folding
+  an addressed slot value into child routing so its contents leaked to
+  descendants they were never aimed at (latent; no suite trigger existed).
+  Pinned in `tests/test_scanner.py`.
+
 - **Dead compatibility shims pruned (private names, zero users verified
   workspace-wide).** Five never-imported re-exports dropped from
   `confluid.engine` (`_classify_annotation`, `_scope_of`, `_settability_target`,

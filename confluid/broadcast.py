@@ -496,6 +496,43 @@ def _scope_of(view: Any, key: str) -> _KeyScope:
 _GLOB_KEYS = ("*", "**")
 
 
+def _merge_rider(prev: Any, new: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a later ``'**'`` rider over an existing one (inner last-write-wins).
+
+    The one spelling of the rider-merge idiom — it was inlined four times
+    across the two splice implementations before Phase B.
+    """
+    return {**prev, **new} if isinstance(prev, dict) else new
+
+
+def _spent_at_boundary(key: str, value: Any, scope: "_KeyScope") -> bool:
+    """True when an inherited entry's routing level is SPENT at a node boundary.
+
+    STRICT entries and ``'*'`` glob blocks are one-level routing: valid for the
+    direct children of their introducer only, dropped when a child view is
+    built for the next level down. (A ``'**'`` rider floats and never spends.)
+    """
+    return scope is _KeyScope.STRICT or (key == "*" and isinstance(value, dict))
+
+
+def _merge_routing(out: "_View", key: str, block: Dict[str, Any]) -> None:
+    """Hoist a routing block — ``'**'`` floats (BARE), anything else one-level (STRICT).
+
+    D1-adjudicated (2026-08-08): an existing entry at ``key`` is merged ONLY
+    when it is itself routing — the ``'**'`` rider, or a STRICT block; any
+    other previous value (an EXACT slot value, an own-kwarg dict) is REPLACED,
+    last-write-wins. The old marker-path variant merged unconditionally,
+    folding an addressed slot value into child routing — contents leaked to
+    descendants they were never aimed at. The configure-path variant already
+    merged STRICT-only; this is now the one policy. Pinned in
+    ``tests/test_scanner.py``.
+    """
+    prev = out.get(key)
+    if isinstance(prev, dict) and (key == "**" or out.scope_of(key) is _KeyScope.STRICT):
+        block = {**prev, **block}
+    out.set(key, block, _KeyScope.BARE if key == "**" else _KeyScope.STRICT)
+
+
 def _is_glob_key(key: Any) -> bool:
     """True for the glob routing block names ``'*'`` / ``'**'``.
 
@@ -640,19 +677,15 @@ def _splice_kwargs_at_slot(
 
     def _emit_parent(k: str, v: Any) -> None:
         scope = _scope_of(parent_context, k)
-        if scope is _KeyScope.STRICT or (k == "*" and isinstance(v, dict)):
+        if _spent_at_boundary(k, v, scope):
             return  # one-level routing — spent at this Fluid boundary
         if k == "**" and isinstance(v, dict):
-            prev = out.get("**")
-            if isinstance(prev, dict):
-                v = {**prev, **v}  # later parent rider merges over the own one
+            v = _merge_rider(out.get("**"), v)  # later parent rider merges over the own one
         out.set(k, v, scope)
 
     def _emit_merged(kk: str, kv: Any) -> None:
         if kk == "**" and isinstance(kv, dict):
-            prev = out.get("**")
-            if isinstance(prev, dict):
-                kv = {**prev, **kv}  # a node's own rider merges with the parent's
+            kv = _merge_rider(out.get("**"), kv)  # a node's own rider merges with the parent's
         out.pop(kk, None)
         out.set(kk, kv, _scope_of(kwargs, kk) if isinstance(kwargs, _View) else _KeyScope.EXACT)
 
@@ -702,6 +735,103 @@ def _splice_kwargs_at_slot(
         else:
             _emit_parent(k, v)
     _shield_glob_rider()
+    return out
+
+
+def _spliced_subtree_view(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) -> Dict[str, Any]:
+    """Return the subtree view: routing hoisted from matched blocks, spent levels dropped.
+
+    The live-object analogue of ``broadcast._splice_kwargs_at_slot``:
+
+    * a matched (floating) block STAYS in the view — a deeper node with the
+      same class/instance name matches it again (``**.name`` anchoring); its
+      scalars were already applied to this object and are simply carried
+      inside the block, never as ambient bare keys (the cascade removal);
+    * a matched block's ROUTING contents are hoisted as additional entries
+      at the block's position: ``'**'`` keeps floating (BARE, merged with an
+      existing rider), ``'*'`` and named sub-blocks become STRICT (valid for
+      the direct children only);
+    * inherited STRICT entries and ``'*'`` glob blocks are dropped — their
+      one level is spent at this object.
+    """
+    block_keys = {cls_name, instance_name} - {None}
+    has_block = any(
+        k in view and isinstance(view[k], dict) and _scope_of(view, k) is not _KeyScope.EXACT for k in block_keys
+    )
+    has_routing = ("*" in view and isinstance(view["*"], dict)) or (
+        isinstance(view, _View) and any(s in (_KeyScope.STRICT, _KeyScope.ADDRESSED) for s in view.scopes.values())
+    )
+    star2 = view.get("**")
+    has_glob_router = isinstance(star2, dict) and isinstance(star2.get("*"), dict)
+    if not (has_block or has_routing or has_glob_router):
+        return view
+
+    out = _View()
+    for k, v in view.items():
+        scope = _scope_of(view, k)
+        if scope is _KeyScope.ADDRESSED:
+            # Delivered to the object that just consumed this view; its dict
+            # contents route one level further, scalars are spent.
+            if isinstance(v, dict):
+                _hoist_block_routing(out, {k: v}, instance_name)
+            continue
+        if isinstance(v, dict) and k in block_keys and scope is not _KeyScope.EXACT:
+            if scope is not _KeyScope.STRICT:
+                out.set(k, v, scope)  # floating block — deeper same-name nodes rematch
+            _hoist_block_routing(out, v, instance_name)
+            continue
+        if k == "*" and isinstance(v, dict):
+            continue  # one-level routing — spent at this boundary
+        if k == "**" and isinstance(v, dict):
+            out.set(k, v, _KeyScope.BARE)
+            if isinstance(v.get("*"), dict):
+                _merge_routing(out, "*", v["*"])  # '*' inside a floating '**' routes my children
+            continue
+        if scope is _KeyScope.STRICT:
+            continue  # routing for a sibling name — spent
+        out.set(k, v, scope)
+    return out
+
+
+def _hoist_block_routing(out: Any, block: Dict[str, Any], instance_name: Optional[str]) -> None:
+    """Hoist a matched block's routing contents ('**'/'*'/named sub-blocks) into ``out``."""
+    for bk, bv in _expand_block_keys(block).items():
+        if bk == instance_name and isinstance(bv, dict):
+            _hoist_block_routing(out, bv, instance_name)  # Cls.inst.attr form unrolls inline
+            continue
+        if not isinstance(bv, dict):
+            continue  # scalars were applied by _apply; the floating block keeps them visible
+        if bk == "**":
+            prev = out.get("**")
+            if isinstance(prev, dict):
+                bv = {**prev, **bv}
+            out.set("**", bv, _KeyScope.BARE)  # keeps floating below
+            if isinstance(bv.get("*"), dict):
+                _merge_routing(out, "*", bv["*"])  # '*' inside the rider routes my children
+            continue
+        _merge_routing(out, bk, bv)  # '*' or a deeper path segment — one level
+
+
+def _spliced_at_slot(view: Dict[str, Any], key: str, sub_block: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``view`` with ``sub_block``'s entries spliced at ``key``'s position.
+
+    Used for child recursion: the block addressed to the child replaces the
+    attr-keyed entry, so its values sit at the block's document position
+    (later than earlier broadcasts → they win for the child, as authored).
+    The entries are ADDRESSED — consumed by that one child, spent below it.
+    """
+    out = _View()
+    placed = False
+    for k, v in view.items():
+        if k == key and not placed:
+            for bk, bv in sub_block.items():
+                out.set(bk, bv, _KeyScope.ADDRESSED)
+            placed = True
+        else:
+            out.set(k, v, _scope_of(view, k))
+    if not placed:
+        for bk, bv in sub_block.items():
+            out.set(bk, bv, _KeyScope.ADDRESSED)
     return out
 
 
@@ -1236,10 +1366,7 @@ class _MergeSink:
             self.origins[key] = origin
 
     def route(self, key: str, block: Dict[str, Any]) -> None:
-        prev = self.merged.get(key)
-        if isinstance(prev, dict):
-            block = {**prev, **block}
-        self.merged.set(key, block, _KeyScope.BARE if key == "**" else _KeyScope.STRICT)
+        _merge_routing(self.merged, key, block)
 
     def unknown(self, key: str, value: Any, *, origin: str) -> None:
         pass  # constructor validation is this path's typo enforcement

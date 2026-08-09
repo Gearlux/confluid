@@ -182,3 +182,53 @@ def test_exact_and_strict_entries_are_ordering_metadata_only() -> None:
     view.set("sibling", {"lr": 1.0}, _KeyScope.STRICT)
     sink = _scan(view, _ScTrainer)
     assert sink.events == []
+
+
+# --------------------------------------------------------------------------- #
+# Phase B primitives — the splice pair's shared vocabulary
+# --------------------------------------------------------------------------- #
+
+
+def test_merge_routing_merges_routing_but_replaces_values() -> None:
+    """D1, adjudicated: routing merges into ROUTING only; a value entry is replaced.
+
+    The old marker-path hoist merged unconditionally — an EXACT slot value
+    grew routing contents and leaked them to descendants it never addressed.
+    """
+    from confluid.broadcast import _merge_routing
+
+    out = _View()
+    out.set("opt", {"lr": 0.5}, _KeyScope.STRICT)  # existing ROUTING → merge
+    _merge_routing(out, "opt", {"momentum": 0.9})
+    assert out["opt"] == {"lr": 0.5, "momentum": 0.9}
+    assert out.scope_of("opt") is _KeyScope.STRICT
+
+    out2 = _View()
+    out2.set("opt", {"lr": 0.5}, _KeyScope.EXACT)  # existing slot VALUE → replace
+    _merge_routing(out2, "opt", {"momentum": 0.9})
+    assert out2["opt"] == {"momentum": 0.9}
+    assert out2.scope_of("opt") is _KeyScope.STRICT
+
+
+def test_merge_routing_floats_a_rider_and_merges_it() -> None:
+    """The ``'**'`` arm: BARE (keeps floating) and merges over the existing rider."""
+    from confluid.broadcast import _merge_routing
+
+    out = _View()
+    _merge_routing(out, "**", {"lr": 0.1})
+    _merge_routing(out, "**", {"wd": 0.2})
+    assert out["**"] == {"lr": 0.1, "wd": 0.2}
+    assert out.scope_of("**") is _KeyScope.BARE
+
+
+def test_merge_rider_and_spent_at_boundary() -> None:
+    """The two small primitives: rider merge (inner last-write) and the spend rule."""
+    from confluid.broadcast import _merge_rider, _spent_at_boundary
+
+    assert _merge_rider(None, {"a": 1}) == {"a": 1}
+    assert _merge_rider({"a": 1, "b": 2}, {"b": 3}) == {"a": 1, "b": 3}
+
+    assert _spent_at_boundary("x", {"y": 1}, _KeyScope.STRICT)  # one-level routing
+    assert _spent_at_boundary("*", {"y": 1}, _KeyScope.BARE)  # a '*' glob dict
+    assert not _spent_at_boundary("**", {"y": 1}, _KeyScope.BARE)  # a rider floats
+    assert not _spent_at_boundary("x", 1, _KeyScope.BARE)  # plain values pass
