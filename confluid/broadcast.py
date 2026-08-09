@@ -975,6 +975,71 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
     return receiver
 
 
+def _receiver_for_instance(obj: Any) -> _Receiver:
+    """The LIVE-OBJECT-path receiver: an already-built instance under configure().
+
+    Kept DIRECTLY beside :func:`_receiver_for_target` on purpose — the fields
+    where the two differ are the documented cross-path behaviors, each with a
+    named pin in ``tests/test_cross_path_pins.py``:
+
+    * ``accepts_value`` is NAME-ONLY (``_settable``: the accept-list union the
+      live ``vars(obj)`` names, minus ignore-marked members and setterless
+      properties) and refuses every dict — a top-level dict is always a BLOCK
+      on this path (D4).
+    * ``dict_slot`` ignores ``gated``/``floating`` — a glob-delivered dict
+      reaches a declared slot here (D5, kept; flagged for adjudication).
+    * There is no own-kwargs consumption and no same-target parent skip — a
+      live object has no marker kwargs, and its view values were already
+      ordered by the ancestors' splices.
+
+    NOT cached in ``_receiver_cache``: the predicates close over THIS
+    instance's ``vars`` — per-object state, not per-class.
+    """
+    cls = obj.__class__
+    cls_name = str(getattr(cls, "__confluid_name__", cls.__name__))
+    instance_name = getattr(obj, "name", None)
+    instance_str = instance_name if isinstance(instance_name, str) else None
+
+    acceptable = _get_acceptable_keys(cls)
+    blocked = _broadcast_blocked_keys(cls)
+    own_attrs = {k for k in vars(obj) if not k.startswith("_")}
+
+    def _settable(key: str) -> bool:
+        member = getattr(cls, key, None)
+        if member is not None and getattr(member, "__confluid_ignore__", False):
+            return False
+        if isinstance(member, property) and member.fset is None:
+            return False
+        return acceptable is None or key in acceptable or key in own_attrs
+
+    def _accepts(k: str, v: Any) -> bool:
+        return not isinstance(v, dict) and _settable(k)
+
+    def _dict_slot(k: str, gated: bool, floating: bool) -> bool:
+        return _settable(k)
+
+    def _own_dict_routes(k: str) -> bool:  # no own kwargs on this path
+        return False
+
+    def _skip_bare(v: Any) -> bool:
+        return False
+
+    names = frozenset(n for n in (cls_name, instance_str) if n)
+    return _Receiver(
+        cls_name=cls_name,
+        block_names=names,
+        inner_names=names,
+        instance_name=instance_str,
+        target_cls=cls,
+        acceptable=acceptable,
+        blocked=blocked,
+        accepts_value=_accepts,
+        dict_slot=_dict_slot,
+        own_dict_routes=_own_dict_routes,
+        skip_bare_value=_skip_bare,
+    )
+
+
 class _ScanSink(Protocol):
     """Effect writer for one :func:`_scan_view` pass — sinks apply, never gate.
 

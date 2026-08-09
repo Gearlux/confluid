@@ -41,10 +41,10 @@ import yaml
 from loggair import get_logger
 
 from confluid.broadcast import (
-    _broadcast_blocked_keys,
     _expand_block_keys,
-    _get_acceptable_keys,
     _KeyScope,
+    _receiver_for_instance,
+    _scan_view,
     _scope_of,
     _View,
     merge_bare_pool_into_kwargs,
@@ -237,6 +237,74 @@ def _tune_deferred(
     )
 
 
+class _LiveSink:
+    """The configure-path sink: scanner decisions become assignments/recursions/tunes.
+
+    An effect writer only — every gate already ran in ``_scan_view`` against
+    the receiver ``_receiver_for_instance`` built for this object. What this
+    sink owns is the LIVE three-way dispatch a marker path cannot have: a dict
+    at a settable key tunes a deferred ``Class`` slot (recording which bare
+    keys its block out-positioned), recurses into a live configurable child,
+    or lands as a plain dict attribute. Warnings keep originating from THIS
+    module's logger (the monkeypatch target tests rely on).
+    """
+
+    __slots__ = ("obj", "cls_name", "target_label", "report", "assignments", "origins", "recursions", "beaten_per_slot")
+
+    def __init__(self, obj: Any, cls_name: str, target_label: str, report: ConfigurationReport) -> None:
+        self.obj = obj
+        self.cls_name = cls_name
+        self.target_label = target_label
+        self.report = report
+        # ``origins`` mirrors ``assignments`` with each key's LAST write, so the
+        # report gets ONE applied record per attribute — the final assignment.
+        self.assignments: Dict[str, Any] = {}
+        self.origins: Dict[str, str] = {}
+        self.recursions: Dict[str, Dict[str, Any]] = {}
+        # attr name -> the bare keys a block addressed at that DEFERRED slot
+        # out-positioned. Call-scoped by construction: lives and dies with this
+        # scan (a verdict about one document must not survive into the next).
+        self.beaten_per_slot: Dict[str, FrozenSet[str]] = {}
+
+    def _mark_used(self, key: str, origin: str) -> None:
+        self.report.mark_used(f"**.{key}" if origin == "glob '**'" else f"*.{key}" if origin == "glob '*'" else key)
+
+    def apply(self, key: str, value: Any, origin: str, scope: Any, own: bool, gated: bool) -> None:
+        logger.trace(f"configure: {key!r} -> {self.cls_name} ({origin})")
+        self.assignments[key] = value
+        self.origins[key] = origin
+        self._mark_used(key, origin)
+
+    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
+        existing = self.obj.__dict__.get(key)
+        if isinstance(existing, Class):
+            # A deferred marker slot (``self.optimizer = LazyClass(...)``) —
+            # TUNE the marker (the engine's rule for the identical spelling),
+            # never recurse into it or replace it with the raw dict. The bare
+            # keys this block out-positioned ride along for _tune_deferred.
+            tuned = copy(existing)
+            tuned.kwargs = {**existing.kwargs, **block}
+            self.beaten_per_slot[key] = bare_before
+            self.assignments[key] = tuned
+            self.origins[key] = origin
+        elif getattr(getattr(getattr(self.obj, key, None), "__class__", None), "__confluid_configurable__", False):
+            self.recursions[key] = block  # a live configurable child — recurse after the scan
+        else:
+            self.assignments[key] = block  # a plain dict-typed attribute value
+            self.origins[key] = origin
+        self._mark_used(key, origin)
+
+    def route(self, key: str, block: Dict[str, Any]) -> None:
+        pass  # _spliced re-derives routing from the retained blocks (Phase B may consume this)
+
+    def unknown(self, key: str, value: Any, *, origin: str) -> None:
+        logger.warning(f"configure(): {self.cls_name} block has no attribute {key!r} — ignored")
+        self.report.record_failed(key, self.target_label, "unknown-attribute")
+
+    def matched(self, name: str) -> None:
+        self.report.mark_used(name)  # a named block is "used" once it matches an object
+
+
 def _apply(
     obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set[int], report: ConfigurationReport
 ) -> Dict[str, Any]:
@@ -251,159 +319,14 @@ def _apply(
     blocks (matched by name or skipped), glob blocks apply gated like bare
     keys.
     """
-    cls = obj.__class__
-    cls_name = getattr(cls, "__confluid_name__", cls.__name__)
-    instance_name = getattr(obj, "name", None)
-    if not isinstance(instance_name, str):
-        instance_name = None
+    receiver = _receiver_for_instance(obj)
+    name = receiver.instance_name
+    target_label = f"{receiver.cls_name} {name!r}" if name else receiver.cls_name
 
-    acceptable = _get_acceptable_keys(cls)
-    own_attrs = {k for k in vars(obj) if not k.startswith("_")}
-    broadcast_blocked = _broadcast_blocked_keys(cls)
+    sink = _LiveSink(obj, receiver.cls_name, target_label, report)
+    _scan_view(view, receiver, sink)
 
-    def _settable(key: str) -> bool:
-        member = getattr(cls, key, None)
-        if member is not None and getattr(member, "__confluid_ignore__", False):
-            return False
-        if isinstance(member, property) and member.fset is None:
-            return False
-        return acceptable is None or key in acceptable or key in own_attrs
-
-    def _is_configurable(value: Any) -> bool:
-        return getattr(getattr(value, "__class__", None), "__confluid_configurable__", False)
-
-    target_label = f"{cls_name} {instance_name!r}" if instance_name else cls_name
-
-    # Document-order scan: assignments overwrite (last write wins); dict-valued
-    # block entries addressing a configurable child become recursions; other
-    # dict-valued block entries become one-level routing in the child view.
-    # ``origins`` mirrors ``assignments`` with the origin of each key's LAST
-    # write, so the report gets ONE applied record per attribute — the final
-    # effective assignment.
-    assignments: Dict[str, Any] = {}
-    origins: Dict[str, str] = {}
-    # Document positions, for the one contest this path has to settle by hand: a
-    # mapping addressed at a DEFERRED slot versus a bare key of the same name.
-    # ``_bare_positions`` holds the non-dict (broadcast-eligible) view keys;
-    # ``_block_pos`` is a one-cell box the scan loop below updates as it walks, so
-    # ``_consume_block`` can read the position of the block it is unrolling.
-    _bare_positions: Dict[str, int] = {k: i for i, (k, v) in enumerate(view.items()) if not isinstance(v, dict)}
-    _block_pos = [0]
-    # attr name -> the bare keys a block addressed at that DEFERRED slot out-positioned.
-    # Call-scoped by construction: it lives and dies with this scan.
-    beaten_per_slot: Dict[str, FrozenSet[str]] = {}
-
-    def _mark_used(key: str, origin: str) -> None:
-        report.mark_used(f"**.{key}" if origin == "glob '**'" else f"*.{key}" if origin == "glob '*'" else key)
-
-    recursions: Dict[str, Dict[str, Any]] = {}
-
-    def _consume_block(
-        block: Dict[str, Any], *, origin: str = "block", gated: bool = False, floating: bool = False
-    ) -> None:
-        """Unroll a block addressed to this object.
-
-        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
-        apply, like bare keys — and unmatched keys stay silent, like bare
-        keys); named-block contents bypass the gate and warn on typos.
-        ``floating=True`` for ``'**'`` contents: nested named dicts are
-        matched-or-ignored (the riding ``'**'`` entry keeps them floating).
-        """
-        for bk, bv in _expand_block_keys(block).items():
-            if bk == "**" and isinstance(bv, dict):
-                _consume_block(bv, origin="glob '**'", gated=True, floating=True)
-                continue  # the '**' entry itself is re-emitted by _spliced
-            if bk == "*" and isinstance(bv, dict):
-                continue  # addresses my direct children — routed by _spliced
-            if isinstance(bv, dict) and bk in (cls_name, instance_name) and (floating or not gated):
-                # Addressed to me again (``Cls.inst.attr`` form, or a named
-                # match while floating under '**') — unroll inline, ungated.
-                _consume_block(bv, origin=f"block {bk!r}")
-                continue
-            if isinstance(bv, dict):
-                if _settable(bk):
-                    existing = obj.__dict__.get(bk)
-                    if isinstance(existing, Class):
-                        # A deferred marker slot (``self.optimizer = LazyClass(...)``).
-                        # A Fluid reports ``__confluid_configurable__``, so the check
-                        # below took it for a live configurable child and recursed INTO
-                        # the marker — setting attributes on the marker OBJECT, where
-                        # nothing reads them, instead of merging into the kwargs the
-                        # target is eventually built with. The value simply vanished.
-                        # Tune the marker instead, which is the engine's rule for the
-                        # identical spelling (``engine._apply_post_init_attrs``).
-                        tuned = copy(existing)
-                        tuned.kwargs = {**existing.kwargs, **bv}
-                        # Record which bare keys this block BEAT on position — as a LOCAL
-                        # of this scan, never on the marker. A bare key never passes a
-                        # broadcast gate on this path (``_walk`` would flow the marker and
-                        # configure a throwaway), so the contest has to be settled here,
-                        # which is the one moment the block's position is known. Stamping
-                        # the verdict on the marker instead would outlive the call that
-                        # computed it: a second ``configure()`` carrying only a bare key
-                        # would find that key still marked "lost" against a document it
-                        # never saw, and silently keep the first call's value.
-                        beaten_per_slot[bk] = frozenset(
-                            key for key, pos in _bare_positions.items() if pos < _block_pos[0]
-                        )
-                        assignments[bk] = tuned
-                        origins[bk] = origin
-                    elif _is_configurable(getattr(obj, bk, None)):
-                        recursions[bk] = bv
-                    else:
-                        assignments[bk] = bv  # a plain dict-typed attribute value
-                        origins[bk] = origin
-                    _mark_used(bk, origin)
-                # else: a name-scoped block for a direct child — routed as
-                # STRICT by _spliced; never a typo warning (dicts are blocks).
-                continue
-            if gated:
-                if broadcast_blocked is not None and bk not in broadcast_blocked and _settable(bk):
-                    logger.trace(f"configure: {bk!r} -> {cls_name} ({origin})")
-                    assignments[bk] = bv
-                    origins[bk] = origin
-                    _mark_used(bk, origin)
-                continue
-            if _settable(bk):
-                logger.trace(f"configure: {bk!r} -> {cls_name} ({origin})")
-                assignments[bk] = bv
-                origins[bk] = origin
-                _mark_used(bk, origin)
-            else:
-                logger.warning(f"configure(): {cls_name} block has no attribute {bk!r} — ignored")
-                report.record_failed(bk, target_label, "unknown-attribute")
-
-    for _pos, (k, v) in enumerate(view.items()):
-        _block_pos[0] = _pos
-        scope = _scope_of(view, k)
-        if scope is _KeyScope.EXACT:
-            continue  # an ancestor's addressed value — ordering visibility only
-        if scope is _KeyScope.ADDRESSED:
-            # An attr-recursion delivered this entry to exactly this object —
-            # consume it like matched-block content (assign / recurse / route).
-            _consume_block({k: v}, origin="addressed")
-        elif k == "**" and isinstance(v, dict):
-            _consume_block(v, origin="glob '**'", gated=True, floating=True)
-        elif k == "*" and isinstance(v, dict):
-            # Introduced one level up — this object is the "any child" it addresses.
-            _consume_block(v, origin="glob '*'", gated=True)
-        elif k in (cls_name, instance_name) and isinstance(v, dict):
-            report.mark_used(k)  # a named block is "used" once it matches an object
-            _consume_block(v, origin=f"block {k!r}")
-        elif scope is _KeyScope.STRICT:
-            continue  # routing block for a sibling name — not mine
-        elif (
-            not isinstance(v, dict)
-            and broadcast_blocked is not None  # None = class-level broadcast opt-out
-            and k not in broadcast_blocked  # NoBroadcast[...] params never take bare keys
-            and _settable(k)
-        ):
-            logger.trace(f"configure: {k!r} -> {cls_name} (bare)")
-            assignments[k] = v  # broadcast — dicts at the top level are blocks for others
-            origins[k] = "bare"
-            report.mark_used(k)
-
-    _assign(obj, assignments, context, report, origins, target_label)
+    _assign(obj, sink.assignments, context, report, sink.origins, target_label)
 
     # Deferred slots are tuned by their OWNER, here, because only this scan knows where
     # each block sat relative to the bare keys. ``_walk`` deliberately does not touch a
@@ -411,16 +334,16 @@ def _apply(
     # bare key with nothing competing must still reach one.
     for attr_name, slot in list(vars(obj).items()):
         if isinstance(slot, Lazy):
-            _tune_deferred(slot, view, report, beaten=beaten_per_slot.get(attr_name, frozenset()))
+            _tune_deferred(slot, view, report, beaten=sink.beaten_per_slot.get(attr_name, frozenset()))
 
     # Splice this object's addressed blocks into the subtree view at their
     # positions (the live-object analogue of ``_splice_kwargs_at_slot``):
     # scalars become EXACT (visible for ordering, never re-applied), nested
     # dicts STRICT (one level), glob blocks keep their reach; inherited
     # one-level routing is dropped — its level is spent at this boundary.
-    child_view = _spliced(view, cls_name, instance_name)
+    child_view = _spliced(view, receiver.cls_name, receiver.instance_name)
 
-    for attr_name, sub_block in recursions.items():
+    for attr_name, sub_block in sink.recursions.items():
         child = getattr(obj, attr_name, None)
         if child is not None:
             _walk(child, _spliced_at(child_view, attr_name, sub_block), context, visited, report)
