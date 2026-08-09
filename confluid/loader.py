@@ -10,20 +10,19 @@ from loggair import get_logger
 
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.resolver import Resolver, parse_value
+from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, parse_value
 from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
-# The ``Target(...)`` call grammar shared by ``!class:`` / ``!lazy:`` and the legacy
-# colon-free ``!class`` — one constant so the three cannot drift. The name group accepts
-# a dotted path AND a ``@axis=value`` tag selector (``!class:FourierOp@group=fft/torch``,
-# ``!class:X@framework=$framework``): ``@ = / , $ ~ -`` are all legal YAML tag-suffix
-# characters, so the selector rides an unquoted tag. Widening the group is purely
-# additive — every pre-existing spelling (``Foo``, ``Foo()``, ``a.b.Foo(x=1)``) matches
-# exactly as before. ``_parse_scope_suffix`` keeps its own pattern on purpose: a scope
+# The ``Target(...)`` call grammar shared by ``!class:`` / ``!lazy:`` / the legacy
+# colon-free ``!class`` AND the quoted-string marker parser — ONE constant
+# (``resolver._TARGET_CALL_RE``, imported above) so no spelling can drift. The name
+# group accepts a dotted path AND a ``@axis=value`` tag selector
+# (``!class:FourierOp@group=fft/torch``, ``!class:X@framework=$framework``):
+# ``@ = / , $ ~ -`` are all legal YAML tag-suffix characters, so the selector rides
+# an unquoted tag. ``_parse_scope_suffix`` keeps its own pattern on purpose: a scope
 # key is a plain identifier, not a class target.
-_TARGET_CALL_RE = re.compile(r"^([\w.@=/,~$-]+)\((.*)\)$")
 
 # Per-context include accumulator (a YAML-side concern — deliberately NOT on
 # the engine's _ENGINE_STATE): populated only inside load_config_with_paths.
@@ -145,21 +144,16 @@ def _register_constructors() -> None:
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         """Parse inline ``key=value`` pairs from a ``Name(...)`` tag suffix.
 
-        Each value is coerced to its native Python type via ``parse_value``
-        (``"7"`` → ``7``, ``"0.01"`` → ``0.01``, ``"true"`` → ``True``), so the
-        unquoted tag form matches the quoted-string form's coercion instead of
-        silently storing raw strings. A nested ``!ref:`` / ``${ENV}`` cannot
-        appear in this position — YAML forbids a second tag on one node, so the
-        scanner rejects it — use the quoted-string form or a mapping body when
-        you need those.
+        The split is the shared grammar (``resolver._split_inline_pairs``);
+        this tag-form policy coerces each value to its native Python type via
+        ``parse_value`` (``"7"`` → ``7``, ``"0.01"`` → ``0.01``, ``"true"`` →
+        ``True``) so the unquoted form matches the quoted-string form's
+        coercion instead of silently storing raw strings. A nested ``!ref:`` /
+        ``${ENV}`` cannot appear in this position — YAML forbids a second tag
+        on one node, so the scanner rejects it — use the quoted-string form or
+        a mapping body when you need those.
         """
-        kwargs: dict[str, Any] = {}
-        if args_str and args_str.strip():
-            for pair in args_str.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    kwargs[k.strip()] = parse_value(v.strip())
-        return kwargs
+        return {k: parse_value(v) for k, v in _split_inline_pairs(args_str)}
 
     def _stamp(fl: Any, loader: yaml.SafeLoader, node: yaml.nodes.Node) -> Any:
         """Attach the YAML source location of `node` to `fl` for diagnostics.
@@ -298,8 +292,11 @@ def _register_constructors() -> None:
         val = loader.construct_scalar(node)
         instant = _TARGET_CALL_RE.match(val)
         if instant:
+            # Through _make_fluid like every other constructor — a kwarg
+            # literally named ``target`` collides with the marker ctor's own
+            # first parameter when splatted.
             return _stamp(
-                Instance(instant.group(1), **_parse_inline_kwargs(instant.group(2))),
+                _make_fluid(Instance, instant.group(1), _parse_inline_kwargs(instant.group(2))),
                 loader,
                 node,
             )

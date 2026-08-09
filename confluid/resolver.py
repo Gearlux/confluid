@@ -24,6 +24,32 @@ _INT_LITERAL_RE = re.compile(r"-?\d+")
 # pre-existing ``${VAR}`` / ``${VAR:default}`` keeps its meaning.
 _INTERP_RE = re.compile(r"\$\{([\w.\[\]-]+)(?::([^}]+))?\}")
 
+# The ONE ``Target(...)`` call grammar — a target name (dotted paths and the
+# ``@axis=value`` / ``$key`` selector characters included; all legal YAML
+# tag-suffix characters) followed by an inline-kwargs parenthesis group. Shared
+# by the YAML tag constructors (the loader imports it) and the quoted-string
+# marker parser below, which used to hand-roll a laxer split that accepted
+# spellings no tag can carry (names with spaces or braces) — one grammar, one
+# answer, whichever way a target is spelled.
+_TARGET_CALL_RE = re.compile(r"^([\w.@=/,~$-]+)\((.*)\)$")
+
+
+def _split_inline_pairs(args_str: str) -> List[Tuple[str, str]]:
+    """Split an inline-kwargs suffix ``"a=1, b=x"`` into raw ``(key, value)`` pairs.
+
+    The split is the grammar; value COERCION is deliberately the caller's
+    policy — the tag form coerces via ``parse_value``, the quoted-string form
+    resolves ``${...}`` / ``!ref:`` against its context first. A pair without
+    ``=`` is skipped, matching both callers' historical behaviour.
+    """
+    pairs: List[Tuple[str, str]] = []
+    if args_str and args_str.strip():
+        for pair in args_str.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                pairs.append((k.strip(), v.strip()))
+    return pairs
+
 
 def _is_config_path(name: str) -> bool:
     """A ``${...}`` name is a config-key path (not an env var) iff it carries a
@@ -403,18 +429,16 @@ class Resolver:
         """
         from confluid.fluid import Class, Instance
 
-        if "(" in content and content.endswith(")"):
-            cls_name, args_str = content[:-1].split("(", 1)
-            fluid = Instance(cls_name)
-            if args_str.strip():
-                for pair in args_str.split(","):
-                    if "=" in pair:
-                        k, v = pair.split("=", 1)
-                        # Resolve and Parse the value!
-                        resolved_v = self.resolve(v.strip(), local_context)
-                        if isinstance(resolved_v, str):
-                            resolved_v = self._parse_primitive(resolved_v)
-                        fluid.kwargs[k.strip()] = resolved_v
+        instant = _TARGET_CALL_RE.match(content)
+        if instant:
+            fluid = Instance(instant.group(1))
+            for k, v in _split_inline_pairs(instant.group(2)):
+                # Resolve THEN parse — the quoted-string form's own coercion
+                # policy: ``${...}`` / ``!ref:`` values see the context first.
+                resolved_v = self.resolve(v, local_context)
+                if isinstance(resolved_v, str):
+                    resolved_v = self._parse_primitive(resolved_v)
+                fluid.kwargs[k] = resolved_v
             return fluid
         return Class(content)
 

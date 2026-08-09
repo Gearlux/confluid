@@ -382,3 +382,35 @@ def test_same_target_uses_class_identity_not_name() -> None:
     # ``_same_target("A", A)`` is True — but ``_same_target("A", B)`` is
     # NOT — exactly the cross-skip bug the fix targets.
     assert _same_target("A", B) is False
+
+
+def test_pop_glob_routing_applies_the_one_cascade_gate() -> None:
+    """The direct-flow ``'**'`` receiver application runs the SHARED gates.
+
+    This branch carried an inline copy with strictly weaker gates: a LIST
+    value and a same-target Fluid landed on the receiver here while the
+    materialize path refused both. Now both halves are
+    ``merge_bare_pool_into_kwargs`` — one gate, one answer.
+    """
+    from confluid.broadcast import _pop_glob_routing
+    from confluid.fluid import Class
+
+    @configurable
+    class GlobReceiver:
+        def __init__(self, lr: float = 0.1, stages: object = None, helper: object = None) -> None:
+            self.lr = lr
+            self.stages = stages
+            self.helper = helper
+
+    same_target = Class(GlobReceiver)
+    merged = {
+        "**": {
+            "lr": 0.9,  # scalar at a declared key — lands
+            "stages": [1, 2],  # container — pooled, never applied
+            "helper": same_target,  # same-target Fluid — refused (would loop)
+        }
+    }
+    pool = _pop_glob_routing(merged, GlobReceiver)
+
+    assert merged == {"lr": 0.9}
+    assert pool == {"lr": 0.9, "stages": [1, 2], "helper": same_target}

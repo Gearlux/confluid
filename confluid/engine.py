@@ -47,11 +47,9 @@ from loggair import get_logger
 # internal and downstream, keep working unchanged.
 from confluid.broadcast import (  # noqa: F401
     _acceptable_keys_cache,
-    _broadcast_blocked_keys,
     _broadcast_pool,
     _expand_block_keys,
     _get_acceptable_keys,
-    _get_param_kinds,
     _get_post_init_attrs,
     _is_glob_key,
     _KeyScope,
@@ -61,7 +59,6 @@ from confluid.broadcast import (  # noqa: F401
     _post_init_attrs_cache,
     _prepare_kwargs,
     _receiver_cache,
-    _same_target,
     _splice_kwargs_at_slot,
     _View,
     accepts_any_key,

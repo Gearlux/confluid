@@ -232,3 +232,58 @@ def test_merge_rider_and_spent_at_boundary() -> None:
     assert _spent_at_boundary("*", {"y": 1}, _KeyScope.BARE)  # a '*' glob dict
     assert not _spent_at_boundary("**", {"y": 1}, _KeyScope.BARE)  # a rider floats
     assert not _spent_at_boundary("x", 1, _KeyScope.BARE)  # plain values pass
+
+
+class _AmbiguousTruth:
+    """Truth value raises — what numpy/torch comparison results do."""
+
+    def __bool__(self) -> bool:
+        raise ValueError("The truth value of an array is ambiguous")
+
+
+class _VectorValue:
+    """Mimics an array: ``!=`` returns an object whose truth value raises."""
+
+    def __ne__(self, other: object) -> Any:  # type: ignore[override]
+        return _AmbiguousTruth()
+
+    def __eq__(self, other: object) -> Any:  # type: ignore[override]
+        return _AmbiguousTruth()
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+def test_view_set_override_diagnostic_survives_array_valued_writes() -> None:
+    """The override DEBUG line must never crash the merge's single write path.
+
+    ``_View.set`` compares old and new values to decide whether to log; a
+    numpy/torch array's ``__eq__`` returns an ARRAY, whose truth value raises.
+    Identity decides those — a false "changed" costs one DEBUG line, while
+    raising here kills the materialization far from the config that caused it.
+    """
+    view = _View()
+    first, second = _VectorValue(), _VectorValue()
+
+    view.set("w", first, _KeyScope.EXACT)
+    view.set("w", second, _KeyScope.BARE)  # must not raise
+    assert view["w"] is second
+
+    # Same object re-set: identity says unchanged, and it still must not raise.
+    view.set("w", second, _KeyScope.EXACT)
+    assert view["w"] is second
+
+
+def test_expand_block_keys_anchors_a_fresh_head_at_its_written_position() -> None:
+    """In-block dotted expansion orders like the document-level expansion.
+
+    ONE grammar (``merger.expand_dotted_mapping``): a head no other key claims
+    is anchored where the dotted spelling was WRITTEN, not appended at the end
+    — inside a block exactly as at the document top level (the scanner
+    consumes block entries in order, so position is meaning).
+    """
+    from confluid.broadcast import _expand_block_keys
+
+    out = _expand_block_keys({"early": 1, "X.a": 2, "later": 3})
+
+    assert list(out) == ["early", "X", "later"]
+    assert out["X"] == {"a": 2}

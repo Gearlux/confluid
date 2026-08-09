@@ -44,10 +44,10 @@ stay deferred (runtime injection). The marker only affects runtime inspection
 marker buried inside the composed alias's ``Union`` arm is still found.
 """
 
-from typing import Annotated, Any, Set, TypeVar, Union, get_type_hints
+from typing import Annotated, Any, Set, TypeVar, Union
 
 from confluid.fluid import Fluid
-from confluid.introspect import annotation_has_marker
+from confluid.introspect import annotation_has_marker, marked_param_names
 
 T = TypeVar("T")
 
@@ -70,29 +70,15 @@ def is_mandatory_annotation(annotation: Any) -> bool:
     return annotation_has_marker(annotation, _MANDATORY_MARKER)
 
 
-def mandatory_param_names(cls: type) -> Set[str]:
-    """Return the ``__init__`` parameter names of ``cls`` declared ``Mandatory[...]``.
+def mandatory_param_names(cls: Any) -> Set[str]:
+    """Return the signature parameter names of ``cls`` declared ``Mandatory[...]``.
 
-    Cached per-class on ``cls.__confluid_mandatory_params__`` so introspecting
-    consumers (StreamStudio's runnable-node builder) don't re-resolve hints on every
-    call. Returns an empty set if ``cls`` has no resolvable ``__init__`` or no
+    ``cls`` may be a class OR any callable (a registered builder FUNCTION) — the
+    scan is :func:`confluid.introspect.marked_param_names`, the ONE scan-plus-cache
+    behind all three marker helpers, dispatching through ``init_callable``.
+    Cached per-target on ``cls.__confluid_mandatory_params__`` so introspecting
+    consumers (a GUI's runnable-node builder) don't re-resolve hints on every
+    call. Returns an empty set for targets with no resolvable signature or no
     Mandatory params.
     """
-    # Own-__dict__ read, never getattr: an MRO walk served a parent's cached
-    # answer to every subclass (see the twin comment in confluid.lazy).
-    cached = cls.__dict__.get("__confluid_mandatory_params__") if hasattr(cls, "__dict__") else None
-    if cached is not None:
-        return cached  # type: ignore[no-any-return]
-    init = getattr(cls, "__init__", None)
-    if init is None:
-        return set()
-    try:
-        hints = get_type_hints(init, include_extras=True)
-    except Exception:
-        return set()
-    names = {name for name, ann in hints.items() if is_mandatory_annotation(ann)}
-    try:
-        cls.__confluid_mandatory_params__ = names  # type: ignore[attr-defined]
-    except (AttributeError, TypeError):
-        pass
-    return names
+    return marked_param_names(cls, _MANDATORY_MARKER, "__confluid_mandatory_params__")

@@ -273,3 +273,23 @@ def test_mandatory_param_cache_is_per_class_never_inherited() -> None:
 
     assert mandatory_param_names(_Base) == {"x"}  # parent primed FIRST
     assert mandatory_param_names(_Sub) == set()
+
+
+def test_input_specs_and_mandatory_read_a_builder_functions_signature() -> None:
+    """The I/O contract of a registered builder FUNCTION is its OWN signature.
+
+    ``input_specs`` / ``mandatory_param_names`` used to reach for
+    ``__init__`` — ``object.__init__`` on a function — and reported an EMPTY
+    contract for every function target. Both now dispatch through
+    ``introspect.init_callable`` (the marker scan via
+    ``introspect.marked_param_names``).
+    """
+
+    def builder(weights: Mandatory[str] = "d", num_classes: int = 91) -> object:
+        return object()
+
+    assert mandatory_param_names(builder) == {"weights"}
+    specs = {s["name"]: s for s in input_specs(builder)}
+    assert set(specs) == {"weights", "num_classes"}
+    assert specs["weights"]["required"] is True
+    assert specs["num_classes"]["required"] is False

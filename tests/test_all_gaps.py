@@ -226,9 +226,6 @@ def test_registry_coverage() -> None:
 
     r.register_class(D)  # 22: duplicate
     assert "D" in r.list_classes()  # 27-31
-    obj: Dict[str, Any] = {}
-    r.register_object(obj, "o")
-    assert r.get_object("o") is obj
 
     # coverage for is_configurable with non-str name
     class E:

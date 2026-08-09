@@ -27,10 +27,16 @@ Without ``Lazy``, ``flow_mode="auto"`` would eagerly call ``flow(optimizer)``
 at script init — which fails because ``Adam`` requires ``params``.
 """
 
-from typing import Annotated, Any, Set, TypeVar, Union, get_type_hints
+from typing import Annotated, Any, Set, TypeVar, Union
 
 from confluid.fluid import Fluid
-from confluid.introspect import annotation_has_marker, init_lazy_setattr_names, resolve_ast_annotation, scan_init_body
+from confluid.introspect import (
+    annotation_has_marker,
+    init_lazy_setattr_names,
+    marked_param_names,
+    resolve_ast_annotation,
+    scan_init_body,
+)
 
 T = TypeVar("T")
 
@@ -60,8 +66,12 @@ def is_lazy_annotation(annotation: Any) -> bool:
     return annotation_has_marker(annotation, _LAZY_MARKER)
 
 
-def body_slot_lazy_names(cls: type) -> Set[str]:
+def body_slot_lazy_names(cls: Any) -> Set[str]:
     """Deferred ``__init__``-BODY slots across ``cls``'s ``@configurable`` MRO.
+
+    ``cls`` may be any callable: a plain function has no ``__mro__``, so the
+    walk below is empty and it reports no body slots — which is correct, a
+    function has no ``__init__`` body.
 
     A class with many deferred dependencies may declare them as body attributes rather
     than constructor parameters (AGENTS rule 4) — a trainer's ``optimizer`` /
@@ -93,7 +103,7 @@ def body_slot_lazy_names(cls: type) -> Set[str]:
     return names
 
 
-def lazy_param_names(cls: type) -> Set[str]:
+def lazy_param_names(cls: Any) -> Set[str]:
     """Every slot of ``cls`` declared ``Lazy[...]`` — constructor params AND body slots.
 
     Both are configurable slots (AGENTS rule 4), so both are reported. Scanning only the
@@ -103,9 +113,15 @@ def lazy_param_names(cls: type) -> Set[str]:
     ``Lazy`` annotation on every one of them, so a deep-flow walker had nothing to honour
     and stayed correct only because those slots happened to hold ``LazyClass`` VALUES.
 
-    Cached per-class on ``cls.__confluid_lazy_params__`` so deep-flow walkers don't
-    re-introspect on every visit. Returns an empty set if ``cls`` has no resolvable
-    ``__init__`` or no Lazy slots.
+    ``cls`` may be a class OR any callable (a registered builder FUNCTION) — the
+    signature scan is :func:`confluid.introspect.marked_param_names`, which
+    dispatches through ``init_callable``; a function has no ``__init__`` body,
+    so the body-slot union is empty for it.
+
+    Cached per-class on ``cls.__confluid_lazy_params__`` (the UNION with the
+    body-slot scan — which is why the shared helper is called uncached here) so
+    deep-flow walkers don't re-introspect on every visit. Returns an empty set
+    if ``cls`` has no resolvable signature or no Lazy slots.
     """
     # Read the cache from the class's OWN __dict__, never getattr — getattr
     # walks the MRO, so a subclass queried after its parent returned the
@@ -116,17 +132,10 @@ def lazy_param_names(cls: type) -> Set[str]:
     cached = cls.__dict__.get("__confluid_lazy_params__") if hasattr(cls, "__dict__") else None
     if cached is not None:
         return cached  # type: ignore[no-any-return]
-    names: Set[str] = set()
-    init = getattr(cls, "__init__", None)
-    if init is not None:
-        try:
-            hints = get_type_hints(init, include_extras=True)
-        except Exception:
-            hints = {}
-        names |= {name for name, ann in hints.items() if is_lazy_annotation(ann)}
+    names = marked_param_names(cls, _LAZY_MARKER)
     names |= body_slot_lazy_names(cls)
     try:
-        cls.__confluid_lazy_params__ = names  # type: ignore[attr-defined]
+        cls.__confluid_lazy_params__ = names
     except (AttributeError, TypeError):
         pass
     return names

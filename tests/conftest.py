@@ -33,7 +33,6 @@ from confluid import get_registry
 _REGISTRY_INDEXES = (
     "_entries",
     "_by_key",
-    "_objects",
     "_by_category",
     "_by_group",
     "_by_task",

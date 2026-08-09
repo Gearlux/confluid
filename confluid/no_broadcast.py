@@ -34,9 +34,9 @@ gate for generically-NAMED scalar knobs (``name``, ``path``, ``size``) whose
 values are plain scalars — a ``Fluid`` arm would misdescribe them.
 """
 
-from typing import Annotated, Any, FrozenSet, TypeVar, get_type_hints
+from typing import Annotated, Any, FrozenSet, TypeVar
 
-from confluid.introspect import annotation_has_marker
+from confluid.introspect import annotation_has_marker, marked_param_names
 
 T = TypeVar("T")
 
@@ -58,31 +58,14 @@ def is_no_broadcast_annotation(annotation: Any) -> bool:
 
 
 def no_broadcast_param_names(cls: Any) -> FrozenSet[str]:
-    """Return the ``__init__`` parameter names of ``cls`` declared ``NoBroadcast[...]``.
+    """Return the signature parameter names of ``cls`` declared ``NoBroadcast[...]``.
 
-    Cached per-class on ``cls.__confluid_no_broadcast_params__``. Returns the
-    empty set for targets without a resolvable ``__init__`` / hints (plain
-    callables included — a builder function's params can carry the marker too,
-    resolved via the callable's own hints).
+    The scan is :func:`confluid.introspect.marked_param_names` — the ONE
+    scan-plus-cache behind all three marker helpers (this module used to carry
+    the only callable-correct copy of the class-vs-callable dispatch by hand;
+    the helper routes through ``init_callable`` for everyone). Cached per-target
+    on ``cls.__confluid_no_broadcast_params__``. Returns the empty set for
+    targets without a resolvable signature / hints (plain callables included —
+    a builder function's params can carry the marker too).
     """
-    # Own-__dict__ read, never getattr: an MRO walk served a parent's cached
-    # answer to every subclass — here that silently BLOCKED bare keys on a
-    # subclass that never declared NoBroadcast (see the twin comment in
-    # confluid.lazy). ``cls`` may be a plain callable; a function's __dict__
-    # is its own, so the same read works.
-    cached = cls.__dict__.get("__confluid_no_broadcast_params__") if hasattr(cls, "__dict__") else None
-    if cached is not None:
-        return cached  # type: ignore[no-any-return]
-    target = getattr(cls, "__init__", None) if isinstance(cls, type) else cls
-    if target is None:
-        return frozenset()
-    try:
-        hints = get_type_hints(target, include_extras=True)
-    except Exception:
-        return frozenset()
-    names = frozenset(name for name, ann in hints.items() if is_no_broadcast_annotation(ann))
-    try:
-        cls.__confluid_no_broadcast_params__ = names
-    except (AttributeError, TypeError):
-        pass
-    return names
+    return frozenset(marked_param_names(cls, _NO_BROADCAST_MARKER, "__confluid_no_broadcast_params__"))

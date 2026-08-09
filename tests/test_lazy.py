@@ -461,3 +461,23 @@ def test_lazy_param_cache_is_per_class_never_inherited() -> None:
 
     assert lazy_param_names(_Marked) == {"opt"}
     assert lazy_param_names(_Plain) == set()  # its own __init__ declares no Lazy slot
+
+
+def test_lazy_param_names_reads_a_builder_functions_own_signature() -> None:
+    """A registered builder FUNCTION's ``Lazy[...]`` params are reported.
+
+    The scan used to read ``getattr(target, "__init__")`` — for a function
+    that is ``object.__init__`` (``*args, **kwargs``), so an identical
+    annotation was reported on a class and silently DROPPED on a function
+    (measured: ``{'model'}`` vs ``set()``). The one dispatch is
+    ``introspect.marked_param_names`` via ``init_callable``.
+    """
+
+    def builder(model: Lazy[Any] = None, weights: str = "x") -> object:
+        return object()
+
+    class Cls:
+        def __init__(self, model: Lazy[Any] = None) -> None:
+            self.model = model
+
+    assert lazy_param_names(builder) == {"model"} == lazy_param_names(Cls)

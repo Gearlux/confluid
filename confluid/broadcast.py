@@ -31,6 +31,7 @@ from loggair import get_logger
 
 from confluid.fluid import Fluid, Reference
 from confluid.introspect import baked_init_attrs, init_callable, init_setattr_names, init_source_available
+from confluid.merger import expand_dotted_mapping
 from confluid.registry import resolve_class
 from confluid.state import _ENGINE_STATE
 
@@ -429,7 +430,7 @@ class _View(dict):
         keys (a sweep's ``lr:`` overriding per-node defaults is the feature). This
         exists so "my knob did not take" is one grep instead of a bisect.
         """
-        if key in self and self[key] != value:
+        if key in self and self._changed(self[key], value):
             # The article is chosen from the WINNING scope's name because two of
             # the four (``exact``, ``addressed``) start with a vowel: a hardcoded
             # "a" reads as a typo in the very line an operator greps to explain a
@@ -445,6 +446,20 @@ class _View(dict):
             self.scopes.pop(key, None)
         else:
             self.scopes[key] = scope
+
+    @staticmethod
+    def _changed(prev: Any, new: Any) -> bool:
+        """Whether an overwrite replaces the value — safe for any operand.
+
+        Config values are arbitrary objects; a numpy/torch array's ``__eq__``
+        returns an ARRAY, whose truth value raises. Identity decides those:
+        this is a diagnostic, and a false "changed" on an equal-but-distinct
+        array costs one DEBUG line, while raising here crashes the merge.
+        """
+        try:
+            return bool(prev != new)
+        except Exception:
+            return prev is not new
 
     def scope_of(self, key: str) -> _KeyScope:
         return self.scopes.get(key, _KeyScope.BARE)
@@ -546,45 +561,32 @@ def _is_glob_key(key: Any) -> bool:
 def _expand_block_keys(block: Dict[str, Any]) -> Dict[str, Any]:
     """Expand dotted keys INSIDE a block / marker-kwargs mapping.
 
-    The in-block analogue of :func:`confluid.merger.expand_dotted_keys`
-    (which only processes the document's top-level keys): ``'**.lr'`` inside
-    a matched ``Trainer:`` block nests to ``{'**': {'lr': …}}``, so
-    ``Trainer: {'**.lr': 1}`` ≡ ``Trainer.**.lr: 1``. Unlike the merger
-    variant this shares every value by REFERENCE (never deep-copies), so
-    resolved ``!ref:`` identity survives; dicts descended into are
-    shallow-copied copy-on-write so the caller's input is never mutated
-    (a ``Fluid`` target's kwargs ARE descended into and extended in place,
-    mirroring the merger's traversal). No-op (same object) when no key
-    contains a dot.
+    The in-block analogue of :func:`confluid.merger.expand_dotted_keys` (which
+    only processes the document's top-level keys): ``'**.lr'`` inside a matched
+    ``Trainer:`` block nests to ``{'**': {'lr': …}}``, so
+    ``Trainer: {'**.lr': 1}`` ≡ ``Trainer.**.lr: 1``. ONE grammar, two
+    policies: both are :func:`confluid.merger.expand_dotted_mapping`; this
+    in-block policy shares every value by REFERENCE (never deep-copies), so
+    resolved ``!ref:`` identity survives, dicts descended into are
+    shallow-copied copy-on-write so the caller's input is never mutated (a
+    ``Fluid`` target's kwargs ARE descended into and extended in place, in both
+    policies), and a dict landing on an existing dict merges shallow,
+    last-write. No-op (same object) when no key contains a dot.
     """
     if not any("." in k for k in block):
         return block
-    out: Dict[str, Any] = {k: v for k, v in block.items() if "." not in k}
-    dotted = sorted((k for k in block if "." in k), key=lambda k: (k.count("."), k))
-    for key in dotted:
-        value = block[key]
-        parts = key.split(".")
-        cur: Dict[str, Any] = out
-        for part in parts[:-1]:
-            nxt = cur.get(part)
-            if isinstance(nxt, Fluid):
-                cur = nxt.kwargs
-                continue
-            if isinstance(nxt, dict):
-                copied = dict(nxt)
-                cur[part] = copied
-                cur = copied
-                continue
-            fresh: Dict[str, Any] = {}
-            cur[part] = fresh
-            cur = fresh
-        last = parts[-1]
-        prev = cur.get(last)
-        if isinstance(prev, dict) and isinstance(value, dict):
-            cur[last] = {**prev, **value}
-        else:
-            cur[last] = value
-    return out
+
+    def _cow(cur: Dict[str, Any], part: str, nxt: Dict[str, Any]) -> Dict[str, Any]:
+        copied = dict(nxt)
+        cur[part] = copied
+        return copied
+
+    return expand_dotted_mapping(
+        block,
+        copy_value=lambda v: v,
+        merge_leaf=lambda prev, value: {**prev, **value},
+        descend=_cow,
+    )
 
 
 def _late_bare_keys_per_slot(child_ctx: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, FrozenSet[str]]:
@@ -1457,23 +1459,24 @@ def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
         pool.update({k: v for k, v in star.items() if not isinstance(v, dict)})
     star2 = merged.pop("**", None)
     if isinstance(star2, dict):
-        target_cls = target if isinstance(target, type) else None
-        acceptable = _get_acceptable_keys(target)
-        blocked = _broadcast_blocked_keys(target_cls)
+        pool.update({k: v for k, v in star2.items() if not isinstance(v, dict)})
+        # Receiver application goes through the ONE cascade gate — this branch
+        # carried its own inline copy with strictly weaker gates (no list skip,
+        # no Fluid declared-key/same-target guards), the exact drift class the
+        # shared function exists to end. Keys the marker already carries keep
+        # winning (``protected`` — they are the marker's own spec, and this
+        # path has no document ordering to consult).
         report = _ENGINE_STATE.get().report
-        for gk, gv in star2.items():
-            if isinstance(gv, dict):
-                continue
-            pool[gk] = gv
-            if gk in merged or blocked is None or gk in blocked:
-                continue
-            if acceptable is not None and gk not in acceptable:
-                continue
-            merged[gk] = gv
+        target_label = str(getattr(target, "__name__", target))
+
+        def _record(k: str) -> None:
             if report is not None:
-                target_label = str(getattr(target, "__name__", target))
-                report.record_applied(gk, target_label, "glob '**'")
-                report.mark_used(f"**.{gk}")
+                report.record_applied(k, target_label, "glob '**'")
+                report.mark_used(f"**.{k}")
+
+        merge_bare_pool_into_kwargs(
+            merged, star2, target, protected=frozenset(merged), on_applied=_record, origin="glob '**'"
+        )
     return pool
 
 
