@@ -61,12 +61,16 @@ from confluid.broadcast import (  # noqa: F401
     _post_init_attrs_cache,
     _prepare_kwargs,
     _receiver_cache,
+    _settability_target,
     _splice_kwargs_at_slot,
     _View,
     accepts_any_key,
     accepts_broadcast,
     accepts_key,
+    clear_pass_caches,
     merge_bare_pool_into_kwargs,
+    register_pass_cache,
+    tune_marker,
 )
 from confluid.exceptions import ConfigurationError, ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.fluid import (
@@ -107,9 +111,10 @@ logger = get_logger("confluid.engine")
 # Engine-owned introspection cache: non-@configurable ancestor attributes per
 # class (see _get_parent_attr_blacklist). Its OWN dict — it used to squat in
 # broadcast._post_init_attrs_cache under suffixed '#parent_blacklist' keys,
-# violating that module's stated cache ownership. Cleared once per
-# materialize()/resolve() pass alongside the broadcast caches.
-_parent_blacklist_cache: Dict[str, FrozenSet[str]] = {}
+# violating that module's stated cache ownership. Registered with the ONE
+# per-pass clear (broadcast.clear_pass_caches — fired by materialize / resolve
+# / configure), so it never needs a second clear site.
+_parent_blacklist_cache: Dict[str, FrozenSet[str]] = register_pass_cache({})
 
 
 def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any]) -> None:
@@ -152,11 +157,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     constructed (``__init__`` only stores values per the zero-arg / lazy-init
     convention), just not solidified.
     """
-    _acceptable_keys_cache.clear()
-    _post_init_attrs_cache.clear()
-    _param_kind_cache.clear()
-    _parent_blacklist_cache.clear()
-    _receiver_cache.clear()
+    clear_pass_caches()
     # ``${...}`` interpolation — the same Resolver pass ``load()`` runs
     # (docs/interpolation.md promises it "at materialization"; measured, this
     # entry point skipped it and the literal ``${...}`` rode into values
@@ -220,11 +221,7 @@ def resolve(
     ctx = context if context is not None else (prepared if isinstance(prepared, dict) else None)
     if ctx:
         ctx = expand_dotted_keys(ctx)
-    _acceptable_keys_cache.clear()
-    _post_init_attrs_cache.clear()
-    _param_kind_cache.clear()
-    _parent_blacklist_cache.clear()
-    _receiver_cache.clear()
+    clear_pass_caches()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
     # untouched — resolve() never managed that flag (it builds no objects).
     token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}))
@@ -380,7 +377,12 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 getattr(data.target, "__name__", ""),
             )
         )
-        actual_target = data.target if isinstance(data.target, type) else None
+        # Pass ANY already-resolved callable through (class OR builder function) —
+        # nulling a function target here made the receiver fall back to resolving
+        # the bare __name__, which for an unregistered code-built marker
+        # (``LazyClass(builder_fn)``) yielded accept-EVERYTHING and no NoBroadcast
+        # gates. The receiver normalizes via the one ``_settability_target``.
+        actual_target = data.target if not isinstance(data.target, str) else None
         # Always prepared (even with no parent context) so own kwargs get
         # scope tags, glob routing, and in-marker dotted-key expansion.
         merged_kwargs = _prepare_kwargs(
@@ -727,9 +729,7 @@ def _resolve_kwarg_value(
         # Apply broadcasting: pull matching keys from full context
         report = _ENGINE_STATE.get().report
         broadcasted = dict(v.kwargs)
-        inner_target_cls = (
-            v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
-        )
+        inner_target_cls = _settability_target(v.target)
         # Confluid has ONE precedence rule — document order, last spec wins — and this
         # pass is NOT where it is decided. `_flow_recursive` already merged this marker's
         # own kwargs against the surrounding bare keys BY POSITION and stamped
@@ -1049,9 +1049,7 @@ def _apply_post_init_attrs(
                 # the kwargs they did NOT mention (a `weight_decay` set in code
                 # stays set), which is the whole reason to spell it as a block
                 # rather than restating the marker.
-                tuned = copy(existing)
-                tuned.kwargs = {**existing.kwargs, **v}
-                tuned._yaml_loc = getattr(existing, "_yaml_loc", None)
+                tuned = tune_marker(existing, v)
                 # The mapping is an ADDRESSED value like any other, so document order
                 # decides it against a competing bare key — but it reaches here with no
                 # position of its own (see :func:`_late_bare_keys_per_slot`). The winner
@@ -1120,8 +1118,17 @@ def _broadcast_onto_instance(
         if resolved is not attr_val:
             try:
                 setattr(instance, attr_name, resolved)
-            except (AttributeError, TypeError):
-                pass  # Read-only property or __slots__
+            except (AttributeError, TypeError) as exc:
+                # Read-only property or __slots__ — but a property setter that
+                # RAISES one of these from its own validation lands here too,
+                # and the broadcast result is dropped either way. Say so: the
+                # sibling post-init path raises a located ConstructionError
+                # for the same event, so this asymmetry must at least be
+                # visible in the log.
+                logger.debug(
+                    f"broadcast: {attr_name!r} on {type(instance).__name__} not settable "
+                    f"({exc}) — nested-broadcast result dropped"
+                )
         seen.add(attr_name)
 
     for param_name in params - seen:
@@ -1132,8 +1139,11 @@ def _broadcast_onto_instance(
                 if resolved is not attr_val:
                     try:
                         setattr(instance, param_name, resolved)
-                    except (AttributeError, TypeError):
-                        pass  # Read-only property or __slots__
+                    except (AttributeError, TypeError) as exc:
+                        logger.debug(
+                            f"broadcast: {param_name!r} on {type(instance).__name__} not settable "
+                            f"({exc}) — nested-broadcast result dropped"
+                        )
 
 
 def _maybe_solidify(instance: Any) -> None:

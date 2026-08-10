@@ -24,8 +24,9 @@ object belongs in ``engine``.
 import collections.abc as cabc
 import inspect
 import typing
+from copy import copy
 from enum import Enum
-from typing import Any, Callable, Dict, FrozenSet, Optional, Protocol, Set
+from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, TypeVar
 
 from loggair import get_logger
 
@@ -38,9 +39,10 @@ from confluid.state import _ENGINE_STATE
 logger = get_logger("confluid.broadcast")
 
 # Introspection caches, keyed by class name. Every reader is in this module;
-# ``engine`` clears them once per ``materialize`` / ``resolve`` pass through
-# the re-export (its own ``_parent_blacklist_cache`` lives in ``engine`` and
-# is cleared alongside — cache ownership follows module ownership).
+# all four are registered in ``_PASS_CACHES`` below and cleared together by
+# ``clear_pass_caches()`` at every entry point (materialize / resolve /
+# configure). ``engine._parent_blacklist_cache`` registers itself alongside —
+# cache ownership follows module ownership, the clear has ONE site.
 _acceptable_keys_cache: Dict[str, Optional[FrozenSet[str]]] = {}
 _post_init_attrs_cache: Dict[str, FrozenSet[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
@@ -57,6 +59,44 @@ _receiver_cache: Dict[Any, "_Receiver"] = {}
 # materialize/resolve: those clear the attr caches once per pass, which would
 # re-fire the warning on every config load. One warning per class per process.
 _warned_unscannable_inits: Set[str] = set()
+
+
+class _Clearable(Protocol):
+    """Anything with a ``clear()`` — the one thing a per-pass cache must offer."""
+
+    def clear(self) -> None: ...  # noqa: E704 — Protocol stub
+
+
+_ClearableT = TypeVar("_ClearableT", bound=_Clearable)
+
+#: Every per-pass introspection cache, cleared together at each entry point
+#: (``materialize()`` / ``resolve()`` / ``configure()``) via
+#: :func:`clear_pass_caches`. A module OWNING such a cache registers it at
+#: import time (``engine._parent_blacklist_cache`` does) — ownership stays with
+#: the owning module, the clear happens in ONE place. The five-line clear block
+#: used to exist twice (materialize + resolve, edited in tandem by convention)
+#: and ``configure()`` cleared nothing at all — a same-qualname class redefined
+#: between calls (a notebook cell re-run) served its previous definition's
+#: accept-list with no diagnostic.
+_PASS_CACHES: List[_Clearable] = [_acceptable_keys_cache, _post_init_attrs_cache, _param_kind_cache, _receiver_cache]
+
+
+def register_pass_cache(cache: _ClearableT) -> _ClearableT:
+    """Register a per-pass cache for :func:`clear_pass_caches`; returns it unchanged.
+
+    For caches owned by OTHER modules (cache ownership follows module
+    ownership) — declare-and-register in one line::
+
+        _my_cache: Dict[str, int] = register_pass_cache({})
+    """
+    _PASS_CACHES.append(cache)
+    return cache
+
+
+def clear_pass_caches() -> None:
+    """Clear every registered per-pass introspection cache — the ONE clear site."""
+    for cache in _PASS_CACHES:
+        cache.clear()
 
 
 def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
@@ -317,7 +357,13 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
     # third-party-imported annotations).
     try:
         hints = typing.get_type_hints(init_method)
-    except Exception:
+    except Exception as exc:
+        # Raw ``param.annotation`` objects still classify below, but a
+        # string annotation (``from __future__ import annotations``) or a
+        # broken forward ref degrades to None — flipping a dict-annotated
+        # param from VALUE to routing with no other trace. Once per class
+        # per pass (this function is cached).
+        logger.debug(f"param-kind scan for {cache_key}: get_type_hints failed ({exc}) — raw annotations used")
         hints = {}
 
     for name, param in sig.parameters.items():
@@ -530,6 +576,23 @@ def _spent_at_boundary(key: str, value: Any, scope: "_KeyScope") -> bool:
     return scope is _KeyScope.STRICT or (key == "*" and isinstance(value, dict))
 
 
+def tune_marker(existing: Fluid, mapping: Dict[str, Any]) -> Fluid:
+    """A mapping addressed at a slot holding a deferred marker TUNES it — the ONE spelling.
+
+    Shallow-copies the marker (identity fields — ``_yaml_loc``, the engine's
+    ordering bookkeeping — ride along with the instance ``__dict__``) and
+    merges ``mapping`` over its kwargs, last-write-wins per key. Assigning the
+    raw dict instead was the historical bug this rule replaced: the slot's
+    target vanished and every kwarg set in code went with it. The engine's
+    post-init tune and the live sink's ``dict_at_slot`` carried twin inline
+    copies (already drifted cosmetically — one restated ``_yaml_loc``, the
+    other did not); this is the single implementation both call.
+    """
+    tuned = copy(existing)
+    tuned.kwargs = {**existing.kwargs, **mapping}
+    return tuned
+
+
 def _merge_routing(out: "_View", key: str, block: Dict[str, Any]) -> None:
     """Hoist a routing block — ``'**'`` floats (BARE), anything else one-level (STRICT).
 
@@ -589,8 +652,42 @@ def _expand_block_keys(block: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+def _cascade_scalar_positions(view: Dict[str, Any]) -> Dict[str, int]:
+    """Document position of every scalar a CASCADE could deliver — the ONE candidate set.
+
+    Both ordering verdicts read this: the engine's late-keys stamp
+    (:func:`_late_bare_keys_per_slot`) and the configure() scan's beaten set
+    (``_scan_view``'s ``_bare_before``). A BARE top-level key sits at its own
+    index; a ``'**'`` rider's scalar contents sit at the RIDER's index — the
+    rider is the delivery vehicle, so its position is where its contents
+    compete. A name delivered both ways keeps the LATER index (last write
+    wins, and the later delivery is the one whose value survives the pool).
+    Dict-valued rider contents are addressed forms (the D5 rider-mapping
+    cell), not cascade scalars, and ``'*'`` blocks are depth-addressed —
+    neither belongs here.
+
+    This set existed twice with DIFFERENT filters (the load side kept
+    BARE-scoped keys and could not see rider contents at all; the configure
+    side kept non-dict keys of any scope and skipped every dict entry
+    including the rider), so the rider × slot-mapping contest was
+    position-INSENSITIVE on both paths with OPPOSITE winners — the D7
+    adjudication (2026-08-10, ``docs/architecture.md`` record 8).
+    """
+    out: Dict[str, int] = {}
+    for i, (k, v) in enumerate(view.items()):
+        if _scope_of(view, k) is not _KeyScope.BARE:
+            continue
+        if k == "**" and isinstance(v, dict):
+            for gk, gv in v.items():
+                if not isinstance(gv, dict):
+                    out[gk] = i
+        elif not _is_glob_key(k) and not isinstance(v, dict):
+            out[k] = i
+    return out
+
+
 def _late_bare_keys_per_slot(child_ctx: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, FrozenSet[str]]:
-    """For each dict-valued kwarg, the BARE keys positioned AFTER it in the document.
+    """For each dict-valued kwarg, the cascade keys positioned AFTER it in the document.
 
     A mapping addressed at a slot (``optimizer: {lr: 0.5}``) is the one addressing
     form that cannot be ordered where every other form is. A marker gets its own
@@ -600,7 +697,9 @@ def _late_bare_keys_per_slot(child_ctx: Dict[str, Any], kwargs: Dict[str, Any]) 
     carries no position of its own — dicts take no attributes.
 
     So the contest is settled HERE, while the ordering is still in hand, and only
-    its OUTCOME is carried forward: the bare keys that sit later than the slot and
+    its OUTCOME is carried forward: the cascade-deliverable keys
+    (:func:`_cascade_scalar_positions` — bare keys AND a ``'**'`` rider's scalar
+    contents, at the rider's position) that sit later than the slot and
     therefore beat it. A slot with an empty set wins outright. ``child_ctx`` is the
     spliced view, whose key order IS document order, which is what makes an index
     comparison meaningful across the two levels.
@@ -612,8 +711,8 @@ def _late_bare_keys_per_slot(child_ctx: Dict[str, Any], kwargs: Dict[str, Any]) 
     if not slots:
         return {}
     order = {k: i for i, k in enumerate(child_ctx)}
-    bare = [(k, i) for k, i in order.items() if _scope_of(child_ctx, k) is _KeyScope.BARE]
-    return {slot: frozenset(k for k, i in bare if i > order[slot]) for slot in slots}
+    positions = _cascade_scalar_positions(child_ctx)
+    return {slot: frozenset(k for k, i in positions.items() if i > order[slot]) for slot in slots}
 
 
 def _splice_kwargs_at_slot(
@@ -804,12 +903,10 @@ def _hoist_block_routing(out: Any, block: Dict[str, Any], instance_name: Optiona
         if not isinstance(bv, dict):
             continue  # scalars were applied by _apply; the floating block keeps them visible
         if bk == "**":
-            prev = out.get("**")
-            if isinstance(prev, dict):
-                bv = {**prev, **bv}
-            out.set("**", bv, _KeyScope.BARE)  # keeps floating below
-            if isinstance(bv.get("*"), dict):
-                _merge_routing(out, "*", bv["*"])  # '*' inside the rider routes my children
+            _merge_routing(out, "**", bv)  # rider hoist — the ONE merge spelling; keeps floating below
+            merged = out.get("**")
+            if isinstance(merged, dict) and isinstance(merged.get("*"), dict):
+                _merge_routing(out, "*", merged["*"])  # '*' inside the rider routes my children
             continue
         _merge_routing(out, bk, bv)  # '*' or a deeper path segment — one level
 
@@ -957,6 +1054,17 @@ def _settability_target(target: Any) -> Any:
     all three predicates answer yes-to-everything for function targets, the
     exact failure ``accepts_any_key`` exists to prevent. A live instance still
     normalizes to its class.
+
+    This is the ONE marker-target normalizer — every "turn ``marker.target``
+    into the thing to introspect" site goes through it (the public predicates,
+    :func:`merge_bare_pool_into_kwargs`, :func:`_receiver_for_target`, the
+    engine's nested-marker cascade, ``configurator._tune_deferred``). The idiom
+    used to be inlined six ways, and five of the copies degraded a function
+    OBJECT target to ``None`` (``resolve_class`` is string/type-only), so a
+    ``LazyClass(builder_fn, …)`` slot bypassed the NoBroadcast opt-outs on the
+    engine cascade and could not be tuned by ``configure()`` at all — while the
+    identical class-target slot behaved, and while these predicates answered
+    correctly. Do not re-inline it.
     """
     if target is None:
         return None
@@ -965,6 +1073,20 @@ def _settability_target(target: Any) -> Any:
     if isinstance(target, type) or inspect.isroutine(target):
         return target
     return type(target)
+
+
+#: How a block's contents reached the node consuming them — the scanner's
+#: delivery vocabulary (previously an implicit ``gated``/``floating`` boolean
+#: pair whose four call-shapes encoded three real states):
+#:
+#: * ``"addressed"`` — a named block / own kwargs / an attr-recursion: aimed at
+#:   exactly this node, bypasses the broadcast opt-outs;
+#: * ``"glob_one"`` — a ``'*'`` block's contents: a cascade form, gated by the
+#:   NoBroadcast opt-outs like bare keys, spent at this level;
+#: * ``"rider"`` — a ``'**'`` block's contents: gated like ``glob_one``, but
+#:   floating — nested named dicts stay matched-or-ignored for deeper nodes
+#:   instead of being hoisted as one-level routing.
+_Delivery = Literal["addressed", "glob_one", "rider"]
 
 
 class _Receiver:
@@ -1003,7 +1125,7 @@ class _Receiver:
         acceptable: Optional[FrozenSet[str]],
         blocked: Optional[FrozenSet[str]],
         accepts_value: Callable[[str, Any], bool],
-        dict_slot: Callable[[str, bool, bool], bool],
+        dict_slot: Callable[[str, _Delivery], bool],
         own_dict_routes: Callable[[str], bool],
         skip_bare_value: Callable[[Any], bool],
     ) -> None:
@@ -1042,7 +1164,7 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
         return cached
 
     acceptable = _get_acceptable_keys(target or cls_name)
-    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
+    target_cls = _settability_target(target or cls_name or None)
     param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
     blocked = _broadcast_blocked_keys(target_cls)
     block_names = {cls_name}
@@ -1074,17 +1196,17 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
             return False
         return True
 
-    def _dict_slot(k: str, gated: bool, floating: bool) -> bool:
+    def _dict_slot(k: str, delivery: _Delivery) -> bool:
         # A dict at a key the receiver DECLARES is a slot value — on the
-        # ADDRESSED path unconditionally, and on the gated/floating (rider)
-        # path since the D5 adjudication (2026-08-09: all four cells of the
+        # ADDRESSED delivery unconditionally, and on the glob deliveries
+        # since the D5 adjudication (2026-08-09: all four cells of the
         # rider×shape matrix apply; `'**.optimizer.lr': 0.01` used to tune the
-        # slot under configure() and silently no-op under load()). A gated
+        # slot under configure() and silently no-op under load()). A glob
         # delivery is a cascade form, so it respects the NoBroadcast opt-outs
         # exactly like a bare key; an undeclared key stays routing.
         if acceptable is None or k not in acceptable:
             return False
-        if gated or floating:
+        if delivery != "addressed":
             return blocked is not None and k not in blocked
         return True
 
@@ -1155,15 +1277,15 @@ def _receiver_for_instance(obj: Any) -> _Receiver:
     def _accepts(k: str, v: Any) -> bool:
         return not isinstance(v, dict) and _settable(k)
 
-    def _dict_slot(k: str, gated: bool, floating: bool) -> bool:
+    def _dict_slot(k: str, delivery: _Delivery) -> bool:
         # Mirrors the marker-path predicate since the D5 adjudication: a
-        # gated/floating (rider) delivery is a cascade form and respects the
+        # glob (rider / '*') delivery is a cascade form and respects the
         # NoBroadcast opt-outs; this path always reached the slot but never
         # consulted ``blocked``, which broke the NoBroadcast promise for
         # glob-delivered mappings.
         if not _settable(k):
             return False
-        if gated or floating:
+        if delivery != "addressed":
             return blocked is not None and k not in blocked
         return True
 
@@ -1187,6 +1309,27 @@ def _receiver_for_instance(obj: Any) -> _Receiver:
         own_dict_routes=_own_dict_routes,
         skip_bare_value=_skip_bare,
     )
+
+
+# Origin labels the scanner attaches to its emissions. They reach TRACE lines
+# and the report VERBATIM (docs/report.md documents them); the ONE place that
+# ever PARSES one is :func:`_mark_used_key` directly below — keep the labels
+# and their parser adjacent, and never match on the raw strings elsewhere
+# (both sinks used to carry a byte-identical parsing expression, so renaming a
+# label in the scanner would have silently broken unused-tracking in TWO
+# modules).
+_ORIGIN_RIDER = "glob '**'"
+_ORIGIN_GLOB_ONE = "glob '*'"
+
+
+def _mark_used_key(key: str, origin: str) -> str:
+    """The report's used-key spelling for a scanner emission — the ONE parser of origin labels.
+
+    Glob-delivered keys register per leaf under their glob prefix (``**.lr`` /
+    ``*.lr``) so a partially consumed glob block reports precisely; everything
+    else registers under the plain key.
+    """
+    return f"**.{key}" if origin == _ORIGIN_RIDER else f"*.{key}" if origin == _ORIGIN_GLOB_ONE else key
 
 
 class _ScanSink(Protocol):
@@ -1240,41 +1383,48 @@ def _scan_view(
 
     def _bare_before() -> FrozenSet[str]:
         # Lazy: only a dict-at-slot emission needs positions (the rare case),
-        # so the common pass never pays the extra view walk.
+        # so the common pass never pays the extra view walk. The candidate set
+        # is the ONE cascade definition (bare keys + '**'-rider scalars at the
+        # rider's index) — a private non-dict filter here skipped the rider,
+        # so its contents could never be "beaten" and always won (D7).
         nonlocal _positions
         if _positions is None:
-            _positions = {k: i for i, (k, v) in enumerate(view.items()) if not isinstance(v, dict)}
+            _positions = _cascade_scalar_positions(view)
         pos = current_pos
         return frozenset(k for k, i in _positions.items() if i < pos)
 
-    def _consume(block: Dict[str, Any], *, origin: str, gated: bool, floating: bool = False) -> None:
+    def _consume(block: Dict[str, Any], *, origin: str, delivery: _Delivery) -> None:
         """Unroll a block addressed to this node — the ONE branch ladder.
 
-        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
-        apply, like bare keys); named-block contents bypass them (addressed).
-        ``floating=True`` for ``'**'`` contents: nested named dicts are
-        matched-or-ignored (the riding ``'**'`` entry keeps them floating)
-        instead of being hoisted as one-level routing.
+        ``delivery`` names how the block reached this node (see
+        :data:`_Delivery`): ``"addressed"`` contents bypass the broadcast
+        opt-outs, glob-delivered contents (``"glob_one"`` / ``"rider"``) are
+        gated by them like bare keys, and only under a ``"rider"`` do nested
+        named dicts stay floating (matched-or-ignored — the riding ``'**'``
+        entry keeps them in reach) instead of being hoisted as one-level
+        routing.
         """
+        gated = delivery != "addressed"
+        floating = delivery == "rider"
         for bk, bv in _expand_block_keys(block).items():
             if bk == "**" and isinstance(bv, dict):
-                _consume(bv, origin="glob '**'", gated=True, floating=True)
+                _consume(bv, origin=_ORIGIN_RIDER, delivery="rider")
                 route("**", bv)
                 continue
             if bk == "*" and isinstance(bv, dict):
                 route("*", bv)
                 continue
-            if isinstance(bv, dict) and bk in receiver.inner_names and (floating or not gated):
+            if isinstance(bv, dict) and bk in receiver.inner_names and delivery in ("rider", "addressed"):
                 # Addressed to me again (``Cls.inst.attr`` form, or a named
                 # match while floating under '**') — unroll inline, ungated.
-                _consume(bv, origin=f"block {bk!r}", gated=False)
+                _consume(bv, origin=f"block {bk!r}", delivery="addressed")
                 continue
             if isinstance(bv, dict) and not accepts_value(bk, bv):
                 # Not a dict-typed VALUE. Either a slot content aimed at a
                 # declared key (the receiver's dict_slot predicate — the paths
                 # deliberately differ on when, see the D5 pin), or routing for
                 # the direct children (spent while floating).
-                if receiver.dict_slot(bk, gated, floating):
+                if receiver.dict_slot(bk, delivery):
                     dict_at_slot(bk, bv, origin, _bare_before())
                     continue
                 if not floating:
@@ -1293,7 +1443,7 @@ def _scan_view(
         """The receiver's own kwargs — addressed to me by definition, thus EXACT."""
         for k, v in _expand_block_keys(kwargs).items():
             if k == "**" and isinstance(v, dict):
-                _consume(v, origin="glob '**'", gated=True, floating=True)
+                _consume(v, origin=_ORIGIN_RIDER, delivery="rider")
                 route("**", v)
             elif k == "*" and isinstance(v, dict):
                 route("*", v)
@@ -1322,17 +1472,17 @@ def _scan_view(
         if scope is _KeyScope.ADDRESSED:
             # An attr-recursion delivered this entry to exactly this object
             # (live path) — consume it like matched-block content.
-            _consume({k: v}, origin="addressed", gated=False)
+            _consume({k: v}, origin="addressed", delivery="addressed")
             continue
         if k == "**" and isinstance(v, dict):
-            _consume(v, origin="glob '**'", gated=True, floating=True)
+            _consume(v, origin=_ORIGIN_RIDER, delivery="rider")
             continue
         if k == "*" and isinstance(v, dict):
-            _consume(v, origin="glob '*'", gated=True)
+            _consume(v, origin=_ORIGIN_GLOB_ONE, delivery="glob_one")
             continue
         if (k in block_names or k == instance_name) and isinstance(v, dict):
             sink.matched(k)
-            _consume(v, origin=f"block {k!r}", gated=False)
+            _consume(v, origin=f"block {k!r}", delivery="addressed")
             continue
         if scope is _KeyScope.STRICT:
             continue  # routing block for a sibling name — not mine
@@ -1364,7 +1514,7 @@ class _MergeSink:
 
     def _mark_used(self, k: str, origin: str) -> None:
         if self.report is not None:
-            self.report.mark_used(f"**.{k}" if origin == "glob '**'" else f"*.{k}" if origin == "glob '*'" else k)
+            self.report.mark_used(_mark_used_key(k, origin))
 
     def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool) -> None:
         self.merged.set(key, value, scope)
@@ -1488,11 +1638,11 @@ def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
 
         def _record(k: str) -> None:
             if report is not None:
-                report.record_applied(k, target_label, "glob '**'")
-                report.mark_used(f"**.{k}")
+                report.record_applied(k, target_label, _ORIGIN_RIDER)
+                report.mark_used(_mark_used_key(k, _ORIGIN_RIDER))
 
         merge_bare_pool_into_kwargs(
-            merged, star2, target, protected=frozenset(merged), on_applied=_record, origin="glob '**'"
+            merged, star2, target, protected=frozenset(merged), on_applied=_record, origin=_ORIGIN_RIDER
         )
     return pool
 
@@ -1565,7 +1715,7 @@ def merge_bare_pool_into_kwargs(
     (the report asymmetry between the paths is documented-deliberate).
     ``origin`` labels the TRACE line only.
     """
-    target_cls = target if isinstance(target, type) else resolve_class(target) if isinstance(target, str) else None
+    target_cls = _settability_target(target)
     blocked = _broadcast_blocked_keys(target_cls)
     if blocked is None:
         return  # @configurable(broadcast=False) — nothing bare ever lands

@@ -33,7 +33,6 @@ inside a :func:`confluid.collect_report` block the ambient report is adopted,
 so a load-then-configure pass aggregates into one report.
 """
 
-from copy import copy
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional, Set, Union
 
@@ -42,17 +41,20 @@ from loggair import get_logger
 
 from confluid.broadcast import (
     _broadcast_pool,
+    _mark_used_key,
     _receiver_for_instance,
     _scan_view,
+    _settability_target,
     _spliced_at_slot,
     _spliced_subtree_view,
+    clear_pass_caches,
     merge_bare_pool_into_kwargs,
+    tune_marker,
 )
-from confluid.engine import _ctor_params, flow
+from confluid.engine import _ctor_params, _maybe_solidify, flow
 from confluid.fluid import Class, Instance, Lazy
 from confluid.loader import ConfluidLoader, load_config
 from confluid.merger import expand_dotted_keys
-from confluid.registry import resolve_class
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, parse_value
 from confluid.state import _active_report
@@ -91,6 +93,12 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         config = yaml.load(config, Loader=ConfluidLoader)
 
     if not isinstance(config, dict):
+        # A silent empty report here read as "configured fine" — the canonical
+        # miss being configure(model, config="overrides.yaml"): a plain
+        # filename fails the YAML heuristic above, stays a str, and NOTHING
+        # was applied with no diagnostic anywhere.
+        hint = " — for a config file path, use configure_from_file(path=...)" if isinstance(config, str) else ""
+        logger.warning(f"configure(): config is a {type(config).__name__}, not a mapping; nothing applied{hint}")
         return report
 
     resolved_context = context if context is not None else config
@@ -105,6 +113,12 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
             report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
         else:
             report.add_config_keys((k,))
+
+    # configure() is an entry point exactly like materialize()/resolve(): a
+    # class redefined since the last pass (a notebook cell re-run) must not be
+    # served its previous definition's accept-list (the caches key on
+    # module.qualname, which a redefinition reuses).
+    clear_pass_caches()
 
     visited: Set[int] = set()
     for instance in instances:
@@ -170,7 +184,15 @@ def _walk(
         # written back to the attribute, discarding every key applied to it.
         return
 
-    obj = flow(obj)
+    # Materialize marker-valued attrs, but with solidify SUPPRESSED: since
+    # flow() finalizes live objects too (architecture record 2), an unsuppressed
+    # call here fired every solidify() BEFORE this pass applied its values —
+    # derived state was built from the PRE-configure config and, solidify being
+    # idempotent-by-contract, never rebuilt. The hook is re-fired post-order
+    # below, after this object AND its subtree carry their new values — the
+    # same point in an object's life the load path fires it (children final,
+    # own config final, then finalize).
+    obj = flow(obj, solidify=False)
 
     obj_id = id(obj)
     if obj_id in visited:
@@ -199,6 +221,12 @@ def _walk(
             if not callable(attr_val):
                 _walk(attr_val, child_view, context, visited, report)
 
+    # Post-order finalize: the suppressed solidify from the flow() above is
+    # re-fired now that the configuration has been applied to this object and
+    # its whole subtree. First visit only (the visited check above) — the hook
+    # is idempotent by contract, but the ordering promise is what matters here.
+    _maybe_solidify(obj)
+
 
 def _tune_deferred(
     marker: Any, view: Dict[str, Any], report: ConfigurationReport, beaten: FrozenSet[str] = frozenset()
@@ -219,7 +247,7 @@ def _tune_deferred(
     A kwarg the marker already carries and that nothing beat is left alone only when
     the bare key lost; otherwise last-spec-wins applies and the bare key overwrites.
     """
-    target_cls = marker.target if isinstance(marker.target, type) else resolve_class(marker.target)
+    target_cls = _settability_target(marker.target)
     if target_cls is None:
         # KEPT difference with the engine cascade (which merges accept-everything
         # for an unresolvable target, serving resolve()-introspection of free
@@ -272,7 +300,7 @@ class _LiveSink:
         self.beaten_per_slot: Dict[str, FrozenSet[str]] = {}
 
     def _mark_used(self, key: str, origin: str) -> None:
-        self.report.mark_used(f"**.{key}" if origin == "glob '**'" else f"*.{key}" if origin == "glob '*'" else key)
+        self.report.mark_used(_mark_used_key(key, origin))
 
     def apply(self, key: str, value: Any, origin: str, scope: Any, own: bool, gated: bool) -> None:
         logger.trace(f"configure: {key!r} -> {self.cls_name} ({origin})")
@@ -287,8 +315,7 @@ class _LiveSink:
             # TUNE the marker (the engine's rule for the identical spelling),
             # never recurse into it or replace it with the raw dict. The bare
             # keys this block out-positioned ride along for _tune_deferred.
-            tuned = copy(existing)
-            tuned.kwargs = {**existing.kwargs, **block}
+            tuned = tune_marker(existing, block)
             self.beaten_per_slot[key] = bare_before
             self.assignments[key] = tuned
             self.origins[key] = origin

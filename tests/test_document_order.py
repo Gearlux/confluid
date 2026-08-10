@@ -297,3 +297,63 @@ def test_a_fresh_head_class_address_written_AFTER_the_marker_wins(spelling: str)
     document = f"{FRESH_HEAD_MARKER}\n{FRESH_HEAD_SPELLINGS[spelling]}\n"
 
     assert int(load(document)["e"].power) == 50
+
+
+# --------------------------------------------------------------------------- #
+# D7 — a '**' RIDER is a bare delivery and orders by ITS document position
+# (adjudicated 2026-08-10; docs/architecture.md record 8). The rider cells were
+# position-INSENSITIVE on both paths with OPPOSITE winners: the load path's
+# late-keys set could not see rider contents at all (the mapping always won),
+# the configure scan's beaten set skipped every dict entry including the rider
+# (the rider always won). Both verdicts now read the ONE candidate set,
+# ``broadcast._cascade_scalar_positions``.
+# --------------------------------------------------------------------------- #
+
+RIDER = "'**.power': 99"
+
+
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_a_rider_written_BEFORE_the_slot_loses_to_it(spelling: str) -> None:
+    """The slot-addressed value comes later, so the slot wins — rider edition."""
+    assert _power(f"{RIDER}\n{SPELLINGS[spelling]}\n") == 50
+
+
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_a_rider_written_AFTER_the_slot_overrides_it(spelling: str) -> None:
+    """The rider comes later, so the rider wins — a sweep's '**' override works."""
+    assert _power(f"{SPELLINGS[spelling]}\n{RIDER}\n") == 99
+
+
+def test_the_rider_rule_is_position_not_provenance() -> None:
+    """The two orderings of the rider × slot-mapping spelling must DISAGREE.
+
+    The single-assertion form of the matrix above, for the one spelling pair
+    that was position-insensitive in BOTH directions: freeze on either constant
+    and this fails, even if one parametrized half is "fixed" to match.
+    """
+    mapping = SPELLINGS["mapping"]
+
+    assert _power(f"{RIDER}\n{mapping}\n") != _power(f"{mapping}\n{RIDER}\n")
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        ("'**.power': 99\nOrderedCar:\n  engine:\n    power: 50\n", 50),
+        ("OrderedCar:\n  engine:\n    power: 50\n'**.power': 99\n", 99),
+    ],
+    ids=["rider_before_the_block_loses", "rider_after_the_block_wins"],
+)
+def test_configure_orders_a_rider_against_a_block_like_the_load_path(document: str, expected: int) -> None:
+    """The same rider contest over a live object — both paths, one winner per ordering.
+
+    Before the D7 adjudication the configure path handed the rider the win in
+    both orderings (its beaten set skipped dict-valued view entries, so rider
+    contents were never marked beaten), while the load path handed the mapping
+    the win in both — the same document, opposite winners, nothing logged.
+    """
+    car = OrderedCar()
+
+    configure(car, config=document)
+
+    assert flow(car.engine).power == expected
