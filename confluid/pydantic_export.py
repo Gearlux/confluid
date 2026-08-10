@@ -481,13 +481,17 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     if cls.__doc__:
         model.__doc__ = cls.__doc__
 
-    # Preserve the lazy-param marker set for downstream consumers (the
-    # serializer emits `!lazy:` instead of `!class:` for these params). Two
-    # sources: ``Lazy[T]``-annotated constructor params, AND body slots whose
-    # default is a ``LazyClass(...)`` (the minimal-ctor pattern — e.g. a
-    # trainer's ``optimizer`` / ``*_loader`` / ``lightning`` body slots). The
-    # latter keeps a runtime-injected slot from being serialized as ``!class:``
-    # (which confluid would eagerly flow on assignment and crash).
+    # Preserve the lazy-param marker set as MODEL METADATA, queryable via
+    # ``lazy_param_names_of`` — which fields of this generated model stand for
+    # deferred (runtime-injected) slots. A schema consumer emitting YAML from a
+    # filled model can use it to spell those slots ``!lazy:`` rather than
+    # ``!class:`` (which would be eagerly flowed on assignment and crash a
+    # runtime-injection target); no in-tree consumer does so today — the
+    # class-side scan ``confluid.lazy.lazy_param_names`` is what serializers
+    # actually consult. Two sources, unioned: ``Lazy[T]``-annotated constructor
+    # params, AND body slots whose default is a ``LazyClass(...)`` (the
+    # minimal-ctor pattern — e.g. a trainer's ``optimizer`` / ``*_loader`` /
+    # ``lightning`` body slots).
     lazy_params = {name for name, anno in hints.items() if name not in _SKIP_PARAMS and is_lazy_annotation(anno)}
     if isinstance(cls, type):  # body-slot lazy scan walks ``cls.__mro__`` (classes only)
         lazy_params |= body_slot_lazy_names(cls)

@@ -32,8 +32,9 @@ class Model:
         """Per-layer weights, derived lazily from the CURRENT ``layers`` (never built in __init__).
 
         A *recomputing* property — not a stored attribute — so it can't go stale when ``layers`` is
-        changed post-construction via ``configure``. (``configure`` introspects an instance by
-        ``getattr``, which would trigger and freeze a *cached* property before the new config lands;
+        changed post-construction via ``configure``. (The configuration machinery itself never
+        executes property getters — it walks instance attributes only — but ordinary domain code
+        reading a *cached* property after reconfiguration would see the frozen pre-config value;
         recomputing reflects current state. Cache only an expensive external materialization whose
         inputs are stable by first use.)
         """

@@ -47,7 +47,8 @@ class AppliedKey:
 
     key: str  #: attribute / config key as applied (post dotted-key expansion)
     target: str  #: receiver label — ``"Trainer"`` or ``"Trainer 'encoder'"``
-    #: ``"bare"`` | ``"block 'X'"`` | ``"glob '**'"`` | ``"glob '*'"`` | ``"addressed"`` | ``"nested-class"``
+    #: ``"bare"`` | ``"block 'X'"`` | ``"glob '**'"`` | ``"glob '*'"`` | ``"addressed"`` |
+    #: ``"nested-class"`` | ``"deferred slot"`` | ``"own"``
     origin: str
     note: Optional[str] = None  #: e.g. the eager-class staleness note
 
@@ -91,9 +92,25 @@ class ConfigurationReport:
             self._config_keys.setdefault(key, False)
 
     def mark_used(self, key: str) -> None:
-        """Flag a registered candidate as used; unregistered names are ignored."""
+        """Flag a registered candidate as used; unregistered names are ignored.
+
+        A LEAF key also satisfies its glob-registered spellings (``**.lr`` /
+        ``*.lr``): a glob block registers per leaf under the glob prefix, but
+        the nested-marker cascade delivers from a POOL in which rider contents
+        are indistinguishable from bare keys (``_broadcast_pool`` flattens both
+        to BARE), so that path can only ever mark the leaf — and a rider whose
+        content reached every slot it aimed at still reported ``**.lr`` unused
+        (measured through a consumer's CLI-override pipeline: ``--**.lr`` with
+        ``applied=[('lr', 'nested-class'), …]`` and ``unused=['**.lr']`` in one
+        report). Satisfying the glob spelling from the leaf matches the
+        mechanism's real granularity: bare and rider deliveries of one key are
+        fused at the pool, so the report cannot tell them apart either.
+        """
         if key in self._config_keys:
             self._config_keys[key] = True
+        for glob_spelling in (f"**.{key}", f"*.{key}"):
+            if glob_spelling in self._config_keys:
+                self._config_keys[glob_spelling] = True
 
     @property
     def unused(self) -> List[str]:
