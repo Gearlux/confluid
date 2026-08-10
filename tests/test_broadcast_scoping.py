@@ -487,7 +487,7 @@ def test_direct_flow_glob_self_application_guards() -> None:
 
 def test_expand_block_keys_unit() -> None:
     """Unit pins for the in-block dotted-key expansion helper."""
-    from confluid.engine import _expand_block_keys
+    from confluid.broadcast import _expand_block_keys
 
     # No dotted keys — same object back (no-op identity).
     block = {"lr": 1}
@@ -599,7 +599,7 @@ def test_view_copy_returns_view_with_scopes() -> None:
     """``view.copy()`` must return a ``_View`` carrying the tags — ``dict.copy()``
     on a subclass returns a plain ``dict``, which would silently flatten every
     addressed/glob key to BARE."""
-    from confluid.engine import _KeyScope, _View
+    from confluid.broadcast import _KeyScope, _View
 
     v = _View({"a": 1})
     v.set("b", 2, _KeyScope.EXACT)
@@ -620,7 +620,7 @@ def test_view_update_last_write_wins_on_scopes() -> None:
     """``update()`` takes each key's scope FROM THE SOURCE: a ``_View`` source
     carries its tag over, and an untagged source key CLEARS an existing tag
     (the value was overwritten, so the stale tag must not survive)."""
-    from confluid.engine import _KeyScope, _View
+    from confluid.broadcast import _KeyScope, _View
 
     v = _View()
     v.set("kept", 1, _KeyScope.EXACT)
@@ -641,7 +641,7 @@ def test_view_update_last_write_wins_on_scopes() -> None:
 def test_view_update_from_plain_sources_clears_tags() -> None:
     """A plain-dict / iterable-of-pairs / keyword source is untagged, so the
     updated keys become BARE."""
-    from confluid.engine import _KeyScope, _View
+    from confluid.broadcast import _KeyScope, _View
 
     v = _View()
     v.set("a", 1, _KeyScope.EXACT)

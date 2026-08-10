@@ -16,7 +16,17 @@ configured with zero parameter-threading code — see
 
 from typing import Any, Optional
 
-from confluid import LazyClass, NoBroadcast, accepts_any_key, accepts_broadcast, accepts_key, configurable, flow, load
+from confluid import (
+    LazyClass,
+    NoBroadcast,
+    accepts_any_key,
+    accepts_broadcast,
+    accepts_key,
+    configurable,
+    configure,
+    flow,
+    load,
+)
 
 
 @configurable
@@ -236,6 +246,28 @@ def deferred_slot_ordering() -> None:
     print("deferred slot: code default 1e-4; document order decides 0.5 vs 0.9 — no priority tiers")
 
 
+def rider_content_reaches_deferred_slots() -> None:
+    """A ``'**'`` rider tunes a declared deferred slot — both shapes, both paths.
+
+    ``Fitter`` declares its optimizer slot in its ``__init__`` body (see above);
+    ``'**.lr'`` (scalar: cascades to the slot's TARGET) and ``'**.optimizer.lr'``
+    (mapping: tunes every declared ``optimizer`` slot) reach the deferred marker
+    under ``load()`` AND under post-construction ``configure()`` — adjudicated
+    2026-08-09; before, each shape worked on exactly one path and was silently
+    ignored on the other.
+    """
+    for rider in ("'**.lr': 0.9", "'**.optimizer.lr': 0.9"):
+        built = flow(load(f"runnable: !class:Fitter()\n{rider}\n")["runnable"].optimizer)
+        assert float(built.lr) == 0.9, f"load path dropped {rider!r}"
+
+        live = Fitter()
+        configure(live, config=rider)
+        assert float(flow(live.optimizer).lr) == 0.9, f"configure path dropped {rider!r}"
+
+    print("rider content: '**.lr' and '**.optimizer.lr' tune the deferred slot on both paths")
+
+
 if __name__ == "__main__":
     main()
     deferred_slot_ordering()
+    rider_content_reaches_deferred_slots()

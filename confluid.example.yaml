@@ -2,7 +2,7 @@
 # This file illustrates the configuration options confluid handles directly.
 # Scope overlays (!scope:NAME, !scope:KEY=VAL, !notscope:...) live at the
 # bottom of this file. Activate them via `confluid.load(path, scopes=[...])`
-# or, in a liquifai CLI, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
+# or, in a CLI layer built on confluid, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
 
 # --- 1. Module Imports ---
 # Dynamically import Python modules to populate the class registry.
@@ -31,7 +31,7 @@ train:
   version: v3
 data_dir: "${HOME}/data/${train.dataset}/${train.version}"
 
-# Dotted Notation (Helios Style)
+# Dotted Notation
 # These are expanded into nested dicts: {"Model": {"layers": 3, "dropout": 0.1}}
 # Addressed keys are EXACT: they configure the matched node only, never its
 # descendants. A bare key (like base_lr above, if a class accepted it) is the
@@ -45,12 +45,12 @@ Model.dropout: 0.1
 
 # --- 4. Reference Syntax ---
 # Reference tags are used for late resolution and dependency injection.
-# !ref key -> Lookup in config (dotted paths supported)
-# !class Class -> Lookup in registry
-# !class Class(args) -> Instantiate with arguments
+# !ref:key -> Lookup in config (dotted paths supported)
+# !class:Class -> Deferred class stub (the parent flows it)
+# !class:Class(args) -> Instantiate eagerly with arguments
 Trainer:
-  lr: !ref base_lr
-  model: !class Model(layers=10)
+  lr: !ref:base_lr
+  model: !class:Model(layers=10)
   # Environment variable resolution
   log_dir: "${HOME}/logs/my_app"
 
@@ -73,7 +73,7 @@ if_debug: !scope:debug
 # Keyed scope (assignment form): fires for `--scope task=classification`
 # or, equivalently, `--task classification` / `--task=classification`.
 if_classification: !scope:task=classification
-  model: !class Model(layers=3)
+  model: !class:Model(layers=3)
 
 # Keyed scope (function-call form) — semantically identical to the
 # assignment form above. Use whichever reads better in context.
@@ -83,7 +83,7 @@ if_prod: !scope:env(prod)
 # Negative scope. Active when no `--task ...` is supplied at all OR when
 # the supplied value differs from `segmentation` (the unset-⇒-active rule).
 unless_segmentation: !notscope:task=segmentation
-  postproc: !class DefaultPost()
+  postproc: !class:DefaultPost()
 
 # A block's body may also be a SEQUENCE or a SCALAR — inside a LIST, where
 # "splice its keys" has no meaning. A sequence body EXTENDS the surrounding

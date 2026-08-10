@@ -41,6 +41,7 @@ import yaml
 from loggair import get_logger
 
 from confluid.broadcast import (
+    _broadcast_pool,
     _receiver_for_instance,
     _scan_view,
     _spliced_at_slot,
@@ -225,9 +226,15 @@ def _tune_deferred(
         # inputs): a configure-path slot whose target this process cannot even
         # resolve can never be flowed by it either — tuning would be noise.
         return
+    # ``_broadcast_pool`` unrolls a ``'**'`` rider's scalars into the pool
+    # (tagged BARE — rider contents cascade by definition), exactly as the
+    # engine's nested-marker loop does. Passing the RAW view here was the
+    # D5-mirror gap: rider contents sat under the ``'**'`` dict key, which
+    # the cascade's container gate skips, so ``'**.lr': 0.01`` tuned a
+    # deferred slot under load() and was silently ignored under configure().
     merge_bare_pool_into_kwargs(
         marker.kwargs,
-        view,
+        _broadcast_pool(view),
         target_cls,
         protected=beaten,
         on_applied=report.mark_used,
@@ -293,7 +300,13 @@ class _LiveSink:
         self._mark_used(key, origin)
 
     def route(self, key: str, block: Dict[str, Any]) -> None:
-        pass  # _spliced re-derives routing from the retained blocks (Phase B may consume this)
+        # Deliberately a no-op — the live path derives its subtree routing in
+        # `_spliced_subtree_view`, which needs the WHOLE view's scope tags (an
+        # ADDRESSED entry's spent scalars, floating-block rematch), not just
+        # this scan's route emissions. Phase B weighed consuming these
+        # emissions and kept the re-derivation: the splice pair is the one
+        # sanctioned duality (docs/architecture.md record 8).
+        pass
 
     def unknown(self, key: str, value: Any, *, origin: str) -> None:
         logger.warning(f"configure(): {self.cls_name} block has no attribute {key!r} — ignored")

@@ -51,7 +51,7 @@ wrapper key (`alt`, `if_debug`, …) is inert scaffolding.
 
 ## What a block's body may be
 
-Three shapes, and the shape decides what "splice" means:
+Three shapes plus the empty placeholder, and the shape decides what "splice" means:
 
 | Body | In a mapping | In a list |
 |------|--------------|-----------|

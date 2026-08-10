@@ -10,15 +10,15 @@ Companions: [Discovery](discovery.md) (tag mechanics + `examples/discovery.py`),
 
 ## 0. One registry, many consumers
 
-`@configurable(task=…, role=…, category=…, group=…)` populates `ConfluidRegistry` (indices
-`_by_category` / `_by_task` / `_by_role` / `_by_group`), bootstrapped by importing every module
+`@configurable(task=…, role=…, framework=…, category=…, group=…)` populates `ConfluidRegistry`
+(indices `_by_category` / `_by_task` / `_by_role` / `_by_framework` / `_by_group`), bootstrapped by importing every module
 listed under `[project.entry-points."confluid.configurables"]`. An **MCP discovery service** offers
 classes and validates *values*; a **visual node editor** offers nodes and enforces *socket types*.
 
 | Concern | File |
 |---|---|
 | `@configurable` / `register` | `confluid/decorators.py` |
-| `list_classes(category=, task=, role=, group=)` | `confluid/registry.py` |
+| `list_classes(category=, task=, role=, framework=, group=)` | `confluid/registry.py` |
 | Validation policy | `confluid/validation.py` |
 | Class → pydantic schema | `confluid/pydantic_export.py` (`to_pydantic`) |
 | Docstring `Args:` → field help | `confluid/schema.py` (`parse_param_docs`) |
@@ -321,6 +321,7 @@ mypkg-classification = "mypkg.classification"   # import the module so register(
     category=None,         # bare category; PREFER task+role, which derives f"{task}_{role}"
     task=None,             # classification / segmentation / detection
     role=None,             # model / loss / dataset / metric / trainer / evaluator / logger
+    framework=None,        # which engine API the class belongs to (torch / keras / sklearn / …)
     group=None,            # palette sub-folder ONLY (presentation, not a filter)
     lazy=False,            # value stays deferred (LazyClass / runtime-injection slot)
     validate=True,         # wrap __init__ to validate kwargs against to_pydantic(cls)

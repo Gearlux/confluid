@@ -15,21 +15,13 @@ not re-exported here.
 
 from typing import TYPE_CHECKING, Any
 
+# Each name from its REAL home — laundering these through the `engine` compat
+# shim gave the shim internal consumers, defeating any future zero-user audit.
+from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
-from confluid.engine import (
-    accepts_any_key,
-    accepts_broadcast,
-    accepts_key,
-    active_context,
-    cast,
-    collect_report,
-    flow,
-    get_configurable_attrs,
-    materialize,
-    resolve,
-)
+from confluid.engine import cast, flow, get_configurable_attrs, materialize, resolve
 from confluid.exceptions import (
     AmbiguousClassError,
     CircularIncludeError,
@@ -68,6 +60,7 @@ from confluid.schema import (
     shortest_unique_paths,
 )
 from confluid.scopes import discover_dimension_values, discover_dimensions
+from confluid.state import active_context, collect_report
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
 
 __all__ = [

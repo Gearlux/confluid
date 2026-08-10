@@ -121,7 +121,9 @@ report = configure(trainer, config=config)
 
 print(trainer.lr) # 0.0001
 print(trainer.model.layers) # 10
-print(report.summary()) # e.g. "2 applied, 0 failed, 0 unused"
+print(report.summary()) # "2 applied, 0 failed, 1 unused"
+# (the "1 unused": `n_layers` feeds the `!ref:` but sets no attribute
+#  itself, so it counts as an unused OVERRIDE — see docs/report.md)
 ```
 
 `configure_from_file` collapses the load + apply into one call — handy when the config lives on disk:
