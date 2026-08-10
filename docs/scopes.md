@@ -134,6 +134,35 @@ the time `load()` returns, the blocks have already been spliced away. A dimensio
 declared only by negated blocks maps to an empty set: it is a real dimension a
 CLI must bind, but it offers nothing to *select*.
 
+## Scope aliases — one name for a bundle of scopes
+
+A document may declare a top-level `scope_aliases:` mapping, so a caller can
+activate several boolean scopes under one name:
+
+```yaml
+scope_aliases:
+  ci: [quick, verbose]      # one alias -> a list of scope names
+  smoke: ci                 # ... or another alias — chains expand recursively
+
+quick_mode: !scope:quick
+  max_epochs: 1
+logging: !scope:verbose
+  log_level: DEBUG
+```
+
+`load(doc, scopes=["ci"])` (or `scopes=["smoke"]`) activates both `quick` and
+`verbose`. A circular alias chain raises `ScopeError` naming the cycle.
+
+Three rules bound the mechanism:
+
+- **Boolean scopes only.** A keyed activation (`task=classification`) never
+  alias-expands — its value is meaningful exactly as spelled.
+- **Hierarchy still applies afterwards.** An expanded name like `prod.gpu`
+  activates its ancestors (`prod`) exactly as it would when passed directly.
+- **The key is load metadata.** `scope_aliases` — and a top-level `scopes:`
+  key, reserved for documenting a config's available scopes — are stripped
+  from the loaded result; they configure the load, not the program.
+
 ## Runnable example
 
 [`examples/scopes.py`](../examples/scopes.py) loads one document under three

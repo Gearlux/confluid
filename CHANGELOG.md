@@ -158,6 +158,31 @@ All notable changes to confluid are documented here. The format follows
   `.py`-only grep misses. Audits claiming "zero consumers" must grep
   notebooks too.)
 
+### Documentation
+
+- **Three new topic guides, each with a runnable example twin** (2026-08-10 —
+  closing the review's largest doc gaps): `docs/configure.md`
+  (post-construction configuration — the first key-feature bullet finally has
+  a page: call surface, the one matching rule over live objects,
+  deferred-slot tuning, values-before-finalize ordering, layering) with
+  `examples/configure.py`; `docs/schema-export.md` (`to_pydantic`,
+  `parse_param_docs`, `validate_model`, `sanitize_schema`) with
+  `examples/schema_export.py`; and `docs/serialization.md` (the dump/reload
+  round trip, what a dump omits and why) pointing at
+  `examples/reproducible_experiment.py`. All three are in the README index.
+- **`scope_aliases` is documented** (`docs/scopes.md` + an
+  `examples/scopes.py` demo) — the top-level alias map existed since the
+  scopes engine landed but was described only by its circular-chain error.
+- **Drift fixes**: the README no longer names the nonexistent
+  `ClassReference` type (the marker family is `Class`/`Instance`/`Lazy`/
+  `Reference`/`Clone`); `examples/ml_pipeline.py` no longer claims the
+  configuration machinery executes property getters (it walks instance
+  attributes only — the recompute rule is about ordinary domain reads);
+  `report.py`'s origin vocabulary lists `"deferred slot"` and `"own"`; the
+  `_confluid_lazy_params` stamp's comment no longer claims a downstream
+  serializer consumer that does not exist (it is queryable model metadata via
+  `lazy_param_names_of`).
+
 ### Internal
 
 - **The cascade corner runs on shared primitives (2026-08-10 — the review's P1

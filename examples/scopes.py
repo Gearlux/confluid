@@ -30,6 +30,18 @@ if_classification: !scope:task=classification
 """
 
 
+ALIAS_DOC = """
+scope_aliases:
+  ci: [quick, verbose]
+max_epochs: 50
+log_level: INFO
+quick_mode: !scope:quick
+  max_epochs: 1
+logging: !scope:verbose
+  log_level: DEBUG
+"""
+
+
 def summarize(label: str, cfg: Dict[str, Any]) -> None:
     print(f"{label:<28} log_level={cfg['log_level']:<8} head={cfg.get('head', '-')}")
 
@@ -120,6 +132,13 @@ def main() -> None:
     offered = discover_dimension_values(raw)
     assert offered == {"task": {"classification"}}
     print(f"{'declared dimensions':<28} {offered}")
+
+    # An alias activates a BUNDLE of boolean scopes under one name; chains
+    # expand recursively, and the metadata keys never reach the result.
+    aliased = load(ALIAS_DOC, scopes=["ci"])
+    assert aliased["max_epochs"] == 1 and aliased["log_level"] == "DEBUG"
+    assert "scope_aliases" not in aliased
+    print(f"{'alias ci -> quick+verbose':<28} max_epochs={aliased['max_epochs']} log_level={aliased['log_level']}")
 
     # Asking for a value it does NOT offer is an error naming the ones it does,
     # rather than a silent fall-through to the unscoped defaults.
