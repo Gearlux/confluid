@@ -137,6 +137,15 @@ All notable changes to confluid are documented here. The format follows
 
 ### Removed
 
+- **Eight more never-imported re-exports dropped from `confluid.engine`**
+  (2026-08-10, the third pruning tranche): `_expand_block_keys`,
+  `_get_acceptable_keys`, `_get_post_init_attrs`, `accepts_key`,
+  `accepts_broadcast`, `accepts_any_key`, `active_context`, `collect_report`.
+  Each grep-verified dead as an ENGINE name — no engine-body use and no
+  `from confluid.engine import` site anywhere (workspace Python, notebooks,
+  YAML). The public names are unaffected: all live in `confluid` top-level
+  and their real homes (`confluid.broadcast`, `confluid.state`).
+
 - **`ConfluidRegistry.register_object` / `get_object` and the `_objects`
   store.** A write-only feature: no resolution path — not `!ref:`, not
   `!class:`, not `resolve_class` — ever consulted the store, so a "registered"

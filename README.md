@@ -17,6 +17,11 @@
 
 ## Documentation
 
+For the *why* — how confluid compares to Hydra, gin-config, and plain pydantic, and the design
+bets behind it — see [RATIONALE.md](https://github.com/Gearlux/confluid/blob/main/RATIONALE.md).
+Looking for a specific function? The [API index](https://github.com/Gearlux/confluid/blob/main/docs/api-index.md)
+maps every public name to its guide.
+
 Each topic has its own guide, and every guide except the architecture notes has a runnable companion script in [`examples/`](https://github.com/Gearlux/confluid/tree/main/examples):
 
 | Guide | What it covers | Example |
@@ -59,6 +64,10 @@ Python, no ML dependencies — run them as-is):
   Worker → RetryPolicy`) where one bare YAML key configures the deepest leaf
   with **zero parameter-threading code**, while addressed keys stay surgical,
   globs scope a subtree, and `NoBroadcast` protects generic names.
+- [`examples/modular_includes/`](https://github.com/Gearlux/confluid/tree/main/examples/modular_includes)
+  — the on-disk `include:` tree companion to the
+  [Interpolation guide](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md):
+  a config split across files, composed at load.
 
 ## Design Goals & Requirements
 

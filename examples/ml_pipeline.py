@@ -1,7 +1,6 @@
 """Lazy-init / zero-arg ``@configurable`` classes + post-construction configuration.
 
-Demonstrates the workspace class-design convention (see confluid ``AGENTS.md`` →
-"Lazy Initialization & Zero-Arg Construction"):
+Demonstrates the class-design convention (``docs/class-design.md``):
 
   * the constructor does **no functional work** — it only stores values;
   * **every parameter is defaulted**, so ``Cls()`` (zero-arg) always works and the

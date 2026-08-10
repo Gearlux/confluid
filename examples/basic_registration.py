@@ -2,7 +2,7 @@
 
 Both classes are **zero-arg constructible** (every parameter defaulted) and do no functional work
 in ``__init__``; ``MyModel.summary`` shows the canonical "derived state behind a read-only cached
-property" pattern. See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction".
+property" pattern. See ``docs/class-design.md`` for the full convention.
 """
 
 from confluid import configurable, get_registry, register
