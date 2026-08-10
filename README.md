@@ -62,7 +62,7 @@ Python, no ML dependencies — run them as-is):
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
 - **Tag-Based IR:** Use standard YAML tags (`!class:Name` deferred / `!class:Name()` eager, `!lazy:Name`, `!ref:path`, `!clone:path`) instead of proprietary symbols like `@`.
-- **Object-Based Internal Representation:** Use typed `Reference` and `ClassReference` objects for internal resolution.
+- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Class`, `Instance`, `Lazy`, `Reference`, `Clone`) for internal resolution.
 
 ### Dependency Injection
 - **Automatic Hydration:** Support `@configurable` decorator for automatic class registration and instantiation.
@@ -70,7 +70,7 @@ Python, no ML dependencies — run them as-is):
 - **Materialize API:** Provide an explicit `materialize()` function to instantiate objects from already-resolved configuration.
 
 ### Robustness
-- **IR-Aware Merging:** `deep_merge` and `expand_dotted_keys` must traverse into `ClassReference` arguments.
+- **IR-Aware Merging:** `deep_merge` and `expand_dotted_keys` must traverse into Fluid marker kwargs.
 - **Circular Reference Detection:** Gracefully handle and report circular dependencies in the object graph.
 - **Type Coercion:** Integrate `parse_value` to ensure CLI strings (e.g. "100") are cast to correct types (int 100).
 

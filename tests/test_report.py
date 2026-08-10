@@ -380,3 +380,27 @@ def test_report_round_trip() -> None:
     reloaded = load(dump(model))
     assert reloaded.layers == 11
     assert reloaded.lr == 0.25
+
+
+def test_a_leaf_delivery_satisfies_the_glob_registered_spelling() -> None:
+    """A rider's content delivered by the CASCADE marks ``**.leaf`` used.
+
+    A ``'**'`` block registers per leaf under the glob prefix (``**.lr``), but
+    the nested-marker cascade delivers from a pool in which rider contents are
+    flattened to BARE keys — it can only mark the LEAF. Before this rule a
+    rider whose content landed everywhere it aimed still reported ``**.lr``
+    unused in the same report that showed the delivery
+    (``applied=[('lr', 'nested-class')]``), measured through a consumer's CLI
+    override pipeline.
+    """
+    report = ConfigurationReport()
+    report.add_config_keys(["**.lr", "other"])
+    report.mark_used("lr")
+    assert report.unused == ["other"]
+
+
+def test_marking_the_glob_spelling_itself_still_works() -> None:
+    report = ConfigurationReport()
+    report.add_config_keys(["**.lr"])
+    report.mark_used("**.lr")
+    assert report.unused == []

@@ -34,6 +34,15 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A glob-registered unused-candidate is satisfied by its LEAF (2026-08-10).**
+  `ConfigurationReport.mark_used("lr")` now also satisfies registered `**.lr` /
+  `*.lr` candidates. The nested-marker cascade delivers from a pool in which
+  rider contents are flattened to bare keys, so it can only mark the leaf — a
+  `'**'` rider whose content landed everywhere it aimed still reported its
+  glob spelling unused in the same report that showed the delivery (found by
+  the first real consumer of `collect_report()`, a CLI front-end asking
+  "did this override reach anything?").
+
 - **Three silent fallbacks now say so.** `configure()` with a non-mapping
   config (the canonical miss: `configure(model, config="overrides.yaml")` — a
   plain filename fails the YAML heuristic and NOTHING was applied, with an
