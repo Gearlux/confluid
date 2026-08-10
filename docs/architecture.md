@@ -58,7 +58,7 @@ The rule is narrow, and three neighbouring cases stay silent by design:
 That last row is not a concession; omitting it breaks the negation semantics outright. The
 first implementation did omit it, and `task=classification` activating a
 `!notscope:task=segmentation` block — the documented core of the unset-⇒-active convention —
-started raising.
+started raising (pinned by `tests/test_scopes.py::test_notscope_keyed_active_when_value_differs`).
 
 **Consequences.**
 
@@ -220,7 +220,10 @@ silent:
 
 Each produced a plausible-looking run. A trainer's `optimizer: {lr: 0.5}` left the code default
 and trained at the wrong rate; a `!lazy:` slot was constructed without the runtime argument it
-exists to wait for. Nothing raised, and nothing appeared in the log.
+exists to wait for. Nothing raised, and nothing appeared in the log. (The configure-path
+recursion in the first row was even locally plausible: a `Fluid` reports
+`__confluid_configurable__`, so the marker looked like a live configurable child — attributes
+were set on the marker object, where nothing reads them.)
 
 A fifth divergence was a matter of time. The fault is not carelessness — it is that two files
 had to agree on a rule neither of them owned.
@@ -245,8 +248,11 @@ each other. Lifting it is the smallest cut that breaks the cycle.
 - `engine.py` went from ~2,300 lines to ~1,200. That is an effect, not the goal — a 2,300-line
   module with one owner would have been fine.
 - Every moved name **with users** is re-exported from `engine`, so no existing import breaks;
-  zero-user private names are pruned as they are found (eight so far — five on 2026-08-08,
-  three on 2026-08-09; the CHANGELOG lists them). New code should import from the real home.
+  zero-user private names are pruned as they are found (sixteen so far — five on 2026-08-08,
+  three on 2026-08-09, eight on 2026-08-10 — plus `loader`'s blanket compat block and
+  `fluid.__getattr__`'s `cast` arm; the CHANGELOG lists them). "Has users" is verified across
+  Python, YAML, and notebooks alike — a `.py`-only grep once called `env.load_workspace_env`
+  dead while a notebook consumed it. New code should import from the real home.
 - Diagnostics from the merge now originate in `confluid.broadcast`. A test that captures them by
   monkeypatching a logger must target that module; four did and were updated.
 - The divergences above are now unrepresentable rather than merely fixed. That is the whole
@@ -313,9 +319,10 @@ differently between runs for reasons nothing in the config could express.
 Two real shapes hit this, and they are not exotic:
 
 - **The same operation per engine.** One name, two implementations, distinguished by the
-  presentation/engine tag they already carry.
+  presentation/engine tag they already carry (same `category`, different `group`).
 - **A library publishing one name in two roles.** Several well-known loss functions are exported
-  under identical names as both a *loss* and a *metric*. Registering both spellings replaced each
+  under identical names as both a *loss* and a *metric* (same `framework`, different `role`).
+  Registering both spellings replaced each
   loss with its metric namesake — invisibly, since both are legitimate configurables for the same
   task.
 
@@ -444,7 +451,9 @@ Three rules follow, and they are load-bearing together:
    never a direct request.
 3. **It is configured like anything else.** Broadcast keys merge into its kwargs; a mapping
    addressed at its slot tunes it rather than replacing it; a kwarg set in code is a default and
-   loses to a later document key, exactly as a constructor default does.
+   loses to a later document key, exactly as a constructor default does. (Before the tuning
+   half, the mapping *replaced* the slot: `optimizer: {lr: 0.5}` left a plain `dict` where an
+   optimizer belonged, and the kwargs set in code — `weight_decay` — vanished with it.)
 
 **Consequences.**
 
@@ -452,6 +461,12 @@ Three rules follow, and they are load-bearing together:
   is tunable from YAML and from a CLI override even though the object cannot be built yet.
 - A slot's declaration is a promise about *timing*, not about reachability. A reader seeing
   `LazyClass(...)` in an `__init__` body knows it is built later, not that it is beyond config.
+- Discovery has ONE authority (2026-07-29): `lazy_param_names` reports a slot deferred by
+  EITHER signal — a `LazyClass(...)` value or a `Lazy[T]` annotation, constructor parameter and
+  `__init__`-body attribute alike. It originally scanned the signature only, which made the
+  annotation load-bearing on params and decorative in the body: a consumer whose deferred slots
+  all lived in the body reported an *empty* set while annotating every one of them, and stayed
+  correct only because those slots happened to hold `LazyClass` values.
 - `solidify()` must be idempotent, because an owner may flow the same slot more than once.
 - The cost: the object does not exist until someone flows it, so an error in its construction
   surfaces at that call rather than at load. That is inherent — the argument genuinely is not
@@ -521,7 +536,7 @@ Two corollaries carry the same idea to the places the flag cannot reach:
 - On the **configure() path** the verdict is call-scoped — a `beaten` parameter computed by the
   owner's scan — never marker state. It was briefly stamped on the marker, and a second
   `configure()` carrying only a bare key found that key still marked "lost" against a document
-  it never saw.
+  it never saw and silently kept the first call's value (measured: 77 -> 50).
 
 **Consequences.**
 

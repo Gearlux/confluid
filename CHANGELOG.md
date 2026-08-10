@@ -191,6 +191,14 @@ All notable changes to confluid are documented here. The format follows
   `_confluid_lazy_params` stamp's comment no longer claims a downstream
   serializer consumer that does not exist (it is queryable model metadata via
   `lazy_param_names_of`).
+- **`AGENTS.md` deduplicated against `docs/architecture.md` (2026-08-10).**
+  Eight mandate paragraphs carried the full narrative — failure stories,
+  measurements, rejected alternatives — that their architecture record also
+  carries, and the two copies had measurably drifted (AGENTS named a
+  `Fluid._beaten_bare_keys` field that never survived). Each mandate now
+  states its rules, discriminators, and pins and points at its record for
+  rationale, history, and measurements; facts that lived only in AGENTS were
+  folded into the records in the same pass.
 
 ### Internal
 
