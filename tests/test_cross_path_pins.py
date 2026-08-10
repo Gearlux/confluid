@@ -8,11 +8,16 @@ audit catalogued every behavioral difference between them (D1-D5; see
 
 This file pins the catalogue:
 
-* the KEPT differences (D4, D5) get a pin **per path**, cross-referencing each
-  other — so future drift in EITHER direction fails a named test instead of
-  passing silently;
-* the UNIFIED ones (D2, D3 — adjudicated to the load path's stricter gates)
-  are pinned in their post-unification state and land with that change.
+* the ONE remaining kept difference (D4) gets a pin **per path**,
+  cross-referencing its twin — so future drift in EITHER direction fails a
+  named test instead of passing silently;
+* the UNIFIED ones are pinned in their post-unification state: D2, D3
+  (adjudicated to the load path's stricter gates, 2026-08-08) and D5 plus its
+  uncatalogued mirror (adjudicated 2026-08-09 to "rider content aimed at a
+  declared deferred slot reaches it — both paths, both value shapes", as a
+  full spelling×path matrix below, because the mirror cell had NO pin: the
+  parity suites compared live-attribute application and the deferred-slot
+  cascade sat outside the audited walk).
 
 D1 (the routing-hoist merge condition) has no reachable end-to-end trigger
 from legal YAML on either path; it is pinned at the unit level on the shared
@@ -21,7 +26,9 @@ from legal YAML on either path; it is pinned at the unit level on the shared
 
 from typing import Any, Dict, Optional
 
-from confluid import LazyClass, configurable, configure, load
+import pytest
+
+from confluid import LazyClass, NoBroadcast, configurable, configure, flow, load
 from confluid.lazy import Lazy
 
 
@@ -88,34 +95,79 @@ def test_d4_configure_path_treats_the_same_dict_as_a_block() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# D5 — a glob-delivered dict at a declared (deferred) slot
+# D5 (+ its mirror) — rider content at a declared deferred slot: the MATRIX
 # --------------------------------------------------------------------------- #
 
+# Every spelling that aims a value at the deferred ``engine`` slot's ``power``
+# knob. Adjudicated 2026-08-09: ALL of them apply on BOTH paths. Before, the
+# rider cells were CROSSED — the mapping worked on configure only (D5) and the
+# scalar on load only (the uncatalogued mirror; measured: the identical
+# ``'**.optimizer.lr': 0.01`` document trained at the code default on one path
+# and at 0.01 on the other, silently either way. This matrix exists so a new
+# spelling or path can never again ship without a cell.
+_DELIVERY_SPELLINGS = {
+    "bare_scalar": "power: 5",
+    "rider_scalar": "'**.power': 5",
+    "rider_mapping": "'**.engine.power': 5",
+    "addressed_mapping": "{name}:\n  engine:\n    power: 5",
+}
 
-def test_d5_configure_path_glob_dict_tunes_a_deferred_slot() -> None:
-    """CONFIGURE: ``'**': {engine: {...}}`` reaches the deferred slot and tunes it.
 
-    The configure ladder's dict branch does not consult the ``gated`` flag.
-    KEPT for the scanner refactor (declared as the receiver's
-    ``gated_dict_reaches_slot`` knob); flagged for separate adjudication —
-    aligning the LOAD path to this is a feature-sized semantic change.
-    """
-    holder = _holder_cls()()
-    configure(holder, config="'**':\n  engine:\n    power: 5\n")
-    assert holder.engine.kwargs == {"power": 5}
-
-
-def test_d5_load_path_glob_dict_is_routing_not_slot_tuning() -> None:
-    """LOAD: the same shape hoists as routing for descendants — the slot stays untouched.
-
-    The marker ladder admits a gated dict only for a dict-TYPED param. Twin of
-    the configure-path pin above.
-    """
+@pytest.mark.parametrize("spelling", sorted(_DELIVERY_SPELLINGS))
+def test_d5_matrix_every_spelling_reaches_the_deferred_slot_on_the_LOAD_path(spelling: str) -> None:
     holder_cls = _holder_cls()
-    cfg = load(
-        "holder: !class:{name}()\n'**':\n  engine:\n    power: 5\n".format(name=holder_cls.__name__),
-    )
-    assert cfg["holder"].engine.kwargs == {}
+    doc = _DELIVERY_SPELLINGS[spelling].format(name=holder_cls.__name__)
+    cfg = load(f"holder: !class:{holder_cls.__name__}()\n{doc}\n")
+    assert flow(cfg["holder"].engine).power == 5
+
+
+@pytest.mark.parametrize("spelling", sorted(_DELIVERY_SPELLINGS))
+def test_d5_matrix_every_spelling_reaches_the_deferred_slot_on_the_CONFIGURE_path(spelling: str) -> None:
+    holder_cls = _holder_cls()
+    holder = holder_cls()
+    configure(holder, config=_DELIVERY_SPELLINGS[spelling].format(name=holder_cls.__name__))
+    assert flow(holder.engine).power == 5
+
+
+def test_d5_gated_delivery_respects_the_no_broadcast_opt_out_on_both_paths() -> None:
+    """A rider delivery is a CASCADE form — the NoBroadcast opt-out gates it.
+
+    Each shield gates deliveries AT ITS OWN KEY, mirroring the bare-key
+    contract exactly: a ``NoBroadcast`` SLOT param refuses the rider MAPPING
+    (delivered at the slot's key on the holder — the live path never
+    consulted ``blocked`` in its dict branch before the adjudication), and a
+    ``NoBroadcast`` param on the TARGET refuses the rider SCALAR (delivered
+    at that key inside the marker's kwargs). The ADDRESSED spelling still
+    tunes — addressed delivery is never gated.
+    """
+
+    class _ShieldedEngine:
+        def __init__(self, power: NoBroadcast[int] = 0) -> None:
+            self.power = power
+
+    @configurable
+    class Shielded:
+        def __init__(self, engine: NoBroadcast[Any] = None) -> None:
+            self.engine = engine if engine is not None else LazyClass(_ShieldedEngine)
+
+    # Rider MAPPING at the NoBroadcast slot key — refused, both paths.
+    cfg = load("holder: !class:Shielded()\n'**.engine.power': 5\n")
+    assert flow(cfg["holder"].engine).power == 0, "load path let the rider mapping through"
+    shielded = Shielded()
+    configure(shielded, config="'**.engine.power': 5")
+    assert flow(shielded.engine).power == 0, "configure path let the rider mapping through"
+
+    # Rider SCALAR at the target's NoBroadcast param — refused, both paths.
+    cfg = load("holder: !class:Shielded()\n'**.power': 5\n")
+    assert flow(cfg["holder"].engine).power == 0, "load path let the rider scalar through"
+    shielded = Shielded()
+    configure(shielded, config="'**.power': 5")
+    assert flow(shielded.engine).power == 0, "configure path let the rider scalar through"
+
+    # Addressed delivery is never gated by NoBroadcast.
+    shielded = Shielded()
+    configure(shielded, config="Shielded:\n  engine:\n    power: 5\n")
+    assert flow(shielded.engine).power == 5
 
 
 # --------------------------------------------------------------------------- #

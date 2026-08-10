@@ -7,7 +7,7 @@ which **failed**, and which matched **nothing at all**. The answer is a
 
 | Bucket | Contents |
 |---|---|
-| `report.applied` | one record per attribute per object — the **final** (last-write-wins) assignment, with the receiver label (`"Trainer 'encoder'"`) and the origin that delivered it (`bare`, `block 'Trainer'`, `glob '**'`, `glob '*'`, `addressed`, `nested-class`) |
+| `report.applied` | one record per attribute per object — the **final** (last-write-wins) assignment, with the receiver label (`"Trainer 'encoder'"`) and the origin that delivered it (`bare`, `block 'Trainer'`, `glob '**'`, `glob '*'`, `addressed`, `nested-class`, `deferred slot` — the last for a bare key tuned into a deferred marker's kwargs on the `configure()` path) |
 | `report.failed` | keys that could not (fully) apply — an unknown attribute inside an object's own named block (`unknown-attribute`), or a per-field validation failure (`validation`, with the error text) |
 | `report.unused` | top-level document keys that matched **nothing** across the whole pass, in document order |
 

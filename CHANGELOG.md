@@ -23,10 +23,12 @@ All notable changes to confluid are documented here. The format follows
   fifth. `broadcast` deliberately materializes nothing, which is what keeps the
   dependency one-directional.
 
-  **No import you have breaks.** Every moved name is re-exported from
-  `confluid.engine`, so `from confluid.engine import accepts_key` (and the
-  internal `_prepare_kwargs` / `active_context` / … spellings) keeps working. New
-  code should import from the real home. One caveat for test suites: broadcast
+  **No import with users breaks.** Every moved name that HAD an importer is
+  re-exported from `confluid.engine`, so `from confluid.engine import
+  accepts_key` (and the internal `_prepare_kwargs` / `active_context` / …
+  spellings) keeps working; zero-user private names are pruned instead (eight
+  so far — see the Internal and Removed sections). New code should import from
+  the real home. One caveat for test suites: broadcast
   diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
   target that module.
 
@@ -175,6 +177,29 @@ All notable changes to confluid are documented here. The format follows
   rejected late-bound/copy-on-write alternatives on record).
 
 ### Fixed
+
+- **Rider content reaches a declared deferred slot on BOTH paths, BOTH value
+  shapes (the D5 adjudication, 2026-08-09).** The 2×2 was crossed: for a
+  trainer with `self.optimizer = LazyClass(AdamW, lr=0.001)`,
+  `'**.optimizer.lr': 0.01` (rider MAPPING) tuned the slot under `configure()`
+  and was silently ignored under `load()` — the kept difference D5 — while
+  `'**.lr': 0.01` (rider SCALAR) tuned it under `load()` and was silently
+  ignored under `configure()`, an uncatalogued mirror in no pin (the
+  deferred-slot cascade sat outside the one-scanner audit's walk). Both
+  failing cells failed identically: the run silently used a value the author
+  overrode. Now: both receivers' `dict_slot` admit a gated/floating dict at a
+  DECLARED key (gated deliveries respect the NoBroadcast opt-outs — each
+  shield gates its own key: the slot param's shield refuses the rider
+  mapping, the target param's shield refuses the rider scalar), and
+  `configure()`'s deferred tuning flattens the `'**'` rider into its pool via
+  the same `_broadcast_pool` the engine uses. Along the way
+  `_broadcast_pool` became scope-preserving: flattening to a plain dict
+  erased the `_View` tags exactly when a rider was present, making an
+  ancestor's addressed (EXACT) values cascade-eligible for descendants'
+  deferred slots. Pins: the spelling×path matrix + NoBroadcast pin in
+  `tests/test_cross_path_pins.py` (the old D5 twins, which ENFORCED the
+  divergence, are replaced by it); example:
+  `examples/broadcasting.py::rider_content_reaches_deferred_slots`.
 
 - **The marker helpers and `input_specs` read a builder FUNCTION's own
   signature.** `lazy_param_names` / `mandatory_param_names` reached for

@@ -288,7 +288,7 @@ def test_collect_report_engine_glob_leaves() -> None:
 
 
 def test_collect_report_survives_materialize_and_active_context() -> None:
-    from confluid.engine import _ENGINE_STATE, active_context
+    from confluid.state import _ENGINE_STATE, active_context
 
     _register_tree_classes()
     with collect_report() as report:
@@ -314,7 +314,7 @@ def test_collect_report_nesting_reuses_outer_report() -> None:
 
 
 def test_no_report_active_is_default() -> None:
-    from confluid.engine import _ENGINE_STATE
+    from confluid.state import _ENGINE_STATE
 
     _register_tree_classes()
     tree = load("outer: !class:Outer()\ndepth: 5\n")

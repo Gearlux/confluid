@@ -1075,11 +1075,18 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
         return True
 
     def _dict_slot(k: str, gated: bool, floating: bool) -> bool:
-        # A dict at a key the receiver DECLARES is a slot value on the
-        # ADDRESSED path only — a glob-delivered dict is genuinely routing and
-        # a floating '**' rider keeps floating (the D5 kept difference: the
-        # live path ignores ``gated`` here — see tests/test_cross_path_pins.py).
-        return not gated and not floating and acceptable is not None and k in acceptable
+        # A dict at a key the receiver DECLARES is a slot value — on the
+        # ADDRESSED path unconditionally, and on the gated/floating (rider)
+        # path since the D5 adjudication (2026-08-09: all four cells of the
+        # rider×shape matrix apply; `'**.optimizer.lr': 0.01` used to tune the
+        # slot under configure() and silently no-op under load()). A gated
+        # delivery is a cascade form, so it respects the NoBroadcast opt-outs
+        # exactly like a bare key; an undeclared key stays routing.
+        if acceptable is None or k not in acceptable:
+            return False
+        if gated or floating:
+            return blocked is not None and k not in blocked
+        return True
 
     def _own_dict_routes(k: str) -> bool:
         # In own kwargs, a dict at a key that is NOT mine is a sub-block
@@ -1118,8 +1125,9 @@ def _receiver_for_instance(obj: Any) -> _Receiver:
       live ``vars(obj)`` names, minus ignore-marked members and setterless
       properties) and refuses every dict — a top-level dict is always a BLOCK
       on this path (D4).
-    * ``dict_slot`` ignores ``gated``/``floating`` — a glob-delivered dict
-      reaches a declared slot here (D5, kept; flagged for adjudication).
+    * ``dict_slot`` matches the marker path since the D5 adjudication
+      (2026-08-09): a rider-delivered dict reaches a declared slot on BOTH
+      paths, gated deliveries respecting the NoBroadcast opt-outs.
     * There is no own-kwargs consumption and no same-target parent skip — a
       live object has no marker kwargs, and its view values were already
       ordered by the ancestors' splices.
@@ -1148,7 +1156,16 @@ def _receiver_for_instance(obj: Any) -> _Receiver:
         return not isinstance(v, dict) and _settable(k)
 
     def _dict_slot(k: str, gated: bool, floating: bool) -> bool:
-        return _settable(k)
+        # Mirrors the marker-path predicate since the D5 adjudication: a
+        # gated/floating (rider) delivery is a cascade form and respects the
+        # NoBroadcast opt-outs; this path always reached the slot but never
+        # consulted ``blocked``, which broke the NoBroadcast promise for
+        # glob-delivered mappings.
+        if not _settable(k):
+            return False
+        if gated or floating:
+            return blocked is not None and k not in blocked
+        return True
 
     def _own_dict_routes(k: str) -> bool:  # no own kwargs on this path
         return False
@@ -1481,26 +1498,34 @@ def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
 
 
 def _broadcast_pool(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten a context's ``'**'`` entry into the nested-Class broadcast pool.
+    """Flatten a context's ``'**'`` entry into the deferred-marker broadcast pool.
 
-    The nested-Class broadcast loop in :func:`_resolve_kwarg_value` skips
-    dict/list values, so a ``'**'`` glob block at the top level of the active
-    context would be invisible to it; unroll its non-dict contents at the
-    block's document position (``'*'`` blocks are depth-addressed and stay
-    out — the recursive-descent path handles them).
+    The deferred-tuning cascade (:func:`merge_bare_pool_into_kwargs`, fed by
+    the engine's nested-marker loop AND — since the D5-mirror fix, 2026-08-09
+    — ``configure()``'s ``_tune_deferred``) skips dict/list values, so a
+    ``'**'`` glob block at the top level of the view would be invisible to it;
+    unroll its non-dict contents at the block's document position, tagged
+    BARE — rider contents cascade by definition. (``'*'`` blocks are
+    depth-addressed and stay out — the recursive-descent path handles them.)
+
+    The output is a scope-preserving :class:`_View`: flattening to a plain
+    dict erased the tags exactly when a rider was present, which made an
+    ancestor's EXACT (addressed) values look BARE to the cascade gate — a
+    value delivered to one node could leak into its descendants' deferred
+    slots whenever a ``'**'`` block happened to exist in the same view.
     """
     if "**" not in ctx and "*" not in ctx:
         return ctx
-    pool: Dict[str, Any] = {}
+    pool = _View()
     for k, v in ctx.items():
         if k == "**" and isinstance(v, dict):
             for gk, gv in v.items():
                 if not isinstance(gv, dict):
-                    pool[gk] = gv
+                    pool.set(gk, gv, _KeyScope.BARE)
         elif k == "*" and isinstance(v, dict):
             continue
         else:
-            pool[k] = v
+            pool.set(k, v, _scope_of(ctx, k))
     return pool
 
 

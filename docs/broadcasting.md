@@ -85,9 +85,9 @@ To see exactly what broadcast where, enable trace logging:
 
 ```bash
 LOGGAIR_CONSOLE_LEVEL=TRACE python train.py config/train.yaml
-# ... TRACE | confluid.broadcast:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
-# ... TRACE | confluid.broadcast:_prepare_kwargs | broadcast: 'lr' -> Transform (glob '**')
-# ... TRACE | confluid.broadcast:_prepare_kwargs | broadcast: 'lr' -> Transform (block 'trainer')
+# ... TRACE | confluid.broadcast:apply | broadcast: 'strength' -> Transform (bare)
+# ... TRACE | confluid.broadcast:apply | broadcast: 'lr' -> Transform (glob '**')
+# ... TRACE | confluid.broadcast:apply | broadcast: 'lr' -> Transform (block 'trainer')
 ```
 
 For a structured, assertable version of the same information — every applied
@@ -238,10 +238,12 @@ class Trainer:
 
 Being deferred means confluid will not **build** it. It does not mean confluid
 will not **configure** it — merging keys into a marker's `kwargs` constructs
-nothing. So all three spellings reach it, and the marker stays deferred:
+nothing. So every spelling reaches it, and the marker stays deferred:
 
 ```yaml
 lr: 0.5                     # bare — cascades like any other key
+'**.lr': 0.5                # a rider SCALAR — cascades to every accepting slot target
+'**.optimizer.lr': 0.5      # a rider MAPPING — tunes every declared `optimizer` slot
 
 trainer: !class:Trainer()
   optimizer:                # a block TUNES the marker ...
@@ -251,13 +253,16 @@ trainer: !class:Trainer()
 
 Two points worth knowing:
 
-- **The cascade gates are identical on both paths.** Whether a bare key reaches
+- **The cascade gates are identical on both paths.** Whether a key reaches
   a deferred slot during YAML materialization or through post-construction
-  `configure()`, the same single function decides: container values (dicts,
-  lists) never cascade, the target's accept-list and the `NoBroadcast` opt-outs
-  gate what lands, and a marker value requires a *declared* key (never the
-  `**kwargs` catchall) with a different target than the slot's own — so a slot
-  can never be tuned with a copy of itself.
+  `configure()`, and whether it arrives bare or through a `'**'` rider, the
+  same gates decide: container values at *undeclared* keys never cascade
+  (they are routing), the target's accept-list and the `NoBroadcast` opt-outs
+  gate what lands (a rider mapping is gated by the SLOT param's shield, a
+  rider scalar by the TARGET param's — each shield guards its own key), and a
+  marker value requires a *declared* key (never the `**kwargs` catchall) with
+  a different target than the slot's own — so a slot can never be tuned with
+  a copy of itself.
 - **A block merges, it does not replace.** `optimizer: {lr: 0.5}` keeps every
   kwarg you did not mention. To replace the marker outright — a different
   optimizer class, say — write one: `optimizer: !lazy:torch.optim.SGD(lr=0.5)`.

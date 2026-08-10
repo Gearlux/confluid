@@ -232,8 +232,9 @@ each other. Lifting it is the smallest cut that breaks the cycle.
 
 - `engine.py` went from ~2,300 lines to ~1,200. That is an effect, not the goal — a 2,300-line
   module with one owner would have been fine.
-- Every moved name is re-exported from `engine`, so no existing import breaks. New code should
-  import from the real home.
+- Every moved name **with users** is re-exported from `engine`, so no existing import breaks;
+  zero-user private names are pruned as they are found (eight so far — five on 2026-08-08,
+  three on 2026-08-09; the CHANGELOG lists them). New code should import from the real home.
 - Diagnostics from the merge now originate in `confluid.broadcast`. A test that captures them by
   monkeypatching a logger must target that module; four did and were updated.
 - The divergences above are now unrepresentable rather than merely fixed. That is the whole
@@ -262,8 +263,9 @@ re-creates the cycle and, with it, the pressure to keep a second copy of the rul
 convenient.
 
 A reasonable review of this module recommends splitting it further — scope types, predicates,
-and merge engine as three files — on the strength of its size (~1,100 lines). **Do not, without
-a stronger reason than size.** The three parts are not three concerns; they are one rule and its
+and merge engine as three files — on the strength of its size (~1,100 lines when this record
+was written; ~1,550 after record 8's phases moved the walk and the splices in, which changes
+the number and not the argument). **Do not, without a stronger reason than size.** The three parts are not three concerns; they are one rule and its
 vocabulary, and the failure this record exists to prevent came from that rule living in more
 than one place. Split it when a *seam* appears — a part with its own callers and its own
 invariants — not when a line count crosses a threshold. If the module is hard to read, the
@@ -627,10 +629,15 @@ position bookkeeping).
 
 - A divergence in the WALK is now unrepresentable — there is one walk. A divergence in a
   *predicate* is two adjacent functions in one diff, reviewed together.
-- The remaining cross-path differences are declared, not ambient: D4 (top-level dict is a value
-  on the load path, a block on configure) and D5 (a glob-delivered dict reaches a declared slot
-  on configure only) each carry twin pins that fail on drift in either direction. D5 is flagged
-  for its own adjudication — aligning it is a feature, not drift repair.
+- The remaining cross-path difference is declared, not ambient: D4 (top-level dict is a value
+  on the load path, a block on configure) carries twin pins that fail on drift in either
+  direction. D5 (a glob-delivered dict reached a declared slot on configure only) was flagged
+  here for its own adjudication and RULED 2026-08-09 — together with an uncatalogued mirror
+  found while demonstrating it (a rider SCALAR reached a deferred slot on load only; the
+  deferred-slot cascade sat outside this record's audited walk): rider content aimed at a
+  declared deferred slot now reaches it on BOTH paths, BOTH value shapes, gated by the
+  NoBroadcast opt-outs like every cascade form. Pinned as a spelling×path matrix in
+  ``tests/test_cross_path_pins.py`` so no cell can go silent again.
 - Receivers for marker targets are cached per pass (pure per spelling × target × instance
   name); instance receivers are not (their predicates close over ``vars(obj)``).
 

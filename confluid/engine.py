@@ -29,8 +29,10 @@ Two deliberate lazy seams remain (both documented at the site):
 ``resolve()`` body-imports ``loader.load`` (str/Path convenience), and
 ``resolver._materialize_cursor`` body-imports this module (``_ENGINE_STATE``/``flow``).
 
-``confluid.loader`` re-exports the moved names for backward compatibility —
-new code should import from here.
+(``confluid.loader``'s own compat re-export block was pruned 2026-08-08 — it
+had zero users; only its real ``materialize`` dependency remains. New code
+imports engine names from ``confluid.engine`` or, better, the real home
+modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
 import inspect
