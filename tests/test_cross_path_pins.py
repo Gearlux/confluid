@@ -216,6 +216,62 @@ def test_d3_a_same_target_fluid_never_tunes_a_deferred_slot() -> None:
     assert isinstance(tuned, ConfluidClass) and tuned.target is _Other  # declared key, other target — lands
 
 
+# --------------------------------------------------------------------------- #
+# D6 — a function-OBJECT target is introspected as ITSELF (both paths,
+# adjudicated 2026-08-10). Five of six target-normalization sites degraded a
+# code-built ``LazyClass(builder_fn, …)`` slot to an unresolvable target
+# (``resolve_class`` is string/type-only): the engine cascade then ran with NO
+# NoBroadcast gates while the public ``accepts_broadcast`` said the key was
+# refused, and ``configure()`` could not tune the slot at all — while the
+# identical class-target slot behaved on both paths. All sites now normalize
+# through the one ``broadcast._settability_target``.
+# --------------------------------------------------------------------------- #
+
+
+def _shielded_builder(lr: float = 0.0, run_name: NoBroadcast[str] = "") -> Dict[str, Any]:
+    """A builder FUNCTION with a NoBroadcast param — the registered-zoo marker shape."""
+    return {"lr": lr, "run_name": run_name}
+
+
+def _fn_holder_cls() -> type:
+    """A fresh holder with a function-target deferred body slot per test."""
+
+    @configurable
+    class FnHolder:
+        def __init__(self) -> None:
+            self.maker: Lazy[Any] = LazyClass(_shielded_builder, lr=1e-4)
+
+    return FnHolder
+
+
+def test_d6_load_cascade_uses_a_function_targets_own_gates() -> None:
+    """LOAD: a bare key cascades into a function-target slot under the fn's own gates.
+
+    The declared ``lr`` lands; the ``NoBroadcast`` ``run_name`` is refused —
+    matching what ``accepts_broadcast(fn, …)`` already answered. Before the
+    normalizer unification the slot's target degraded to ``None``, so blocked
+    was EMPTY and ``run_name`` rode in against the published predicate.
+    """
+    holder_cls = _fn_holder_cls()
+    cfg = load(f"holder: !class:{holder_cls.__name__}()\nlr: 0.5\nrun_name: cascaded\n")
+    marker = cfg["holder"].maker
+    assert marker.kwargs.get("lr") == 0.5
+    assert "run_name" not in marker.kwargs
+
+
+def test_d6_configure_tunes_a_function_target_slot_like_a_class_target_one() -> None:
+    """CONFIGURE: a function-target deferred slot is tunable, same gates.
+
+    ``_tune_deferred`` resolved the target with the string/type-only idiom, got
+    ``None``, and early-returned — so ``configure(holder, {"lr": 0.5})``
+    silently left the code default while the identical class-target slot tuned.
+    """
+    holder = _fn_holder_cls()()
+    configure(holder, config={"lr": 0.5, "run_name": "cascaded"})
+    assert holder.maker.kwargs.get("lr") == 0.5
+    assert "run_name" not in holder.maker.kwargs
+
+
 def test_d3_a_fluid_never_rides_the_kwargs_catchall_into_a_deferred_slot() -> None:
     """A ``**kwargs`` deferred target accepts every scalar — but never a Fluid.
 

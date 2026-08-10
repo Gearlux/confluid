@@ -32,6 +32,51 @@ All notable changes to confluid are documented here. The format follows
   diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
   target that module.
 
+### Fixed
+
+- **Three silent fallbacks now say so.** `configure()` with a non-mapping
+  config (the canonical miss: `configure(model, config="overrides.yaml")` — a
+  plain filename fails the YAML heuristic and NOTHING was applied, with an
+  empty report reading as success) warns and names `configure_from_file` for
+  the string case. A nested-broadcast result dropped by a refusing setattr
+  (`_broadcast_onto_instance`'s read-only/`__slots__` swallow) and a
+  `get_type_hints` failure in the param-kind scan (which silently flips a
+  dict-annotated param from value to routing) each log at DEBUG.
+
+- **A `'**'` rider now orders against a slot-addressed mapping by document
+  position — on BOTH paths (the D7 adjudication, 2026-08-10).** The contest was
+  position-insensitive with OPPOSITE winners: under `load()` the mapping always
+  won (the late-keys verdict kept BARE top-level keys only, and rider contents
+  sit under the dict-valued `'**'` entry — invisible), under `configure()` the
+  rider always won (the beaten verdict kept non-dict keys only, and the rider
+  entry IS a dict — never beaten). A sweep's `'**': {lr: …}` override therefore
+  silently lost on one path and silently beat a later per-slot choice on the
+  other, for the identical document. Both verdicts now read the ONE candidate
+  set, `broadcast._cascade_scalar_positions` — bare keys at their own index, a
+  rider's scalar contents at the RIDER's index — with the per-path directional
+  read unchanged. Pinned as a rider × spelling × ordering × path matrix in
+  `tests/test_document_order.py`.
+
+- **`configure()` applies values BEFORE `solidify()` fires.** Since the
+  flow-pass-through solidify (0.3.0's record-2 change), the configure walk's
+  internal `flow(obj)` finalized every live object BEFORE the pass applied its
+  values — an unsolidified object baked its pre-configure state
+  (`configure(m, {"width": 32})` left `backbone(width=8)` where the load path
+  builds `backbone(width=32)`), and the idempotency contract then kept it. The
+  walk now flows with `solidify=False` and re-fires the hook post-order, once
+  the object and its subtree carry the new values. An object solidified before
+  the call keeps its built state — rebuild-on-reconfigure remains the
+  recompute-property convention's job, not `solidify()`'s.
+
+- **A function-OBJECT marker target is introspected as itself, everywhere (the
+  D6 adjudication, 2026-08-10).** Five of the six "normalize `marker.target`"
+  sites degraded a plain callable to `None` (`resolve_class` is
+  string/type-only), so a code-built `LazyClass(builder_fn, …)` slot ran the
+  engine cascade with NO `NoBroadcast` gates — against what `accepts_broadcast`
+  answered for the same key — and `configure()` could not tune the slot at all,
+  while the identical class-target slot behaved. All six sites now normalize
+  through the one callable-aware `broadcast._settability_target`.
+
 ### Changed (behavior)
 
 - **`get_hierarchy` reports a declared `name` constructor param (2026-08-09
@@ -105,6 +150,27 @@ All notable changes to confluid are documented here. The format follows
   notebooks too.)
 
 ### Internal
+
+- **The cascade corner runs on shared primitives (2026-08-10 — the review's P1
+  batch, closing the residue the D6/D7 defects lived in).** Five
+  consolidations, all behavior-preserving: (1) per-pass cache clearing is ONE
+  registered `broadcast.clear_pass_caches()` — modules owning a cache
+  self-register (`engine._parent_blacklist_cache` does) and every entry point
+  fires it, **now including `configure()`**, which cleared nothing: a
+  same-qualname class redefined between calls (a notebook cell re-run) was
+  served its previous definition's accept-list with no diagnostic; (2) the
+  "mapping tunes a deferred marker" idiom is ONE `broadcast.tune_marker`
+  (the engine's post-init tune and the live sink's `dict_at_slot` carried
+  twin inline copies, already cosmetically drifted); (3)
+  `_hoist_block_routing`'s inline `'**'` merge goes through `_merge_routing`
+  (a fifth copy of the rider-merge idiom Phase B extracted); (4) the
+  report's glob-prefix used-key spelling is ONE `broadcast._mark_used_key`
+  beside the origin-label constants it parses (both sinks carried a
+  byte-identical parsing expression — a scanner label rename would have
+  silently broken unused-tracking in two modules); (5) the scanner's
+  `gated`/`floating` boolean pair is the closed `_Delivery` Literal
+  (`addressed`/`glob_one`/`rider`) on `_consume` and the receiver
+  `dict_slot` predicate — three real states, self-documented.
 
 - **One grammar per concept in the introspection/grammar layer (2026-08-09).**
   Three duplications the one-scanner plan's audit found one layer below

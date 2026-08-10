@@ -286,3 +286,99 @@ def test_configure_last_write_wins_document_order() -> None:
     m2 = Model()
     configure(m2, config={"lr": 0.9, "Model": {"lr": 0.5}})
     assert m2.lr == 0.5
+
+
+def test_configure_applies_values_before_solidify_fires() -> None:
+    """``configure()`` finalizes AFTER applying — never with pre-configure values.
+
+    ``_walk``'s ``flow(obj)`` fires ``solidify()`` on live objects since the
+    record-2 pass-through change; unsuppressed it ran BEFORE ``_apply``, so an
+    unsolidified object was finalized from its PRE-configure state and — the
+    hook being idempotent by contract — never rebuilt. The walk now flows with
+    ``solidify=False`` and re-fires the hook post-order, once the object and
+    its subtree carry the new values (the load path's ordering: config final,
+    then finalize).
+    """
+
+    @configurable
+    class Model:
+        def __init__(self, width: int = 8):
+            self.width = width
+            self.backbone: object = None
+
+        def solidify(self) -> None:
+            if self.backbone is None:
+                self.backbone = f"backbone(width={self.width})"
+
+    m = Model()
+    configure(m, config={"width": 32})
+    assert m.width == 32
+    assert m.backbone == "backbone(width=32)"
+
+
+def test_configure_does_not_rebuild_an_already_solidified_object() -> None:
+    """An object solidified BEFORE ``configure()`` keeps its built state.
+
+    The idempotency contract (build-once-and-cache) is the object author's;
+    configure() re-fires the hook but must not force a rebuild — reconfiguring
+    a built object and expecting fresh derived state is what the recompute-
+    property convention exists for, not solidify().
+    """
+
+    @configurable
+    class Model:
+        def __init__(self, width: int = 8):
+            self.width = width
+            self.backbone: object = None
+            self.builds = 0
+
+        def solidify(self) -> None:
+            if self.backbone is None:
+                self.builds += 1
+                self.backbone = f"backbone(width={self.width})"
+
+    m = Model()
+    from confluid import flow as _flow
+
+    _flow(m)  # domain code finalized it first — width=8 is the built state
+    configure(m, config={"width": 32})
+    assert m.width == 32
+    assert m.builds == 1
+    assert m.backbone == "backbone(width=8)"
+
+
+def test_configure_warns_when_config_is_not_a_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-mapping config is a no-op — but never a SILENT one.
+
+    The canonical miss: ``configure(model, config="overrides.yaml")`` — a plain
+    filename fails the YAML heuristic (no ``:`` / newline), stays a ``str``,
+    and an empty report came back with no diagnostic anywhere, reading as
+    "configured fine". The warning names the actual fix for the string case.
+    """
+    from types import SimpleNamespace
+
+    import confluid.configurator as configurator_module
+
+    seen: list = []
+    monkeypatch.setattr(
+        configurator_module,
+        "logger",
+        SimpleNamespace(warning=seen.append, debug=lambda m: None, trace=lambda m: None),
+    )
+
+    @configurable
+    class Model:
+        def __init__(self, lr: float = 0.01):
+            self.lr = lr
+
+    m = Model()
+    report = configure(m, config="overrides.yaml")
+
+    assert not report.applied
+    assert any("configure_from_file" in msg for msg in seen), seen
+    assert m.lr == 0.01
+
+    # A mapping stays quiet — the warning must not fire on the ordinary path.
+    seen.clear()
+    configure(m, config={"lr": 0.5})
+    assert not seen and m.lr == 0.5

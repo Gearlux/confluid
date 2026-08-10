@@ -154,6 +154,18 @@ config. The deferral mechanism failed on a signature shape, not on a semantic di
   That raises `ConstructionError` naming the two ways out rather than silently dropping the args.
 - **Live objects drop them**, matching the existing convention for runtime kwargs. This is what
   keeps `flow(slot, train, valid)` safe when a config wired a live object into that slot.
+- **`configure()` finalizes AFTER applying, never before** *(2026-08-10)*. The pass-through
+  solidify reached the configure walk through its pre-existing `flow(obj)` call — which had been
+  a no-op for live objects — so every object was finalized BEFORE the pass applied its values:
+  an unsolidified object baked its **pre-configure** state (measured: `configure(m,
+  {"width": 32})` left `backbone(width=8)` where the load path builds `backbone(width=32)`),
+  and idempotency then kept it. The walk now flows with `solidify=False` and re-fires the hook
+  post-order, once the object and its subtree carry the new values — the load path's ordering
+  (children final, own config final, then finalize). An object solidified before the call keeps
+  its built state: the hook re-fires but idempotency holds, which is the contract — fresh
+  derived state after reconfiguration is the recompute-property convention's job, not
+  `solidify()`'s. Pins: `tests/test_configurator.py::test_configure_applies_values_before_solidify_fires`
+  / `::test_configure_does_not_rebuild_an_already_solidified_object`.
 
 **Example.**
 
@@ -519,6 +531,12 @@ Two corollaries carry the same idea to the places the flag cannot reach:
   `late_bare_keys_of` / `addressed_keys_of` accessors, so each default is written down once.
 - The guard is load-bearing and measured: disabling it fails 7 tests, including a
   document-authored marker losing to an *earlier* bare key.
+- The CANDIDATE set both verdicts draw from — which keys can cascade, and where each sits — is
+  single-sourced in `broadcast._cascade_scalar_positions` since the D7 ruling (2026-08-10,
+  record 8): bare keys at their own index, a `'**'` rider's scalar contents at the rider's
+  index. The two corollaries above keep their opposite directional reads (keys AFTER the slot
+  on the load path, keys BEFORE the block on the configure path) — that is the per-caller
+  ordering model; the candidate set is not allowed to differ again.
 
 **Example.**
 
@@ -640,6 +658,26 @@ position bookkeeping).
   ``tests/test_cross_path_pins.py`` so no cell can go silent again.
 - Receivers for marker targets are cached per pass (pure per spelling × target × instance
   name); instance receivers are not (their predicates close over ``vars(obj)``).
+- **D6 (ruled 2026-08-10): a function-OBJECT target is introspected as itself, everywhere.**
+  The "normalize `marker.target` into the thing to introspect" idiom existed six ways, and five
+  degraded a plain callable to `None` (`resolve_class` is string/type-only) — so a code-built
+  `LazyClass(builder_fn, …)` slot ran the engine cascade with NO NoBroadcast gates while the
+  public `accepts_broadcast` said the key was refused, and `configure()` could not tune the
+  slot at all (its "cannot even resolve" early-return fired for a target the process resolves
+  fine). All six sites now go through the one `broadcast._settability_target` — the same
+  one-implementation move this record made for the walk. Pins: the D6 pair in
+  ``tests/test_cross_path_pins.py``.
+- **D7 (ruled 2026-08-10): a `'**'` rider is a bare delivery and orders by ITS document
+  position — both paths.** The rider × slot-addressed-mapping contest was position-INSENSITIVE
+  on both paths with OPPOSITE winners: the load path's late-keys verdict kept BARE top-level
+  keys only (rider contents sit under the dict-valued `'**'` entry — invisible, so the mapping
+  always won), the configure scan's beaten verdict kept non-dict keys only (the rider entry IS
+  a dict — never beaten, so the rider always won). The two verdicts now read ONE candidate set,
+  ``broadcast._cascade_scalar_positions`` — bare keys at their own index, a rider's scalar
+  contents at the rider's index — with the per-path directional read (late-keys vs beaten)
+  remaining the documented per-caller ordering model (record 6). Pins: the rider matrix in
+  ``tests/test_document_order.py`` (four spellings × two orderings × both paths, plus the
+  rule-level disagree pin).
 
 **Example.**
 
