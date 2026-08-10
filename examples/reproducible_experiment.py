@@ -1,7 +1,7 @@
 """Round-trip reproducibility with lazy, zero-arg ``@configurable`` classes.
 
-Shows that the lazy-init convention (see confluid ``AGENTS.md`` → "Lazy Initialization &
-Zero-Arg Construction") and full-hierarchy serialization compose cleanly:
+Shows that the lazy-init convention (``docs/class-design.md``) and full-hierarchy
+serialization (``docs/serialization.md``) compose cleanly:
 
   * ``Preprocessor()`` / ``Pipeline()`` are **zero-arg constructible** (every field defaulted);
   * ``Preprocessor.fitted_params`` is **derived state behind a read-only cached property** — it is

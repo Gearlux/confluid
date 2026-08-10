@@ -141,7 +141,9 @@ kwargs.
 > deferred and flowed LATER by your own code — `flow(self.loss)` inside a trainer's
 > `run()`, long after `load()` returned — is outside that window, and the selector fails
 > naming the key it could not find. Write the value literally there
-> (`@framework=keras`), or flow inside `confluid.active_context(document)`. Pair it with a [scope block](tags.md) that declares the key, and one config drives
+> (`@framework=keras`), or flow inside `confluid.active_context(document)`.
+
+Pair it with a [scope block](tags.md) that declares the key, and one config drives
 either engine:
 
 ```yaml

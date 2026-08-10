@@ -164,3 +164,18 @@ def test_the_slug_rule_matches_githubs() -> None:
     assert _slug("Registering a class you don't own") == "registering-a-class-you-dont-own"
     assert _slug("`flow()` finishes the object") == "flow-finishes-the-object"
     assert _slug("Bare, addressed, glob — the scoping model") == "bare-addressed-glob--the-scoping-model"
+
+
+def test_api_index_covers_every_public_name() -> None:
+    """Every ``confluid.__all__`` name has a row in docs/api-index.md.
+
+    The index exists because ~10 exported names had no docs home at all — a
+    reader finding them in ``dir(confluid)`` had nowhere to go. This pin keeps
+    the page complete: a name added to the public surface without an index row
+    fails here, naming itself.
+    """
+    import confluid
+
+    index = (_DOCS / "api-index.md").read_text(encoding="utf-8")
+    missing = [name for name in confluid.__all__ if f"`{name}`" not in index]
+    assert not missing, f"public names missing from docs/api-index.md: {missing}"

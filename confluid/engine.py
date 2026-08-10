@@ -21,9 +21,10 @@ cycle. The layering is now one-directional:
 ``state`` and ``broadcast`` came out of this module (2026-08-03): the ordered-merge
 rule was implemented twice — here and, over live objects, in ``configurator`` — and
 the two copies diverged four separate ways in a single day, three of them silently.
-Both callers now import the one module. Their names are RE-EXPORTED below, so
-existing ``from confluid.engine import _prepare_kwargs / accepts_key / ...`` call
-sites keep working.
+Both callers now import the one module. Names with users stay importable from here
+(the caches, ``_prepare_kwargs``, …); zero-user compat re-exports are pruned as
+found — sixteen so far, ledger in the AGENTS broadcast mandate and the CHANGELOG.
+NEW code imports from the real home (``confluid.broadcast`` / ``confluid.state``).
 
 Two deliberate lazy seams remain (both documented at the site):
 ``resolve()`` body-imports ``loader.load`` (str/Path convenience), and
@@ -44,15 +45,13 @@ from loggair import get_logger
 
 # Broadcasting moved to `confluid.broadcast` — the ordered-merge rule was
 # implemented twice (here and over live objects in `configurator`) and the copies
-# diverged; one module both import is what stops that. Re-exported so existing
-# `from confluid.engine import _prepare_kwargs / accepts_key / ...` call sites,
-# internal and downstream, keep working unchanged.
+# diverged; one module both import is what stops that. Names below are engine
+# dependencies; the caches double as compat re-exports for test suites that
+# reach them via `engine.<cache>` (zero-user re-exports are pruned as found —
+# the ledger lives in the AGENTS broadcast mandate and the CHANGELOG).
 from confluid.broadcast import (  # noqa: F401
     _acceptable_keys_cache,
     _broadcast_pool,
-    _expand_block_keys,
-    _get_acceptable_keys,
-    _get_post_init_attrs,
     _is_glob_key,
     _KeyScope,
     _late_bare_keys_per_slot,
@@ -64,9 +63,6 @@ from confluid.broadcast import (  # noqa: F401
     _settability_target,
     _splice_kwargs_at_slot,
     _View,
-    accepts_any_key,
-    accepts_broadcast,
-    accepts_key,
     clear_pass_caches,
     merge_bare_pool_into_kwargs,
     register_pass_cache,
@@ -92,19 +88,12 @@ from confluid.registry import _resolve_selector_values, get_registry, parse_targ
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, resolve_reference_path
 
-# Re-exported, not re-implemented: the engine state moved to `confluid.state` so
-# `confluid.broadcast` can read the ambient report without importing the engine
-# (see that module's docstring for the layering). Existing
-# `from confluid.engine import active_context / collect_report / _ENGINE_STATE`
-# call sites — internal and downstream — keep working unchanged.
-from confluid.state import (  # noqa: F401
-    _ENGINE_STATE,
-    _active_report,
-    _EngineState,
-    active_context,
-    collect_report,
-    get_active_context,
-)
+# The engine state moved to `confluid.state` so `confluid.broadcast` can read
+# the ambient report without importing the engine (see that module's docstring
+# for the layering). These are the engine's own dependencies — the public
+# `active_context` / `collect_report` seams live in `confluid.state` and
+# `confluid` top-level.
+from confluid.state import _ENGINE_STATE, _active_report, _EngineState, get_active_context
 
 logger = get_logger("confluid.engine")
 
@@ -340,9 +329,9 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 # Marker materialization
 # ---------------------------------------------------------------------------
-# (The public settability predicates this section once introduced moved to
+# (The public settability predicates this section once introduced live in
 # ``confluid.broadcast`` — ``accepts_key`` / ``accepts_broadcast`` /
-# ``accepts_any_key`` — and are re-exported above for compatibility.)
+# ``accepts_any_key`` — importable from there or from ``confluid`` top-level.)
 
 
 def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
