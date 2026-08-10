@@ -22,6 +22,7 @@ configuration so the choice is written once; see :func:`parse_target_spec`.
 """
 
 import importlib
+import importlib.metadata
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
@@ -623,6 +624,50 @@ def get_registry() -> ConfluidRegistry:
     return _registry
 
 
+def load_configurables(group: str = "confluid.configurables") -> Dict[str, Any]:
+    """Import every module declared under the ``group`` entry-point group.
+
+    Registration is an import side effect: a package advertises its
+    ``@configurable``-bearing modules as entry points —
+
+    .. code-block:: toml
+
+        [project.entry-points."confluid.configurables"]
+        mypkg-ops = "mypkg.ops"        # key arbitrary; value = module path
+
+    — and one call imports them all, so their decorators run and fill the
+    global registry. This is the blessed bootstrap for a consuming service.
+    It is EXPLICIT ONLY: confluid never invokes it at its own import time, so
+    a user who wires classes by hand pays nothing for the mechanism.
+
+    Errors are collected PER ENTRY: an entry whose import raises is caught —
+    one ``logger.warning`` naming the entry and the exception — and reported
+    in the returned dict as the exception instance instead of the module. A
+    broken package must not blank every other package's registrations.
+
+    Repeated calls are cheap: Python's module cache makes re-imports no-ops,
+    so calling this defensively before a discovery pass costs nothing.
+
+    Args:
+        group: The entry-point group to iterate. Defaults to confluid's own
+            ``"confluid.configurables"`` convention.
+
+    Returns:
+        ``{entry_name: module}`` for each entry that imported, with the raised
+        exception instance in place of the module for each entry that failed.
+        Values are ``Any`` because ``EntryPoint.load()`` is itself open-typed —
+        the value is whatever object the entry point names, normally a module.
+    """
+    loaded: Dict[str, Any] = {}
+    for ep in importlib.metadata.entry_points(group=group):
+        try:
+            loaded[ep.name] = ep.load()
+        except BaseException as exc:  # broad by design: optional deps, version skew, anything at import
+            logger.warning(f"load_configurables: entry point '{ep.name}' ({ep.value}) failed to import: {exc}")
+            loaded[ep.name] = exc
+    return loaded
+
+
 def resolve_class(
     name: Union[str, type],
     *,
@@ -705,3 +750,59 @@ def resolve_class(
             logger.debug(f"Failed to resolve '{base}' via module path: {e}")
 
     return None
+
+
+@dataclass(frozen=True)
+class Marks:
+    """One class's/callable's confluid marks, as a read-only record — see :func:`marks`."""
+
+    configurable: bool  #: carries the ``@configurable`` wrap (``register()`` alone leaves this False)
+    name: Optional[str]  #: custom registry name, or None for the class's own
+    display_name: Optional[str]  #: human-facing label override
+    category: Optional[str]  #: discovery bucket (``task_role`` when derived)
+    group: Optional[str]  #: presentation sub-grouping within a category
+    task: Optional[str]  #: the task axis (``classification`` / ``detection`` / …)
+    role: Optional[str]  #: the role axis (``model`` / ``loss`` / ``trainer`` / …)
+    framework: Optional[str]  #: the engine-API axis (``torch`` / ``keras`` / …)
+    lazy: bool  #: constructed value should stay deferred (a runtime-injection target)
+    random: bool  #: non-deterministic output (re-execute every run)
+    constant: bool  #: pure value producer (foldable into an exported document)
+    eager: bool  #: plain constructor — ``__init__`` does real work from its params
+    strict_typing: bool  #: opts into stricter annotation handling
+    no_broadcast: bool  #: bare/glob cascade keys never land on instances
+    no_capture: bool  #: ctor-kwargs capture (the dump round-trip aid) is skipped
+    broadcast_attrs: Optional[Tuple[str, ...]]  #: declared post-init broadcast slots, or None
+
+
+def marks(target: Any) -> Marks:
+    """The ONE public read surface for the ``__confluid_*__`` marks.
+
+    Accepts a class, a decorated callable, or a live instance (read via its
+    class). Reads are plain ``getattr`` — an inherited mark is visible, exactly
+    as the raw reads consumers used to hand-roll behaved. The dunder names
+    themselves are INTERNAL: they may be renamed with only this accessor
+    updated, which is the reason it exists — six projects were reading them
+    raw, and a rename would have broken every one with no deprecation path.
+    (Registration-time semantics such as the own-``__dict__`` name fallback
+    are ``register_class``'s internals and deliberately not mirrored here.)
+    """
+    cls = target if isinstance(target, type) or callable(target) else type(target)
+    raw_attrs = getattr(cls, "__confluid_broadcast_attrs__", None)
+    return Marks(
+        configurable=bool(getattr(cls, "__confluid_configurable__", False)),
+        name=getattr(cls, "__confluid_name__", None),
+        display_name=getattr(cls, "__confluid_display_name__", None),
+        category=getattr(cls, "__confluid_category__", None),
+        group=getattr(cls, "__confluid_group__", None),
+        task=getattr(cls, "__confluid_task__", None),
+        role=getattr(cls, "__confluid_role__", None),
+        framework=getattr(cls, "__confluid_framework__", None),
+        lazy=bool(getattr(cls, "__confluid_lazy__", False)),
+        random=bool(getattr(cls, "__confluid_random__", False)),
+        constant=bool(getattr(cls, "__confluid_constant__", False)),
+        eager=bool(getattr(cls, "__confluid_eager__", False)),
+        strict_typing=bool(getattr(cls, "__confluid_strict_typing__", False)),
+        no_broadcast=bool(getattr(cls, "__confluid_no_broadcast__", False)),
+        no_capture=bool(getattr(cls, "__confluid_no_capture__", False)),
+        broadcast_attrs=tuple(raw_attrs) if raw_attrs is not None else None,
+    )

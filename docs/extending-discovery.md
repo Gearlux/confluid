@@ -12,11 +12,14 @@ Companions: [Discovery](discovery.md) (tag mechanics + `examples/discovery.py`),
 
 `@configurable(task=…, role=…, framework=…, category=…, group=…)` populates `ConfluidRegistry`
 (indices `_by_category` / `_by_task` / `_by_role` / `_by_framework` / `_by_group`) as a side effect of the
-decorated module being **imported** — confluid itself ships no plugin loader. A consuming service
-bootstraps the registry by importing the packages that declare configurables at its own startup;
-the convention the examples here use is an entry-point group (each package lists its configurable
-modules under `[project.entry-points."confluid.configurables"]` and the service iterates the group) —
-but that group is the *consumer's* contract, and any import mechanism fills the registry equally.
+decorated module being **imported** — and confluid ships the loader for that convention: each
+package lists its configurable modules under `[project.entry-points."confluid.configurables"]`,
+and a consuming service calls `confluid.load_configurables()` once at its own startup — the
+blessed bootstrap. It imports every declared module with per-entry error tolerance (a broken
+package is skipped with one warning and reported in the returned dict as the exception instance,
+so it never blanks the other packages' registrations), and it is explicit-only — never invoked
+at confluid import. A consumer may still iterate the group itself, and any import mechanism
+fills the registry equally.
 An **MCP discovery service** offers classes and validates *values*; a **visual node editor** offers
 nodes and enforces *socket types*.
 

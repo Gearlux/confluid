@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 # Each name from its REAL home — laundering these through the `engine` compat
 # shim gave the shim internal consumers, defeating any future zero-user audit.
-from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key
+from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key, declares_key
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, ignore_config, output, register
 from confluid.dumper import dump
@@ -46,7 +46,7 @@ from confluid.loader import get_app_name, load, load_config, load_config_with_pa
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
-from confluid.registry import get_registry
+from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
 from confluid.schema import (
@@ -82,6 +82,9 @@ __all__ = [
     "ignore_config",
     "output",
     "get_registry",
+    "load_configurables",
+    "Marks",
+    "marks",
     "load",
     "load_config",
     "load_config_with_paths",
@@ -130,6 +133,7 @@ __all__ = [
     "accepts_key",
     "accepts_broadcast",
     "accepts_any_key",
+    "declares_key",
     "ValidationMode",
     "ValidationPolicy",
     "get_policy",

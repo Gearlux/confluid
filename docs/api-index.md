@@ -34,6 +34,8 @@ row here fails a test.
 | `configurable` | The decorator: registers a class/callable and wraps its constructor with validation |
 | `register` | Registration without the validation wrap — for classes/functions you don't own |
 | `get_registry` | The registry object (`list_classes`, `get_class`, tag filters) |
+| `load_configurables` | Import every module in the `confluid.configurables` entry-point group so its registrations run |
+| `marks` / `Marks` | Read-only record of a class's confluid marks (task/role/framework, lazy/random/…) |
 | `ignore_config` | Mark a class attribute as never-configurable |
 
 ## Post-construction configuration — [Post-Construction Configuration](configure.md)
@@ -57,6 +59,7 @@ row here fails a test.
 | `accepts_key` | May this key set this target when ADDRESSED? |
 | `accepts_broadcast` | May a BARE key cascade onto this target (opt-outs honoured)? |
 | `accepts_any_key` | Does this target discriminate between keys at all (`**kwargs`)? |
+| `declares_key` | Does the target NAME this key (catchall never counts)? |
 | `NoBroadcast` | Annotation: exclude one parameter from bare-key cascade |
 | `no_broadcast_param_names` | The `NoBroadcast`-marked parameter names of a target |
 
