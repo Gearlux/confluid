@@ -141,6 +141,59 @@ def test_interpolate_non_scalar_target_left_literal() -> None:
     assert resolver.resolve("prefix-${cfg.nested}") == "prefix-${cfg.nested}"
 
 
+# --- bare $VAR environment expansion ---------------------------------------
+
+
+def test_bare_env_var_expands_embedded_in_a_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``$DATA_ROOT/sub`` expands like ``os.path.expandvars`` — one spelling, every entry path."""
+    monkeypatch.setenv("DATA_ROOT", "/data")
+    assert Resolver().resolve("$DATA_ROOT/sub") == "/data/sub"
+
+
+def test_bare_env_var_unset_stays_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset variable leaves the ``$name`` text in place, mirroring ``os.path.expandvars``."""
+    monkeypatch.delenv("CONFLUID_TEST_UNSET_VAR", raising=False)
+    assert Resolver().resolve("$CONFLUID_TEST_UNSET_VAR/sub") == "$CONFLUID_TEST_UNSET_VAR/sub"
+
+
+def test_bare_env_pass_leaves_marker_strings_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``"!class:..."`` STRING keeps its ``$`` text — flow-time parsing owns it.
+
+    The ``@axis=$key`` document-selector grammar also spells ``$`` in tag
+    targets, so the bare pass skips every ``!``-prefixed string.
+    """
+    from confluid.fluid import Class
+
+    monkeypatch.setenv("DATA_ROOT", "/data")
+    marker = Class("Whatever")
+    marker.kwargs["child"] = "!class:X(dir=$DATA_ROOT)"
+    out = Resolver(context={}).resolve(marker)
+    assert out is marker
+    assert marker.kwargs["child"] == "!class:X(dir=$DATA_ROOT)"
+
+
+def test_braced_default_behavior_unchanged_by_bare_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${VAR:default}`` keeps its meaning, and an unresolved ``${...}`` literal survives."""
+    monkeypatch.delenv("CONFLUID_TEST_UNSET_VAR", raising=False)
+    resolver = Resolver()
+    assert resolver.resolve("${CONFLUID_TEST_UNSET_VAR:fallback}") == "fallback"
+    # The bare regex cannot match ``${`` (the ``{`` sits outside its identifier
+    # class), so the braced literal a ${...} miss leaves behind stays untouched.
+    assert resolver.resolve("${CONFLUID_TEST_UNSET_VAR}/x") == "${CONFLUID_TEST_UNSET_VAR}/x"
+
+
+def test_bare_env_var_expands_in_marker_kwargs_walk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A marker kwargs mapping value ``"$DATA_ROOT/x"`` expands in place — and burns in."""
+    from confluid.fluid import Class
+
+    monkeypatch.setenv("DATA_ROOT", "/data")
+    marker = Class("Whatever")
+    marker.kwargs["path"] = "$DATA_ROOT/x"
+    out = Resolver(context={}).resolve(marker)
+    assert out is marker  # identity preserved — the flow memo keys on id()
+    assert marker.kwargs["path"] == "/data/x"
+
+
 def test_resolver_interpolates_marker_kwargs_in_place_and_keeps_references_late_bound(
     monkeypatch: "pytest.MonkeyPatch",
 ) -> None:

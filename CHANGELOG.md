@@ -102,6 +102,47 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`load_configurables(group="confluid.configurables")` — the entry-point
+  bootstrap now ships IN confluid.** Packages have long advertised their
+  `@configurable`-bearing modules under `[project.entry-points.
+  "confluid.configurables"]`, but the loop that iterates the group lived in a
+  consumer; the group carries confluid's name, so confluid now owns the
+  loader. One call imports every declared module (running its registration
+  side effects) and returns `{entry_name: module}`. Errors are collected PER
+  ENTRY: a broken import logs one warning and lands in the dict as the
+  exception instance, so one broken package never blanks the other packages'
+  registrations. Explicit call only — never invoked at confluid import — and
+  repeated calls are cheap (Python's module cache makes re-imports no-ops).
+
+- **Bare `$VAR` expands as an environment variable in the one interpolation
+  pass.** After the `${...}` handling, a bare `$IDENTIFIER` in a string value
+  reads `os.getenv` — an unset variable leaves the `$name` text literal,
+  mirroring `os.path.expandvars`. Env-only by design: no dotted config-path
+  form and no `:default` (those spellings stay `${...}`-exclusive), and marker
+  strings (leading `!`) are exempt so flow-time parsing — where the
+  `@axis=$key` document-selector grammar also spells `$` — keeps its text.
+  The reason: 59+ live workspace YAML lines spell `root: $DATA_ROOT/...`,
+  which worked only through front-ends that re-implement
+  `os.path.expandvars` — the same file through a direct `confluid.load()`
+  kept the literal and produced the canonical zero-records failure. One
+  spelling now behaves identically on every entry path.
+
+- **`marks(target)` / `Marks` — the ONE public read surface for the
+  `__confluid_*__` stamps.** Six projects were reading the dunders raw
+  (`getattr(cls, "__confluid_role__", None)` and friends), so a rename would
+  have broken every one with no deprecation path. `marks()` accepts a class,
+  decorated callable, or instance and returns a frozen record of all sixteen
+  marks with typed defaults; the dunder names are now explicitly internal.
+
+- **`declares_key(target, key)` — the fourth settability predicate.** What the
+  target NAMES (ctor params, settable properties, body slots), with the
+  `**kwargs` catchall never counting — the question between `accepts_key`
+  (which answers yes to everything a catchall cannot refuse) and
+  `accepts_any_key`. A consumer sizing torchmetrics templates (every metric
+  takes `**kwargs` and raises "Unexpected keyword arguments" for undeclared
+  names) had re-derived exactly this locally; per the never-re-derive rule the
+  gate now lives beside its siblings.
+
 - **`register()` carries the accept-list controls the decorator does** —
   `broadcast=False` and `broadcast_attrs=[...]`. They existed only on
   `@configurable`, which had it backwards: a class you own can be shielded from

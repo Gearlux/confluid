@@ -286,12 +286,28 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
         _acceptable_keys_cache[cache_key] = None
         return None
 
-    # Class-only extras: settable class attributes and __init__-body slots.
-    # A plain callable has neither (its function attributes are not config
-    # slots, and there is no body to setattr into post-construction).
+    keys |= _class_extra_keys(target, keys)
+
+    result = frozenset(keys)
+    _acceptable_keys_cache[cache_key] = result
+    return result
+
+
+def _class_extra_keys(target: Any, existing: Optional[Set[str]] = None) -> Set[str]:
+    """Class-only extras: settable class attributes and ``__init__``-body slots.
+
+    A plain callable has neither (its function attributes are not config slots,
+    and there is no body to setattr into post-construction). The body-slot names
+    come from the AST scan — instance attributes invisible via ``dir(cls)`` that
+    the engine's post-init injection loop assigns via setattr, so broadcasting
+    (and :func:`declares_key`) just needs the names. Shared by
+    :func:`_get_acceptable_keys` and :func:`declares_key` — one enumeration.
+    """
+    skip = existing or set()
+    keys: Set[str] = set()
     if isinstance(target, type) and getattr(target, "__confluid_configurable__", False):
         for name in dir(target):
-            if name.startswith("_") or name in keys:
+            if name.startswith("_") or name in skip:
                 continue
             member = getattr(target, name, None)
             if member is None or callable(member):
@@ -301,17 +317,8 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
             if isinstance(member, property) and member.fset is None:
                 continue
             keys.add(name)
-
-        # Fold in attribute names assigned in __init__'s body (AST scan).
-        # These are instance attributes not visible via dir(cls), but the
-        # post-init injection loop in confluid.engine.flow already assigns
-        # any matching kwarg via setattr — broadcasting just needs to know
-        # the names so a top-level YAML key can flow into them.
         keys.update(_get_post_init_attrs(target))
-
-    result = frozenset(keys)
-    _acceptable_keys_cache[cache_key] = result
-    return result
+    return keys
 
 
 def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
@@ -1044,6 +1051,53 @@ def accepts_any_key(target: Any) -> bool:
     if cls is None:
         return False
     return _get_acceptable_keys(cls) is None
+
+
+#: Per-pass cache for :func:`declares_key`'s named-surface enumeration — only
+#: consulted for ``**kwargs`` targets (everything else rides the accept-list).
+_declared_names_cache: Dict[str, FrozenSet[str]] = register_pass_cache({})
+
+
+def declares_key(target: Any, key: str) -> bool:
+    """True if ``target`` NAMES ``key`` — the ``**kwargs`` catchall never counts.
+
+    The question BETWEEN :func:`accepts_key` and :func:`accepts_any_key`: a
+    ``**kwargs`` constructor cannot REFUSE any key, so ``accepts_key`` answers
+    yes to everything — but the keys such a target DECLARES (named constructor
+    parameters, settable class attributes, ``__init__``-body slots) are
+    knowable, and a library that forwards its catchall somewhere strict rejects
+    every other name at a call site nowhere near the config (torchmetrics:
+    every metric takes ``**kwargs`` and raises "Unexpected keyword arguments").
+    A consumer sizing such targets re-derived exactly this answer locally; this
+    is that answer, beside the predicates it complements. For a target with no
+    catchall it agrees with ``accepts_key`` by construction. An unresolvable
+    target declares nothing (``False``), like its siblings.
+    """
+    cls = _settability_target(target)
+    if cls is None:
+        return False
+    acceptable = _get_acceptable_keys(cls)
+    if acceptable is not None:
+        return key in acceptable
+    cache_key = f"{cls.__module__}.{cls.__qualname__}"
+    declared = _declared_names_cache.get(cache_key)
+    if declared is None:
+        names: Set[str] = set()
+        try:
+            init_method = init_callable(cls)
+            if init_method is not None:
+                names = {
+                    p.name
+                    for p in inspect.signature(init_method).parameters.values()
+                    if p.name not in ("self", "cls")
+                    and p.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+                }
+        except (ValueError, TypeError):
+            names = set()
+        names |= _class_extra_keys(cls)
+        declared = frozenset(names)
+        _declared_names_cache[cache_key] = declared
+    return key in declared
 
 
 def _settability_target(target: Any) -> Any:

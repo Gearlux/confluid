@@ -764,3 +764,37 @@ tuned:   !clone:counter    # a clone may carry overrides
 test suite) — do not weaken them to a shallow copy for performance without a new record.
 Deleting the tag requires first answering where independent fan-out goes instead; a
 grep showing no users is not that answer.
+
+---
+
+## 10. Unexercised surface is kept until 1.0 — the census ruling
+
+*2026-08-10*
+
+**Context.** A consumer sweep (16 workspace projects; `.py`, `.ipynb`, `.yaml`) found a set of
+published, documented, pinned features with zero live users. Each dead-surface audit re-greps
+them, re-flags them, and someone re-litigates; two already earned individual keep-rulings
+(`!clone:` — record 9; the bake machinery — a mandate note) written precisely so "the next audit
+stops at the why". This record generalizes that move to the whole census.
+
+**Decision.** The unexercised surface is KEPT, classified three ways, and reviewed as a set at
+the 1.0 boundary — where "pre-1.0 minors may break" expires and keep-or-prune becomes a
+compatibility commitment either way.
+
+| Tier | Members | Why kept |
+|---|---|---|
+| **Escape hatches** — value is existence, not usage | `!notscope:`, `NoBroadcast[T]`, `broadcast=False`, `capture=False` | the design's default posture (cascade-on, capture-on, positive scopes) is safe only while the opt-out exists; `!notscope:` additionally defines the declared-value check's third exemption (record 1) |
+| **Awaiting their consumer** | `@axis=value` / `$key` selectors, `eager=`, `constant=` | built for recurring situations (a real registry collision in a config; the next plain-constructor class; the next pure value producer); the first real user activates them, and the consuming machinery for `constant=` already ships in a visual editor |
+| **Review at 1.0** | `${dotted.key}` config-path interpolation, `strict_typing=` | no escape-hatch or consumer-in-waiting argument on file; if still unused when 1.0 approaches, these are the prune candidates |
+
+**Consequences.** An audit that greps a census member and finds zero users STOPS HERE — a new
+finding requires new evidence (a defect, a drift, a maintenance cost that materialized), not a
+re-run of the same grep. New zero-user surface does not join the census silently: it needs its
+own entry with a tier and a reason, added when it ships.
+
+**Example.** The shape of a census hit in an audit report:
+`!notscope:` — zero configs → census tier "escape hatch" (record 10) → no finding.
+
+**What you may change.** The tier of a member, with evidence (a `constant=` producer shipping
+moves it out entirely). The 1.0 trigger date, never the existence of a trigger — an undated
+"someday" is how the census would rot back into per-audit re-litigation.

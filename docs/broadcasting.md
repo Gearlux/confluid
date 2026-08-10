@@ -220,6 +220,16 @@ elif accepts_broadcast(cls, key):
     marker.kwargs[key] = value   # the class declares it — an argument is correct
 ```
 
+A fourth predicate completes the family: `declares_key(target, key)` answers
+what the target **names** — constructor parameters, settable properties,
+`__init__`-body slots — with the `**kwargs` catchall never counting. It is the
+question between `accepts_key` (yes to everything a catchall cannot refuse) and
+`accepts_any_key` (whether it discriminates at all): a library that forwards
+its catchall somewhere strict rejects undeclared names far from the config, so
+a caller sizing such targets checks `declares_key` before passing a dimension.
+For a target with no catchall it agrees with `accepts_key` by construction.
+
+
 ## Deferred (`!lazy:`) slots are configured, not skipped
 
 A slot that needs a runtime argument is declared deferred, typically in code:

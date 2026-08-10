@@ -353,3 +353,45 @@ def test_no_broadcast_cache_is_per_class_never_inherited() -> None:
     assert no_broadcast_param_names(_Base) == frozenset({"n"})  # parent primed FIRST
     assert no_broadcast_param_names(_Sub) == frozenset()
     assert no_broadcast_param_names(_Inherits) == frozenset({"n"})
+
+
+def test_declares_key_ignores_the_kwargs_catchall() -> None:
+    """The question between accepts_key and accepts_any_key — named surface only.
+
+    A ``**kwargs`` target cannot REFUSE any key (`accepts_key` says yes to
+    everything), but a library forwarding its catchall somewhere strict rejects
+    undeclared names far from the config. `declares_key` answers what the
+    target NAMES; a consumer sizing torchmetrics re-derived exactly this.
+    """
+    from confluid import accepts_key, declares_key
+
+    class Forwarding:
+        def __init__(self, top_k: int = 1, **kwargs: object) -> None:
+            self.top_k = top_k
+
+    assert accepts_key(Forwarding, "banana")  # cannot refuse ...
+    assert declares_key(Forwarding, "top_k")  # ... but declares only what it names
+    assert not declares_key(Forwarding, "banana")
+
+
+def test_declares_key_agrees_with_accepts_key_without_a_catchall() -> None:
+    from confluid import accepts_key, declares_key
+
+    class Plain:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    for key in ("lr", "typo"):
+        assert declares_key(Plain, key) == accepts_key(Plain, key)
+
+
+def test_declares_key_sees_body_slots_and_refuses_unresolvable_targets() -> None:
+    from confluid import configurable, declares_key
+
+    @configurable
+    class WithSlot:
+        def __init__(self, **kw: object) -> None:
+            self.optimizer = None
+
+    assert declares_key(WithSlot, "optimizer")  # an __init__-body slot is declared surface
+    assert not declares_key("not.importable.Anywhere", "lr")  # unresolvable declares nothing

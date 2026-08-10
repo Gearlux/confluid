@@ -87,6 +87,31 @@ lose a scanned name — it only adds.
 The parameter-level opt-out `NoBroadcast[T]` needs no registration support: it is
 an annotation, so it works wherever the annotation can be written.
 
+## Bootstrapping the registry from entry points
+
+Registration is an import side effect, so a process only sees the classes whose
+modules it has imported. Packages advertise those modules under the
+`confluid.configurables` entry-point group, and one explicit call imports them all:
+
+```toml
+[project.entry-points."confluid.configurables"]
+mypkg-ops = "mypkg.ops"        # key arbitrary; value = the module to import
+```
+
+```python
+import confluid
+
+loaded = confluid.load_configurables()   # {entry_name: module}
+```
+
+Errors are collected per entry: a package that fails to import is skipped with one
+warning and reported in the returned dict as the exception instance, so a broken
+install never blanks every other package's registrations. The call is explicit —
+confluid never runs it at its own import — and repeating it is cheap, since
+Python's module cache makes re-imports no-ops. See
+[Extending the Discovery Surface](extending-discovery.md) for the full plugin
+contract.
+
 ## When two classes share a name
 
 A registered name is not required to be unique. Two classes legitimately share one when a
@@ -202,3 +227,21 @@ Two introspection helpers make the same declaration serve every downstream surfa
 `category` / `group` / behavioral marks, queries them back through
 `get_registry().list_classes(...)`, and extracts parameter help with
 `parse_param_docs`.
+
+## Reading a class's marks
+
+`marks(target)` returns a frozen record of every mark a class (or decorated
+callable, or instance) carries — the discovery axes (`task` / `role` /
+`framework` / `category` / `group`), the display name, and the behavioural
+flags (`lazy`, `random`, `constant`, `eager`, …):
+
+```python
+from confluid import marks
+
+m = marks(SomeModel)
+m.role, m.task      # ("model", "classification")
+m.lazy              # True — compose a deferred value for this target
+```
+
+This accessor is the public contract; the underlying ``__confluid_*__``
+attribute names are internal and may change.

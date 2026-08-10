@@ -24,6 +24,29 @@ Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps mea
 > `materialize()`, or `resolve()`. The raw parse returned by `load_config` /
 > `load_config_with_paths` still carries the literal `${...}` placeholders.
 
+## Bare `$VAR` — environment variables only
+
+After the `${...}` pass, bare `$IDENTIFIER` occurrences in string values expand as
+**environment variables** (`os.getenv`), so `root: $DATA_ROOT/subdir` behaves exactly
+like `root: ${DATA_ROOT}/subdir` on every entry path — the spelling no longer depends
+on a front-end re-implementing `os.path.expandvars` before handing the file to the loader.
+
+- **Env-only.** There is no dotted config-path form and no `:default` — those
+  spellings remain `${...}`-exclusive.
+- **Unset stays literal.** An unset variable leaves the `$name` text in place,
+  mirroring `os.path.expandvars`. (An unresolved `${...}` literal is likewise
+  untouched — the bare pattern cannot match a `${`.)
+- **Marker strings are exempt.** A string starting with `!` (`"!class:..."`,
+  `"!lazy:..."`, `"!ref:..."`) keeps its `$` text for flow-time parsing — the
+  `@axis=$key` document-selector grammar also spells `$` in tag targets.
+- **Burn-in.** Like every interpolation, the substitution is a single load-time
+  pass: a marker kwarg `"$DATA_ROOT/x"` carries the expanded value from then on
+  (`dump()` emits it; a deferred slot flowed later sees it).
+
+```yaml
+root: $DATA_ROOT/RFUAV/v3        # -> /store/RFUAV/v3 (same as ${DATA_ROOT}/RFUAV/v3)
+```
+
 > **Marker kwargs interpolate too — and burn in.** A `${...}` written inside a
 > `!class:` / `!lazy:` tag's mapping body (or its quoted-string form) is
 > substituted in the same load-time pass as any plain key. The substituted

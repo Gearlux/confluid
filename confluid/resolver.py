@@ -24,6 +24,14 @@ _INT_LITERAL_RE = re.compile(r"-?\d+")
 # pre-existing ``${VAR}`` / ``${VAR:default}`` keeps its meaning.
 _INTERP_RE = re.compile(r"\$\{([\w.\[\]-]+)(?::([^}]+))?\}")
 
+# Bare ``$IDENTIFIER`` — an ENVIRONMENT-variable read, expanded AFTER the
+# ``${...}`` pass. The ``{`` sits outside the character class, so this regex
+# can never match a ``${...}`` placeholder — an unresolved braced literal the
+# pass above left in place survives the bare pass untouched. Env-only by
+# design: NO dotted config-path form and NO ``:default`` — those spellings
+# remain ``${...}``-exclusive.
+_BARE_ENV_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
 # The ONE ``Target(...)`` call grammar — a target name (dotted paths and the
 # ``@axis=value`` / ``$key`` selector characters included; all legal YAML
 # tag-suffix characters) followed by an inline-kwargs parenthesis group. Shared
@@ -298,7 +306,7 @@ def _resolve_base_path(obj_path: str, ctx: Dict[str, Any]) -> Any:
 
 
 class Resolver:
-    """Resolves references (!ref), environment variables (${ENV}), and deep keys."""
+    """Resolves references (!ref), environment variables (${ENV} / bare $VAR), and deep keys."""
 
     def __init__(self, context: Optional[Dict[str, Any]] = None) -> None:
         self.context = context or {}
@@ -495,7 +503,7 @@ class Resolver:
         return _walk_path_segments(segments, context, self._lookup_path)
 
     def _interpolate(self, value: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
-        """Substitute ``${...}`` placeholders in a string.
+        """Substitute ``${...}`` placeholders — then bare ``$VAR`` — in a string.
 
         Two families share the ``${...}`` syntax, dispatched purely on the name:
 
@@ -515,9 +523,24 @@ class Resolver:
         ``:default`` is applied (parsed), else the literal ``${...}`` is left
         in place. The referenced config value must already be a resolved
         literal / scalar (interpolation is a single pass, like ``!ref:``).
+
+        AFTER the ``${...}`` pass, bare ``$IDENTIFIER`` occurrences expand as
+        ENVIRONMENT variables (:meth:`_expand_bare_env`), so
+        ``root: $DATA_ROOT/...`` behaves identically on every entry path
+        instead of only through front-ends that re-implement
+        ``os.path.expandvars``. Marker strings (leading ``!``) are exempt from
+        the bare pass — see the guard below.
         """
+        # GUARD: a marker STRING ("!class:..." / "!lazy:..." / "!ref:...")
+        # keeps its bare-$ text for FLOW-time parsing — the ``@axis=$key``
+        # DOCUMENT-selector grammar also spells ``$`` in tag targets, and
+        # expanding here could burn an env var in over a document key.
+        # ``${...}`` still substitutes (``{`` is not a legal tag character, so
+        # the two grammars cannot collide).
+        expand_bare = not value.startswith("!")
+
         if "${" not in value:
-            return value
+            return self._expand_bare_env(value) if expand_bare else value
 
         # Whole-string match — return the resolved value with its real type.
         whole = _INTERP_RE.fullmatch(value)
@@ -532,7 +555,25 @@ class Resolver:
                 return str(resolved)
             return match.group(0)  # miss / non-scalar → leave the literal ${...}
 
-        return _INTERP_RE.sub(replacer, value)
+        result = _INTERP_RE.sub(replacer, value)
+        return self._expand_bare_env(result) if expand_bare else result
+
+    def _expand_bare_env(self, value: str) -> str:
+        """Expand bare ``$IDENTIFIER`` occurrences as environment variables.
+
+        Runs AFTER the ``${...}`` pass, text-only. An UNSET variable leaves
+        the ``$name`` text literal, mirroring ``os.path.expandvars``.
+        Deliberately env-only: no dotted config-path form and no ``:default``
+        — those spellings remain ``${...}``-exclusive.
+        """
+        if "$" not in value:
+            return value
+
+        def replacer(match: "re.Match[str]") -> str:
+            env_val = os.getenv(match.group(1))
+            return env_val if env_val is not None else match.group(0)  # unset → literal $name
+
+        return _BARE_ENV_RE.sub(replacer, value)
 
     def _resolve_placeholder(
         self, name: str, default_val: Optional[str], local_context: Optional[Dict[str, Any]]

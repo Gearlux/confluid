@@ -439,3 +439,37 @@ def test_clear_resets_the_framework_index() -> None:
 
     get_registry().clear()
     assert get_registry().list_frameworks() == set()
+
+
+def test_marks_is_the_one_public_read_surface_for_the_stamps() -> None:
+    """`marks()` mirrors the raw getattr reads consumers used to hand-roll.
+
+    Inheritance-visible, class/callable/instance all accepted, typed defaults
+    (None for the string axes, False for the flags). The dunders themselves are
+    internal — this record is what a rename must keep working.
+    """
+    from confluid import Marks, configurable, marks
+
+    @configurable(task="classification", role="model", framework="torch", lazy=True)
+    class Tagged:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    m = marks(Tagged)
+    assert isinstance(m, Marks) and m.configurable
+    assert (m.task, m.role, m.framework) == ("classification", "model", "torch")
+    assert m.category == "classification_model"  # derived from task x role
+    assert m.lazy and not m.random and not m.eager
+    assert m.display_name is None and m.broadcast_attrs is None
+    assert marks(Tagged(lr=0.2)) == m  # an instance reads via its class
+
+    class Sub(Tagged):
+        pass
+
+    assert marks(Sub).task == "classification"  # plain getattr — inherited marks visible
+
+    class Untagged:
+        pass
+
+    u = marks(Untagged)
+    assert not u.configurable and u.task is None and not u.lazy
