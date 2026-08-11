@@ -180,10 +180,18 @@ Anything the grammar cannot convert is reported with its line, never guessed at:
 config/odd.yaml:128: tag survived conversion — convert by hand — - !scope:verbose 42
 ```
 
-Three forms need a hand edit, all rare: a `!scope:` block with a **sequence or
-scalar body** (it needs `_content_`), the `@axis=` target selector (use a
-fully-qualified `_target_`, or `_target_: pkg.${engine}.Loss` for a dynamic
-choice), and the quoted-string marker spelling (`"!class:Adam(lr=!ref:base)"`).
+Two forms need a hand edit, both rare: a `!scope:` block with a **sequence or
+scalar body** (it needs `_content_`), and the quoted-string marker spelling
+(`"!class:Adam(lr=!ref:base)"`).
+
+An `@axis=value` [target selector](discovery.md) needs no migration — it is part
+of the target NAME, so it rides along unchanged and stays ordinary YAML:
+
+```yaml
+loss:
+  _target_: Loss@framework=keras     # picks between classes sharing one name
+  from_logits: false
+```
 
 The tool also makes every environment read explicit — `${DATA_ROOT}` and
 `$DATA_ROOT` both become `${env:DATA_ROOT}`, and `${PORT:8080}` becomes

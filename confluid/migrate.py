@@ -296,12 +296,10 @@ def _convert_tag_line(
             return None
         return emit([f"{body}_{kind}_: {suffix}"])
 
-    # class / lazy
-    if "@" in suffix:
-        findings.append(
-            Finding(path, index + 1, line.strip(), "@axis= selector — use a fully-qualified _target_ instead")
-        )
-        return None
+    # class / lazy. An ``@axis=value`` selector needs NO special handling: it lives
+    # in the target STRING, not in tag syntax, so ``_target_: Loss@framework=keras``
+    # is ordinary YAML and ``registry.parse_target_spec`` reads it exactly as before
+    # (the ``$key`` document form included).
     target, _pairs = _target_and_kwargs(suffix)
     call = _TARGET_CALL_RE.match(suffix)
     keys = [f"{body}_target_: {target}"]
