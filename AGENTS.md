@@ -268,6 +268,39 @@ group, `::test_a_full_document_is_readable_by_plain_yaml`,
 `::test_yaml_anchors_and_aliases_still_work`, `::test_the_two_spellings_can_be_mixed_in_one_document`.
 **Docs.** `docs/plain-format.md`. **Example.** `examples/plain_format.py`.
 
+### The migration codemod edits LINES
+
+**Rule.** `confluid/migrate.py` MUST NOT parse-and-rewrite a document. It converts the lines
+carrying a tag and leaves every other byte alone. Never reach for a round-trip YAML library: it
+would be a new dependency the DEPENDENCIES rule forbids, and it reformats regardless — measured on
+a 458-line config, a comment-preserving round-tripper changed 34 lines on a NO-OP load+dump. These
+configs are ~86% comments and the comments are the documentation.
+
+**Rule.** Safety is the VERIFICATION, never the parser. `verify_equivalence` compares resolved
+marker trees **once per scope activation the document declares** (`discover_dimension_values` over
+the RAW parse — `yaml.safe_load` cannot see a scope block, so asking IT for the dimensions silently
+degrades the check to the default alone). A file whose conversion is not provably equivalent is
+NOT written.
+
+**Rule.** Anything the grammar cannot convert is REPORTED with its line, never guessed at, and a
+post-pass sweep re-scans for surviving tags so nothing is dropped silently. A `Finding` makes the
+run exit non-zero.
+
+**Detail — the line shapes.** Four, all found by running the tool over the workspace: `key: !tag`,
+`- !tag` (first key on the dash line), a tag ALONE on its line (keys join the block at the tag's
+OWN indent), and a trailing flow mapping (`!class:X {a: 1}`, merged inline). The flow scan is
+depth- AND quote-aware — a value may carry its own braces (`{ low_level: "-{template}" }`) and a
+`\{[^}]*\}` pattern stops at the wrong one.
+
+**Detail — interpolation.** `${NAME}` / `$NAME` → `${env:NAME}`, `${NAME:d}` → `${env:NAME,d}`; a
+dotted name is a config key and is left alone. Meaning-preserving today, and it is what removes
+every ambiguous spelling before a bare `${name}` is re-read as a config key. The pass MUST skip a
+placeholder already naming a resolver, or it is not idempotent (`${env:X}` → `${env:env,X}`).
+
+**Pins.** `tests/test_migrate.py` — the form matrix, the comments-are-never-edited group, the
+real-config shapes, and the equivalence tests that feed WRONG conversions in (a check that only
+ever passes is worse than none). **Docs.** `docs/plain-format.md` → "Migrating an existing config".
+
 ### There are exactly TWO construction modes
 
 **Rule.** `partial` decides whether a marker is built, and NOTHING else does — not the parent's

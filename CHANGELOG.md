@@ -35,6 +35,11 @@ All notable changes to confluid are documented here. The format follows
   are removed with the tag spelling. Note `Class is Instance is Target` now, so
   `isinstance(x, Instance)` no longer separates eager from deferred — read `x.partial`.
 
+  `confluid/lazy.py` survives as a deprecation SHIM re-exporting the renamed names,
+  because renaming a module breaks importers even when every name it exports still
+  resolves: a consumer doing `from confluid.lazy import lazy_param_names` fails on
+  the module path alone. Removed with the tag spelling.
+
 - **`dump()` emits the plain format** (`_target_:` / `_partial_:` / `_ref_:` / `_clone_:`), so an
   archived config is readable by `yaml.safe_load`, `yq` and a diff viewer. Reload fidelity is
   unchanged.
@@ -50,6 +55,32 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
 
 ### Added
+
+- **`confluid-migrate` — a codemod that rewrites tagged configs into the plain format
+  (2026-08-11).** ``confluid-migrate config/`` converts a directory in place;
+  ``--check`` reports without writing (exit 1 if anything would change), ``--report
+  out.csv`` records every converted site, and ``--verify`` proves the conversion.
+
+  It **edits lines rather than reparsing**, so everything it does not convert stays
+  byte-identical — comments, key order, spacing and quoting. That is not a
+  preference: a comment-preserving round-tripper changes 34 lines of a real
+  458-line config on a *no-op* load+dump, and these files are ~86% comments.
+
+  ``--verify`` compares the resolved marker trees of the old and new documents
+  **once per scope activation the document declares** — a wrong conversion inside a
+  variant block is invisible to a plain resolve, because the block is dropped
+  before any marker is built. A file whose conversion is not provably equivalent
+  is left untouched and reported.
+
+  Three forms need a hand edit and are reported with their line rather than
+  guessed at: a `!scope:` block with a sequence or scalar body (needs
+  `_content_`), the `@axis=` selector, and the quoted-string marker spelling. The
+  tool also makes every environment read explicit (`${DATA_ROOT}` / `$DATA_ROOT`
+  → `${env:DATA_ROOT}`), which is meaning-preserving today and is what removes
+  every ambiguous spelling ahead of the eventual bare-`${name}` flip.
+
+  Measured over this workspace: 624 sites across 56 of 61 config files, with 3
+  findings — all the documented sequence/scalar scope bodies.
 
 - **A plain-YAML config format — no custom tags (2026-08-11).** A document may now
   be written with reserved mapping keys instead of YAML tags, which makes it
