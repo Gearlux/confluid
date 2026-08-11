@@ -46,6 +46,14 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`confluid-migrate --verify` could not verify a config with a relative
+  `include:`.** Verification loads the document from text, which carries no
+  location, so `include: ../base.yaml` resolved against the caller's working
+  directory instead of the file's. Every such config reported
+  `ConfigFileNotFoundError` under every activation and was refused as
+  unverifiable — a failure that reads exactly like the check doing its job. It
+  now resolves against the migrated file's own directory.
+
 - **Sibling markers could share one instance through a recycled `id()`.** Both engine memos key on
   `id(marker)`, which is unique only while the marker is alive; the engine builds short-lived
   broadcast copies, and CPython reuses a freed object's address, so the second item of a list could

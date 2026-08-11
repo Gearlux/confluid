@@ -278,6 +278,13 @@ would be a new dependency the DEPENDENCIES rule forbids, and it reformats regard
 a 458-line config, a comment-preserving round-tripper changed 34 lines on a NO-OP load+dump. These
 configs are ~86% comments and the comments are the documentation.
 
+**Rule.** Verification MUST run with the migrated file's directory as CWD (`_working_dir`). It
+loads the document from TEXT, which carries no location, so a relative `include:` otherwise
+resolves against the caller's working directory — every such config then reports
+`ConfigFileNotFoundError` under every activation and is refused as unverifiable, which reads
+exactly like the safety check working. **Pins.**
+`tests/test_migrate.py::test_verification_resolves_a_relative_include_against_the_FILE`.
+
 **Rule.** Safety is the VERIFICATION, never the parser. `verify_equivalence` compares resolved
 marker trees **once per scope activation the document declares** (`discover_dimension_values` over
 the RAW parse — `yaml.safe_load` cannot see a scope block, so asking IT for the dimensions silently
