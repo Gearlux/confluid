@@ -17,6 +17,25 @@ except confluid.ConfluidError:
 
 Every concrete class **also inherits the builtin it replaces**, so pre-existing `except ValueError:` / `except FileNotFoundError:` code (and `pytest.raises(ValueError)` tests) keep working unchanged.
 
+## Errors name the line that caused them
+
+An error raised while processing a document carries `file:line:col`, so a failure is one click
+away instead of a traceback to read and a config tree to grep:
+
+```console
+UnknownClassError: Cannot resolve class: waivefront.sources.HDF5WindwoSource
+                   at /path/to/config/utils/hdf5_rewindow.yaml:22:7
+```
+
+That is the exact shape a rename leaves behind, and the reported node is the **offending one** —
+a mistyped source nested inside a pipeline's kwargs reports its own line, not the enclosing
+marker's. Loading from a string rather than a file reports `<unicode string>:33:12`; the line and
+column still locate the node.
+
+The location comes from the marker (`confluid.format_yaml_loc(fluid)` renders it, and is public
+so your own code can quote it in messages about a config node). A node built in Python rather
+than parsed from YAML has no location, and the suffix is simply omitted.
+
 | Exception | Also a | Raised when |
 |---|---|---|
 | `ConfigurationError` | `ValueError` | base for config-content errors (all seven below) |

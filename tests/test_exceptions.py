@@ -16,6 +16,7 @@ import pytest
 
 import confluid
 from confluid import (
+    AmbiguousClassError,
     CircularIncludeError,
     Class,
     ConfigFileNotFoundError,
@@ -201,3 +202,61 @@ def test_to_pydantic_non_callable_raises_introspection_error() -> None:
     with pytest.raises(IntrospectionError) as ei:
         to_pydantic(42)
     assert isinstance(ei.value, TypeError)
+
+
+# --------------------------------------------------------------------------------------
+# Every error raised while processing a document names its file:line:col.
+#
+# These pin the rule against the defect that produced it: a renamed class left
+# `UnknownClassError: Cannot resolve class: waivefront.sources.HDF5WindwoSource` with no
+# file and no line, while `ConstructionError` a few frames later had been printing
+# `.../evaluate_yolo26.yaml:20:5` the whole time. Asserting the LINE (not just "some
+# location") is the point — a message naming only the file still sends the reader grepping.
+# --------------------------------------------------------------------------------------
+
+
+def test_unknown_class_names_the_yaml_file_and_line(tmp_path: Path) -> None:
+    cfg = tmp_path / "pipeline.yaml"
+    cfg.write_text("# a comment line\nnode:\n  _target_: does.not.Exist\n")  # target on line 3
+
+    with pytest.raises(UnknownClassError) as ei:
+        confluid.load(str(cfg))
+
+    msg = str(ei.value)
+    assert "does.not.Exist" in msg
+    assert "pipeline.yaml:3:" in msg, f"no file:line in the message: {msg}"
+
+
+def test_unknown_class_NESTED_in_another_markers_kwargs_names_its_own_line(tmp_path: Path) -> None:
+    """The shape a real config has: the typo is a source inside a wrapper's kwargs.
+
+    This path runs through `_resolve_kwarg_value` -> `flow` -> `_flow_target`, so the
+    reported line must be the NESTED node's, not the outer marker's.
+    """
+    cfg = tmp_path / "nested.yaml"
+    cfg.write_text("outer:\n  _target_: Model\n  layers:\n    _target_: pkg.Typoed\n")  # inner on line 4
+
+    with pytest.raises(UnknownClassError) as ei:
+        confluid.load(str(cfg))
+
+    assert "nested.yaml:4:" in str(ei.value), f"reported the wrong node: {ei.value}"
+
+
+def test_ambiguous_class_names_the_yaml_file_and_line(tmp_path: Path) -> None:
+    """The registry raises this one, and it has never seen the document."""
+
+    @configurable(name="Twin", framework="torch")
+    class TwinA:
+        def __init__(self) -> None: ...
+
+    @configurable(name="Twin", framework="keras")
+    class TwinB:
+        def __init__(self) -> None: ...
+
+    cfg = tmp_path / "ambiguous.yaml"
+    cfg.write_text("a: 1\nb: 2\nnode:\n  _target_: Twin\n")  # target on line 4
+
+    with pytest.raises(AmbiguousClassError) as ei:
+        confluid.load(str(cfg))
+
+    assert "ambiguous.yaml:4:" in str(ei.value), f"no file:line in the message: {ei.value}"

@@ -69,7 +69,13 @@ from confluid.broadcast import (  # noqa: F401
     register_pass_cache,
     tune_marker,
 )
-from confluid.exceptions import ConfigurationError, ConstructionError, ReferenceResolutionError, UnknownClassError
+from confluid.exceptions import (
+    AmbiguousClassError,
+    ConfigurationError,
+    ConstructionError,
+    ReferenceResolutionError,
+    UnknownClassError,
+)
 from confluid.fluid import (
     Clone,
     Fluid,
@@ -603,7 +609,7 @@ def _flow_target(
     memoize + stamp origin → apply post-init attrs → broadcast onto remaining
     Fluid-valued instance attrs → auto-solidify.
     """
-    target = _resolve_target_callable(obj.target)
+    target = _resolve_target_callable(obj)
 
     # kwargs already contain broadcasting (merged by _flow_recursive)
     merged: dict[str, Any] = dict(obj.kwargs)
@@ -691,8 +697,24 @@ def _flow_target(
     return instance
 
 
-def _resolve_target_callable(target: Any) -> Any:
-    """Resolve a string target to its class/callable via the registry; pass callables through.
+def _at_yaml_loc(node: Any) -> str:
+    """`` at <file>:<line>:<col>`` for an error message — ``""`` when the node has no location.
+
+    Every error raised while processing a document names its ``file:line:col`` (workspace rule
+    2026-08-11). This renders that suffix so the spelling cannot drift between raise sites.
+    """
+    loc = format_yaml_loc(node)
+    return f" at {loc}" if loc else ""
+
+
+def _resolve_target_callable(node: Any) -> Any:
+    """Resolve a MARKER's string target to its class/callable; pass callables through.
+
+    Takes the marker, **never the bare target string**, because the marker is what carries
+    ``_yaml_loc`` — handed only the string, this reported ``Cannot resolve class:
+    waivefront.sources.HDF5WindwoSource`` with no file and no line, leaving the reader a
+    30-frame traceback and a config tree to grep (measured 2026-08-11, on the exact defect a
+    rename produces). ``ConstructionError`` a few frames later named its line the whole time.
 
     This is a CONSTRUCTION funnel, so it resolves ``strict=True``: an ambiguous name must
     stop the run naming its candidates, never bind whichever module happened to import
@@ -700,12 +722,18 @@ def _resolve_target_callable(target: Any) -> Any:
     read the choice from the config (``!class:FourierOp@framework=$framework``) — the
     context is available here even for a node nested inside another marker's kwargs.
     """
-    if isinstance(target, str):
+    target = getattr(node, "target", node)
+    if not isinstance(target, str):
+        return target
+    try:
         resolved = resolve_class(target, strict=True, context=get_active_context())
-        if resolved is None:
-            raise UnknownClassError(f"Cannot resolve class: {target}{_selector_detail(target)}")
-        return resolved
-    return target
+    except AmbiguousClassError as exc:
+        # Raised inside the registry, which has never seen the document — re-raise with the
+        # line that wrote the ambiguous name, keeping the candidate list the registry built.
+        raise AmbiguousClassError(f"{exc}{_at_yaml_loc(node)}") from exc
+    if resolved is None:
+        raise UnknownClassError(f"Cannot resolve class: {target}{_at_yaml_loc(node)}{_selector_detail(target)}")
+    return resolved
 
 
 def _selector_detail(target: str) -> str:
@@ -1302,12 +1330,16 @@ def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs:
     target = obj.target
     if isinstance(target, str):
         # A construction funnel like _resolve_target_callable — same strictness, same
-        # context (so a `@axis=$key` selector resolves against the active document).
-        resolved = resolve_class(target, strict=True, context=get_active_context())
+        # context (so a `@axis=$key` selector resolves against the active document), and
+        # the same rule that both misses name the YAML line that wrote the name.
+        try:
+            resolved = resolve_class(target, strict=True, context=get_active_context())
+        except AmbiguousClassError as exc:
+            raise AmbiguousClassError(f"{exc}{_at_yaml_loc(obj)}") from exc
         if resolved is not None:
             base_kwargs = {**obj.kwargs, **runtime_kwargs}
             return resolved(*runtime_args, **base_kwargs)
-        raise UnknownClassError(f"Class '{target}' not found in registry.")
+        raise UnknownClassError(f"Class '{target}' not found in registry{_at_yaml_loc(obj)}.")
     return flow(target, *runtime_args, **{**obj.kwargs, **runtime_kwargs})
 
 
