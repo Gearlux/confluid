@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from loggair import get_logger
 
 from confluid.resolver import _ENV_RESOLVERS, _MARKER_RESOLVERS, _TARGET_CALL_RE, _split_inline_pairs
+from confluid.scopes import parse_scope_arg
 
 logger = get_logger("confluid.migrate")
 
@@ -208,6 +209,27 @@ def _inline_kwarg_lines(args: str, indent: str) -> List[str]:
     return [f"{indent}{key}: {value}" for key, value in _split_inline_pairs(args)]
 
 
+def _scope_mapping(suffix: str) -> str:
+    """Render a tag's ``KEY=VAL`` / ``KEY(VAL)`` / ``KEY`` suffix as a YAML mapping.
+
+    ``_scope_`` takes structured data rather than a grammar packed into a string.
+    A value YAML would coerce to a BOOLEAN is quoted: the tag stores `yes` as the
+    TEXT "yes", and an unquoted `{extra: yes}` becomes `True`, which then never
+    matches the activation string a CLI passes.
+    """
+    paren = re.match(r"^([\w_.]+)\((.*)\)$", suffix)
+    key, value = (paren.group(1), paren.group(2).strip()) if paren else parse_scope_arg(suffix)
+    if value is None:
+        return f"{{{key}: }}"
+    import yaml as _yaml
+
+    try:
+        coerced = _yaml.safe_load(value)
+    except _yaml.YAMLError:
+        coerced = value
+    return f'{{{key}: "{value}"}}' if isinstance(coerced, bool) else f"{{{key}: {value}}}"
+
+
 def _target_and_kwargs(suffix: str) -> Tuple[str, List[Tuple[str, str]]]:
     """Split a ``!class:`` / ``!lazy:`` suffix into ``(target, inline_kwargs)``."""
     call = _TARGET_CALL_RE.match(suffix)
@@ -241,8 +263,11 @@ def _convert_tag_line(
     kind, suffix = tag.group("kind"), tag.group("suffix")
     indent = match.group("indent")
     flow, trailing = _split_flow(match.group("rest") or "")
+    scalar_body = ""
     if flow is None and trailing.strip() and not trailing.lstrip().startswith("#"):
-        return None  # text after the tag this grammar does not model — report it
+        if kind not in ("scope", "notscope"):
+            return None  # text after the tag this grammar does not model — report it
+        scalar_body, trailing = trailing.strip(), ""  # `- !scope:verbose 42`
 
     # Where the construct's own keys go. A LONE tag's body already sits at the
     # tag's own indent, so its keys join it there; the other two forms open a new
@@ -289,12 +314,18 @@ def _convert_tag_line(
         return [f"{head} {marker}{trailing}" if key_match else f"{indent}- {marker}{trailing}"]
 
     if kind in ("scope", "notscope"):
-        if _body_indent(lines, index) is not None and _body_is_sequence(lines, index):
-            findings.append(
-                Finding(path, index + 1, line.strip(), "scope block with a SEQUENCE body needs _content_ by hand")
-            )
-            return None
-        return emit([f"{body}_{kind}_: {suffix}"])
+        marker = f"_{kind}_: {_scope_mapping(suffix)}"
+        sequence_body = _body_indent(lines, index) is not None and _body_is_sequence(lines, index)
+        if sequence_body or scalar_body:
+            # A list body makes the block a LIST whose FIRST item is the marker, so
+            # the wrapper gains one nesting level and the body items stay exactly
+            # where they are — `- !scope:x` becomes `- - _scope_: {...}`. The
+            # conversion is still line-local, which a `_content_` key was not.
+            head_dash = f"{indent}- - {marker}" if item_match else f"{indent}- {marker}"
+            if scalar_body:
+                return [f"{head_dash}{trailing}", f"{indent}  - {scalar_body}"]
+            return [f"{head_dash}{trailing}"]
+        return emit([f"{body}{marker}"])
 
     # class / lazy. An ``@axis=value`` selector needs NO special handling: it lives
     # in the target STRING, not in tag syntax, so ``_target_: Loss@framework=keras``

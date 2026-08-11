@@ -8,6 +8,11 @@ Conditional config blocks live at an arbitrary key whose value carries a
 and the block's contents are spliced in at that slot. Three activation
 forms are supported, all equivalent at the IR level:
 
+> **Two spellings.** This page is written in the tag form; the plain-YAML form
+> uses a `_scope_:` key taking a MAPPING of dimension → value
+> (`_scope_: {task: classification}`), which additionally lets one block depend on
+> several dimensions at once. See [the plain-YAML format](plain-format.md#scopes).
+
 ```yaml
 # Boolean — flips on with `--scope debug`
 if_debug: !scope:debug

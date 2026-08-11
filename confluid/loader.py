@@ -138,8 +138,8 @@ class ConfluidLoader(yaml.SafeLoader):
 # The reserved-key format — plain YAML, no tags
 #
 # ``_target_`` / ``_partial_`` mirror Hydra's vocabulary; ``_ref_`` / ``_clone_`` /
-# ``_scope_`` / ``_notscope_`` / ``_content_`` are confluid's additions for the
-# constructs Hydra has no equivalent for. A document written this way is ORDINARY
+# ``_scope_`` / ``_notscope_`` are confluid's additions for the constructs Hydra
+# has no equivalent for. A document written this way is ORDINARY
 # YAML — ``yaml.safe_load`` and external tooling (yq, editor schemas) read it,
 # which no tagged document can be. Both spellings produce the SAME Fluid markers,
 # so every downstream pass (includes, scopes, interpolation, broadcasting, flow)
@@ -152,16 +152,13 @@ REF_KEY = "_ref_"
 CLONE_KEY = "_clone_"
 SCOPE_KEY = "_scope_"
 NOTSCOPE_KEY = "_notscope_"
-CONTENT_KEY = "_content_"
 
 #: Every key that turns a plain mapping into a marker. A mapping carrying NONE of
 #: these is an ordinary dict and takes PyYAML's untouched construction path.
-RESERVED_KEYS: FrozenSet[str] = frozenset(
-    {TARGET_KEY, PARTIAL_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY, CONTENT_KEY}
-)
+RESERVED_KEYS: FrozenSet[str] = frozenset({TARGET_KEY, PARTIAL_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY})
 
-#: The keys that DECIDE which marker is built. ``_partial_`` and ``_content_`` are
-#: modifiers — they qualify a discriminator rather than standing on their own.
+#: The keys that DECIDE which marker is built. ``_partial_`` is a modifier — it
+#: qualifies a discriminator rather than standing on its own.
 _DISCRIMINATORS: Tuple[str, ...] = (TARGET_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY)
 
 
@@ -227,17 +224,33 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     body = {k: v for k, v in mapping.items() if k not in RESERVED_KEYS}
 
     if key in (SCOPE_KEY, NOTSCOPE_KEY):
-        suffix = mapping[key]
-        if not isinstance(suffix, str) or not suffix.strip():
-            raise ConfigurationError(f"{key} must be a non-empty string (got {suffix!r})")
-        scope_key, scope_value = _parse_scope_suffix(suffix.strip())
-        # A mapping body splices its keys at the wrapper's slot; ``_content_``
-        # carries the sequence / scalar bodies, which a mapping cannot express
-        # and which are the only way to write a conditional list ITEM.
-        contents: Any = mapping[CONTENT_KEY] if CONTENT_KEY in mapping else body
-        if CONTENT_KEY in mapping and body:
-            raise ConfigurationError(f"{CONTENT_KEY} and sibling keys are mutually exclusive in a {key} block")
-        return ScopeBlock(key=scope_key, value=scope_value, negate=key == NOTSCOPE_KEY, contents=contents)
+        # A MAPPING of dimension -> required value (``None`` for a boolean
+        # dimension), rather than the tag form's ``KEY=VAL`` string. The string
+        # packs a grammar inside a scalar, which `yq` and an editor schema see as
+        # opaque text; as a mapping it is data, and a multi-dimension condition
+        # falls out with no extra spelling.
+        spec = mapping[key]
+        if not isinstance(spec, dict) or not spec:
+            raise ConfigurationError(
+                f"{key} must be a non-empty mapping of dimension to value "
+                f"(e.g. {{framework: keras}}, or {{debug: }} for a boolean) — got {spec!r}"
+            )
+        dims: Dict[str, Optional[str]] = {}
+        for dim, value in spec.items():
+            if not isinstance(dim, str) or not dim.strip():
+                raise ConfigurationError(f"{key} dimension names must be non-empty strings (got {dim!r})")
+            if isinstance(value, bool):
+                # YAML 1.1 reads `yes` / `no` / `on` / `off` as booleans, so an
+                # unquoted `{extra: yes}` becomes True and stops matching the
+                # activation string a CLI passes (`--scope extra=yes`). Refuse it
+                # rather than silently never firing.
+                raise ConfigurationError(
+                    f"{key} value for {dim.strip()!r} is the YAML boolean {value!r} — quote it "
+                    f'({{{dim.strip()}: "{str(value).lower()}"}}), or use {{{dim.strip()}: }} '
+                    f"for a boolean DIMENSION with no value"
+                )
+            dims[dim.strip()] = None if value is None else str(value)
+        return ScopeBlock(dims=dims, negate=key == NOTSCOPE_KEY, contents=body)
 
     path = mapping[key]
     if key in (REF_KEY, CLONE_KEY):
@@ -373,7 +386,7 @@ def _register_constructors() -> None:
         else:  # pragma: no cover - PyYAML has no fourth node kind
             contents = {}
         return _stamp(
-            ScopeBlock(key=key, value=value, negate=negate, contents=contents),
+            ScopeBlock(dims={key: value}, negate=negate, contents=contents),
             loader,
             node,
         )
@@ -438,6 +451,42 @@ def _register_constructors() -> None:
         yield _stamp_loc(marker, loader, node)
 
     ConfluidLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, map_constructor)
+
+    # ---- a SEQUENCE whose first item is a scope marker IS a scope block --------
+    #
+    #     ops:
+    #       - always_first
+    #       - - _scope_: {extra: yes}     # the marker
+    #         - extra_a                   # ...and the body it guards
+    #         - extra_b
+    #       - always_last
+    #
+    # A mapping body splices its KEYS at the wrapper's slot; a list body splices
+    # its ITEMS into the surrounding list. Both start with `_scope_:`, so the two
+    # differ only in their container. This is what a mapping cannot express — a
+    # YAML node is a mapping or a sequence, never both — and it is the only way to
+    # write a conditional list ITEM. The alternative considered was a `_content_`
+    # key holding the list; it needed a reserved key, a second body-shape rule and
+    # a scalar special case, all of which this shape removes.
+    default_seq_constructor = ConfluidLoader.yaml_constructors[yaml.resolver.BaseResolver.DEFAULT_SEQUENCE_TAG]
+
+    def seq_constructor(loader: yaml.SafeLoader, node: yaml.nodes.SequenceNode) -> Any:
+        first = node.value[0] if node.value else None
+        marks_a_scope = isinstance(first, yaml.nodes.MappingNode) and any(
+            isinstance(k, yaml.nodes.ScalarNode) and k.value in (SCOPE_KEY, NOTSCOPE_KEY) for k, _ in first.value
+        )
+        if not marks_a_scope:
+            yield from default_seq_constructor(loader, node)
+            return
+        items = loader.construct_sequence(node, deep=True)
+        block = items[0]
+        if not isinstance(block, ScopeBlock):  # pragma: no cover - the node test already decided
+            yield items
+            return
+        block.contents = items[1:]
+        yield _stamp_loc(block, loader, node)
+
+    ConfluidLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_SEQUENCE_TAG, seq_constructor)
 
 
 # Register once at import — constructors live on ConfluidLoader for the

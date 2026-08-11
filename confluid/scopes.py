@@ -116,12 +116,14 @@ def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
 
     def walk(node: Any) -> None:
         if isinstance(node, ScopeBlock):
-            if node.value is not None:
-                values = positive.setdefault(node.key, set())
+            for key, value in node.dims.items():
+                if value is None:
+                    continue  # boolean dimension — no selectable value to report
+                values = positive.setdefault(key, set())
                 if node.negate:
-                    negated.add(node.key)
+                    negated.add(key)
                 else:
-                    values.add(node.value)
+                    values.add(value)
             walk(node.contents)
             return
         if isinstance(node, dict):
@@ -210,17 +212,22 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
 
 
 def _is_active(block: ScopeBlock, active: Dict[str, Optional[str]]) -> bool:
-    if block.value is None:
-        # Boolean scope — active iff the key is in the activation map (any value).
-        present = block.key in active
-        return (not present) if block.negate else present
-    # Keyed scope — active iff active[key] equals block.value.
-    matches = active.get(block.key) == block.value
-    if block.negate:
-        # Unset ⇒ active (per plan): the negation block fires when the user
-        # didn't specify this dimension at all, OR specified a different value.
-        return not matches
-    return matches
+    """Whether ``block`` fires under the ``active`` map. ALL its dimensions must match.
+
+    A block with several dimensions is an AND — ``{framework: keras, model: convnet}``
+    fires only when both are selected, which is what lets one block hold the
+    combination that previously needed a block nested inside another.
+    """
+
+    def matches(key: str, value: Optional[str]) -> bool:
+        if value is None:
+            return key in active  # boolean dimension — present under any value
+        return active.get(key) == value
+
+    matched = all(matches(k, v) for k, v in block.dims.items())
+    # Unset ⇒ active: a negation fires when the dimension was not specified at
+    # all, OR was specified with a different value. Both are "not matched".
+    return (not matched) if block.negate else matched
 
 
 def _resolve_value(value: Any, active: Dict[str, Optional[str]]) -> Any:
@@ -272,7 +279,7 @@ def _resolve_dict(d: Dict[str, Any], active: Dict[str, Optional[str]]) -> Dict[s
                     loc = format_yaml_loc(v)
                     where = f" at {loc}" if loc else ""
                     raise ScopeError(
-                        f"Scope block {v.key!r} under key {k!r}{where} has a "
+                        f"Scope block {v!r} under key {k!r}{where} has a "
                         f"{type(v.contents).__name__} body, but a block spliced into a mapping "
                         f"must carry a mapping body (its keys are what get spliced). "
                         f"Write the block's contents as `key: value` pairs, or move the block "

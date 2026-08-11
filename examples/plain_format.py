@@ -141,10 +141,10 @@ def main() -> None:
     print("=" * 70)
     scoped = """
     default_model:
-      _notscope_: size
+      _notscope_: {size: }
       model: {_target_: Model, hidden: 16}
     big_model:
-      _scope_: size=big
+      _scope_: {size: big}
       model: {_target_: Model, hidden: 512}
     """
     assert load(scoped)["model"].hidden == 16

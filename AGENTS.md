@@ -240,8 +240,10 @@ it late-bound for post-load overrides.
 
 **Rule.** Confluid reads a document written with YAML TAGS (`!class:` / `!lazy:` / `!ref:` /
 `!clone:` / `!scope:`) or with RESERVED KEYS (`_target_` / `_partial_` / `_ref_` / `_clone_` /
-`_scope_` / `_notscope_` / `_content_`). Both MUST produce the SAME Fluid markers. A behaviour
-reachable from only one spelling is a BUG in that spelling — never a feature of it.
+`_scope_` / `_notscope_`). Both MUST produce the SAME Fluid markers. A behaviour reachable from
+only one spelling is a BUG in that spelling — never a feature of it. The ONE deliberate asymmetry:
+`_scope_` takes a MAPPING and can therefore carry several dimensions, which a tag suffix (a string)
+cannot.
 
 **Rule.** The reserved-key path is a PARSE-TIME conversion and nothing else. Do not add
 reserved-key branches to `scopes`, `broadcast`, `engine`, `configurator` or `dumper` — by the time
@@ -665,9 +667,29 @@ warned-set is deliberately NOT cleared per pass).
 
 ## Scopes
 
-**Rule.** Scopes are a TAGGED construct (`!scope:KEY[=VAL]` / `!notscope:…`, with `KEY(VAL)` ≡
-`KEY=VAL`), activated via the `scopes=` kwarg on `load()`. Bare dict keys are NEVER treated as
-scopes. `!notscope:` uses the unset-⇒-active convention.
+**Rule.** A scope block is `!scope:KEY[=VAL]` / `!notscope:…` (tag, `KEY(VAL)` ≡ `KEY=VAL`) or
+`_scope_:` / `_notscope_:` taking a MAPPING of dimension → value (reserved key), activated via the
+`scopes=` kwarg on `load()`. Bare dict keys are NEVER treated as scopes. `!notscope:` uses the
+unset-⇒-active convention.
+
+**Rule.** `ScopeBlock.dims` is a `Dict[str, Optional[str]]` — the block is active only when ALL of
+them match (an AND). `None` is a boolean dimension. Never re-add the single `key`/`value` pair: the
+mapping is what lets one block replace a block nested inside another.
+
+**Rule.** The WRAPPER KEY is inert and MUST stay so. It cannot become the dimension name: several
+blocks routinely share a dimension (`lightning:`/`torch:`/`keras:` all on `framework`) and YAML
+forbids duplicate keys in one mapping.
+
+**Rule — a LIST whose FIRST item is a `_scope_` mapping IS a scope block**, the remaining items its
+body. That is the ONLY way to write a conditional list ITEM, because a YAML node is a mapping or a
+sequence and never both. Registered as a DEFAULT SEQUENCE tag constructor that tests the first
+node's keys, so an ordinary list keeps PyYAML's own path. Do NOT reintroduce a `_content_` key: it
+needed a reserved key, a second body-shape rule AND a scalar special case, all of which this shape
+removes (a scalar body is a one-item list, and `_resolve_list` already extends).
+
+**Rule.** A dimension VALUE that YAML reads as a boolean is REJECTED with a quote-it message.
+`{extra: yes}` becomes `True` and then never matches the `extra=yes` string an activation carries —
+silently never firing. `{debug: }` is the boolean DIMENSION spelling.
 
 **Rule.** There are THREE walkers that must agree on which nodes can carry a block —
 `scopes._walk_dimensions`, `scopes._resolve_value`, and `loader._process_includes_recursive` — over
