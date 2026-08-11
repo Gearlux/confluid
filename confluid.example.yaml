@@ -3,6 +3,27 @@
 # Scope overlays (!scope:NAME, !scope:KEY=VAL, !notscope:...) live at the
 # bottom of this file. Activate them via `confluid.load(path, scopes=[...])`
 # or, in a CLI layer built on confluid, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
+#
+# ---------------------------------------------------------------------------
+# NOTE — this file is written in the TAG spelling (!class:, !lazy:, !ref:, ...).
+# Confluid also reads an equivalent RESERVED-KEY spelling that is ordinary YAML,
+# so `yaml.safe_load` / `yq` / editor schemas can read the file. Both produce the
+# same objects and may be mixed in one document. See docs/plain-format.md.
+#
+#   model:                          #  ==  model: !class:Model(layers=3)
+#     _target_: Model
+#     layers: 3
+#   optimizer:                      #  ==  optimizer: !lazy:Adam(lr=0.01)
+#     _target_: Adam
+#     _partial_: true               #     (deferred; the receiver flow()s it)
+#     lr: 0.01
+#   alias: ${ref:model}             #  ==  alias: !ref:model
+#   copy:  {_clone_: model}         #  ==  copy: !clone:model
+#   data_dir: ${env:DATA_ROOT}/set  #     explicit environment-variable read
+#   if_debug:                       #  ==  if_debug: !scope:debug
+#     _scope_: debug
+#     log_level: DEBUG
+# ---------------------------------------------------------------------------
 
 # --- 1. Module Imports ---
 # Dynamically import Python modules to populate the class registry.

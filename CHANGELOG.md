@@ -8,6 +8,63 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
+### Added
+
+- **A plain-YAML config format — no custom tags (2026-08-11).** A document may now
+  be written with reserved mapping keys instead of YAML tags, which makes it
+  ordinary YAML that `yaml.safe_load`, `yq`, editor schemas and linters can read.
+  A tagged document cannot be: `yaml.safe_load` on `!class:MLP` raises
+  `ConstructorError: could not determine a constructor for the tag`.
+
+  ```yaml
+  seed: 7
+  model: {_target_: MLP, hidden: 32}          # was: !class:MLP(hidden=32)
+  optimizer:                                   # was: !lazy:SGD(lr=0.5)
+    _target_: SGD
+    _partial_: true
+    lr: 0.5
+  alias: ${ref:model}                          # was: !ref:model
+  copy: {_clone_: model, hidden: 64}           # was: !clone:model + a block
+  variant:                                     # was: !scope:size=big
+    _scope_: size=big
+    model: {_target_: MLP, hidden: 512}
+  ```
+
+  The keys are `_target_` / `_partial_` (construction), `_ref_` / `_clone_`
+  (references, with `${ref:…}` / `${clone:…}` as scalar shorthand), and
+  `_scope_` / `_notscope_` / `_content_` (conditional blocks). Every other key in
+  the mapping becomes the marker's kwargs; a mapping carrying none of them is an
+  ordinary dict, untouched.
+
+  Both spellings produce the **same** Fluid markers, so broadcasting, scopes,
+  interpolation, `configure()` and `dump()` are unchanged and cannot tell them
+  apart — and the two may be **mixed in one file**, which is what makes a
+  file-by-file migration safe. Parity is pinned per construct
+  (`tests/test_plain_format.py::test_both_spellings_agree`). The tag spelling
+  still loads and is not yet deprecated.
+
+  Three details worth knowing: the conversion rides the default mapping tag and
+  decides from the YAML *node's* key names, so ordinary mappings keep PyYAML's
+  own constructor (and its alias behaviour) untouched; markers built this way are
+  stamped with their source location, so diagnostics are unchanged; and a
+  malformed marker raises a **located `ConfigurationError`** rather than degrading
+  silently — the opposite of the tag grammar's behaviour, where one space in
+  `!class:Model(a=1, b=2)` produced a target named `Model(a=1,` and dropped both
+  kwargs with no error at all.
+
+  See `docs/plain-format.md`, `examples/plain_format.py`, and architecture
+  record 11.
+
+- **`${env:NAME}` / `${env:NAME,default}` environment reads** (alias
+  `${oc.env:…}`). An explicit, unambiguous spelling for an environment variable,
+  independent of what a bare `${NAME}` is taken to mean. Checked before the
+  dotted-name test, since `oc.env` contains a dot.
+
+- **`${ref:path}` / `${clone:path}`** — scalar shorthand producing the same
+  markers as `!ref:` / `!clone:`, so identity semantics are identical. A
+  reference must be the whole value; embedding one in a larger string raises
+  rather than stringifying an object.
+
 ### Changed
 
 - **`include:` pastes the included document AT ITS LINE (2026-08-11).** An

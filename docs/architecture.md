@@ -843,3 +843,74 @@ own entry with a tier and a reason, added when it ships.
 **What you may change.** The tier of a member, with evidence (a `constant=` producer shipping
 moves it out entirely). The 1.0 trigger date, never the existence of a trigger — an undated
 "someday" is how the census would rot back into per-audit re-litigation.
+
+---
+
+## 11. Two spellings, one IR — the plain-YAML format
+
+*2026-08-11*
+
+**Context.** Confluid's object graph rode custom YAML tags (`!class:` / `!lazy:` / `!ref:` /
+`!clone:` / `!scope:`). Tags are compact and they carry a source location for free, but they make
+the document unreadable to anything that is not confluid: `yaml.safe_load` on `!class:MLP` raises
+`ConstructorError: could not determine a constructor for the tag`. Every external consumer — `yq`
+in a CI script, a schema-aware editor, a diff viewer, a config linter — is locked out, and so is
+anyone arriving from a config system whose files are plain YAML.
+
+The tag grammar had also grown a trap of its own. Because YAML ends a tag at whitespace,
+`!class:Model(a=1, b=2)` parses to a target literally named `Model(a=1,` with **both kwargs
+silently dropped** — no error at load, a failure much later and nowhere near the typo.
+
+**Decision.** Accept a second spelling that is ordinary YAML, using reserved mapping keys:
+`_target_` / `_partial_` for construction, `_ref_` / `_clone_` for references, `_scope_` /
+`_notscope_` / `_content_` for conditional blocks. `_target_` and `_partial_` deliberately reuse
+the wider ecosystem's vocabulary rather than inventing a private one.
+
+Both spellings produce **the same Fluid markers**. The reserved-key path is a parse-time
+conversion and nothing else: includes, scopes, interpolation, broadcasting, flow, `configure()`
+and `dump()` are untouched and cannot tell which spelling produced a marker. That is what lets the
+two coexist inside a single file, which is the only way a large body of configs migrates
+incrementally.
+
+The conversion is registered on the **default mapping tag**, and its reserved-key test reads the
+YAML *node's* key names — constructing no values to answer it. A mapping carrying none of the
+reserved keys delegates straight to PyYAML's own constructor, so the ordinary path keeps its
+performance and its alias/recursion behaviour exactly. Markers built this way are stamped with
+their node's source location, so the new spelling loses none of the tag form's diagnostics.
+
+**Consequences.**
+
+- A confluid config can be plain YAML. That is the whole point, and it is testable in one line:
+  `yaml.safe_load(doc)`.
+- Two front-ends exist during the migration. Parity is pinned per construct
+  (`tests/test_plain_format.py::test_both_spellings_agree`) so a divergence is a test failure
+  rather than a surprise in a run. The tag path is retired once the configs are migrated.
+- A malformed marker now raises a located `ConfigurationError` — the opposite of the silent
+  kwarg-dropping the tag grammar allowed.
+- `${ref:…}` / `${clone:…}` / `${env:…}` join `${...}` as resolver-style placeholders. They are
+  checked before the dotted-name test, because `oc.env` contains a dot and would otherwise route
+  to config-key lookup.
+- A reference must be a whole value. `"pre-${ref:x}-post"` raises rather than stringifying an
+  object into a plausible-looking value.
+
+**Example.**
+
+```yaml
+seed: 7                              # broadcasts into both nodes below
+trainer:
+  _target_: Trainer
+  model: {_target_: MLP, hidden: 32} # built during load()
+  optimizer:
+    _target_: SGD
+    _partial_: true                  # never auto-built; flow(slot, params=…) later
+    lr: 0.5
+```
+
+```python
+yaml.safe_load(doc)          # works — this is ordinary YAML
+load(doc)["trainer"].seed    # 7
+```
+
+**What you may change.** Which keys are reserved, while they stay namespaced in the `_x_` form
+that no real parameter name occupies. Not the invariant that both spellings converge on one IR —
+a behaviour reachable from only one spelling is a bug in that spelling, not a feature.

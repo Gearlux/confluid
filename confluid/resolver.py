@@ -1,9 +1,11 @@
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 import yaml
 from loggair import get_logger
+
+from confluid.exceptions import ConfigurationError
 
 logger = get_logger("confluid.resolver")
 
@@ -31,6 +33,18 @@ _INTERP_RE = re.compile(r"\$\{([\w.\[\]-]+)(?::([^}]+))?\}")
 # design: NO dotted config-path form and NO ``:default`` — those spellings
 # remain ``${...}``-exclusive.
 _BARE_ENV_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
+# ``${name:arg}`` placeholders whose NAME is one of these are RESOLVER CALLS, not
+# a config key with a ``:default`` — the OmegaConf-idiomatic spelling, and the
+# plain-YAML counterpart of the ``!ref:`` / ``!clone:`` tags:
+#
+#   ${env:DATA_ROOT}    ${env:PORT,8080}    ${oc.env:HOME}   -> environment
+#   ${ref:proto}        ${clone:proto}                       -> a marker
+#
+# Checked BEFORE the config-path test, because ``oc.env`` contains a dot and would
+# otherwise route to config-key lookup.
+_ENV_RESOLVERS: FrozenSet[str] = frozenset({"env", "oc.env"})
+_MARKER_RESOLVERS: FrozenSet[str] = frozenset({"ref", "clone"})
 
 # The ONE ``Target(...)`` call grammar — a target name (dotted paths and the
 # ``@axis=value`` / ``$key`` selector characters included; all legal YAML
@@ -315,11 +329,17 @@ class Resolver:
         """
         Recursively resolves markers with support for local scoping.
         """
+        from confluid.fluid import Class, Fluid, Reference
+
         # 1. Handle Strings (Interpolation and Tags)
         if isinstance(value, str):
             value = self._interpolate(value, local_context)
             if not isinstance(value, str):
-                return value
+                # A ``${ref:...}`` / ``${clone:...}`` interpolates to a MARKER, which
+                # must take the same resolution path as the tag spelling below rather
+                # than being returned raw. Any other non-string (an int from
+                # ``${a.b}``, say) is already final and falls straight through.
+                return self.resolve(value, local_context) if isinstance(value, Fluid) else value
 
             if value.startswith("!ref:"):
                 ref_path = value[5:]
@@ -336,8 +356,6 @@ class Resolver:
             return value
 
         # 2. Handle Fluid citizens
-        from confluid.fluid import Class, Fluid, Reference
-
         if isinstance(value, Reference):
             res = self._resolve_ref(value.target, local_context)
             if res == f"!ref:{value.target}":
@@ -545,11 +563,22 @@ class Resolver:
         # Whole-string match — return the resolved value with its real type.
         whole = _INTERP_RE.fullmatch(value)
         if whole:
+            marker = self._marker_resolver(whole.group(1), whole.group(2))
+            if marker is not None:
+                return marker
             resolved, found = self._resolve_placeholder(whole.group(1), whole.group(2), local_context)
             return resolved if found else value
 
         # Embedded matches — substitute each occurrence as a string.
         def replacer(match: "re.Match[str]") -> str:
+            if match.group(1) in _MARKER_RESOLVERS:
+                # A reference resolves to an OBJECT; there is no meaningful way to
+                # splice one into the middle of a string, and silently stringifying
+                # it would hide the mistake behind a plausible-looking value.
+                raise ConfigurationError(
+                    f"{match.group(0)} cannot be embedded in a string — "
+                    f"a reference must be the whole value (got {value!r})"
+                )
             resolved, found = self._resolve_placeholder(match.group(1), match.group(2), local_context)
             if found and _is_scalar(resolved):
                 return str(resolved)
@@ -575,6 +604,27 @@ class Resolver:
 
         return _BARE_ENV_RE.sub(replacer, value)
 
+    def _marker_resolver(self, name: str, arg: Optional[str]) -> Any:
+        """Build the marker for a ``${ref:path}`` / ``${clone:path}`` placeholder.
+
+        Returns ``None`` when ``name`` is not a marker resolver, so the caller
+        falls through to ordinary placeholder resolution.
+
+        This is the scalar shorthand for the ``_ref_`` / ``_clone_`` reserved keys
+        — the same markers the ``!ref:`` / ``!clone:`` tags produce, so identity
+        semantics are identical (``${ref:x}`` twice yields ONE shared instance;
+        ``${clone:x}`` yields an independent deep copy). The mapping form remains
+        the way to override kwargs on a clone, which a scalar cannot express.
+        """
+        if name not in _MARKER_RESOLVERS:
+            return None
+        from confluid.fluid import Clone, Reference
+
+        path = (arg or "").strip()
+        if not path:
+            raise ConfigurationError(f"${{{name}:...}} needs a target path")
+        return Reference(path) if name == "ref" else Clone(path)
+
     def _resolve_placeholder(
         self, name: str, default_val: Optional[str], local_context: Optional[Dict[str, Any]]
     ) -> Tuple[Any, bool]:
@@ -585,7 +635,20 @@ class Resolver:
         On a miss, ``default_val`` (if any) is parsed and returned; otherwise
         ``(None, False)`` signals "leave the literal ``${...}`` in place". A
         looked-up ``None`` is treated as a miss, matching ``_resolve_ref``.
+
+        ``${env:NAME}`` / ``${env:NAME,default}`` (and the ``oc.env`` alias) are
+        checked FIRST: they are resolver calls, so the second group is the
+        variable name rather than a default. This is the explicit spelling that
+        works regardless of what a bare ``${NAME}`` is later taken to mean.
         """
+        if name in _ENV_RESOLVERS:
+            arg = default_val or ""
+            var, _, fallback = arg.partition(",")
+            env_val = os.getenv(var.strip())
+            if env_val is not None:
+                return self._parse_primitive(env_val), True
+            return (self._parse_primitive(fallback.strip()), True) if fallback else (None, False)
+
         if _is_config_path(name):
             for ctx in (local_context, self.context):
                 if ctx:

@@ -3,12 +3,12 @@ import os
 import re
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union, cast
 
 import yaml
 from loggair import get_logger
 
-from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError
+from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, parse_value
 from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
@@ -134,6 +134,131 @@ class ConfluidLoader(yaml.SafeLoader):
     """
 
 
+# --------------------------------------------------------------------------- #
+# The reserved-key format — plain YAML, no tags
+#
+# ``_target_`` / ``_partial_`` mirror Hydra's vocabulary; ``_ref_`` / ``_clone_`` /
+# ``_scope_`` / ``_notscope_`` / ``_content_`` are confluid's additions for the
+# constructs Hydra has no equivalent for. A document written this way is ORDINARY
+# YAML — ``yaml.safe_load`` and external tooling (yq, editor schemas) read it,
+# which no tagged document can be. Both spellings produce the SAME Fluid markers,
+# so every downstream pass (includes, scopes, interpolation, broadcasting, flow)
+# is untouched by which one an author used.
+# --------------------------------------------------------------------------- #
+
+TARGET_KEY = "_target_"
+PARTIAL_KEY = "_partial_"
+REF_KEY = "_ref_"
+CLONE_KEY = "_clone_"
+SCOPE_KEY = "_scope_"
+NOTSCOPE_KEY = "_notscope_"
+CONTENT_KEY = "_content_"
+
+#: Every key that turns a plain mapping into a marker. A mapping carrying NONE of
+#: these is an ordinary dict and takes PyYAML's untouched construction path.
+RESERVED_KEYS: FrozenSet[str] = frozenset(
+    {TARGET_KEY, PARTIAL_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY, CONTENT_KEY}
+)
+
+#: The keys that DECIDE which marker is built. ``_partial_`` and ``_content_`` are
+#: modifiers — they qualify a discriminator rather than standing on their own.
+_DISCRIMINATORS: Tuple[str, ...] = (TARGET_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY)
+
+
+def _stamp_loc(obj: Any, loader: yaml.SafeLoader, node: yaml.nodes.Node) -> Any:
+    """Attach the YAML source location of ``node`` to ``obj`` for diagnostics.
+
+    Stored as ``(filename_or_None, line, column)`` on ``obj._yaml_loc``; line and
+    column are 1-based. Surfaces via :func:`confluid.format_yaml_loc` so an error
+    can point at the offending YAML mapping. Shared by the tag constructors and
+    the reserved-key path so a marker carries its location either way.
+    """
+    mark = node.start_mark
+    filename = getattr(loader, "name", None)
+    obj._yaml_loc = (filename, mark.line + 1, mark.column + 1)
+    return obj
+
+
+def _parse_scope_suffix(suffix: str) -> tuple[str, Optional[str]]:
+    """Split a scope activation string into ``(key, value)``.
+
+    The ONE grammar behind every spelling — the ``!scope:`` tag suffix, the
+    ``_scope_:`` reserved key, and a CLI ``--scope`` argument:
+
+    * ``debug``                  → ``("debug", None)``   (boolean)
+    * ``task=classification``    → ``("task", "classification")``
+    * ``task(classification)``   → ``("task", "classification")``
+    """
+    paren = re.match(r"^([\w_.]+)\((.*)\)$", suffix)
+    if paren:
+        return paren.group(1), paren.group(2).strip()
+    # ``KEY=VALUE`` / bare ``KEY`` — the same grammar as a CLI activation string,
+    # so the ONE splitter (``scopes.parse_scope_arg``) serves both.
+    return parse_scope_arg(suffix)
+
+
+def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
+    """Convert a reserved-key mapping into its Fluid marker, or return it unchanged.
+
+    ``mapping`` must already carry at least one entry of :data:`RESERVED_KEYS`
+    (the caller checks the YAML node's keys first, so an ordinary mapping never
+    reaches here). Every non-reserved key becomes the marker's kwargs.
+
+    Raises :class:`ConfigurationError` on a malformed marker rather than degrading
+    silently — the tag syntax this replaces had exactly that failure mode (a single
+    space in ``!class:Model(a=1, b=2)`` produced a mangled target with both kwargs
+    dropped and no error at all).
+    """
+    from confluid.fluid import Clone, Instance, Lazy, Reference, ScopeBlock
+
+    present = [k for k in _DISCRIMINATORS if k in mapping]
+    if len(present) > 1:
+        raise ConfigurationError(f"Conflicting reserved keys in one mapping: {', '.join(sorted(present))}")
+    if not present:
+        # Only modifiers, no discriminator — a typo that would otherwise be
+        # silently carried into the config as an ordinary key.
+        extra = sorted(RESERVED_KEYS & set(mapping))
+        raise ConfigurationError(
+            f"{', '.join(extra)} needs a discriminator key "
+            f"({TARGET_KEY} / {REF_KEY} / {CLONE_KEY} / {SCOPE_KEY} / {NOTSCOPE_KEY}) in the same mapping"
+        )
+
+    key = present[0]
+    body = {k: v for k, v in mapping.items() if k not in RESERVED_KEYS}
+
+    if key in (SCOPE_KEY, NOTSCOPE_KEY):
+        suffix = mapping[key]
+        if not isinstance(suffix, str) or not suffix.strip():
+            raise ConfigurationError(f"{key} must be a non-empty string (got {suffix!r})")
+        scope_key, scope_value = _parse_scope_suffix(suffix.strip())
+        # A mapping body splices its keys at the wrapper's slot; ``_content_``
+        # carries the sequence / scalar bodies, which a mapping cannot express
+        # and which are the only way to write a conditional list ITEM.
+        contents: Any = mapping[CONTENT_KEY] if CONTENT_KEY in mapping else body
+        if CONTENT_KEY in mapping and body:
+            raise ConfigurationError(f"{CONTENT_KEY} and sibling keys are mutually exclusive in a {key} block")
+        return ScopeBlock(key=scope_key, value=scope_value, negate=key == NOTSCOPE_KEY, contents=contents)
+
+    path = mapping[key]
+    if key in (REF_KEY, CLONE_KEY):
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigurationError(f"{key} must be a non-empty string path (got {path!r})")
+        marker = Reference(path.strip()) if key == REF_KEY else Clone(path.strip())
+        marker.kwargs.update(body)
+        return marker
+
+    if not isinstance(path, str) or not path.strip():
+        raise ConfigurationError(f"{TARGET_KEY} must be a non-empty string (got {path!r})")
+    partial = mapping.get(PARTIAL_KEY, False)
+    if not isinstance(partial, bool):
+        raise ConfigurationError(f"{PARTIAL_KEY} must be true or false (got {partial!r})")
+    # ``kwargs`` assigned POST-construction: a config kwarg literally named
+    # ``target`` collides with the marker ctor's own first parameter when splatted.
+    target = Lazy(path.strip()) if partial else Instance(path.strip())
+    target.kwargs.update(body)
+    return target
+
+
 def _register_constructors() -> None:
     """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
 
@@ -155,17 +280,7 @@ def _register_constructors() -> None:
         """
         return {k: parse_value(v) for k, v in _split_inline_pairs(args_str)}
 
-    def _stamp(fl: Any, loader: yaml.SafeLoader, node: yaml.nodes.Node) -> Any:
-        """Attach the YAML source location of `node` to `fl` for diagnostics.
-
-        Stored as ``(filename_or_None, line, column)`` on ``fl._yaml_loc``;
-        line/column are 1-based. Surfaces in :func:`format_yaml_loc` so error
-        messages can point at the offending YAML mapping.
-        """
-        mark = node.start_mark
-        filename = getattr(loader, "name", None)
-        fl._yaml_loc = (filename, mark.line + 1, mark.column + 1)
-        return fl
+    _stamp = _stamp_loc  # the ONE stamping helper, shared with the reserved-key path
 
     def _make_fluid(factory: Any, name: str, kwargs: dict[str, Any]) -> Any:
         """Build a Fluid marker with its kwargs assigned POST-construction.
@@ -224,15 +339,6 @@ def _register_constructors() -> None:
             return _stamp(_make_fluid(Lazy, name, inline), loader, node)
 
         return _stamp(Lazy(tag_suffix), loader, node)
-
-    def _parse_scope_suffix(tag_suffix: str) -> tuple[str, Optional[str]]:
-        # ``KEY(VALUE)`` — function-call form, mirrors ``!class:Foo(...)`` grammar.
-        paren = re.match(r"^([\w_.]+)\((.*)\)$", tag_suffix)
-        if paren:
-            return paren.group(1), paren.group(2).strip()
-        # ``KEY=VALUE`` / bare ``KEY`` — the same grammar as a CLI activation
-        # string, so the ONE splitter (``scopes.parse_scope_arg``) serves both.
-        return parse_scope_arg(tag_suffix)
 
     def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
         """Construct a ``ScopeBlock`` from any of the three YAML body shapes.
@@ -304,6 +410,34 @@ def _register_constructors() -> None:
 
     ConfluidLoader.add_constructor("!ref", ref_compat)
     ConfluidLoader.add_constructor("!class", class_compat)
+
+    # ---- the reserved-key format: plain mappings that carry ``_target_`` & co ----
+    #
+    # Registered on the DEFAULT MAPPING tag, so it sees every untagged mapping in
+    # the document. The reserved-key test reads the NODE's key names — no values
+    # are constructed to answer it — and a mapping carrying none of them delegates
+    # straight to PyYAML's own constructor. That keeps the ordinary path exactly as
+    # fast (and as alias/recursion-correct) as it was, and confines the new
+    # behaviour to mappings that actually opted in.
+    default_map_constructor = ConfluidLoader.yaml_constructors[yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG]
+
+    def map_constructor(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) -> Any:
+        node_keys = {k.value for k, _ in node.value if isinstance(k, yaml.nodes.ScalarNode)}
+        if not (node_keys & RESERVED_KEYS):
+            yield from default_map_constructor(loader, node)
+            return
+        # ``deep=True`` is required: the marker is built NOW, so its kwargs must be
+        # real values rather than PyYAML's not-yet-filled placeholders.
+        mapping = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+        try:
+            marker = _reserved_to_marker(mapping)
+        except ConfigurationError as exc:
+            mark = node.start_mark
+            where = f"{getattr(loader, 'name', None) or '<config>'}:{mark.line + 1}:{mark.column + 1}"
+            raise ConfigurationError(f"{exc} (at {where})") from exc
+        yield _stamp_loc(marker, loader, node)
+
+    ConfluidLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, map_constructor)
 
 
 # Register once at import — constructors live on ConfluidLoader for the
