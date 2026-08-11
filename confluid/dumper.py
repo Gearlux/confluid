@@ -14,12 +14,18 @@ class CompactDumper(yaml.SafeDumper):
 
 
 def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
-    """Emit a module-level function/builtin as ``!ref:module.qualname``.
+    """Emit a module-level function/builtin as the plain string ``${ref:module.qualname}``.
 
     The resolver's ``resolve_reference_path`` resolves this back to the live
     object via ``importlib.import_module`` + ``getattr``, so dump/load
     round-trips hold as long as the symbol stays importable at the same
     dotted path.
+
+    It was a ``!ref`` TAG until 2026-08-11, which made a dumped document unreadable
+    by ``yaml.safe_load`` — the one property the plain format exists to give — for
+    any config carrying a function-valued param (a ``collate_fn`` is the common one).
+    The interpolation spelling is what the migrated configs use and what the codemod
+    converts a ``!ref:`` to, so this only brings ``dump()`` in line with them.
     """
     module = getattr(data, "__module__", None)
     qualname = getattr(data, "__qualname__", None) or getattr(data, "__name__", None)
@@ -29,21 +35,25 @@ def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
         raise yaml.representer.RepresenterError(
             f"cannot represent callable {data!r} — no resolvable dotted import path"
         )
-    return dumper.represent_scalar("!ref", f"{module}.{qualname}")
+    return dumper.represent_str(f"${{ref:{module}.{qualname}}}")
 
 
 def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
-    """Fallback: emit a ``!class:<module.qualname>`` scalar marker.
+    """Fallback: emit a bare ``{_target_: <module.qualname>}`` marker mapping.
 
     Used for objects that aren't ``@configurable`` and have no registered
-    representer (e.g. Lightning auto-injects ``RichProgressBar`` into
-    ``Trainer.callbacks``). Not round-trippable — the marker carries no
-    kwargs — but lets ``dump()`` complete with informational placeholders
-    instead of aborting on the first opaque object.
+    representer (e.g. a training framework auto-injecting a progress bar into
+    its callback list). Not round-trippable — the marker carries no kwargs —
+    but lets ``dump()`` complete with informational placeholders instead of
+    aborting on the first opaque object.
+
+    A ``!class:<name>`` scalar tag until 2026-08-11, for the reason above it:
+    a tag anywhere in the document costs the whole file its plain-YAML
+    readability. The reserved-key mapping says the same thing and parses.
     """
     cls = data.__class__
     name = f"{cls.__module__}.{cls.__qualname__}"
-    return dumper.represent_scalar(f"!class:{name}", "")
+    return dumper.represent_dict({"_target_": name})
 
 
 def _target_name(target: Any) -> str:

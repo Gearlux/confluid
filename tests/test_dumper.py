@@ -173,7 +173,11 @@ def test_dump_non_configurable_round_trip() -> None:
 
 
 def test_dump_function_reference_round_trip() -> None:
-    """Module-level callables dump as ``!ref:module.qualname`` and reload as the live function."""
+    """Module-level callables dump as ``${ref:module.qualname}`` and reload as the live function.
+
+    The spelling is a plain STRING, not a tag: a tag anywhere in the document costs the whole
+    file its ``yaml.safe_load`` readability, which is the property the plain format exists for.
+    """
     import os.path
 
     from confluid import load
@@ -186,7 +190,8 @@ def test_dump_function_reference_round_trip() -> None:
     obj = Loader(joiner=os.path.join)
     output = dump(obj)
 
-    assert "!ref 'posixpath.join'" in output or "!ref 'ntpath.join'" in output
+    assert "${ref:posixpath.join}" in output or "${ref:ntpath.join}" in output
+    yaml.safe_load(output)  # the point of the spelling: a plain reader can still parse it
 
     reloaded = load(output)
     assert isinstance(reloaded, Loader)
@@ -207,7 +212,7 @@ def test_dump_lambda_rejected() -> None:
 
 
 def test_dump_builtin_function_reference() -> None:
-    """Built-in callables (e.g., ``len``) dump as ``!ref:builtins.len``."""
+    """Built-in callables (e.g., ``len``) dump as ``${ref:builtins.len}``."""
 
     @configurable
     class Holder:
@@ -216,4 +221,4 @@ def test_dump_builtin_function_reference() -> None:
 
     obj = Holder(fn=len)
     output = dump(obj)
-    assert "!ref 'builtins.len'" in output
+    assert "${ref:builtins.len}" in output
