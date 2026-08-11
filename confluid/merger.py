@@ -99,15 +99,18 @@ def expand_dotted_mapping(
     * ``descend`` — how the walk enters an existing dict (in place over the
       caller's own fresh copies, or copy-on-write over shared references).
     """
-    result: Dict[str, Any] = {}
+    # A non-str key (an int class id, a float threshold) is DATA, never a dotted config path,
+    # so it passes through untouched. The guard is what lets the loader preserve YAML's own
+    # key types instead of str()-ing the whole document to keep this walk safe.
+    result: Dict[Any, Any] = {}
     for k, v in mapping.items():
-        if "." not in k:
+        if not isinstance(k, str) or "." not in k:
             result[k] = copy_value(v)
         else:
             head = k.split(".", 1)[0]
             if head not in result and head not in mapping:
                 result[head] = {}
-    dotted = sorted((k for k in mapping if "." in k), key=lambda k: (k.count("."), k))
+    dotted = sorted((k for k in mapping if isinstance(k, str) and "." in k), key=lambda k: (k.count("."), k))
     for key in dotted:
         value = mapping[key]
         parts = key.split(".")

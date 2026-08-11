@@ -604,8 +604,14 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
     if not isinstance(data, dict):
         return data
 
-    processed_dict: Dict[str, Any] = {
-        str(k): _process_includes_recursive(v, current_path, _included) for k, v in data.items()
+    # Keys are preserved AS PARSED — never ``str()``-ed. A YAML mapping may legitimately be
+    # keyed by int (a class-id -> label table) or float, and stringifying here rewrote every
+    # such table in EVERY document, silently: `class_names: {1: DJI MINI3}` reached its
+    # consumer as `{'1': ...}`, so a lookup by the int id missed and the label came back
+    # empty. The raw parse had the key right the whole time; this walk broke it, and it had
+    # done so since 2026-03-13. The dotted-key expansion downstream tolerates non-str keys.
+    processed_dict: Dict[Any, Any] = {
+        k: _process_includes_recursive(v, current_path, _included) for k, v in data.items()
     }
 
     if "include" in processed_dict:
