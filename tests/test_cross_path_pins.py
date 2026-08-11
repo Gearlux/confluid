@@ -28,8 +28,8 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from confluid import LazyClass, NoBroadcast, configurable, configure, flow, load
-from confluid.lazy import Lazy
+from confluid import NoBroadcast, PartialClass, configurable, configure, flow, load
+from confluid.partial import Partial
 
 
 class _Engine:
@@ -49,7 +49,7 @@ def _holder_cls() -> type:
     @configurable
     class Holder:
         def __init__(self) -> None:
-            self.engine: Lazy[Any] = LazyClass(_Engine)
+            self.engine: Partial[Any] = PartialClass(_Engine)
 
     return Holder
 
@@ -148,7 +148,7 @@ def test_d5_gated_delivery_respects_the_no_broadcast_opt_out_on_both_paths() -> 
     @configurable
     class Shielded:
         def __init__(self, engine: NoBroadcast[Any] = None) -> None:
-            self.engine = engine if engine is not None else LazyClass(_ShieldedEngine)
+            self.engine = engine if engine is not None else PartialClass(_ShieldedEngine)
 
     # Rider MAPPING at the NoBroadcast slot key — refused, both paths.
     cfg = load("holder: !class:Shielded()\n'**.engine.power': 5\n")
@@ -219,7 +219,7 @@ def test_d3_a_same_target_fluid_never_tunes_a_deferred_slot() -> None:
 # --------------------------------------------------------------------------- #
 # D6 — a function-OBJECT target is introspected as ITSELF (both paths,
 # adjudicated 2026-08-10). Five of six target-normalization sites degraded a
-# code-built ``LazyClass(builder_fn, …)`` slot to an unresolvable target
+# code-built ``PartialClass(builder_fn, …)`` slot to an unresolvable target
 # (``resolve_class`` is string/type-only): the engine cascade then ran with NO
 # NoBroadcast gates while the public ``accepts_broadcast`` said the key was
 # refused, and ``configure()`` could not tune the slot at all — while the
@@ -239,7 +239,7 @@ def _fn_holder_cls() -> type:
     @configurable
     class FnHolder:
         def __init__(self) -> None:
-            self.maker: Lazy[Any] = LazyClass(_shielded_builder, lr=1e-4)
+            self.maker: Partial[Any] = PartialClass(_shielded_builder, lr=1e-4)
 
     return FnHolder
 
@@ -288,7 +288,7 @@ def test_d3_a_fluid_never_rides_the_kwargs_catchall_into_a_deferred_slot() -> No
     @configurable
     class _CatchallHolder:
         def __init__(self) -> None:
-            self.engine: Lazy[Any] = LazyClass(_Forwards)
+            self.engine: Partial[Any] = PartialClass(_Forwards)
 
     holder = _CatchallHolder()
     configure(holder, config={"anything": ConfluidClass(_Engine), "plain": 7})

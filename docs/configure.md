@@ -77,14 +77,14 @@ attributes only), and it never touches private (`_`-prefixed) state.
 
 ## Deferred slots are tuned, not built
 
-A `!lazy:` marker — or a `LazyClass(...)` body slot — stands for an object
+A `!lazy:` marker — or a `PartialClass(...)` body slot — stands for an object
 built *later*, usually because a constructor argument only exists at runtime
 (`params=model.parameters()`). `configure()` treats such a slot exactly as
 loading does: keys aimed at it are merged **into the marker's kwargs**, and
 nothing is constructed.
 
 ```python
-from confluid import LazyClass, configurable, configure, flow
+from confluid import PartialClass, configurable, configure, flow
 
 class Optimizer:
     def __init__(self, params=None, lr: float = 1e-4):
@@ -93,7 +93,7 @@ class Optimizer:
 @configurable
 class Trainer:
     def __init__(self) -> None:
-        self.optimizer = LazyClass(Optimizer, lr=1e-4)   # a default, not a decision
+        self.optimizer = PartialClass(Optimizer, lr=1e-4)   # a default, not a decision
 
 trainer = Trainer()
 configure(trainer, config={"lr": 0.5})
@@ -107,7 +107,7 @@ is recorded in [Architecture Decisions](architecture.md) §5.
 ## Values first, finalization second
 
 If an object defines a `solidify()` method (the lazy-finalize hook `flow()`
-fires — see [Tags & Deferred Initialization](tags.md)), `configure()` re-fires
+fires — see [Tags & Deferred Initialization](targets.md)), `configure()` re-fires
 it **after** the object and its whole subtree carry their new values — never
 before. An object that was already finalized keeps its built state: the hook
 is idempotent by contract, and fresh derived state after reconfiguration is
@@ -133,7 +133,7 @@ configure(trainer, config={"lr": 0.7})                        # nothing competes
 - **Layer override documents** over a graph a previous pass produced.
 
 If you are starting from YAML and have no live objects yet, you want
-`load()` — see [Tags & Deferred Initialization](tags.md).
+`load()` — see [Tags & Deferred Initialization](targets.md).
 
 ## Runnable example
 

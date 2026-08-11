@@ -17,8 +17,8 @@ configured with zero parameter-threading code — see
 from typing import Any, Optional
 
 from confluid import (
-    LazyClass,
     NoBroadcast,
+    PartialClass,
     accepts_any_key,
     accepts_broadcast,
     accepts_key,
@@ -44,7 +44,7 @@ class Fitter:
 
     def __init__(self, name: str = "fit") -> None:
         self.name = name
-        self.optimizer: Any = LazyClass(Optimizer, lr=1e-4)
+        self.optimizer: Any = PartialClass(Optimizer, lr=1e-4)
 
 
 @configurable
@@ -226,7 +226,7 @@ def settability_predicates() -> None:
 def deferred_slot_ordering() -> None:
     """A deferred slot is ordered against a bare key like anything else.
 
-    The knob lives in CODE (`LazyClass(Optimizer, lr=1e-4)`), which is the shape a
+    The knob lives in CODE (`PartialClass(Optimizer, lr=1e-4)`), which is the shape a
     consumer's trainer uses so the slot can be flowed later with a runtime argument.
     A code-set kwarg has no position in the document, so it is a DEFAULT; the two
     document sources compete on position alone. Every way of aiming a value at the

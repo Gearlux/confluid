@@ -7,7 +7,7 @@ the expensive ``solidify()`` finalize (e.g. building a model backbone).
 
 from typing import Any
 
-from confluid import Class, Instance, LazyClass, Reference, configurable, flow, materialize, resolve
+from confluid import Class, Instance, PartialClass, Reference, configurable, flow, materialize, resolve
 
 
 def test_resolve_returns_markers_without_instantiating() -> None:
@@ -84,7 +84,7 @@ def test_resolve_shares_ref_by_identity_for_fanout() -> None:
 
 
 def test_resolve_preserves_lazy_markers() -> None:
-    """A ``!lazy:`` slot stays a ``LazyClass`` marker through ``resolve``."""
+    """A ``!lazy:`` slot stays a ``PartialClass`` marker through ``resolve``."""
 
     @configurable
     class _R4:
@@ -96,9 +96,9 @@ def test_resolve_preserves_lazy_markers() -> None:
         def __init__(self, lr: float = 0.0) -> None:
             self.lr = lr
 
-    doc = {"node": Instance(_R4, opt=LazyClass(_R4Opt, lr=0.1))}
+    doc = {"node": Instance(_R4, opt=PartialClass(_R4Opt, lr=0.1))}
     out = resolve(doc)
-    assert isinstance(out["node"].kwargs["opt"], LazyClass)
+    assert isinstance(out["node"].kwargs["opt"], PartialClass)
 
 
 def test_materialize_solidify_false_builds_but_skips_solidify() -> None:

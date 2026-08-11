@@ -168,7 +168,7 @@ kwargs.
 > naming the key it could not find. Write the value literally there
 > (`@framework=keras`), or flow inside `confluid.active_context(document)`.
 
-Pair it with a [scope block](tags.md) that declares the key, and one config drives
+Pair it with a [scope block](targets.md) that declares the key, and one config drives
 either engine:
 
 ```yaml

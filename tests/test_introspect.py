@@ -8,8 +8,8 @@ are broadcast-visible NAMES but never pydantic fields or lazy slots.
 
 from typing import Any
 
-from confluid import LazyClass, configurable
-from confluid.introspect import init_lazy_setattr_names, init_setattr_names, scan_init_body
+from confluid import PartialClass, configurable
+from confluid.introspect import init_partial_setattr_names, init_setattr_names, scan_init_body
 
 
 class _AllKinds:
@@ -29,13 +29,13 @@ class _AllKinds:
 
 class _LazySlots:
     def __init__(self) -> None:
-        self.optimizer: Any = LazyClass(dict)
+        self.optimizer: Any = PartialClass(dict)
         self.plain_slot: Any = dict()
-        self.qualified: Any = _Ns.LazyClass(dict)
+        self.qualified: Any = _Ns.PartialClass(dict)
 
 
 class _Ns:
-    LazyClass: Any = staticmethod(LazyClass)
+    PartialClass: Any = staticmethod(PartialClass)
 
 
 def test_scan_records_all_four_kinds_in_walk_order() -> None:
@@ -56,7 +56,7 @@ def test_names_projection_is_the_widest() -> None:
 
 
 def test_lazy_projection_matches_bare_and_qualified_calls_only() -> None:
-    lazy = init_lazy_setattr_names(_LazySlots.__init__)
+    lazy = init_partial_setattr_names(_LazySlots.__init__)
     assert lazy == {"optimizer", "qualified"}
 
 
@@ -76,11 +76,11 @@ def test_scan_sees_through_configurable_wrapper() -> None:
     class Trainer:
         def __init__(self, lr: float = 0.01) -> None:
             self.lr = lr
-            self.optimizer: Any = LazyClass(dict)
+            self.optimizer: Any = PartialClass(dict)
             self.loss_fn = "cross-entropy"
 
     wrapped_init = Trainer.__dict__["__init__"]
     assert getattr(wrapped_init, "__confluid_validated__", False)  # it IS the wrapper
     names = init_setattr_names(wrapped_init)
     assert {"lr", "optimizer", "loss_fn"} <= names
-    assert "optimizer" in init_lazy_setattr_names(wrapped_init)
+    assert "optimizer" in init_partial_setattr_names(wrapped_init)

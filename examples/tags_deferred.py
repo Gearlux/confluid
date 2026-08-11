@@ -2,14 +2,14 @@
 
 Covers the tag family end-to-end: ``!class:Name`` (deferred ``Class`` stub) vs
 ``!class:Name(...)`` (eager ``Instance``), ``!lazy:`` + ``flow()`` runtime injection
-(keyword AND positional), the Python-side ``Lazy[T]`` annotation (typed with the
+(keyword AND positional), the Python-side ``Partial[T]`` annotation (typed with the
 interface the slot flows into), post-flow ``solidify()``, and ``!ref:`` (shared
 instance) vs ``!clone:`` (deep copy).
 """
 
 from typing import Any, List, Optional
 
-from confluid import Class, Lazy, LazyClass, configurable, flow, load
+from confluid import Class, Partial, PartialClass, configurable, flow, load
 
 
 @configurable
@@ -44,22 +44,28 @@ class Car:
 
 
 def main() -> None:
-    # --- !class: eager vs deferred: the trailing () is the whole difference -------------
+    # --- construction: `_partial_` is the whole difference ------------------------------
+    # The trailing `()` used to decide eager-vs-deferred and a bare `!class:` produced a
+    # stub whose fate depended on its parent. Both spellings build now; only
+    # `_partial_: true` (`!lazy:`) withholds construction.
     doc = """
-car: !class:Car()
+car:
+  _target_: Car
   color: blue
-  engine: !class:Engine          # NO parens -> stays a deferred Class stub
-ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
+  engine: {_target_: Engine}     # built, like every non-partial target
+ready_engine: {_target_: Engine, cylinders: 8}
 """
     graph = load(doc)
     car, ready = graph["car"], graph["ready_engine"]
     assert isinstance(car, Car) and car.color == "blue"
-    assert isinstance(car.engine, Class), "no parens -> the receiver got a deferred stub"
-    assert isinstance(ready, Engine) and ready.cylinders == 8, "parens -> eagerly built"
+    assert isinstance(car.engine, Engine), "a non-partial target is built"
+    assert isinstance(ready, Engine) and ready.cylinders == 8
 
-    built = car.start()  # the receiver flows the stub on its own terms
+    # `flow()` is idempotent, so a receiver that flows its own slot keeps working
+    # whether it was handed a marker or a live object.
+    built = car.start()
     assert isinstance(built, Engine) and built.cylinders == 4
-    print(f"deferred stub built on demand: {built.cylinders} cylinders")
+    print(f"built target, re-flowed idempotently: {built.cylinders} cylinders")
 
     # --- !lazy: runtime injection: kwargs merge, runtime wins ---------------------------
     lazy_graph = load("factory: !lazy:Engine(cylinders=6)")
@@ -69,13 +75,13 @@ ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
     assert (injected.cylinders, injected.fuel) == (6, "diesel")
     print(f"!lazy: built with runtime kwarg: {injected.cylinders} cylinders on {injected.fuel}")
 
-    # --- Lazy[T] annotation: the slot is typed with the INTERFACE it flows into ---------
-    # Lazy[Engine] == Annotated[Union[Engine, Fluid], marker]: the Class(...) default
+    # --- Partial[T] annotation: the slot is typed with the INTERFACE it flows into ---------
+    # Partial[Engine] == Annotated[Union[Engine, Fluid], marker]: the Class(...) default
     # type-checks (a Class IS a Fluid), auto-flow walkers leave the slot deferred,
     # and the subscript documents what an explicit flow() eventually builds.
     @configurable
     class Garage:
-        def __init__(self, spare: Lazy[Engine] = Class(Engine, cylinders=3)) -> None:
+        def __init__(self, spare: Partial[Engine] = Class(Engine, cylinders=3)) -> None:
             """A garage holding a deferred spare-engine template.
 
             Args:
@@ -84,10 +90,10 @@ ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
             self.spare = spare
 
     garage = Garage()
-    assert isinstance(garage.spare, Class), "Lazy slot stays a deferred stub"
+    assert isinstance(garage.spare, Class), "Partial slot stays a deferred stub"
     spare = flow(garage.spare, fuel="e85")  # runtime kwarg injected at flow time
     assert isinstance(spare, Engine) and (spare.cylinders, spare.fuel) == (3, "e85")
-    print(f"Lazy[Engine] slot flowed on demand: {spare.cylinders} cylinders on {spare.fuel}")
+    print(f"Partial[Engine] slot flowed on demand: {spare.cylinders} cylinders on {spare.fuel}")
 
     # --- positional runtime injection: inputs a keyword cannot carry --------------------
     # `Fleet(*cars, depot=...)` takes its cars POSITIONALLY, so no marker kwarg could
@@ -97,7 +103,7 @@ ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
         def __init__(self, *cars: Any, depot: str = "central") -> None:
             self.cars, self.depot = list(cars), depot
 
-    fleet_slot: Lazy[Fleet] = LazyClass(Fleet, depot="north")
+    fleet_slot: Partial[Fleet] = PartialClass(Fleet, depot="north")
     fleet = flow(fleet_slot, Engine(cylinders=2), Engine(cylinders=3))
     assert [engine.cylinders for engine in fleet.cars] == [2, 3]
     assert fleet.depot == "north", "the stored knob survives positional injection"
@@ -126,7 +132,9 @@ ready_engine: !class:Engine(cylinders=8)   # parens -> built during load()
     assert flow(live_turbo) is live_turbo, "a live object flows to itself"
     assert live_turbo.blades == [0, 1, 2], "...and is solidified on the way through"
     assert flow(live_turbo, solidify=False) is live_turbo
-    print(f"solidify() built {len(live_turbo.blades)} blades on a live object")
+    blades = live_turbo.blades
+    assert blades is not None
+    print(f"solidify() built {len(blades)} blades on a live object")
 
     # --- !ref: vs !clone: shared identity vs deep copy ----------------------------------
     identity = load(

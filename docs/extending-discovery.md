@@ -141,7 +141,7 @@ Full text in [Class Design](class-design.md); the four rules discovery depends o
    for expensive external materialization whose inputs are stable by first use.
 4. **Params stay introspectable** — in the signature, or as **annotated** `__init__`-body attributes
    (`to_pydantic` surfaces them as optional fields). A runtime-injected body slot (`params=`,
-   `dataset=`) MUST hold a `LazyClass(...)` (`!lazy:`), not a bare `!class:`.
+   `dataset=`) MUST hold a `PartialClass(...)` (`!lazy:`), not a bare `!class:`.
 
 This is *why* validation is on by default: fully-defaulted params validate cleanly, and
 required-at-use values are checked by your code, not by pydantic at construction time.
@@ -264,7 +264,7 @@ and the viewers. A missing op or visualizer is added to its home package, never 
 | Fixed-choice param is free text | typed as `str` | type it `Literal[...]` |
 | Numeric widget clamps to `[0, 2048]` | no `Interval` mark | annotate `Annotated[float, Interval(...)]` (§3) |
 | Body slot becomes an OBJECT socket | un-annotated `self.x = …` | write `self.x: bool = …` |
-| Runtime-injected body slot crashes on materialize | bare `!class:` instead of `!lazy:` | hold a `LazyClass(...)` |
+| Runtime-injected body slot crashes on materialize | bare `!class:` instead of `!lazy:` | hold a `PartialClass(...)` |
 | Body slots vanish in a frozen/zipped deployment | `inspect.getsource` fails, the AST scan is empty | run `confluid-bake <package>`, or declare `@configurable(broadcast_attrs=[...])` |
 | Discovery log shows a skipped module | optional dependency missing | expected; degrades at `debug` |
 
@@ -331,7 +331,7 @@ mypkg-classification = "mypkg.classification"   # import the module so register(
     role=None,             # model / loss / dataset / metric / trainer / evaluator / logger
     framework=None,        # which engine API the class belongs to (torch / keras / sklearn / …)
     group=None,            # palette sub-folder ONLY (presentation, not a filter)
-    lazy=False,            # value stays deferred (LazyClass / runtime-injection slot)
+    lazy=False,            # value stays deferred (PartialClass / runtime-injection slot)
     validate=True,         # wrap __init__ to validate kwargs against to_pydantic(cls)
     random=False,          # non-deterministic → editors re-execute the node every run
     constant=False,        # pure value producer → exporters fold it into the static config

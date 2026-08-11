@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from confluid import LazyClass, configurable, configure, flow, load
+from confluid import PartialClass, configurable, configure, flow, load
 from confluid.registry import get_registry
 
 
@@ -40,7 +40,7 @@ class OrderedCar:
 
     def __init__(self, name: str = "car") -> None:
         self.name = name
-        self.engine: Any = LazyClass(OrderedEngine, power=1)
+        self.engine: Any = PartialClass(OrderedEngine, power=1)
 
 
 @pytest.fixture(autouse=True)
@@ -164,7 +164,7 @@ def test_configure_follows_document_order_like_the_load_path(document: str, expe
     comes LAST in document order wins — no priority tiers"), and it did not hold:
     the bare key won either way. Two separate causes, both fixed —
 
-    * `_assign` flowed the tuned marker, because `Lazy` subclasses `Class`, so a
+    * `_assign` flowed the tuned marker, because `Partial` subclasses `Class`, so a
       deferred slot was built EAGERLY on this path alone;
     * `_walk` then flowed the slot again to walk into it and configured the
       resulting object, which is never written back — so every bare key applied to
@@ -207,7 +207,7 @@ def test_configure_does_not_build_a_deferred_slot() -> None:
 
     configure(car, config="OrderedCar:\n  engine:\n    power: 50\n")
 
-    assert isinstance(car.engine, LazyClass(OrderedEngine).__class__)
+    assert isinstance(car.engine, PartialClass(OrderedEngine).__class__)
     assert car.engine.kwargs["power"] == 50
 
 

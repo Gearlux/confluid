@@ -55,38 +55,28 @@ def _target_name(target: Any) -> str:
 
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
-    from confluid.fluid import Class, Clone, Instance
-    from confluid.fluid import Lazy as LazyFluid
-    from confluid.fluid import Reference
+    from confluid.fluid import Clone, Reference, Target
+    from confluid.loader import CLONE_KEY, PARTIAL_KEY, REF_KEY, TARGET_KEY
+
+    # A dump emits the PLAIN-YAML spelling, so the artifact a run archives is
+    # readable by anything — `yaml.safe_load`, `yq`, a diff viewer — and not only
+    # by confluid. Reload fidelity is unchanged: both spellings parse to the same
+    # markers (docs/plain-format.md, architecture record 11).
 
     if isinstance(data, Clone):
-        if data.kwargs:
-            return dumper.represent_mapping(f"!clone:{data.target}", data.kwargs)
-        return dumper.represent_scalar(f"!clone:{data.target}", "")
+        return dumper.represent_mapping("tag:yaml.org,2002:map", {CLONE_KEY: data.target, **data.kwargs})
 
     if isinstance(data, Reference):
-        return dumper.represent_scalar("!ref", data.target)
+        return dumper.represent_mapping("tag:yaml.org,2002:map", {REF_KEY: data.target, **data.kwargs})
 
-    # Lazy comes BEFORE Class/Instance — it's a Class subclass, so the
-    # isinstance ladder must match it first to emit ``!lazy:`` instead of
-    # ``!class:`` and preserve the deferred-construction contract on reload.
-    if isinstance(data, LazyFluid):
-        name = _target_name(data.target)
-        if data.kwargs:
-            return dumper.represent_mapping(f"!lazy:{name}", data.kwargs)
-        return dumper.represent_scalar(f"!lazy:{name}", "")
-
-    # Instance comes BEFORE Class in the isinstance ladder (Class is a sibling,
-    # but we match the exact type first to pick the right tag: `!class:X()` for
-    # Instance, `!class:X` for Class — so a reload reproduces the same
-    # eager/deferred semantics.
-    if isinstance(data, Instance):
-        name = _target_name(data.target)
-        return dumper.represent_mapping(f"!class:{name}()", data.kwargs)
-
-    if isinstance(data, Class):
-        name = _target_name(data.target)
-        return dumper.represent_mapping(f"!class:{name}", data.kwargs)
+    if isinstance(data, Target):
+        # ``_partial_`` is emitted only when true — ``false`` is the default and
+        # restating it is noise in an archived config.
+        body: dict[str, Any] = {TARGET_KEY: _target_name(data.target)}
+        if data.partial:
+            body[PARTIAL_KEY] = True
+        body.update(data.kwargs)
+        return dumper.represent_mapping("tag:yaml.org,2002:map", body)
 
     # Objects materialized via Confluid but not @configurable — use stored origin metadata
     if hasattr(data, "__confluid_class__") and not hasattr(data.__class__, "__confluid_configurable__"):
@@ -95,7 +85,9 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             cls_name = f"{target.__module__}.{target.__qualname__}"
         else:
             cls_name = str(target)
-        return dumper.represent_mapping(f"!class:{cls_name}()", getattr(data, "__confluid_kwargs__", {}))
+        return dumper.represent_mapping(
+            "tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **getattr(data, "__confluid_kwargs__", {})}
+        )
 
     # Live @configurable instance → dump with () to indicate instant construction on reload.
     # The registry answers with the PUBLIC key — the bare name while it is unambiguous, the
@@ -137,7 +129,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
                         # Same reasoning as the instance branch above: a class-VALUED
                         # kwarg needs the unambiguous key, not the shared short name.
                         key = get_registry().key_for(val) or getattr(val, "__confluid_name__", None)
-                        val = f"!class:{key or val.__name__}"
+                        val = {TARGET_KEY: key or val.__name__}
                     else:
                         val = f"{val.__module__}.{val.__name__}"
                 kwargs[p] = val
@@ -154,7 +146,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         if val is not None:
             kwargs[name] = val
 
-    return dumper.represent_mapping(f"!class:{cls_name}()", kwargs)
+    return dumper.represent_mapping("tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **kwargs})
 
 
 def dump(obj: Any) -> str:
@@ -168,16 +160,15 @@ def dump(obj: Any) -> str:
     _LocalDumper.add_representer(types.FunctionType, _represent_callable)
     _LocalDumper.add_representer(types.BuiltinFunctionType, _represent_callable)
 
-    # Register representers for all four Fluid subclasses upfront — Confluid
-    # has a fixed, small set of Fluid shapes, and the traversal below can
-    # only register what it has seen. Doing it here closes the gap where a
-    # nested Instance (or Reference / Clone) inside another Fluid's kwargs
-    # would miss out and fall through to `represent_undefined`.
-    from confluid.fluid import Class, Clone, Instance
-    from confluid.fluid import Lazy as LazyFluid
-    from confluid.fluid import Reference
+    # Register representers for every Fluid subclass upfront — Confluid has a
+    # fixed, small set of Fluid shapes, and the traversal below can only register
+    # what it has seen. Doing it here closes the gap where a nested marker inside
+    # another marker's kwargs would miss out and fall through to
+    # `represent_undefined`. PyYAML dispatches on EXACT type, so `Partial` needs
+    # its own entry even though it is a `Target` subclass.
+    from confluid.fluid import Clone, Partial, Reference, Target
 
-    for _fluid_cls in (Class, Instance, Reference, Clone, LazyFluid):
+    for _fluid_cls in (Target, Partial, Reference, Clone):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
 
     # Catch-all fallback for opaque non-@configurable objects. PyYAML

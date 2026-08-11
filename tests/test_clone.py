@@ -113,7 +113,7 @@ def test_clone_dump_round_trip() -> None:
     """Clone objects that haven't been resolved yet survive dump/load."""
     clone = Clone("metrics", prefix="train/")
     output = dump(clone)
-    assert "!clone:metrics" in output
+    assert "_clone_: metrics" in output
     assert "prefix" in output
 
 

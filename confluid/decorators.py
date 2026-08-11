@@ -97,11 +97,11 @@ def configurable(
             framework=…)`` filters a picker down to compatible candidates.
         role: Optional slot role this class fills for its task (``"model"`` /
             ``"loss"`` / ``"dataset"`` / ``"metric"`` / ``"trainer"``).
-        lazy: When ``True``, stamp ``__confluid_lazy__`` on the class. Marks a
+        lazy: When ``True``, stamp ``__confluid_partial__`` on the class. Marks a
             class whose constructed value should stay **deferred** — a
             runtime-injection slot (e.g. an optimizer needing ``params=`` or a
             DataLoader needing ``dataset=``). Consumers that compose configs read
-            it to emit a ``LazyClass`` (deferred) rather than a live instance —
+            it to emit a ``PartialClass`` (deferred) rather than a live instance —
             notably StreamStudio's object nodes, which feed a runnable's deferred
             body slots. Independent of ``category``/``task``/``role``.
         random: When ``True``, stamp ``__confluid_random__`` on the class.
@@ -256,7 +256,7 @@ def register(
         framework: Optional engine whose API this class belongs to (see
             :func:`configurable`) — e.g. ``register(nn.CrossEntropyLoss,
             task="classification", role="loss", framework="torch")``.
-        lazy: When ``True``, stamp ``__confluid_lazy__`` — the constructed value
+        lazy: When ``True``, stamp ``__confluid_partial__`` — the constructed value
             should stay deferred (a runtime-injection slot like a torch optimizer
             needing ``params=`` / a DataLoader needing ``dataset=``). See
             :func:`configurable`.
@@ -285,7 +285,7 @@ def register(
             you cannot add a decorator to a class you do not own.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
-    # ``register_class`` stamps the discovery markers (incl. ``__confluid_lazy__``)
+    # ``register_class`` stamps the discovery markers (incl. ``__confluid_partial__``)
     # on the class — it tolerates immutable built-ins via try/except.
     get_registry().register_class(
         cls,
@@ -358,7 +358,7 @@ def _wrap_callable_with_validation(func: C) -> C:
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # Lazy import to avoid a hard dependency cycle at decorator-import time.
+        # Partial import to avoid a hard dependency cycle at decorator-import time.
         from confluid.validation import get_policy, validate_kwargs
 
         mode = get_policy().init
@@ -429,7 +429,7 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
 
     @functools.wraps(original_init)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> None:
-        # Lazy import to avoid a hard dependency cycle at decorator-import time.
+        # Partial import to avoid a hard dependency cycle at decorator-import time.
         from confluid.validation import get_policy, validate_kwargs
 
         mode = get_policy().init

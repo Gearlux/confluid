@@ -329,7 +329,7 @@ class Resolver:
         """
         Recursively resolves markers with support for local scoping.
         """
-        from confluid.fluid import Class, Fluid, Reference
+        from confluid.fluid import Fluid, Reference
 
         # 1. Handle Strings (Interpolation and Tags)
         if isinstance(value, str):
@@ -371,7 +371,7 @@ class Resolver:
                 return self.resolve(res, local_context)
             return value
 
-        if isinstance(value, (Class, Fluid)):
+        if isinstance(value, Fluid):
             # A marker passes through WHOLE — its kwargs are the engine's to
             # consume — but its kwarg STRINGS get ``${...}`` substituted first.
             # Before this, a placeholder written in a tag's mapping body stayed
@@ -453,11 +453,11 @@ class Resolver:
         post-construction so a kwarg literally named ``target`` can't collide
         with the Fluid ctor's own parameter.
         """
-        from confluid.fluid import Class, Instance
+        from confluid.fluid import Target
 
         instant = _TARGET_CALL_RE.match(content)
         if instant:
-            fluid = Instance(instant.group(1))
+            fluid = Target(instant.group(1))
             for k, v in _split_inline_pairs(instant.group(2)):
                 # Resolve THEN parse — the quoted-string form's own coercion
                 # policy: ``${...}`` / ``!ref:`` values see the context first.
@@ -466,7 +466,7 @@ class Resolver:
                     resolved_v = self._parse_primitive(resolved_v)
                 fluid.kwargs[k] = resolved_v
             return fluid
-        return Class(content)
+        return Target(content)
 
     def _resolve_ref(self, ref_path: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
         """

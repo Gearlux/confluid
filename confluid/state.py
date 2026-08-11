@@ -19,7 +19,7 @@ downstream reach-ins are prohibited; go through ``active_context``.
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from confluid.merger import expand_dotted_keys
 from confluid.report import ConfigurationReport
@@ -40,6 +40,17 @@ class _EngineState:
     context: Optional[Dict[str, Any]] = None
     flow_memo: Optional[Dict[int, Any]] = None
     instance_memo: Optional[Dict[int, Any]] = None
+    # Strong references to every marker the memos key on, held for the pass.
+    #
+    # Both memos key on ``id(marker)``, which is only unique while the marker is
+    # ALIVE — CPython reuses the address of a freed object, and a recycled id
+    # reads as a memo HIT for a completely unrelated node. The engine builds
+    # short-lived broadcast COPIES of markers (``_resolve_kwarg_value``), so
+    # without this the second item of a list could be handed the first item's
+    # instance: measured on a three-stage pipeline, every stage came back as
+    # stage one. Document-owned markers are safe on their own; the copies are
+    # not, and the memo cannot tell them apart.
+    memo_keepalive: Optional[List[Any]] = None
     suppress_solidify: bool = False
     # Ambient ConfigurationReport installed by collect_report(). Mutable by
     # design (like the memo dicts riding this frozen dataclass); every
@@ -61,7 +72,7 @@ def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
 
     The public way to make ``!ref:`` resolution work for ``flow()`` calls made
     OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a deferred
-    ``Lazy`` slot later, on another thread).
+    ``Partial`` slot later, on another thread).
 
     **It does NOT enable broadcasting.** A ``flow()`` inside this block builds
     the target in isolation — the context's top-level keys are NOT injected into
@@ -90,7 +101,9 @@ def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
     ctx = expand_dotted_keys(context) if context and any("." in k for k in context) else context
     # Fresh memos, but the ambient report (collect_report) carries forward —
     # a fresh state would silently stop the pass's tracking.
-    token = _ENGINE_STATE.set(_EngineState(context=ctx, flow_memo={}, instance_memo={}, report=_active_report()))
+    token = _ENGINE_STATE.set(
+        _EngineState(context=ctx, flow_memo={}, instance_memo={}, memo_keepalive=[], report=_active_report())
+    )
     try:
         yield
     finally:

@@ -27,14 +27,14 @@ from confluid import resolve, materialize, load
 
 # (a) resolve(): broadcast-resolved Fluid MARKERS, nothing instantiated. !ref: targets are shared by
 #     identity (a fan-out is one object reached twice); an unresolved !ref:NAME stays a Reference.
-markers = resolve("config.yaml")        # {key: Instance/Lazy/Class marker, ...}
+markers = resolve("config.yaml")        # {key: Instance/Partial/Class marker, ...}
 
 # (b) solidify=False: live-but-inert objects — constructed (cheap, per zero-arg / lazy-init) but the
 #     expensive post-flow solidify() (e.g. building a model backbone) is suppressed for the subtree.
 graph = materialize(data, solidify=False)   # also load(..., solidify=False) / flow(obj, solidify=False)
 ```
 
-Both leave `Lazy` (`!lazy:`) slots deferred and default behaviour unchanged (`solidify=True`).
+Both leave `Partial` (`!lazy:`) slots deferred and default behaviour unchanged (`solidify=True`).
 
 ## Dump and reconstruct
 

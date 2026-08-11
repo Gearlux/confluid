@@ -128,7 +128,7 @@ def test_configure_respects_marker_and_class_flag() -> None:
 
 
 def test_no_broadcast_alias_has_no_fluid_arm() -> None:
-    """Deliberate asymmetry with Lazy/Mandatory: NoBroadcast is a routing gate for
+    """Deliberate asymmetry with Partial/Mandatory: NoBroadcast is a routing gate for
     generically-named SCALAR knobs, so its alias stays ``Annotated[T, marker]`` —
     no ``Union[..., Fluid]`` arm (which would misdescribe a plain scalar)."""
     from typing import get_args

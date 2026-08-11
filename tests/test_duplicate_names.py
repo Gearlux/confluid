@@ -681,7 +681,7 @@ def test_dump_emits_a_key_that_reloads_the_same_class(tmp_path: Any) -> None:
     _torch_twin, keras_twin = _framework_twins()
     text = confluid.dump(keras_twin(n=3))
 
-    assert "!class:" in text
+    assert "_target_:" in text
     reloaded = confluid.load(text)
     assert isinstance(reloaded, keras_twin) and reloaded.n == 3
 
@@ -695,7 +695,7 @@ def test_dump_of_a_unique_name_still_emits_the_bare_name() -> None:
         def __init__(self, n: int = 0) -> None:
             self.n = n
 
-    assert "!class:Solo()" in confluid.dump(Solo(n=1))
+    assert "_target_: Solo" in confluid.dump(Solo(n=1))
 
 
 def test_a_dumped_bare_name_survives_the_class_moving_module() -> None:

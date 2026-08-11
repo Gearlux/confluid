@@ -12,7 +12,7 @@ model:
   hidden: 32
 ```
 
-The [tag format](tags.md) (`!class:MLP`) is the original spelling and still
+The [tag format](targets.md) (`!class:MLP`) is the original spelling and still
 loads. Both produce the **same** markers, so everything downstream —
 [broadcasting](broadcasting.md), [scopes](scopes.md),
 [interpolation](interpolation.md), `dump()` — behaves identically whichever you

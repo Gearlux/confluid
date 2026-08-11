@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from confluid import Class, Instance, LazyClass, Reference, configurable, flow, get_registry, load, materialize
+from confluid import Class, Instance, PartialClass, Reference, configurable, flow, get_registry, load, materialize
 
 
 def _inst(target: str, /, **kwargs: Any) -> Instance:
@@ -169,7 +169,7 @@ class BodyAssignedLazy:
     """The same shape with a ``!lazy:`` slot — a runtime-injection point.
 
     The canonical instance of this is a trainer holding
-    ``self.optimizer = LazyClass(AdamW)``: it cannot be built during
+    ``self.optimizer = PartialClass(AdamW)``: it cannot be built during
     materialization because ``params=`` only exists once the model does.
     """
 
@@ -178,14 +178,14 @@ class BodyAssignedLazy:
         # `type` is preset in CODE, `power` is not — the pair is what lets the tests
         # below tell "a bare key reaches an unset slot" from "a tuned block keeps
         # what it did not mention".
-        self.nested = LazyClass(Engine, type="diesel")
+        self.nested = PartialClass(Engine, type="diesel")
 
 
 def test_broadcast_reaches_body_assigned_LAZY_attribute() -> None:
-    """A Lazy body slot is CONFIGURED by broadcasting, exactly like a Class one.
+    """A Partial body slot is CONFIGURED by broadcasting, exactly like a Class one.
 
     Deferral means "do not BUILD it", not "do not configure it" — merging keys into
-    a marker's kwargs constructs nothing. Until 2026-08-03 a Lazy was returned
+    a marker's kwargs constructs nothing. Until 2026-08-03 a Partial was returned
     untouched, so a `!lazy:` marker written in the DOCUMENT received bare keys while
     an identical one created in an `__init__` BODY did not, and a consumer's
     code-declared optimizer could not be retuned from config at all.
@@ -195,7 +195,7 @@ def test_broadcast_reaches_body_assigned_LAZY_attribute() -> None:
 
     obj = materialize(config["obj"], context=config)
 
-    assert isinstance(obj.nested, LazyClass)  # still deferred — NOT built
+    assert isinstance(obj.nested, PartialClass)  # still deferred — NOT built
     assert obj.nested.kwargs.get("power") == 321  # ... and configured
     assert flow(obj.nested).power == 321  # whoever flows it later gets the value
 
@@ -203,13 +203,13 @@ def test_broadcast_reaches_body_assigned_LAZY_attribute() -> None:
 def test_a_lazy_body_slot_is_never_built_by_materialization() -> None:
     """The half of the contract that must survive the change above.
 
-    A Lazy target typically cannot be constructed without a runtime argument, so
+    A Partial target typically cannot be constructed without a runtime argument, so
     auto-building one during materialization is not a nicety — it raises.
     """
     get_registry().register_class(BodyAssignedLazy, name="BodyAssignedLazy")
     config = {"obj": _inst("BodyAssignedLazy"), "power": 321}
     obj = materialize(config["obj"], context=config)
-    assert type(obj.nested) is LazyClass and not isinstance(obj.nested, Engine)
+    assert type(obj.nested) is PartialClass and not isinstance(obj.nested, Engine)
 
 
 def test_a_mapping_addressed_at_a_deferred_slot_tunes_it_rather_than_replacing_it() -> None:
@@ -226,7 +226,7 @@ def test_a_mapping_addressed_at_a_deferred_slot_tunes_it_rather_than_replacing_i
 
     obj = materialize(marker, context={"obj": marker})
 
-    assert isinstance(obj.nested, LazyClass)  # not a dict
+    assert isinstance(obj.nested, PartialClass)  # not a dict
     assert obj.nested.kwargs["power"] == 42  # the addressed key landed
     assert obj.nested.kwargs["type"] == "diesel"  # ... and the untouched one survived
 
@@ -235,7 +235,7 @@ def test_a_bare_key_overrides_a_marker_kwarg_that_was_set_in_CODE() -> None:
     """A code-set marker kwarg is a DEFAULT, and defaults are what broadcasting overrides.
 
     `BodyAssignedLazy` presets `type="diesel"` the way a consumer presets
-    `LazyClass(AdamW, lr=1e-4)`. Before 2026-08-03 that kwarg blocked the bare key, so
+    `PartialClass(AdamW, lr=1e-4)`. Before 2026-08-03 that kwarg blocked the bare key, so
     WHERE a default was written decided whether config could reach it: a plain
     `def __init__(self, type="diesel")` loses to a bare `type:`, while the identical
     default on a marker held out. The run then used the hard-coded value silently.
@@ -280,11 +280,9 @@ def test_broadcast_reaches_body_assigned_class_attribute() -> None:
     obj = materialize(config["obj"], context=config)
 
     # Class stays deferred but its kwargs are populated with broadcast scalars
-    assert isinstance(obj.nested, Class)
-    assert obj.nested.kwargs.get("power") == 321
-
-    # Flowing the deferred Class produces an Engine configured from broadcast
-    engine = flow(obj.nested)
+    # A plain ``Class(...)`` body slot is BUILT (only ``partial`` defers), and the
+    # broadcast key reached it before its constructor ran.
+    engine = obj.nested
     assert isinstance(engine, Engine)
     assert engine.power == 321
 

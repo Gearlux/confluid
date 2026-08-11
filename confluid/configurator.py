@@ -53,7 +53,7 @@ from confluid.broadcast import (
     tune_marker,
 )
 from confluid.engine import _ctor_params, _maybe_solidify, flow
-from confluid.fluid import Class, Instance, Lazy
+from confluid.fluid import Partial, Target
 from confluid.loader import ConfluidLoader, load_config
 from confluid.merger import expand_dotted_keys
 from confluid.report import ConfigurationReport
@@ -177,7 +177,7 @@ def _walk(
     if obj is None:
         return
 
-    if isinstance(obj, Lazy):
+    if isinstance(obj, Partial):
         # A deferred slot is NOT walked into, and is NOT tuned here either — its OWNER
         # tunes it (see ``_apply``), because only the owner's scan knows where each of
         # its blocks sat relative to the bare keys. Flowing it would build the target
@@ -312,8 +312,8 @@ class _LiveSink:
 
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
         existing = self.obj.__dict__.get(key)
-        if isinstance(existing, Class):
-            # A deferred marker slot (``self.optimizer = LazyClass(...)``) —
+        if isinstance(existing, Target):
+            # A deferred marker slot (``self.optimizer = PartialClass(...)``) —
             # TUNE the marker (the engine's rule for the identical spelling),
             # never recurse into it or replace it with the raw dict. The bare
             # keys this block out-positioned ride along for _tune_deferred.
@@ -370,10 +370,10 @@ def _apply(
 
     # Deferred slots are tuned by their OWNER, here, because only this scan knows where
     # each block sat relative to the bare keys. ``_walk`` deliberately does not touch a
-    # Lazy. Every deferred slot is visited — not only those a block addressed — since a
+    # Partial. Every deferred slot is visited — not only those a block addressed — since a
     # bare key with nothing competing must still reach one.
     for attr_name, slot in list(vars(obj).items()):
-        if isinstance(slot, Lazy):
+        if isinstance(slot, Partial):
             _tune_deferred(slot, view, report, beaten=sink.beaten_per_slot.get(attr_name, frozenset()))
 
     # Splice this object's addressed blocks into the subtree view at their
@@ -432,13 +432,13 @@ def _assign(
             resolved_val = parse_value(resolved_val)
         # Materialize class markers (e.g. a "!class:Model(...)" string value
         # resolved to an Instance/Class Fluid) into live instances before setattr.
-        # A ``Lazy`` is EXCLUDED, exactly as it is in ``engine._apply_post_init_attrs``:
+        # A ``Partial`` is EXCLUDED, exactly as it is in ``engine._apply_post_init_attrs``:
         # it is a deliberate runtime-injection point the owning class flows when it has
         # the missing argument, so building it here produces the wrong object (an
-        # optimizer with no ``params``) and destroys the slot. `Lazy` subclasses `Class`,
+        # optimizer with no ``params``) and destroys the slot. `Partial` subclasses `Class`,
         # so the isinstance test above caught it and configure() ALONE built it eagerly —
         # a straight divergence from the load path for the identical config.
-        if isinstance(resolved_val, (Class, Instance)) and not isinstance(resolved_val, Lazy):
+        if isinstance(resolved_val, Target) and not resolved_val.partial:
             resolved_val = flow(resolved_val)
         # Post-construction overrides honour the same per-field schema as the
         # constructor — re-uses ``policy.init`` because configure() is the

@@ -242,7 +242,7 @@ class Trainer:
     def __init__(self, model=None) -> None:
         self.model = model
         # cannot be built yet — `params=` only exists once the model does
-        self.optimizer: Lazy[Optimizer] = LazyClass(AdamW, lr=1e-4, weight_decay=0.05)
+        self.optimizer: Partial[Optimizer] = PartialClass(AdamW, lr=1e-4, weight_decay=0.05)
 
     def configure_optimizers(self):
         return flow(self.optimizer, params=self.model.parameters())
@@ -296,7 +296,7 @@ Two points worth knowing:
   lr: 0.9                              # ... overridden by a later sweep   -> 0.9
   ```
 
-  A value set in *code* — `self.optimizer = LazyClass(AdamW, lr=1e-4)` — has no
+  A value set in *code* — `self.optimizer = PartialClass(AdamW, lr=1e-4)` — has no
   position in the document at all, so it is a default: any `lr:` overrides it,
   exactly as it would override a constructor default. This is also why a CLI
   override always takes effect: it is applied after the whole file.

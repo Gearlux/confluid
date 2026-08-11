@@ -7,9 +7,9 @@ row here fails a test.
 New to confluid? The surface is wide because the engine has several audiences —
 start from [The Lifecycle](lifecycle.md), which shows where each of these names
 plugs into the passes, and from the eight names most configs need:
-`configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Lazy`, `dump`.
+`configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Partial`, `dump`.
 
-## Loading & materialization — [Tags & Deferred Initialization](tags.md)
+## Loading & materialization — [Tags & Deferred Initialization](targets.md)
 
 | Name | One line |
 |---|---|
@@ -21,14 +21,15 @@ plugs into the passes, and from the eight names most configs need:
 | `flow` | Build one node now — with runtime args/kwargs for deferred slots |
 | `cast` | `flow` that also narrows the static type for checkers ([Introspection](introspection.md)) |
 
-## The marker family — [Tags & Deferred Initialization](tags.md)
+## The marker family — [Tags & Deferred Initialization](targets.md)
 
 | Name | One line |
 |---|---|
 | `Fluid` | Base class of every marker |
-| `Class` | A deferred recipe (`!class:Name`) — built by its receiver |
-| `Instance` | An eager recipe (`!class:Name()`) — built at load, shared by identity |
-| `Lazy` / `LazyClass` | A runtime-injection slot (`!lazy:`) — never auto-built; `LazyClass` is the Python spelling |
+| `Target` | A callable + its kwargs (`_target_:`) — built at load, shared by identity |
+| `Partial` / `PartialClass` | A runtime-injection slot (`_partial_: true`) — never auto-built; `PartialClass` is the Python spelling |
+| `partial_param_names` | Every slot of a class declared `Partial[...]` — ctor params and body slots |
+| `Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names` | *Deprecated aliases.* `Class`/`Instance` are both `Target` now; the `Lazy*` names are the old spelling of `Partial*` |
 | `Reference` | A `!ref:` — the same object reached twice |
 | `Clone` | A `!clone:` — an independent deep copy |
 
@@ -94,7 +95,7 @@ plugs into the passes, and from the eight names most configs need:
 | `InputSpec` / `OutputSpec` | The record types those return |
 | `Mandatory` | Annotation: required-in-spirit even when defaulted for zero-arg construction |
 | `mandatory_param_names` | The `Mandatory`-marked parameter names of a target |
-| `lazy_param_names` | The deferred (lazy) slot names of a target — params and body slots |
+| `partial_param_names` | The deferred (lazy) slot names of a target — params and body slots |
 
 ## Serialization — [Serialization](serialization.md)
 

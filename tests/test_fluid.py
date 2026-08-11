@@ -216,14 +216,14 @@ class _Bundle:
 
 
 def test_flow_passes_positional_runtime_args_to_the_target() -> None:
-    marker = confluid.LazyClass(_Bundle, label="stored")
+    marker = confluid.PartialClass(_Bundle, label="stored")
     built = flow(marker, "a", "b")
     assert built.items == ["a", "b"]
     assert built.label == "stored"
 
 
 def test_positional_args_compose_with_stored_and_runtime_kwargs() -> None:
-    marker = confluid.LazyClass(_Bundle, label="stored", tag="stored")
+    marker = confluid.PartialClass(_Bundle, label="stored", tag="stored")
     built = flow(marker, 1, 2, tag="runtime")
     assert (built.items, built.label, built.tag) == ([1, 2], "stored", "runtime")
 
@@ -235,7 +235,7 @@ def test_a_var_positional_name_is_never_passed_as_a_keyword() -> None:
     ctor filter and the call dies with ``got some positional-only arguments
     passed as keyword arguments``.
     """
-    built = flow(confluid.LazyClass(_Bundle, items=["ignored"]), "real")
+    built = flow(confluid.PartialClass(_Bundle, items=["ignored"]), "real")
     assert built.items == ["real"]
 
 
@@ -263,7 +263,7 @@ def test_positional_args_on_a_configurable_bare_type_raise() -> None:
 
 
 def test_positional_args_survive_the_solidify_suppression_re_entry() -> None:
-    marker = confluid.LazyClass(_Bundle, label="L")
+    marker = confluid.PartialClass(_Bundle, label="L")
     assert flow(marker, "a", "b", solidify=False).items == ["a", "b"]
 
 
@@ -283,7 +283,7 @@ class _Forwarder:
 
 
 def test_a_runtime_kwarg_reaches_a_var_keyword_constructor() -> None:
-    built = flow(confluid.LazyClass(_Forwarder), model="resnet", batch_size=4)
+    built = flow(confluid.PartialClass(_Forwarder), model="resnet", batch_size=4)
 
     assert built.received == {"model": "resnet", "batch_size": 4}
 
@@ -302,7 +302,7 @@ def test_a_var_keyword_constructor_used_to_be_built_with_nothing() -> None:
                 raise RuntimeError("requires either a `model` or `model_init` argument")
             self.model = kwargs["model"]
 
-    assert flow(confluid.LazyClass(_NeedsAModel), model="a-model").model == "a-model"
+    assert flow(confluid.PartialClass(_NeedsAModel), model="a-model").model == "a-model"
 
 
 def test_a_declared_param_and_an_extra_both_arrive() -> None:
@@ -312,7 +312,7 @@ def test_a_declared_param_and_an_extra_both_arrive() -> None:
         def __init__(self, name: str = "", **kwargs: Any) -> None:
             self.name, self.extra = name, dict(kwargs)
 
-    built = flow(confluid.LazyClass(_Mixed), name="run", depth=3)
+    built = flow(confluid.PartialClass(_Mixed), name="run", depth=3)
 
     assert built.name == "run" and built.extra == {"depth": 3}
 
@@ -336,7 +336,7 @@ def test_a_runtime_kwarg_is_not_ALSO_set_as_an_attribute() -> None:
                 self.assigned_after.append(name)
             object.__setattr__(self, name, value)
 
-    built = flow(confluid.LazyClass(_Recording), model="resnet")
+    built = flow(confluid.PartialClass(_Recording), model="resnet")
 
     assert built.options == {"model": "resnet"}
     assert built.assigned_after == [], "the ctor took it; a post-init setattr would double-apply"
@@ -348,7 +348,7 @@ def test_a_kwarg_written_ON_the_marker_reaches_the_constructor() -> None:
     A forwarding subclass would otherwise never see it — the value would land as an
     attribute on the built object and quietly do nothing.
     """
-    built = flow(confluid.LazyClass(_Forwarder, tag="from-config"))
+    built = flow(confluid.PartialClass(_Forwarder, tag="from-config"))
 
     assert built.received == {"tag": "from-config"}
 
@@ -388,7 +388,7 @@ def test_a_plain_class_is_unaffected_by_the_var_keyword_path() -> None:
         def __init__(self, lr: float = 0.1) -> None:
             self.lr = lr
 
-    built = flow(confluid.LazyClass(_Declared), lr=0.5, note="extra")
+    built = flow(confluid.PartialClass(_Declared), lr=0.5, note="extra")
 
     assert built.lr == 0.5
     assert built.note == "extra"

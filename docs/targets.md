@@ -19,14 +19,14 @@ tagged documents.
 | `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |
 | `!clone:path` | Like `!ref:` but returns a deep copy | `Clone` |
 | `!class:Name` / `!class:Name(...)` | Class node — **deferred or eager depending on `()`** (below) | `Class` / `Instance` |
-| `!lazy:Name(...)` | Class node that **always** stays deferred (runtime injection) | `Lazy` |
+| `!lazy:Name(...)` | Class node that **always** stays deferred (runtime injection) | `Partial` |
 | `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
 
 ## The lifecycle: Fluid → Solid
 
 | State | What it is | Tag types |
 |---|---|---|
-| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Class`, `Lazy`, `Reference`, `Clone` |
+| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Class`, `Partial`, `Reference`, `Clone` |
 | **Solid** (live) | The actual Python instance your code uses. | — |
 
 `load(text)` (≡ `load(text, flow=True)`) and `materialize(data)` walk the tree
@@ -162,14 +162,14 @@ What `materialize()` / `load()` actually build vs. leave deferred:
 | Root-level Fluid (the whole document is `!class:…`) | **Yes** |
 | `Class` nested in a **`@configurable`** parent | **No** — the parent receives the stub |
 | `Class` nested in a **non-`@configurable`** parent (e.g. `pl.Trainer`) | **Yes** — the third-party ctor won't flow it, so Confluid does |
-| `Lazy` (`!lazy:…`) | **No**, anywhere — see below |
+| `Partial` (`!lazy:…`) | **No**, anywhere — see below |
 
-**2. `Lazy` — "this genuinely cannot be built until runtime."**
+**2. `Partial` — "this genuinely cannot be built until runtime."**
 Some objects need an argument that does not exist at config time — the textbook
 case is an optimizer that needs `params=model.parameters()`. Declare it with the
 **`!lazy:`** tag, which mirrors the `!class:` grammar (`!lazy:Foo`,
 `!lazy:Foo(lr=1e-3)`, or `!lazy:Foo` + block) but **always** produces a deferred
-`Lazy` — parentheses or not:
+`Partial` — parentheses or not:
 
 ```yaml
 # Inline kwargs are coerced just like !class: — lr is a float here.
@@ -184,22 +184,22 @@ def configure_optimizers(self):
 
 > ⚠️ `!lazy:` must be written as a real (unquoted) YAML tag — the "quote the
 > tag" trick does **not** apply (a quoted `"!lazy:…"` stays a plain string,
-> never a `Lazy`). Its inline kwargs are coerced and merge with a block body
+> never a `Partial`). Its inline kwargs are coerced and merge with a block body
 > exactly as for `!class:`; only the deferral differs.
 
-**`Class` vs `Lazy` — when to reach for which.** Both are deferred, but they
+**`Class` vs `Partial` — when to reach for which.** Both are deferred, but they
 differ in how *external* deep-flow walkers treat them. An auto-flowing caller
 (any framework that recursively flows a graph before handing it to your code)
 will **eagerly build a bare `Class`** — which crashes if the target needs a runtime
-argument. A `Lazy` is *never* auto-flowed by anything; only an explicit
+argument. A `Partial` is *never* auto-flowed by anything; only an explicit
 `flow(node, …)` builds it. So:
 
 - Use a **`Class` stub** when the target *can* be built from config alone but
   you want to build it yourself (to apply broadcasts, sequence side effects, …).
-- Use **`!lazy:` / `Lazy`** when building the target without a runtime-injected
+- Use **`!lazy:` / `Partial`** when building the target without a runtime-injected
   argument would fail.
 
-**Python-side `Lazy[T]` annotation.** The same deferral can be pinned on a
+**Python-side `Partial[T]` annotation.** The same deferral can be pinned on a
 *constructor parameter*, so an auto-flow walker leaves even a plain
 `Class` / `Instance` default in that slot alone:
 
@@ -207,46 +207,46 @@ argument. A `Lazy` is *never* auto-flowed by anything; only an explicit
 from torch.optim import Adam, Optimizer
 
 from confluid import Class, configurable, flow
-from confluid.lazy import Lazy   # Lazy[T] == Annotated[Union[T, Fluid], <marker>]
+from confluid.partial import Partial   # Partial[T] == Annotated[Union[T, Fluid], <marker>]
 
 @configurable
 class Trainer:
-    def __init__(self, optimizer: Lazy[Optimizer] = Class(Adam, lr=1e-3)):
+    def __init__(self, optimizer: Partial[Optimizer] = Class(Adam, lr=1e-3)):
         self.optimizer = optimizer           # auto-flow walkers skip this slot
     def configure_optimizers(self):
         return flow(self.optimizer, params=self.parameters())
 ```
 
 Subscript with the **interface the slot eventually flows into** — the abstract
-base (`Lazy[Optimizer]`), not the concrete default (`Lazy[Adam]`). Because
-`Lazy[T]` expands to `Union[T, Fluid]`, the annotation is honest to strict type
+base (`Partial[Optimizer]`), not the concrete default (`Partial[Adam]`). Because
+`Partial[T]` expands to `Union[T, Fluid]`, the annotation is honest to strict type
 checkers about *both* states of the slot: pre-flow it holds a deferred `Fluid`
 stub (so the `Class(Adam, …)` default type-checks — a `Class` *is* a `Fluid`),
-and any live `Optimizer` also satisfies it. `Lazy[Any]` remains valid when the
+and any live `Optimizer` also satisfies it. `Partial[Any]` remains valid when the
 target type is genuinely open. To narrow the flowed result for a type-checker,
 use `cast(node, Optimizer)` (confluid's typed `flow`). The marker itself is
-runtime-only and is discovered via `lazy_param_names(cls)`. `Lazy[T]` is the
+runtime-only and is discovered via `partial_param_names(cls)`. `Partial[T]` is the
 Python-annotation twin of the YAML `!lazy:` tag: **the tag defers a *value*,
 the annotation defers a *slot*.**
 
 **Body slots count too.** A class with many deferred dependencies often takes a
 minimal constructor and assigns the rest in the `__init__` body. Annotate those
-the same way — `lazy_param_names` reports constructor parameters *and* body
+the same way — `partial_param_names` reports constructor parameters *and* body
 slots:
 
 ```python
 @configurable
 class Trainer:
-    def __init__(self, model: Lazy[Module], batch_size: int = 32):
+    def __init__(self, model: Partial[Module], batch_size: int = 32):
         self.model = model
-        self.optimizer: Lazy[Optimizer] = LazyClass(Adam, lr=1e-3)
-        self.lightning: Lazy[pl.Trainer] = LazyClass(pl.Trainer)
+        self.optimizer: Partial[Optimizer] = PartialClass(Adam, lr=1e-3)
+        self.lightning: Partial[pl.Trainer] = PartialClass(pl.Trainer)
 
-lazy_param_names(Trainer)      # {'model', 'optimizer', 'lightning'}
+partial_param_names(Trainer)      # {'model', 'optimizer', 'lightning'}
 ```
 
-A body slot is deferred if *either* signal says so — a `LazyClass(...)` value or
-a `Lazy[T]` annotation — so an existing class that only used the value form keeps
+A body slot is deferred if *either* signal says so — a `PartialClass(...)` value or
+a `Partial[T]` annotation — so an existing class that only used the value form keeps
 working. Prefer writing both: the value is what makes the slot survive an
 auto-flow walker, and the annotation is what tells a reader and a type-checker.
 Annotating such a slot `Any` (a common habit) declares nothing to either.
@@ -270,7 +270,7 @@ class Loaders:
 @configurable
 class Trainer:
     def __init__(self, batch_size: int = 32):
-        self.loaders: Lazy[Loaders] = LazyClass(Loaders)   # a config can set device=
+        self.loaders: Partial[Loaders] = PartialClass(Loaders)   # a config can set device=
 
     def run(self, train, valid):
         loaders = flow(self.loaders, train, valid)         # target(train, valid, **stored)

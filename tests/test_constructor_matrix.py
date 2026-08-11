@@ -34,7 +34,7 @@ from typing import Any, List
 import pytest
 
 import confluid
-from confluid import LazyClass, configurable, configure, flow, get_registry, load, register
+from confluid import PartialClass, configurable, configure, flow, get_registry, load, register
 
 
 @configurable
@@ -103,7 +103,7 @@ class PositionalOnly:
 class LazySlot:
     def __init__(self) -> None:
         self.k: Any = None
-        self.dep: Any = LazyClass(Defaulted, k=1)
+        self.dep: Any = PartialClass(Defaulted, k=1)
 
 
 SHAPES = [

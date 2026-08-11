@@ -129,7 +129,7 @@ def test_decorators_coverage() -> None:
 
 def test_dumper_coverage() -> None:
     f = Class("M", x=1)
-    assert "!class:M" in dump(f)
+    assert "_target_: M" in dump(f)
     assert "- 1" in dump([1, (2,)])
     assert "42" in dump(42)
 

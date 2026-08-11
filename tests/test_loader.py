@@ -198,11 +198,18 @@ def test_class_form_inline_kwargs_parses_to_instance() -> None:
     assert isinstance(data["m"].kwargs["layers"], int)
 
 
-def test_class_form_bare_stays_deferred_after_load(_register_grammar_model: None) -> None:
-    """``load()`` leaves a bare ``!class:`` deferred (the receiver flows it)."""
-    from confluid.fluid import Class
+def test_class_form_bare_is_built_by_load(_register_grammar_model: None) -> None:
+    """A bare ``!class:`` is BUILT — the parens no longer change anything.
 
-    assert isinstance(load("m: !class:Model\n")["m"], Class)
+    Until 2026-08-11 the trailing ``()`` decided eager-vs-deferred and a bare
+    ``!class:`` produced a stub whose construction depended on whether its parent
+    was ``@configurable``. There are now exactly two modes and only ``_partial_``
+    (``!lazy:``) selects between them.
+    """
+    bare = load("m: !class:Model\n")["m"]
+    parens = load("m: !class:Model()\n")["m"]
+    assert isinstance(bare, _GrammarModel) and isinstance(parens, _GrammarModel)
+    assert bare.layers == parens.layers
 
 
 def test_class_form_empty_parens_is_built_by_load(_register_grammar_model: None) -> None:
@@ -270,12 +277,12 @@ def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None)
 
 
 def test_lazy_tag_stays_deferred_with_any_grammar(_register_grammar_model: None) -> None:
-    """``!lazy:`` always produces a deferred ``Lazy`` — parens or not, block or not."""
-    from confluid.fluid import Lazy
+    """``!lazy:`` always produces a deferred ``Partial`` — parens or not, block or not."""
+    from confluid.fluid import Partial
 
-    assert isinstance(load("m: !lazy:Model\n")["m"], Lazy)
-    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], Lazy)
-    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], Lazy)
+    assert isinstance(load("m: !lazy:Model\n")["m"], Partial)
+    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], Partial)
+    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], Partial)
 
 
 def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
@@ -292,7 +299,7 @@ def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> No
 
 def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> None:
     """The quote-the-tag trick is ``!class:`` / ``!ref:`` only — a quoted ``!lazy:``
-    stays a plain string and is NEVER turned into a ``Lazy``."""
+    stays a plain string and is NEVER turned into a ``Partial``."""
     value = load('m: "!lazy:Model(layers=5)"\n')["m"]
     assert value == "!lazy:Model(layers=5)"  # untouched string
 
@@ -426,7 +433,7 @@ def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch:
     stay late-bound uses ``!ref:`` instead.
     """
     from confluid import configurable, dump, load
-    from confluid.fluid import Lazy
+    from confluid.fluid import Partial
 
     @configurable
     class _LazySrc:
@@ -435,7 +442,7 @@ def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch:
 
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
     marker = load('opt: !lazy:_LazySrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/opt"\n')["opt"]
-    assert isinstance(marker, Lazy)  # construction still deferred
+    assert isinstance(marker, Partial)  # construction still deferred
     assert marker.kwargs["input_dir"] == "/store/opt"
     dumped = dump({"opt": marker})
     assert "/store/opt" in dumped and "${" not in dumped

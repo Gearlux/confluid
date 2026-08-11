@@ -1,4 +1,4 @@
-"""Lazy-init / zero-arg ``@configurable`` classes + post-construction configuration.
+"""Partial-init / zero-arg ``@configurable`` classes + post-construction configuration.
 
 Demonstrates the class-design convention (``docs/class-design.md``):
 
@@ -22,7 +22,7 @@ from confluid import Class, configurable, configure, flow, register
 @configurable
 class Model:
     def __init__(self, layers: int = 3, dropout: float = 0.1) -> None:
-        # Lazy constructor: only stores config (both knobs defaulted → ``Model()`` works).
+        # Partial constructor: only stores config (both knobs defaulted → ``Model()`` works).
         self.layers = layers
         self.dropout = dropout
 
@@ -59,7 +59,7 @@ register(AdamOptimizer, name="Adam")
 @configurable
 class Trainer:
     def __init__(self, model: Optional[Model] = None, epochs: int = 5) -> None:
-        # Lazy constructor, zero-arg constructible: ``model`` defaults to None so ``Trainer()``
+        # Partial constructor, zero-arg constructible: ``model`` defaults to None so ``Trainer()``
         # is valid; the dependency graph is wired afterwards via ``configure`` (build → configure → use).
         self.model = model
         self.epochs = epochs
@@ -120,9 +120,9 @@ def main() -> None:
     assert trainer.model is not None
     print(f"Verified Model Layers: {trainer.model.layers}")
 
-    # Lazy derived state — materialized only now, on first access.
+    # Partial derived state — materialized only now, on first access.
     print(f"Verified Optimizer LR: {trainer.built_optimizer.lr}")
-    print(f"Lazy Model Weights (len): {len(trainer.model.weights)}")
+    print(f"Partial Model Weights (len): {len(trainer.model.weights)}")
 
 
 if __name__ == "__main__":

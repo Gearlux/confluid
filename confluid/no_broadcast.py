@@ -24,10 +24,10 @@ Example::
 
 Type-checkers see ``NoBroadcast[T]`` as ``T`` — the marker only affects runtime
 inspection (see :func:`is_no_broadcast_annotation`). It mirrors
-:data:`confluid.Lazy` / :data:`confluid.Mandatory` in shape and composes with
+:data:`confluid.Partial` / :data:`confluid.Mandatory` in shape and composes with
 them; ``to_pydantic`` strips it so it never leaks into JSON schemas.
 
-Unlike ``Lazy[T]`` / ``Mandatory[T]``, this alias deliberately does NOT union a
+Unlike ``Partial[T]`` / ``Mandatory[T]``, this alias deliberately does NOT union a
 ``Fluid`` arm into ``T``: those two mark *dependency* slots (which legitimately
 hold a deferred ``Fluid`` stub pre-flow), whereas ``NoBroadcast`` is a routing
 gate for generically-NAMED scalar knobs (``name``, ``path``, ``size``) whose
@@ -47,7 +47,7 @@ NoBroadcast = Annotated[T, _NO_BROADCAST_MARKER]
 
 Type-checkers see ``NoBroadcast[T]`` as ``T``; the marker only affects runtime
 inspection (see :func:`is_no_broadcast_annotation`). No ``Fluid`` union arm —
-see the module docstring for why this deliberately differs from ``Lazy`` /
+see the module docstring for why this deliberately differs from ``Partial`` /
 ``Mandatory``.
 """
 

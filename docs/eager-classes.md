@@ -6,7 +6,7 @@ supported for loading, flowing, and dumping. This page explains what works out o
 dump round-trip is achieved, and where the lazy convention still buys you something.
 
 > Not to be confused with the *tag-level* eager-vs-deferred distinction (`!class:Foo()` vs
-> `!class:Foo` — see [Tags & Deferred Initialization](tags.md)). "Eager class" here means the
+> `!class:Foo` — see [Tags & Deferred Initialization](targets.md)). "Eager class" here means the
 > **class design**: a constructor that does work from its params.
 
 ## Loading just works
