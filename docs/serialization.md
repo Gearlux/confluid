@@ -13,8 +13,14 @@ clone = load(state)            # an equivalent object graph, any process
 
 ## What a dump contains
 
+`dump()` emits the **plain format** — reserved keys, no tags — so a dumped
+document is ordinary YAML that `yaml.safe_load`, `yq` and an editor schema can
+all read. That holds for every value it can emit, including a function-valued
+param (`collate_fn: ${ref:recordstream.collate_records}`) and the informational
+placeholder it falls back to for an opaque object.
+
 For each `@configurable` (or registered) instance, `dump()` emits a
-`!class:` mapping whose kwargs are reconstructed **per parameter**:
+`_target_:` mapping whose kwargs are reconstructed **per parameter**:
 
 1. the **live attribute of the same name**, when the instance still carries
    it — so post-construction changes (a `configure()` call, a broadcast) are
@@ -24,9 +30,9 @@ For each `@configurable` (or registered) instance, `dump()` emits a
    *transforms* its constructor args instead of storing them) reloadable.
 
 Values follow the same rules recursively: a nested configurable dumps as its
-own `!class:` node, a shared instance reached twice dumps once and is
-referenced (`!ref:`), a deferred slot still holding a `!lazy:` marker dumps
-as that marker — deferred in, deferred out.
+own `_target_:` node, a shared instance reached twice dumps once and is
+referenced (`${ref:...}`), a deferred slot still holding a partial marker dumps
+as `_partial_: true` — deferred in, deferred out.
 
 ## What a dump deliberately omits
 

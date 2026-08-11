@@ -68,6 +68,13 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`dump()` no longer emits a document `yaml.safe_load` refuses.** Two fallbacks still wrote
+  TAGS: a function-valued param became `!ref 'module.qualname'` (a `collate_fn` is the common
+  case) and an opaque object became a `!class:<name>` scalar. One tag anywhere costs the whole
+  file its plain-YAML readability, which is the single property the format change exists to
+  give. They are now `${ref:module.qualname}` — the spelling the codemod converts a `!ref:` to,
+  so dumps and migrated configs agree — and a bare `{_target_: <name>}` mapping.
+
 - **A class-resolution failure now names the YAML line that wrote the name.** `UnknownClassError`
   reported `Cannot resolve class: pkg.mod.Typo` with no file and no line, so the exact failure a
   rename produces left the reader a 30-frame traceback and a config tree to grep — while
