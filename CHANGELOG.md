@@ -68,6 +68,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A class-resolution failure now names the YAML line that wrote the name.** `UnknownClassError`
+  reported `Cannot resolve class: pkg.mod.Typo` with no file and no line, so the exact failure a
+  rename produces left the reader a 30-frame traceback and a config tree to grep — while
+  `ConstructionError`, a few frames later on the same run, had been printing
+  `.../evaluate_yolo26.yaml:20:5` the whole time. The location was available and discarded:
+  `_resolve_target_callable` was handed `obj.target`, the bare string, so the marker holding
+  `_yaml_loc` never reached the raise. It now takes the MARKER, and both construction funnels
+  report `at <file>:<line>:<col>`. `AmbiguousClassError` gets the same treatment — the registry
+  raises it and has never seen the document, so the funnel re-raises it with the location and the
+  registry's candidate list intact.
+
+  Nested markers report their OWN node, not the enclosing one, which is what makes the line usable
+  in a real config where the offending target is a source inside a pipeline's kwargs.
+
 - **`confluid-migrate --verify` reported three kinds of FALSE difference**, each
   found by running the tool over real configs rather than test fixtures. All
   three had the same shape — the check failed, the file was refused, and the

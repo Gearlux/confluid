@@ -906,6 +906,21 @@ optional-dependency `ImportError`s (pydantic, dotenv), and `flow()`'s constructo
 which re-raises `type(exc)(msg)` to PRESERVE the original class — only its can't-rebuild fallback
 is `ConstructionError`.
 
+**Rule — EVERY error raised while processing a document NAMES ITS `file:line:col`** (user
+instruction 2026-08-11, asked repeatedly). A config error without a location is not a usable
+error: the user gets a 30-frame traceback through `engine.py` and still has to grep 76 YAML files
+for the offending string. The marker carries `_yaml_loc`, `format_yaml_loc(fluid)` renders it, and
+`ConstructionError` already does this (`Failed to construct RFUAVSource at
+.../evaluate_yolo26.yaml:20:5`) — so the machinery is not the obstacle, DROPPING the marker on the
+way to the raise is.
+
+**Consequence for helpers.** A helper that raises about a node MUST receive the NODE, never just
+the string pulled off it. `_resolve_target_callable(obj.target)` is the live counterexample: it
+takes the target STRING, so `UnknownClassError: Cannot resolve class:
+waivefront.sources.HDF5WindwoSource` names no file and no line, while the marker holding the
+location sits one frame up in `_flow_target`. When you add or touch such a helper, pass the marker
+(or the loc) and render it into the message.
+
 **Pins.** `tests/test_exceptions.py`. **Docs.** `docs/errors.md`.
 
 ### Dependencies
