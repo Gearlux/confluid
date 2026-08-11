@@ -512,3 +512,93 @@ def test_class_and_instance_are_now_the_same_type() -> None:
     assert Target(int).partial is False
     assert Partial(int).partial is True
     assert isinstance(Partial(int), Instance)  # the old check no longer separates them
+
+
+def test_the_deprecated_Lazy_alias_stays_SUBSCRIPTABLE() -> None:
+    """``Lazy[T]`` must keep working for a type checker, not just at runtime.
+
+    `Lazy = Partial` as a plain ASSIGNMENT loses the alias's genericity: mypy then
+    reports `Bad number of arguments for type alias, expected 0, given 1` at every
+    downstream `Lazy[DataLoader[Any]]`. Measured on three real slots in a consuming
+    project, which is why the alias is an IMPORT alias instead.
+
+    Runtime subscripting passing is NOT the check that matters here (an assignment
+    passes that too) — the guard is that `Lazy` IS `Partial`, the same alias object,
+    so a type checker sees one generic alias under two names.
+    """
+    import confluid
+    from confluid.partial import Partial as _PartialAnnotation
+
+    # Identity is the whole check: a type checker resolves `Lazy[T]` only if `Lazy`
+    # IS the generic alias, not a re-binding of it. (Subscripting here would need a
+    # `# type: ignore` precisely because mypy reads the annotation, not the runtime.)
+    assert confluid.Lazy is _PartialAnnotation, "must be the SAME alias, not a copy"
+
+
+def test_the_body_slot_scan_still_recognises_the_DEPRECATED_call_names() -> None:
+    """A body slot written ``self.x = LazyClass(...)`` must stay deferred.
+
+    The scan matches on the call NAME in the source, so the rename to
+    ``PartialClass`` silently un-deferred every consumer still using the alias —
+    which is all of them, since the alias exists so they need not change. Silent
+    is the operative word: no error, no diagnostic, the slot is just built, and
+    an optimizer reaches its constructor without the params it was waiting for.
+    """
+    from confluid import LazyClass, PartialClass, configurable, partial_param_names
+
+    @configurable
+    class _Old:
+        def __init__(self, n: int = 1) -> None:
+            self.n = n
+            self.slot = LazyClass(int)  # the deprecated spelling
+
+    @configurable
+    class _New:
+        def __init__(self, n: int = 1) -> None:
+            self.n = n
+            self.slot = PartialClass(int)
+
+    assert "slot" in partial_param_names(_Old), "the deprecated spelling must still defer"
+    assert "slot" in partial_param_names(_New)
+
+
+def test_a_Partial_ANNOTATED_ctor_param_keeps_its_value_deferred() -> None:
+    """A slot the class declared `Partial[T]` is broadcast into but never BUILT.
+
+    The declaration is the receiver's contract — "I will supply a runtime argument"
+    — so a plain `_target_:` wired into such a slot must not be constructed at load.
+    Regression: the constructor honoured it and a post-construction sweep
+    (`_broadcast_onto_instance`) then re-resolved the attribute with no knowledge of
+    the slot and built it anyway, so an optimizer reached its constructor without the
+    `params` it was waiting for. Caught by a CLI's flow-mode test, not by this suite.
+    """
+    from typing import Any, List
+
+    from confluid import Partial, Target, flow, load
+
+    @configurable
+    class _Needs:
+        def __init__(self, params: List[int], lr: float = 0.01) -> None:
+            self.params, self.lr = params, lr
+
+    @configurable
+    class _Plain:
+        def __init__(self, path: str = "") -> None:
+            self.path = path
+
+    @configurable
+    class _Holder:
+        def __init__(self, optimizer: Partial[Any] = None, model: Any = None) -> None:
+            self.optimizer, self.model = optimizer, model
+
+    held = load(
+        "h:\n"
+        "  _target_: _Holder\n"
+        "  optimizer: {_target_: _Needs, lr: 0.5}\n"
+        "  model: {_target_: _Plain, path: /m}\n"
+    )["h"]
+
+    assert isinstance(held.optimizer, Target), "a Partial[T] slot must stay deferred"
+    assert held.optimizer.kwargs["lr"] == 0.5, "deferral withholds CONSTRUCTION, not configuration"
+    assert isinstance(held.model, _Plain), "an undeclared slot is built as usual"
+    assert flow(held.optimizer, params=[1, 2]).params == [1, 2]
