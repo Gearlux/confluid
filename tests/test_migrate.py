@@ -407,3 +407,28 @@ def test_verification_resolves_a_relative_include_against_the_FILE(
     assert problems == [], problems
     assert result.changed
     assert "_target_: Box" in target.read_text()
+
+
+def test_a_live_object_is_compared_by_TYPE_not_by_repr() -> None:
+    """A dotted ``!ref:split.train`` instantiates its target to read the attribute,
+    so a live object reaches the comparison. Its default repr carries a memory
+    address and the two sides are necessarily different objects, so comparing
+    reprs makes every such node read as a difference.
+
+    Measured: three real 485-site configs reported "marker trees DIFFER" whose
+    entire diff was ``<_SplitView object at 0x14d95ff20>`` vs ``0x10a27a000``.
+    """
+    from confluid.migrate import _marker_shape
+
+    class _Opaque:
+        pass
+
+    one, two = _Opaque(), _Opaque()
+    assert repr(one) != repr(two), "the reprs differ — that is the trap"
+    assert _marker_shape(one) == _marker_shape(two)
+    assert "_Opaque" in str(_marker_shape(one))
+
+    class _Other:
+        pass
+
+    assert _marker_shape(_Opaque()) != _marker_shape(_Other()), "a real type change must still show"

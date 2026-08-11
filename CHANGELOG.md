@@ -46,6 +46,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`confluid-migrate --verify` reported three kinds of FALSE difference**, each
+  found by running the tool over real configs rather than test fixtures. All
+  three had the same shape — the check failed, the file was refused, and the
+  refusal looked exactly like the safety net working:
+
+  - an **unset environment variable** left `$NAME` on one side and `${env:NAME}`
+    on the other, two literals that differ as text while meaning the same thing.
+    Unset variables now get a sentinel value for the comparison, which also makes
+    it stronger: the substitution actually runs on both sides.
+  - a **live object** reached the comparison (a dotted `!ref:split.train`
+    instantiates its target to read the attribute) and was compared by `repr`,
+    which carries a memory address. The two sides are necessarily different
+    objects, so every such node read as a difference. Compared by TYPE now.
+  - a **relative `include:`** resolved against the caller's working directory
+    rather than the file's, since verification loads from text.
+
 - **`confluid-migrate --verify` could not verify a config with a relative
   `include:`.** Verification loads the document from text, which carries no
   location, so `include: ../base.yaml` resolved against the caller's working
