@@ -426,22 +426,73 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
     }
 
     if "include" in processed_dict:
-        includes = processed_dict.pop("include")
-        if isinstance(includes, str):
-            includes = [includes]
-
-        if isinstance(includes, list):
-            merged_base: Dict[str, Any] = {}
-            for inc_path in includes:
-                if not isinstance(inc_path, str):
-                    continue
-                target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
-
-                inc_data = load_config(target_path, _included=set(_included))
-                merged_base = deep_merge(merged_base, inc_data)
-            processed_dict = deep_merge(merged_base, processed_dict)
+        processed_dict = _splice_includes(processed_dict, current_path, _included)
 
     return processed_dict
+
+
+def _splice_includes(block: Dict[str, Any], current_path: Path, _included: Set[Path]) -> Dict[str, Any]:
+    """Splice each included document AT THE POSITION its ``include:`` key was written.
+
+    An ``include:`` behaves as if the included document were **pasted into the
+    source document at that line** — which is the only reading consistent with
+    confluid's ONE precedence rule (document order, last spec wins), and the same
+    rule ``!scope:`` blocks already follow: a construct that contributes keys
+    splices them at its own slot.
+
+    So the include's position is MEANINGFUL, and both directions are useful::
+
+        include: base.yaml      #  base first  -> everything below overrides it
+        lr: 0.3
+
+        lr: 0.3                 #  base last   -> base overrides what is above it
+        include: base.yaml
+
+    Until 2026-08-11 the directive was popped and the WHOLE including file was
+    merged over the result, so where you wrote it made no difference at all: the
+    including file always won, and a config could not express "these are fallbacks,
+    let the shared file win" without splitting into another file. Worse, the
+    inverse also failed — an override written after the include inherited the
+    INCLUDED file's position (``deep_merge`` assigned in place), so it lost to an
+    addressed block inside the include while the same document written flat gave
+    the opposite answer.
+
+    Implementation note: the document is cut into segments at the include's slot
+    and folded left with :func:`confluid.merger.deep_merge`, so a key appearing in
+    several segments still deep-merges (nested blocks combine) and lands at its
+    LAST position — the ordering rule, applied to composition. The common
+    ``include:``-on-line-1 spelling folds to exactly what the old code produced.
+    """
+    includes = block["include"]
+    if isinstance(includes, str):
+        includes = [includes]
+    if not isinstance(includes, list):
+        return {k: v for k, v in block.items() if k != "include"}
+
+    included: List[Dict[str, Any]] = []
+    for inc_path in includes:
+        if not isinstance(inc_path, str):
+            continue
+        target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
+        included.append(load_config(target_path, _included=set(_included)))
+
+    segments: List[Dict[str, Any]] = []
+    current: Dict[str, Any] = {}
+    for key, value in block.items():
+        if key == "include":
+            if current:
+                segments.append(current)
+                current = {}
+            segments.extend(included)  # pasted here, in the order they were listed
+        else:
+            current[key] = value
+    if current:
+        segments.append(current)
+
+    merged: Dict[str, Any] = {}
+    for segment in segments:
+        merged = deep_merge(merged, segment)
+    return merged
 
 
 def load(

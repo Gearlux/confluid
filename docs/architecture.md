@@ -553,6 +553,40 @@ Two corollaries carry the same idea to the places the flag cannot reach:
   on the load path, keys BEFORE the block on the configure path) — that is the per-caller
   ordering model; the candidate set is not allowed to differ again.
 
+- **Composition must produce the order the author reads** (2026-08-11). Everything above governs
+  arbitration *within* one document; `include:` is what produces that document, and it was
+  producing an order the files do not show. Two defects, one cause — the composition step did not
+  obey the rule the rest of the system does:
+
+  1. **The directive's position was discarded.** `include:` was popped and the WHOLE including file
+     merged over the result, so writing it first or last made no difference: the including file
+     always won. A config therefore could not express "these are my fallbacks, let the shared file
+     win" at all.
+  2. **An overridden key kept the INCLUDED file's position.** `merger.deep_merge` assigned overlay
+     values into a copy of the base, and Python keeps a key's original position on assignment — so
+     an override written after an `include:` lost to an addressed block inside that include, while
+     the identical document written flat gave the opposite answer, with no diagnostic on either
+     path.
+
+  The decision is that **an `include:` behaves as if the included document were pasted into the
+  source document at that line** — the same "splice at the wrapper's slot" rule `!scope:` blocks
+  already follow, since both are constructs that contribute keys. `loader._splice_includes` cuts
+  the document at the directive's slot, pastes the included documents there, and folds the segments
+  with `deep_merge`, which now re-anchors an overridden key at the overlay's position so a key
+  written on both sides survives once, at the later position, with the later value. Fix (2) is the
+  same repair `expand_dotted_mapping` received on 2026-08-09 for dotted heads (anchor where the
+  spelling was WRITTEN, never append), applied to the other producer of key order; fix (1) is what
+  makes the directive's own position mean something.
+
+  **Consequences, measured** (every config in the reference workspace using `include:`, 14
+  loadable, directive on lines 2–70 — mid-file placement is normal, so this is not a change that
+  only bites exotic files): key ORDER changes in all 14; no VALUE changes in any. Order is
+  precedence here, so that is not "nothing" — those configs are one edit away from a different
+  outcome — but the change bites only where a key is set on **both** sides of the directive, and
+  none of them does that. With `include:` on line 1 the segment fold reduces to exactly what the
+  old merge produced, which is why the common spelling is unaffected by construction rather than
+  by luck.
+
 **Example.**
 
 ```yaml
@@ -561,12 +595,23 @@ opt: !lazy:torch.optim.AdamW(lr=0.5)     # ... loses to the later own kwarg -> 0
 ```
 
 Swap the two lines and the bare key wins instead. Without the flag, the broadcast pass would
-apply `lr: 0.9` in **both** orderings.
+apply `lr: 0.9` in **both** orderings. The composition corollary, across two files — the same two
+files, in the two include positions:
+
+```yaml
+# base.yaml       # main.yaml, include FIRST     # main.yaml, include LAST
+lr: 0.1           include: base.yaml             lr: 0.3
+Stage:            lr: 0.3                        s: !class:Stage()
+  lr: 0.2         s: !class:Stage()              include: base.yaml
+                  # -> s.lr = 0.3                # -> s.lr = 0.2
+```
 
 **What you may change.** Not the discriminator: `_yaml_loc` must never again gate precedence
 (diagnostics drift toward absence — a merged, tuned, or hand-built marker legitimately has no
 location, and absence must not mean "default"). And never persist a configure()-path verdict on
-the marker — it would outlive the document that produced it.
+the marker — it would outlive the document that produced it. Nor may any future merge helper
+reinstate base-anchored positions: if a mechanism produces a document, its key order is a
+precedence decision, and it must be the author's reading order.
 
 ---
 

@@ -769,3 +769,47 @@ def test_a_locals_scope_is_dropped_while_a_lambda_name_is_unwrapped() -> None:
 
     assert _entry_key(outer()).endswith("outer.Inner")
     assert _entry_key(lambda: None).endswith(".lambda")
+
+
+def test_same_qualname_classes_do_not_share_an_accept_list() -> None:
+    """The introspection caches key on IDENTITY, not on ``module.QualName``.
+
+    Two classes defined in ONE scope share that dotted name — which is why
+    ``registry._claim_key`` suffixes ``~N`` — and until 2026-08-11 the five
+    per-pass introspection caches keyed on the raw name, so the second class was
+    served the FIRST one's accept-list. The measured consequence was silent: the
+    second class built on its defaults and had the other's key ``setattr``-ed onto
+    it as a post-init attribute. Real triggers are class factories, plugin loaders
+    building classes in a loop, and parametrised fixtures.
+    """
+    from confluid import configurable, load
+    from confluid.broadcast import _get_acceptable_keys, clear_pass_caches
+
+    def make_both() -> tuple:
+        @configurable(name="FirstWidget")
+        class Widget:
+            def __init__(self, alpha: int = 1) -> None:
+                self.alpha = alpha
+
+        first = Widget
+
+        @configurable(name="SecondWidget")
+        class Widget:  # type: ignore[no-redef]  # noqa: F811 — same __qualname__ IS the case under test
+            def __init__(self, beta: int = 2) -> None:
+                self.beta = beta
+
+        return first, Widget
+
+    first, second = make_both()
+    assert first.__qualname__ == second.__qualname__  # the collision this test exists for
+
+    clear_pass_caches()
+    assert _get_acceptable_keys(first) == frozenset({"alpha"})
+    assert _get_acceptable_keys(second) == frozenset({"beta"})
+
+    clear_pass_caches()
+    result = load("alpha: 41\nbeta: 42\na: !class:FirstWidget()\nb: !class:SecondWidget()\n")
+
+    assert result["a"].alpha == 41
+    assert result["b"].beta == 42
+    assert not hasattr(result["b"], "alpha")  # the foreign key must never land

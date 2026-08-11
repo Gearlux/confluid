@@ -1,5 +1,7 @@
 # `${...}` Interpolation & Config Files
 
+> New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
+
 ## `${...}` interpolation — env vars AND config keys
 
 A `${...}` placeholder in a string value is substituted at load time. The name decides the source:
@@ -54,6 +56,70 @@ root: $DATA_ROOT/RFUAV/v3        # -> /store/RFUAV/v3 (same as ${DATA_ROOT}/RFUA
 > `flow()` of a deferred `!lazy:` slot sees it, even if the environment changed
 > in between. A slot that must stay **late-bound** uses `!ref:` to a plain key
 > instead of `${...}`.
+
+## `include:` and document order
+
+**An `include:` behaves as if the included document were pasted into your file at
+that line.** That is the whole rule. Confluid has one precedence rule — document
+order, last spec wins — and the include obeys it like everything else.
+
+```yaml
+# base.yaml                    # main.yaml
+lr: 0.1                        include: base.yaml
+Stage:                         lr: 0.3
+  lr: 0.2                      s: !class:Stage()
+```
+
+Read the composed document top to bottom:
+
+```yaml
+Stage:
+  lr: 0.2         # from the paste
+lr: 0.3           # your line, where you wrote it
+s: !class:Stage()
+```
+
+`s` gets `lr = 0.3` — your bare key is the last spec. Note that base's `lr: 0.1`
+is gone: **a key written on both sides survives once, at the later position, with
+the later value.**
+
+### The position of `include:` is meaningful
+
+Move the directive to the bottom and the same two files mean the opposite thing:
+
+```yaml
+# main.yaml
+lr: 0.3
+s: !class:Stage()
+include: base.yaml     # everything above is a FALLBACK; base overrides it
+```
+
+composes to
+
+```yaml
+s: !class:Stage()
+lr: 0.1           # base's value now, at the paste's later position
+Stage:
+  lr: 0.2         # the last spec addressing Stage
+```
+
+so `s` gets `lr = 0.2`. This is the natural way to say *"here are my defaults,
+let the shared file win"*, and an include in the middle splits the file cleanly:
+keys above it are overridden by the paste, keys below it override the paste.
+
+- **Between two includes, the later one wins** (`include: [first, second]`) — they
+  paste in listed order at the same slot.
+- **A nested block still deep-merges.** Splicing decides *where* a block lands,
+  not whether blocks combine: `Trainer: {lr: 0.9}` over an included
+  `Trainer: {lr: 0.1, epochs: 5}` yields `{lr: 0.9, epochs: 5}`.
+
+> **Changed 2026-08-11.** Previously the directive was lifted out and the whole
+> including file was merged over the result, so its position made no difference
+> and the including file always won — and, because an overridden key kept the
+> *included* file's position, an override written after the include could still
+> lose to an addressed block inside it (the same document written flat gave the
+> opposite answer). If you have a config that relied on the including file
+> winning from a bottom-placed `include:`, move the directive to the top.
 
 ## Capturing the YAML include tree
 

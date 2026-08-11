@@ -10,6 +10,60 @@ All notable changes to confluid are documented here. The format follows
 
 ### Changed
 
+- **`include:` pastes the included document AT ITS LINE (2026-08-11).** An
+  `include:` now behaves as if the included document were pasted into the source
+  document at that line — the same "splice at the wrapper's slot" rule `!scope:`
+  blocks follow, and the only reading consistent with confluid's one precedence
+  rule. Two defects went with the old behaviour:
+
+  - the directive's **position was discarded** (it was popped and the whole
+    including file merged over the result), so writing it first or last made no
+    difference and the including file always won — a config could not express
+    "these are my fallbacks, let the shared file win" at all;
+  - an **overridden key kept the INCLUDED file's position**, because `deep_merge`
+    assigned into a copy of the base and Python preserves a key's position on
+    assignment. So an override written after the include lost to an addressed
+    block inside it, while the same document written flat gave the opposite
+    answer — with no diagnostic on either path.
+
+  ```yaml
+  # base.yaml       # main.yaml, include FIRST     # main.yaml, include LAST
+  lr: 0.1           include: base.yaml             lr: 0.3
+  Stage:            lr: 0.3                        s: !class:Stage()
+    lr: 0.2         s: !class:Stage()              include: base.yaml
+                    # -> s.lr = 0.3                # -> s.lr = 0.2
+  ```
+
+  `loader._splice_includes` cuts the document at the directive's slot and folds
+  the segments with `deep_merge`, which now re-anchors an overridden key at the
+  overlay's position — so a key written on both sides survives once, at the later
+  position, with the later value. Nested blocks still deep-merge.
+
+  **Migration.** The shape that changes is a config whose lines **above** the
+  `include:` set a key the included file also sets: those lines are now
+  overridden by the paste, where before the including file always won. Move the
+  directive to the top to keep the old meaning.
+
+  Measured across every config in the reference workspace that uses `include:`
+  (14 loadable; the directive sits on lines 2–70, so mid-file placement is
+  common): **key order changes in all of them and no value changes in any**,
+  because none re-states a key its include also sets. Expect the same shape of
+  result elsewhere — a reordering that is usually inert, and a genuine change
+  only where a key is set on both sides of the directive.
+
+  A front-end that re-seats CLI override keys at the end of the document to work
+  around the old positioning can keep doing so — the operation is now a no-op,
+  not a conflict. Docs: `docs/interpolation.md` → "`include:` and document
+  order"; architecture record 6.
+
+- **`python-dotenv` is no longer a runtime dependency** — it moved to the new
+  `confluid[env]` extra. It was only ever used by `confluid.env.load_workspace_env`
+  (a `.env`-walking convenience helper); nothing in the configuration engine
+  imports it, so every installation of confluid was paying for a helper most
+  consumers never call. `confluid.env` still imports without the extra; only the
+  call raises, with an `ImportError` naming it. Runtime dependencies are now
+  `pyyaml`, `loggair` and `typing-extensions`.
+
 - **`confluid.state` and `confluid.broadcast` split out of `confluid.engine`.**
   The layering is now `fluid → state → broadcast → engine → loader`. `broadcast`
   owns the one precedence rule and its machinery — scope tags, the tagged view,
@@ -33,6 +87,27 @@ All notable changes to confluid are documented here. The format follows
   target that module.
 
 ### Fixed
+
+- **Two classes with the same `module.QualName` no longer share an accept-list
+  (2026-08-11).** The five per-pass introspection caches (`_acceptable_keys_cache`,
+  `_post_init_attrs_cache`, `_param_kind_cache`, `_declared_names_cache`,
+  `engine._parent_blacklist_cache`) keyed on that dotted name, which is not unique —
+  the registry has always known this (`_claim_key` suffixes `~N`) because two
+  classes defined in ONE scope share it: a class factory, a plugin loader building
+  classes in a loop, a decorator that rebuilds a class, a parametrised fixture.
+  The second class was served the first one's accept-list, so it was built on its
+  defaults and had a FOREIGN key `setattr`-ed onto it, silently. All five now key
+  on `broadcast._cache_key(target)` — the target object itself.
+
+- **`get_hierarchy()` returned `{}` for every registered builder FUNCTION
+  (2026-08-11).** `register()` / `@configurable` stamp `__confluid_configurable__`
+  on the function object, which disqualified it from `schema.py`'s callable branch;
+  the class branch then read `types.FunctionType.__init__` = `object.__init__` =
+  `(*args, **kwargs)` and filtered every parameter away. The same target was fully
+  visible to `input_specs` / `to_pydantic` / `parse_param_docs`, so only the
+  `get_hierarchy` surface (a CLI `--help` view) lost it. Both walkers in
+  `schema.py` now dispatch through `introspect.init_callable`, which exists to
+  prevent exactly this.
 
 - **A glob-registered unused-candidate is satisfied by its LEAF (2026-08-10).**
   `ConfigurationReport.mark_used("lr")` now also satisfies registered `**.lr` /
@@ -210,6 +285,28 @@ All notable changes to confluid are documented here. The format follows
 
 ### Documentation
 
+- **`docs/lifecycle.md` — the map (2026-08-11).** Twenty-one correct topic pages
+  with nothing tying them together: no page described the ORDER of the passes, and
+  the repo had no diagram at all. The new guide gives the nine passes
+  (parse → import → include → scope → interpolate → expand → broadcast → flow →
+  solidify), what each one decides permanently, where you can stop
+  (`load_config` / `flow=False` / `resolve()` / `load()` / `solidify=False` /
+  `configure()`), and the questions the order answers — why `${...}` burns in, why
+  a scope block cannot read an interpolated value, why an included file wins or
+  loses. Its runnable twin `examples/lifecycle.py` walks one document through every
+  stage and ASSERTS each invariant. Cross-linked from the topic guides and listed
+  first in the README index.
+
+- **`AGENTS.md` re-split into RULE / PINS / WHY (2026-08-11).** It had grown to
+  108 KB of rule, history, measurement and pins interleaved in single paragraphs —
+  several mandates were longer than the topic guide they pointed at, and the
+  rationale was restated beside every link to the architecture record that already
+  held it. Same rules, same 35 test-file and 32 test-method pins, half the size.
+
+- **`examples/modular_includes/` gained the README its own convention requires**,
+  and now demonstrates the include-ordering rule with assertions rather than only
+  composition.
+
 - **Three new topic guides, each with a runnable example twin** (2026-08-10 —
   closing the review's largest doc gaps): `docs/configure.md`
   (post-construction configuration — the first key-feature bullet finally has
@@ -242,6 +339,22 @@ All notable changes to confluid are documented here. The format follows
   folded into the records in the same pass.
 
 ### Internal
+
+- **Materialization is ~22 % faster (2026-08-11), measured, no design change.**
+  Two hot-path repairs on `examples/performance.py`'s 2,500-marker tree
+  (305 ms → 238 ms):
+
+  - **Per-key TRACE diagnostics are gated.** Python evaluates the f-string before
+    the logger can filter, and loggair's handlers sit at TRACE with a filter, so
+    loguru's own min-level fast path never fires — 10,000 records per pass were
+    built in full, dispatched to both handlers, and discarded (30.1 % of the pass,
+    isolated by measurement). The four per-key sites now check a gate recomputed
+    once per pass by `clear_pass_caches()` from `loggair.get_active_config()`. A
+    swapped-in logger is never gated, so log-asserting tests are unaffected.
+  - **`broadcast._same_target` is memoized** through the existing
+    `register_pass_cache` mechanism. It was the one uncached introspection helper
+    in the module and was asked once per (view entry × marker) — 113,000 times per
+    pass, 50,002 of which reached `resolve_class` (9.5 %).
 
 - **The cascade corner runs on shared primitives (2026-08-10 — the review's P1
   batch, closing the residue the D6/D7 defects lived in).** Five

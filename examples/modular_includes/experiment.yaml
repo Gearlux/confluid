@@ -6,3 +6,7 @@ base_lr: 0.0001
 
 Model:
   layers: 50
+
+# Written AFTER the Model block, in the file that does the including — so this
+# is the last spec for `dropout` in the composed document, and it wins.
+dropout: 0.5

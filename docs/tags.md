@@ -1,5 +1,7 @@
 # Tags & Deferred Initialization
 
+> New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
+
 A Confluid config is built from six YAML tags. Each parses into a typed
 **Fluid** — a deferred *recipe* — that `load()` / `materialize()` resolves into
 a live **Solid** object. This two-stage lifecycle is what lets Confluid

@@ -49,6 +49,7 @@ from confluid.broadcast import (
     _spliced_subtree_view,
     clear_pass_caches,
     merge_bare_pool_into_kwargs,
+    trace_enabled,
     tune_marker,
 )
 from confluid.engine import _ctor_params, _maybe_solidify, flow
@@ -303,7 +304,8 @@ class _LiveSink:
         self.report.mark_used(_mark_used_key(key, origin))
 
     def apply(self, key: str, value: Any, origin: str, scope: Any, own: bool, gated: bool) -> None:
-        logger.trace(f"configure: {key!r} -> {self.cls_name} ({origin})")
+        if trace_enabled(logger):  # per-KEY site — see broadcast's log-gate block
+            logger.trace(f"configure: {key!r} -> {self.cls_name} ({origin})")
         self.assignments[key] = value
         self.origins[key] = origin
         self._mark_used(key, origin)

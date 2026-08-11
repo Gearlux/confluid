@@ -275,3 +275,63 @@ def test_a_var_keyword_function_still_cannot_refuse_any_key(clean_registry: Any)
 
     assert accepts_any_key(forwards)
     assert accepts_key(forwards, "anything")
+
+
+def test_get_hierarchy_reads_a_registered_functions_own_signature(clean_registry: Any) -> None:
+    """``get_hierarchy`` reported ``{}`` for every registered builder FUNCTION.
+
+    ``register()`` / ``@configurable`` stamp ``__confluid_configurable__`` on the
+    function object, which disqualified it from ``_build_hierarchy_recursive``'s
+    callable branch; the class branch then read
+    ``types.FunctionType.__init__`` = ``object.__init__`` = ``(*args, **kwargs)``
+    and filtered every parameter away. The same target was fully visible to
+    ``input_specs`` / ``to_pydantic`` / ``parse_param_docs``, so a CLI ``--help``
+    view (the consumer of ``get_hierarchy``) was the one surface that lost it.
+    """
+    from confluid import configurable, get_hierarchy, input_specs, register
+
+    def build_widget(num_classes: int = 91, pretrained: bool = False) -> Dict[str, Any]:
+        """Build a widget.
+
+        Args:
+            num_classes: How many classes the head predicts.
+            pretrained: Whether to load pretrained weights.
+        """
+        return {"num_classes": num_classes, "pretrained": pretrained}
+
+    register(build_widget, task="detection", role="model")
+
+    hierarchy = get_hierarchy(build_widget)
+    assert set(hierarchy) == {"num_classes", "pretrained"}
+    assert hierarchy["num_classes"][1] == 91  # the real default, not object.__init__'s
+    assert hierarchy["num_classes"][2] == "How many classes the head predicts."
+    # The surfaces must agree — the drift is what made this invisible.
+    assert {spec["name"] for spec in input_specs(build_widget)} == set(hierarchy)
+
+    @configurable
+    def build_other(depth: int = 3) -> Dict[str, Any]:
+        """Build another. Args: depth: How deep."""
+        return {"depth": depth}
+
+    # The @configurable wrapper is still a routine, and get_type_hints /
+    # inspect.signature follow __wrapped__ — so the wrap must not hide the param.
+    assert set(get_hierarchy(build_other)) == {"depth"}
+
+
+def test_get_hierarchy_from_instance_walks_a_function_valued_slot(clean_registry: Any) -> None:
+    """A function held in a live slot routes to the callable walk, not the instance walk."""
+    from confluid import configurable, get_hierarchy_from_instance, register
+
+    def collate(batch_size: int = 4) -> int:
+        """Collate. Args: batch_size: Items per batch."""
+        return batch_size
+
+    register(collate)
+
+    @configurable
+    class Holder:
+        def __init__(self, fn: Any = None) -> None:
+            self.fn = fn
+
+    paths = get_hierarchy_from_instance({"holder": Holder(fn=collate)})
+    assert any(p.endswith("batch_size") for p in paths), sorted(paths)

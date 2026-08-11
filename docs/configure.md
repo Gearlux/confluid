@@ -1,5 +1,7 @@
 # Post-Construction Configuration
 
+> New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
+
 `configure()` applies a config document to objects that **already exist** — in
 place, no re-instantiation. It is the second half of confluid's core promise:
 `load()` builds an object graph *from* a document; `configure()` brings a live

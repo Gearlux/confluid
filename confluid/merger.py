@@ -5,13 +5,33 @@ from confluid.fluid import Fluid
 
 
 def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Recursively merge overlay into base.
-    Returns a new dictionary.
+    """Recursively merge ``overlay`` into ``base``; returns a NEW dictionary.
 
     Live Fluid markers (Class/Instance/Reference/Clone) are preserved by
     identity so that ``!ref:`` resolution stays consistent across contexts.
     Other values are deep-copied for safety.
+
+    **A key the overlay re-states takes the OVERLAY's position** (2026-08-11).
+    Key order is not cosmetic here: confluid has ONE precedence rule — document
+    order, last spec wins — so the merged order IS the arbitration. Python
+    preserves the original position when you assign to an existing key, which
+    meant an overridden key silently kept the position it had in the BASE, and
+    the most common composition in the system inverted its own rule::
+
+        # base.yaml            # main.yaml
+        lr: 0.1                include: base.yaml
+        Stage:                 lr: 0.3            <- written last, LOST (0.2 won)
+          lr: 0.2              s: !class:Stage()
+
+    ``lr`` sat at the base's position 0, ahead of the ``Stage:`` block it was
+    written after, so the included file's addressed value won — while the same
+    document written flat gave 0.3. Re-anchoring makes the merged order "every
+    key the overlay did not mention, in base order, then the overlay's keys in
+    overlay order", i.e. exactly "the including file is read after the file it
+    includes". Sibling rule, same reasoning: ``expand_dotted_mapping`` anchors a
+    fresh head at the position the dotted spelling was WRITTEN.
+
+    Pins: ``tests/test_includes.py`` (the ordering group), ``tests/test_merger.py``.
     """
     result: Dict[str, Any] = cast(
         Dict[str, Any],
@@ -19,9 +39,13 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     )
     for key, value in overlay.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
+            merged = deep_merge(result[key], value)
         else:
-            result[key] = _preserve_identity_copy(value)
+            merged = _preserve_identity_copy(value)
+        # Re-anchor: delete before re-inserting so the key lands at the overlay's
+        # position instead of keeping the base's (see the docstring).
+        result.pop(key, None)
+        result[key] = merged
     return result
 
 

@@ -26,6 +26,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 
 | Guide | What it covers | Example |
 |---|---|---|
+| [**The Lifecycle**](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md) — *start here* | How a document becomes objects: the nine passes in order (parse → include → scope → interpolate → expand → broadcast → flow → solidify), what each one decides permanently, and where you can stop | `lifecycle.py` |
 | [Tags & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/tags.md) | The six YAML tags, Fluid→Solid lifecycle, `!class:` eager-vs-deferred, `!lazy:` + `flow()`, `!ref:` vs `!clone:` | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |
