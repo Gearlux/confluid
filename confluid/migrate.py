@@ -98,6 +98,12 @@ _RESOLVER_NAMES = _ENV_RESOLVERS | _MARKER_RESOLVERS
 #: Bare ``$NAME`` — environment-only, no dotted form and no default.
 _BARE_ENV_RE = re.compile(r"(?<![\w$}])\$([A-Za-z_][A-Za-z0-9_]*)")
 
+#: Every environment-variable NAME a document mentions, in any of the three
+#: spellings — used to give unset ones a value while verifying.
+_ENV_NAME_RE = re.compile(
+    r"\$\{env:([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)[,:}]|(?<![\w$}])\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+
 
 @dataclass
 class Finding:
@@ -429,7 +435,16 @@ def _marker_shape(value: Any) -> Any:
         return {k: _marker_shape(v) for k, v in sorted(value.items())}
     if isinstance(value, list):
         return [_marker_shape(v) for v in value]
-    return value
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    # A LIVE object — a dotted `!ref:split.train` instantiates its target to read
+    # the attribute, so one shows up here. Compare its TYPE, never its repr: the
+    # default repr carries a memory address, and the two sides are necessarily
+    # different objects, so every such node would read as a difference. (Measured:
+    # the only "difference" in three real 485-site configs was a _SplitView at two
+    # addresses.) The marker structure around it is what a conversion can affect.
+    kind = type(value)
+    return f"<{kind.__module__}.{kind.__qualname__}>"
 
 
 def _activations(raw: Dict[str, Any]) -> List[List[str]]:
@@ -445,6 +460,32 @@ def _activations(raw: Dict[str, Any]) -> List[List[str]]:
     for dimension, values in sorted(discover_dimension_values(raw).items()):
         out.extend([f"{dimension}={value}"] for value in sorted(values))
     return out
+
+
+@contextmanager
+def _env_placeholders(*texts: str) -> Iterator[None]:
+    """Give every UNSET environment variable the documents mention a sentinel value.
+
+    Without this the comparison is between two unresolved LITERALS rather than two
+    resolved values: an unset variable leaves `$NAME` on one side and
+    `${env:NAME}` on the other, which differ as text while meaning the same thing.
+    Measured on a real config — the only reported difference in a 485-site
+    migration was `$PROJECT_ROOT` vs `${env:PROJECT_ROOT}`, and setting the
+    variable made the trees identical.
+
+    Assigning a value also makes the comparison STRONGER: the substitution
+    actually runs on both sides, so a conversion that mangled the variable NAME
+    still shows up as a difference.
+    """
+    names = {g for text in texts for m in _ENV_NAME_RE.finditer(text) for g in m.groups() if g}
+    added = [name for name in names if name not in os.environ]
+    for name in added:
+        os.environ[name] = f"__confluid_migrate_{name}__"
+    try:
+        yield
+    finally:
+        for name in added:
+            os.environ.pop(name, None)
 
 
 @contextmanager
@@ -510,7 +551,7 @@ def verify_equivalence(
     for scopes in activations:
         label = ",".join(scopes) or "<no scopes>"
         try:
-            with _working_dir(base_dir):
+            with _working_dir(base_dir), _env_placeholders(before, after):
                 differs = _resolved(before, scopes) != _resolved(after, scopes)
             if differs:
                 problems.append(f"{path}: marker trees DIFFER under {label}")

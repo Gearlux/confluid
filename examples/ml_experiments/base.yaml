@@ -15,29 +15,41 @@ base_lr: 0.5
 # --- data ---
 # Trailing () = build eagerly at load time (broadcast keys still reach it);
 # the mapping body supplies constructor kwargs.
-dataset: !class:SyntheticDataset()
+dataset:
+  _target_: SyntheticDataset
   n_records: 256
 
 # --- config group "model" (default: MLP; select others via scopes=["model=cnn"]) ---
-model_default: !notscope:model      # active while no model=... dimension is set
-  model: !class:MLP()
+model_default:      # active while no model=... dimension is set
+  _notscope_: {model: }
+  model:
+    _target_: MLP
     hidden: 32
-model_cnn: !scope:model=cnn
-  model: !class:CNN()
+model_cnn:
+  _scope_: {model: cnn}
+  model:
+    _target_: CNN
     channels: 8
 
 # --- config group "optimizer" (default: SGD; select via scopes=["optimizer=adam"]) ---
 # !lazy: = deferred until the trainer flows it with params= at run time.
-optim_default: !notscope:optimizer
-  optimizer: !lazy:SGD
-    lr: !ref:base_lr
-optim_adam: !scope:optimizer=adam
-  optimizer: !lazy:Adam
-    lr: !ref:base_lr
+optim_default:
+  _notscope_: {optimizer: }
+  optimizer:
+    _target_: SGD
+    _partial_: true
+    lr: ${ref:base_lr}
+optim_adam:
+  _scope_: {optimizer: adam}
+  optimizer:
+    _target_: Adam
+    _partial_: true
+    lr: ${ref:base_lr}
 
 # --- the trainer wires everything together ---
-trainer: !class:Trainer
-  model: !ref:model
-  dataset: !ref:dataset
-  optimizer: !ref:optimizer
+trainer:
+  _target_: Trainer
+  model: ${ref:model}
+  dataset: ${ref:dataset}
+  optimizer: ${ref:optimizer}
   max_epochs: 10
