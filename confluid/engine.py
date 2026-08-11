@@ -205,9 +205,11 @@ def resolve(
     ``materialize(data, solidify=False)`` is the instantiate-but-cheap
     counterpart; prefer it unless you specifically need un-built markers.
 
-    Caveat: a *dotted* ``!ref:a.b`` (attribute/method access) still instantiates
-    its target subtree to read the attribute — plain whole-object ``!ref:name``
-    stays a marker.
+    A *dotted* ``!ref:a.b`` (attribute/method access) stays a ``Reference`` here,
+    exactly as a plain whole-object ``!ref:name`` does: reading ``split.train``
+    would mean BUILDING ``split``, and this function constructs nothing. Use
+    ``materialize()`` / ``load()`` when you want the attribute's value — those
+    still resolve it off ONE shared instance.
     """
     # The ONE deliberate engine->YAML seam: resolve() accepts a str/Path for
     # convenience, which needs the YAML loader. Partial import keeps the module
@@ -222,7 +224,14 @@ def resolve(
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
     # untouched — resolve() never managed that flag (it builds no objects).
     token = _ENGINE_STATE.set(
-        replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}, memo_keepalive=[])
+        replace(
+            _ENGINE_STATE.get(),
+            context=ctx,
+            flow_memo={},
+            instance_memo={},
+            memo_keepalive=[],
+            structural=True,
+        )
     )
     try:
         return _flow_recursive(prepared, parent_context=ctx)
@@ -441,7 +450,15 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             return _flow_recursive(resolved, parent_context=parent_context)
         # Support dotted paths and method calls (e.g., "obj.method()") via
         # the unified rich resolver (attribute access, brackets, module import).
-        if parent_context:
+        #
+        # This is the ONE place `_flow_recursive` constructs on behalf of a
+        # Reference: reading `split.train` means building `split`. `resolve()`
+        # promises to construct NOTHING, so it withholds this step and hands the
+        # Reference back untouched — a dotted ref stays late-bound exactly as a
+        # plain `!ref:name` already does. `materialize()` / `load()` are
+        # unaffected, so the one-instance guarantee (one `split` shared by
+        # `.train` and `.val`) is untouched.
+        if parent_context and not _ENGINE_STATE.get().structural:
             resolved = resolve_reference_path(data.target, parent_context)
             if resolved is not None:
                 return resolved
