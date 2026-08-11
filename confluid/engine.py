@@ -71,13 +71,12 @@ from confluid.broadcast import (  # noqa: F401
 )
 from confluid.exceptions import ConfigurationError, ConstructionError, ReferenceResolutionError, UnknownClassError
 from confluid.fluid import (
-    Class,
     Clone,
     Fluid,
-    Instance,
-    Lazy,
+    Partial,
     Reference,
     T,
+    Target,
     addressed_keys_of,
     format_yaml_loc,
     is_order_resolved,
@@ -85,6 +84,7 @@ from confluid.fluid import (
 )
 from confluid.introspect import init_callable, init_setattr_names
 from confluid.merger import expand_dotted_keys
+from confluid.partial import partial_param_names
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, resolve_reference_path
@@ -169,7 +169,14 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     if report is not None and isinstance(context, dict):
         _register_document_keys(report, context)
     token = _ENGINE_STATE.set(
-        _EngineState(context=context, flow_memo={}, instance_memo={}, suppress_solidify=not solidify, report=report)
+        _EngineState(
+            context=context,
+            flow_memo={},
+            instance_memo={},
+            memo_keepalive=[],
+            suppress_solidify=not solidify,
+            report=report,
+        )
     )
     try:
         result = _flow_recursive(data, parent_context=context)
@@ -190,7 +197,7 @@ def resolve(
     resolves scopes/includes, applies broadcasting and ``!ref:`` resolution
     (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
     ``!ref:`` is one object reached twice), and returns the resulting
-    ``Instance`` / ``Lazy`` / ``Class`` markers with their broadcast siblings
+    ``Instance`` / ``Partial`` / ``Class`` markers with their broadcast siblings
     merged into ``.kwargs`` — WITHOUT constructing any live object.
 
     Use for static structural introspection of a config (e.g. StreamStudio's
@@ -203,7 +210,7 @@ def resolve(
     stays a marker.
     """
     # The ONE deliberate engine->YAML seam: resolve() accepts a str/Path for
-    # convenience, which needs the YAML loader. Lazy import keeps the module
+    # convenience, which needs the YAML loader. Partial import keeps the module
     # graph one-directional (loader imports engine at top level, not vice versa).
     from confluid.loader import load
 
@@ -214,7 +221,9 @@ def resolve(
     clear_pass_caches()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
     # untouched — resolve() never managed that flag (it builds no objects).
-    token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}))
+    token = _ENGINE_STATE.set(
+        replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}, memo_keepalive=[])
+    )
     try:
         return _flow_recursive(prepared, parent_context=ctx)
     finally:
@@ -224,7 +233,7 @@ def resolve(
 def _deep_flow(data: Any) -> Any:
     """Flow the top-level Fluid + any Instance objects in the tree.
 
-    ``Lazy`` Fluids are left deferred at every level — they are
+    ``Partial`` Fluids are left deferred at every level — they are
     runtime-injection points whose construction happens later (e.g.
     inside ``configure_optimizers`` once ``model.parameters()`` is
     available). Flowing them here would either fail (missing runtime
@@ -233,13 +242,11 @@ def _deep_flow(data: Any) -> Any:
     _flow = flow  # same-module; alias keeps the moved body verbatim
 
     def _maybe_flow(v: Any) -> Any:
-        if isinstance(v, Lazy):
-            return v
-        if isinstance(v, Instance):
-            return _flow(v)
+        if isinstance(v, Target):
+            return v if v.partial else _flow(v)
         return v
 
-    if isinstance(data, Lazy):
+    if isinstance(data, Target) and data.partial:
         return data
     if isinstance(data, Fluid):
         return _flow(data)
@@ -354,7 +361,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
-    if isinstance(data, (Class, Instance)):
+    if isinstance(data, Target):
         if flow_memo is not None and id(data) in flow_memo:
             return flow_memo[id(data)]
         raw_id = id(data)
@@ -370,7 +377,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         # Pass ANY already-resolved callable through (class OR builder function) —
         # nulling a function target here made the receiver fall back to resolving
         # the bare __name__, which for an unregistered code-built marker
-        # (``LazyClass(builder_fn)``) yielded accept-EVERYTHING and no NoBroadcast
+        # (``PartialClass(builder_fn)``) yielded accept-EVERYTHING and no NoBroadcast
         # gates. The receiver normalizes via the one ``_settability_target``.
         actual_target = data.target if not isinstance(data.target, str) else None
         # Always prepared (even with no parent context) so own kwargs get
@@ -447,7 +454,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
 
             resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
             cloned = deepcopy(resolved)
-            if data.kwargs and isinstance(cloned, (Class, Instance)):
+            if data.kwargs and isinstance(cloned, Target):
                 resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
                 cloned.kwargs.update(resolved_kwargs)
             return cloned
@@ -521,15 +528,15 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
         _maybe_solidify(obj)
         return obj
 
-    # An EXPLICIT ``flow(lazy)`` call builds the Lazy — even with no runtime
-    # kwargs. A ``Lazy`` defers construction past the AUTO-flow walkers
+    # An EXPLICIT ``flow(lazy)`` call builds the Partial — even with no runtime
+    # kwargs. A ``Partial`` defers construction past the AUTO-flow walkers
     # (``_deep_flow`` and ``materialize``'s recursive descent, which both skip it
     # without calling ``flow()``); a deliberate ``flow()`` by domain code is a
     # "build this now" request. The runtime-injection case still works because
     # the missing args are passed as ``runtime_kwargs`` (e.g.
     # ``flow(self.optimizer, params=model.parameters())``); a slot needing no
     # runtime args (e.g. a deferred ``lightning`` Trainer) is built by a bare
-    # ``flow(self.lightning)``. So there is NO Lazy early-return — a ``Lazy`` (a
+    # ``flow(self.lightning)``. So there is NO Partial early-return — a ``Partial`` (a
     # ``Class`` subclass) falls through to the Class instantiation path.
 
     context = get_active_context()
@@ -538,12 +545,18 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
     # when no runtime kwargs override the stored ones (overrides must yield a
     # fresh object).
     instance_memo = _ENGINE_STATE.get().instance_memo
-    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs and not runtime_args:
+    if (
+        isinstance(obj, Target)
+        and not obj.partial
+        and instance_memo is not None
+        and not runtime_kwargs
+        and not runtime_args
+    ):
         cached = instance_memo.get(id(obj))
         if cached is not None:
             return cached
 
-    if isinstance(obj, (Class, Instance)):
+    if isinstance(obj, Target):
         return _flow_target(obj, context, instance_memo, runtime_args, runtime_kwargs)
     if isinstance(obj, type):
         return _flow_bare_type(obj, context, runtime_args, runtime_kwargs)
@@ -565,7 +578,7 @@ def _flow_target(
     runtime_args: Tuple[Any, ...],
     runtime_kwargs: Dict[str, Any],
 ) -> Any:
-    """Materialize a ``Class`` / ``Instance`` / ``Lazy`` marker into a live object.
+    """Materialize a ``Class`` / ``Instance`` / ``Partial`` marker into a live object.
 
     The phase sequence: resolve the target callable → merge + resolve kwargs →
     split constructor kwargs from post-init attrs → construct (under the YAML
@@ -599,12 +612,17 @@ def _flow_target(
     # The nested-Class broadcast pool is the ACTIVE context (bare root keys
     # + '**' contents) — never the receiver's own kwargs (addressed keys do
     # not cascade); without a context only the marker's own glob blocks feed it.
-    is_configurable_target = bool(getattr(target, "__confluid_configurable__", False))
     broadcast_ctx = _broadcast_pool(context) if context else glob_pool
+    # A slot the RECEIVING class declared deferred (`Partial[T]`, or a body slot
+    # holding a `PartialClass(...)`) keeps its value unbuilt, whatever the value's
+    # own `partial` says. This is the receiver's declared contract — "this slot
+    # needs a runtime argument I will supply" — not the parent-context guessing
+    # that `Target` replaced: it is static, local to the class, and readable.
+    # Without it a config writing a plain `_target_:` into an optimizer slot would
+    # construct it here with no `params`, far from the config that caused it.
+    partial_slots = partial_param_names(target)
     merged = {
-        k: _resolve_kwarg_value(
-            v, context=context, broadcast_ctx=broadcast_ctx, eager_classes=not is_configurable_target
-        )
+        k: _resolve_kwarg_value(v, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=k in partial_slots)
         for k, v in merged.items()
     }
 
@@ -623,7 +641,13 @@ def _flow_target(
     # Memoize so a second flow() of the same Instance marker returns this
     # exact object (see module docstring). Positional runtime args override the
     # stored spec exactly as kwargs do, so they suppress memoization too.
-    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs and not runtime_args:
+    if (
+        isinstance(obj, Target)
+        and not obj.partial
+        and instance_memo is not None
+        and not runtime_kwargs
+        and not runtime_args
+    ):
         instance_memo[id(obj)] = instance
 
     # Preserve Confluid origin for serialization round-trip. The dumper reads
@@ -633,7 +657,7 @@ def _flow_target(
     # transformed a param instead of storing it verbatim (eager classes).
     # This overwrites any capture the @configurable validation wrap stamped
     # during __init__ — deliberately: the resolved ctor dict is the richer
-    # value (live children, Lazy markers). A capture=False class
+    # value (live children, Partial markers). A capture=False class
     # (__confluid_no_capture__) skips BOTH attrs together — they exist only
     # for the dump round-trip, and __confluid_class__ without
     # __confluid_kwargs__ would break the dumper's non-configurable branch.
@@ -689,11 +713,11 @@ def _resolve_kwarg_value(
     *,
     context: Optional[Dict[str, Any]],
     broadcast_ctx: Dict[str, Any],
-    eager_classes: bool = False,
+    slot_is_partial: bool = False,
 ) -> Any:
     """Resolve ONE kwarg value for a target under materialization.
 
-    A ``Lazy`` (a ``Class`` subclass) is a runtime-injection point: keep it
+    A ``Partial`` (a ``Class`` subclass) is a runtime-injection point: keep it
     deferred through materialization regardless of ``eager_classes`` — an
     explicit ``flow()`` by domain code builds it later; the auto-flow walkers
     here must never instantiate it. **It still receives broadcasting**, though,
@@ -701,21 +725,32 @@ def _resolve_kwarg_value(
     statements and only the first is what deferral means: merging broadcast
     keys into a marker's ``kwargs`` constructs nothing, which is exactly why the
     ``Class`` branch below can do it and still hand back a deferred stub. A
-    ``Lazy`` therefore takes that same branch (it IS a ``Class``) and only the
+    ``Partial`` therefore takes that same branch (it IS a ``Class``) and only the
     terminal ``eager_classes`` flow is withheld from it.
 
     This was a real gap until 2026-08-03: an early ``return v`` here meant a
     ``!lazy:`` marker written in the DOCUMENT received bare keys while an
     identical one created in an ``__init__`` BODY did not — same marker type,
-    two answers. A consumer declaring ``self.optimizer = LazyClass(AdamW,
+    two answers. A consumer declaring ``self.optimizer = PartialClass(AdamW,
     lr=1e-4)`` could not be retuned by ``lr:`` (or ``--lr``) at all: the run
     trained at the hard-coded default and reported nothing, which is the silent
     class of failure. ``Instance`` flows now; ``Reference`` flows when a context
     is active (unresolvable → kept deferred); containers recurse.
     """
-    if isinstance(v, Instance):
-        return flow(v)
-    if isinstance(v, Class):  # Lazy included — it is a Class subclass
+    if isinstance(v, Target):
+        # ONE instance per marker per pass — the invariant `!ref:` rests on. By the
+        # time a kwarg reaches here its `!ref:` has already been resolved to the
+        # TARGET MARKER, so two slots referencing one node arrive holding the same
+        # object; if the document also flowed it at top level, that instance already
+        # exists. Consult the memo before building, and record under the ORIGINAL
+        # marker after — the broadcast copy below would otherwise sit between the
+        # marker and its memo entry, and each slot would build its own.
+        instance_memo = _ENGINE_STATE.get().instance_memo
+        if instance_memo is not None and not v.partial:
+            cached = instance_memo.get(id(v))
+            if cached is not None:
+                return cached
+
         # Apply broadcasting: pull matching keys from full context
         report = _ENGINE_STATE.get().report
         broadcasted = dict(v.kwargs)
@@ -728,7 +763,7 @@ def _resolve_kwarg_value(
         #
         # So the question is only "has the ordered merge run for this marker yet?".
         # It has not for a marker built in CODE (a ctor default `engine: Any =
-        # Class(Engine, power=7)`, a body slot `self.optimizer = LazyClass(AdamW,
+        # Class(Engine, power=7)`, a body slot `self.optimizer = PartialClass(AdamW,
         # lr=1e-4)`) — those are defaults that never appeared in the document and so
         # never took a position; broadcasting exists to override exactly those, which is
         # why a plain `def __init__(self, power=7)` loses to a bare `power:` too.
@@ -757,14 +792,26 @@ def _resolve_kwarg_value(
             on_applied=_record_nested if report is not None else None,
         )
         v_copy = copy(v)
+        # The memos key on id(); a freed copy's address is reused and reads as a
+        # HIT for an unrelated node. Pin it for the pass (see _EngineState).
+        keepalive = _ENGINE_STATE.get().memo_keepalive
+        if keepalive is not None:
+            keepalive.append(v_copy)
         v_copy.kwargs = broadcasted
         v_copy._yaml_loc = getattr(v, "_yaml_loc", None)
-        # A Lazy is configured like any stub but NEVER built here — the whole
-        # point of the marker is that domain code supplies the missing runtime
-        # argument later (`flow(self.optimizer, params=...)`).
-        if eager_classes and not isinstance(v, Lazy):
-            return flow(v_copy)
-        return v_copy
+        # `partial` is the ONLY thing that withholds construction. A Partial is
+        # configured like any other marker but never built here — the point is
+        # that domain code supplies the missing runtime argument later
+        # (`flow(self.optimizer, params=...)`).
+        if v_copy.partial or slot_is_partial:
+            # A slot the receiver declared deferred keeps its marker unbuilt. The
+            # value is NOT rewritten to a Partial here — the ONE promotion site is
+            # the post-init guard in `_apply_post_init_attrs`, which also warns.
+            return v_copy
+        built = flow(v_copy)
+        if instance_memo is not None:
+            instance_memo[id(v)] = built
+        return built
     if isinstance(v, Reference) and context:
         try:
             return flow(v)
@@ -774,12 +821,12 @@ def _resolve_kwarg_value(
         return v  # Other Fluid types stay as-is
     if isinstance(v, list):
         return [
-            _resolve_kwarg_value(i, context=context, broadcast_ctx=broadcast_ctx, eager_classes=eager_classes)
+            _resolve_kwarg_value(i, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=slot_is_partial)
             for i in v
         ]
     if isinstance(v, dict):
         return {
-            dk: _resolve_kwarg_value(dv, context=context, broadcast_ctx=broadcast_ctx, eager_classes=eager_classes)
+            dk: _resolve_kwarg_value(dv, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=slot_is_partial)
             for dk, dv in v.items()
         }
     return v
@@ -982,11 +1029,11 @@ def _apply_post_init_attrs(
     materialized now: unlike constructor args, post-init attrs have no
     runtime-kwarg injection channel, so a deferred marker would just pollute a
     slot typed as the real dependency (``nn.Module.__setattr__`` would even
-    reject it). EXCEPTION — a ``Lazy`` (``!lazy:``) stays deferred: it is a
+    reject it). EXCEPTION — a ``Partial`` (``!lazy:``) stays deferred: it is a
     deliberate runtime-injection point the owning class flows when ready.
 
-    Misconfiguration guard: if the slot's OWN default is a ``Lazy`` (a deferred
-    runtime-injection body slot, e.g. ``self.optimizer = LazyClass(...)``), a
+    Misconfiguration guard: if the slot's OWN default is a ``Partial`` (a deferred
+    runtime-injection body slot, e.g. ``self.optimizer = PartialClass(...)``), a
     supplied deferred ``Class`` (``!class:`` no-parens) would be eagerly built
     here and break the slot (an optimizer built with no ``params``). The slot's
     laziness is inherited — the supplied value is auto-deferred with a warning
@@ -1018,18 +1065,18 @@ def _apply_post_init_attrs(
             # ``'S' object has no attribute '__dict__'`` from a line the author never
             # wrote, which points at the engine instead of at their config.
             existing = getattr(instance, "__dict__", {}).get(k)
-            if isinstance(v, Fluid) and not isinstance(v, Lazy):
-                if type(v) is Class and isinstance(existing, Lazy):
+            if isinstance(v, Fluid) and not getattr(v, "partial", False):
+                if isinstance(v, Target) and isinstance(existing, Partial):
                     logger.warning(
                         f"Config slot {k!r} on {getattr(target, '__name__', target)} received a "
                         "'!class:' value but the slot is a deferred (lazy) runtime-injection slot; "
                         "treating it as '!lazy:'. Wire it '!lazy:' in YAML to make the intent "
                         "explicit and silence this."
                     )
-                    v = Lazy(v.target, **v.kwargs)
+                    v = Partial(v.target, **v.kwargs)
                 else:
                     v = flow(v)
-            elif isinstance(v, dict) and isinstance(existing, Class):
+            elif isinstance(v, dict) and isinstance(existing, Target):
                 # A mapping addressed at a slot that already holds a deferred marker
                 # TUNES that marker — it does not replace it. Assigning the raw dict
                 # was the old behaviour and it destroyed the slot silently: the
@@ -1167,13 +1214,13 @@ def _flow_bare_type(
         if runtime_args:
             # A marker carries kwargs only, and the broadcast pass reads it — so
             # there is nowhere for positional args to ride. Wrap the class in a
-            # `Class`/`LazyClass` marker and flow THAT if you need both.
+            # `Class`/`PartialClass` marker and flow THAT if you need both.
             raise ConstructionError(
                 f"flow({obj.__name__}, <positional args>) is not supported for a registry-configurable "
                 "class: it materializes through a marker, which carries keyword arguments only. "
-                "Pass the arguments by keyword, or flow a Class/LazyClass marker instead."
+                "Pass the arguments by keyword, or flow a Class/PartialClass marker instead."
             )
-        marker = Instance(obj)
+        marker = Target(obj)
         marker.kwargs.update(runtime_kwargs)
         return materialize(marker, context=context)
     return obj(*runtime_args, **runtime_kwargs)

@@ -21,7 +21,7 @@ def test_basic_dump() -> None:
     output = dump(model)
 
     # Instances dump with () for instant construction on reload
-    assert "!class:Model()" in output
+    assert "_target_: Model" in output
     assert "layers: 10" in output
 
     # Round-trip via confluid.load produces a live instance
@@ -49,8 +49,8 @@ def test_hierarchical_dump() -> None:
 
     output = dump(trainer)
 
-    assert "!class:Trainer" in output
-    assert "!class:Model" in output
+    assert "_target_: Trainer" in output
+    assert "_target_: Model" in output
     assert "lr: 0.001" in output
     assert "layers: 5" in output
 
@@ -69,7 +69,7 @@ def test_opaque_fallback_emits_class_marker() -> None:
 
     model = Model(thing=InternalThing())
     output = dump(model)
-    assert "!class:" in output
+    assert "_target_:" in output
     assert "InternalThing" in output
 
 
@@ -98,7 +98,7 @@ def test_dump_list_and_dict() -> None:
     obj = Container(items=[1, 2], mapping={"a": 1})
     output = dump(obj)
 
-    assert "!class:Container" in output
+    assert "_target_: Container" in output
     assert "- 1" in output
     assert "a: 1" in output
 
@@ -110,7 +110,7 @@ def test_dump_no_init() -> None:
 
     obj = Simple()
     output = dump(obj)
-    assert "!class:Simple" in output
+    assert "_target_: Simple" in output
 
 
 def test_dump_none() -> None:
@@ -129,7 +129,7 @@ def test_dump_non_configurable_with_confluid_origin() -> None:
     live = flow(inst)
 
     output = dump(live)
-    assert "!class:" in output
+    assert "_target_:" in output
     assert "num_classes: 5" in output
 
 
@@ -150,8 +150,8 @@ def test_dump_non_configurable_in_configurable_parent() -> None:
     trainer = Trainer(metrics=[flow(metric)])
 
     output = dump(trainer)
-    assert "!class:Trainer" in output
-    assert "!class:" in output
+    assert "_target_: Trainer" in output
+    assert "_target_:" in output
     assert "average: weighted" in output
 
 

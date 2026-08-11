@@ -6,10 +6,10 @@ YamlLoc = Tuple[Optional[str], int, int]
 """``(filename or None, line, column)`` — 1-based YAML source location."""
 
 T = TypeVar("T", default=Any)
-"""Phantom type parameter for ``Lazy[T]`` — the eventual flow()'d target type.
+"""Phantom type parameter for ``Partial[T]`` — the eventual flow()'d target type.
 
-Defaults to ``Any`` (PEP 696) so a bare ``LazyClass(Foo)`` infers ``Lazy[Any]``
-(not ``Lazy[Never]``) and needs no annotation, while ``LazyClass[Metric]`` stays
+Defaults to ``Any`` (PEP 696) so a bare ``PartialClass(Foo)`` infers ``Partial[Any]``
+(not ``Partial[Never]``) and needs no annotation, while ``PartialClass[Metric]`` stays
 available to document intent."""
 
 
@@ -118,15 +118,29 @@ def format_yaml_loc(obj: Any) -> str:
     return f"{head}:{line}:{col}"
 
 
-class Class(Fluid):
-    """Deferred class initializer. Stays deferred until explicitly flow()'d."""
+class Target(Fluid):
+    """A callable to build, plus the kwargs to build it with.
 
-    def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
-        super().__init__(target, **kwargs)
+    The ``_target_:`` YAML key and the ``!class:`` tag both produce one of these.
+    Materialization BUILDS it — always, and regardless of what surrounds it.
 
+    There are exactly TWO construction modes, and :attr:`partial` is the whole
+    difference: ``False`` here, ``True`` on :class:`Partial`. Nothing about the
+    parent, the nesting depth or the document position changes whether a marker
+    is built.
 
-class Instance(Fluid):
-    """Instant class initializer. Materialized immediately by materialize()/flow()."""
+    Until 2026-08-11 there were three modes: ``Instance`` (built), ``Class``
+    (built only when its parent was NOT ``@configurable``) and ``Partial`` (never
+    built). The middle one was unnecessary — its documented purpose was to let
+    broadcasting reach a node before construction, but broadcasting is pass 7
+    and construction is pass 8, so a BUILT node already receives every cascading
+    key before its constructor runs. What it actually provided was deferral of
+    construction COST, which is what ``partial`` is for.
+    """
+
+    #: Whether materialization withholds construction. A CLASS attribute, so
+    #: every reader can ask ``marker.partial`` without an isinstance ladder.
+    partial: bool = False
 
     def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
         super().__init__(target, **kwargs)
@@ -181,36 +195,46 @@ class ScopeBlock:
         return f"{tag}:{suffix} {self.contents!r}"
 
 
-class Lazy(Class, Generic[T]):
-    """Class fluid that stays deferred through ``materialize()`` / deep-flow.
+class Partial(Target, Generic[T]):
+    """A :class:`Target` that materialization NEVER builds.
 
-    Optionally **parameterized** as ``Lazy[T]`` (e.g. ``LazyClass[Metric]``) to
-    document the type the deferred template builds once ``flow()``'d. ``T`` is a
-    *phantom* parameter — it is never bound from the ``target`` argument (the
-    ctor still accepts any ``Type | str``), so ``LazyClass(MulticlassAccuracy)``
-    stays ``Lazy[Any]`` and the subscript is purely an intent annotation for
-    type-checkers / readers. Mirrors the Python-side ``confluid.Lazy[T]``
-    *annotation* alias (``Annotated[Union[T, Fluid], _LAZY_MARKER]``) at the
-    fluid layer.
+    Written ``_partial_: true`` in YAML (or ``!lazy:`` in the tag spelling), and
+    ``PartialClass(...)`` in code. Nothing auto-flows one — not ``materialize``,
+    not an external deep-flow walker. Only an explicit
+    ``flow(marker, *args, **kwargs)`` builds it, which is the point: the receiving
+    code supplies an argument that does not exist at config time. The textbook
+    case is an optimizer needing ``params=model.parameters()``; a model needing
+    ``num_classes`` from the dataset is the same shape.
 
-    Behaves identically to :class:`Class` for the purposes of broadcasting:
-    a ``Lazy`` value receives broadcast kwargs from its surrounding context
-    just like a regular ``!class:`` Fluid. The difference is downstream —
-    materialization passes (``materialize``, the liquifai ``_deep_flow``
-    walker, and any caller that uses ``Instance``-only auto-flow) leave a
-    ``Lazy`` deferred. The receiving code is responsible for calling
-    ``flow(value, **runtime_kwargs)`` when it has the runtime arguments
-    needed to actually construct the target.
+    **Deferral withholds CONSTRUCTION only.** A ``Partial`` is broadcast into and
+    configured exactly like a built target — merging keys into ``kwargs``
+    constructs nothing — so ``lr: 0.001`` still tunes a deferred optimizer.
 
-    The classic use is an optimizer that needs ``params=model.parameters()``
-    — declared in YAML as ``optimizer: !lazy:torch.optim.Adam(lr=0.01)``,
-    then instantiated inside ``configure_optimizers`` with the live params.
-    Mirrors the Python-side ``confluid.Lazy[T]`` annotation but expressed
-    at the YAML layer.
+    Optionally parameterized as ``Partial[T]`` (e.g. ``PartialClass[Metric]``) to
+    document the type it builds once flowed. ``T`` is a *phantom* parameter, never
+    bound from ``target``, so ``PartialClass(Adam)`` stays ``Partial[Any]`` and the
+    subscript is purely an intent annotation. Mirrors the Python-side
+    ``confluid.Partial[T]`` *annotation* alias at the fluid layer: the tag defers a
+    VALUE, the annotation defers a SLOT.
     """
+
+    partial: bool = True
 
     def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
         super().__init__(target, **kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Deprecated marker aliases — removed once the tag spelling is retired.
+#
+# ``Class`` and ``Instance`` were the deferred/eager pair that ``Target`` replaced;
+# they are now the SAME class, so ``isinstance(x, Instance)`` no longer separates
+# them. Any code that relied on that distinction wants ``x.partial`` instead.
+# --------------------------------------------------------------------------- #
+
+Class = Target
+Instance = Target
+Lazy = Partial
 
 
 def __getattr__(name: str) -> Any:

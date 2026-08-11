@@ -220,16 +220,16 @@ def test_ast_scan_skips_private_literal_setattr() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Lazy: stays deferred, but receives broadcast kwargs.
+# Partial: stays deferred, but receives broadcast kwargs.
 # ---------------------------------------------------------------------------
 
 
 def test_lazy_stays_deferred_through_materialize() -> None:
-    """A ``LazyClass`` value at the root of a config must NOT be flowed by
+    """A ``PartialClass`` value at the root of a config must NOT be flowed by
     ``materialize`` — domain code is responsible for calling
     ``flow(value, **runtime_kwargs)`` later.
     """
-    from confluid import LazyClass
+    from confluid import PartialClass
 
     class _Adam:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -238,12 +238,12 @@ def test_lazy_stays_deferred_through_materialize() -> None:
 
     register(_Adam)
 
-    lazy = LazyClass(_Adam, lr=0.005)
+    lazy = PartialClass(_Adam, lr=0.005)
     result = materialize(lazy)
     # ``materialize`` may copy the Fluid while running the broadcast pass;
     # the contract is "still deferred", not Python identity. The result
-    # must remain a LazyClass with the original kwargs intact.
-    assert isinstance(result, LazyClass)
+    # must remain a PartialClass with the original kwargs intact.
+    assert isinstance(result, PartialClass)
     assert result.kwargs.get("lr") == 0.005
 
     # Explicit flow with runtime kwargs constructs the target.
@@ -254,7 +254,7 @@ def test_lazy_stays_deferred_through_materialize() -> None:
 
 
 def test_lazy_inside_a_class_attribute_is_left_deferred() -> None:
-    from confluid import LazyClass
+    from confluid import PartialClass
 
     class _Optim:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -269,17 +269,17 @@ def test_lazy_inside_a_class_attribute_is_left_deferred() -> None:
     register(_Optim)
     register(TrainerLike)
 
-    data = _inst("TrainerLike", optimizer=LazyClass(_Optim, lr=0.001))
+    data = _inst("TrainerLike", optimizer=PartialClass(_Optim, lr=0.001))
     result = materialize(data)
     assert isinstance(result, TrainerLike)
-    assert isinstance(result.optimizer, LazyClass)
+    assert isinstance(result.optimizer, PartialClass)
 
 
 def test_lazy_receives_broadcast_kwargs_like_class() -> None:
     """``!lazy:`` participates in broadcast just like ``!class:`` — the
     deferral only blocks construction, not kwarg merging.
     """
-    from confluid import LazyClass
+    from confluid import PartialClass
 
     class _Adam:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -288,17 +288,17 @@ def test_lazy_receives_broadcast_kwargs_like_class() -> None:
 
     register(_Adam)
 
-    context = {"lr": 0.5, "optimizer": LazyClass(_Adam)}
+    context = {"lr": 0.5, "optimizer": PartialClass(_Adam)}
     result = materialize(context, context=context)
-    assert isinstance(result["optimizer"], LazyClass)
-    # Broadcast pulled `lr` into the Lazy's kwargs.
+    assert isinstance(result["optimizer"], PartialClass)
+    # Broadcast pulled `lr` into the Partial's kwargs.
     assert result["optimizer"].kwargs.get("lr") == 0.5
 
 
 def test_lazy_yaml_tag_round_trip() -> None:
-    """``!lazy:Foo(lr=1e-3)`` parses to a ``LazyClass`` and dumps back to
+    """``!lazy:Foo(lr=1e-3)`` parses to a ``PartialClass`` and dumps back to
     ``!lazy:`` (not ``!class:``)."""
-    from confluid import LazyClass, dump, load
+    from confluid import PartialClass, dump, load
 
     class _Adam:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -309,21 +309,21 @@ def test_lazy_yaml_tag_round_trip() -> None:
 
     yaml_text = "optimizer: !lazy:tests.test_broadcast_robustness._Adam\n  lr: 0.001\n"
     loaded = load(yaml_text, flow=False)
-    assert isinstance(loaded["optimizer"], LazyClass)
+    assert isinstance(loaded["optimizer"], PartialClass)
     assert loaded["optimizer"].kwargs == {"lr": 0.001}
 
-    # Round-trip through dump → load preserves the Lazy semantics.
+    # Round-trip through dump → load preserves the Partial semantics.
     rendered = dump({"optimizer": loaded["optimizer"]})
-    assert "!lazy:" in rendered
+    assert "_partial_: true" in rendered
     assert "!class:" not in rendered
 
     reloaded = load(rendered, flow=False)
-    assert isinstance(reloaded["optimizer"], LazyClass)
+    assert isinstance(reloaded["optimizer"], PartialClass)
 
 
 def test_lazy_inline_kwargs_form() -> None:
     """``!lazy:Adam(lr=0.01)`` inline-kwargs form works (mirrors !class:)."""
-    from confluid import LazyClass, load
+    from confluid import PartialClass, load
 
     class _Adam:
         def __init__(self, lr: float = 0.0) -> None:
@@ -332,7 +332,7 @@ def test_lazy_inline_kwargs_form() -> None:
     register(_Adam)
     yaml_text = "opt: !lazy:tests.test_broadcast_robustness._Adam(lr=0.001)\n"
     loaded = load(yaml_text, flow=False)
-    assert isinstance(loaded["opt"], LazyClass)
+    assert isinstance(loaded["opt"], PartialClass)
     assert loaded["opt"].kwargs == {"lr": 0.001}  # inline scalars are coerced (parse_value)
 
 

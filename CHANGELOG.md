@@ -8,6 +8,47 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
+### Changed — BREAKING
+
+- **Two construction modes, not three (2026-08-11).** `Class` and `Instance` merged into one
+  marker, `Target`, carrying a `partial: bool`. **A bare `!class:Foo` is now BUILT**, exactly like
+  `!class:Foo()` — the trailing `()` is inert, and `_partial_: true` (`!lazy:`) is the only
+  spelling that withholds construction.
+
+  The deleted middle state built or didn't depending on whether its *parent* was `@configurable`,
+  which is not something a reader can see locally. Its stated justification — "pick deferred so
+  broadcasting can still reach it" — does not hold: broadcasting is pass 7 and construction is
+  pass 8, so a built node already receives every cascading key before its constructor runs.
+  Verified, same document, both spellings: `Model(layers=3, seed=7)` either way.
+
+  What this means for a config: a `!class:Foo` whose receiver genuinely needs to build it later
+  (an optimizer needing `params=`, a model needing `num_classes`) must now say so — `_partial_:
+  true`, or `!lazy:`. A slot the receiving class *declared* deferred (`Partial[T]`, or a body slot
+  holding `PartialClass(...)`) still keeps its value unbuilt automatically, so classes following
+  the workspace convention are unaffected.
+
+- **`Lazy` renamed to `Partial` across the API** so the Python name and the YAML key are one word:
+  `Lazy[T]`→`Partial[T]`, `LazyClass(...)`→`PartialClass(...)`,
+  `lazy_param_names`→`partial_param_names`, `@configurable(lazy=True)`→`partial=True`,
+  `confluid.lazy`→`confluid.partial`, `docs/tags.md`→`docs/targets.md`.
+  `Class`/`Instance`/`Lazy`/`LazyClass`/`lazy_param_names` remain as **deprecation aliases** and
+  are removed with the tag spelling. Note `Class is Instance is Target` now, so
+  `isinstance(x, Instance)` no longer separates eager from deferred — read `x.partial`.
+
+- **`dump()` emits the plain format** (`_target_:` / `_partial_:` / `_ref_:` / `_clone_:`), so an
+  archived config is readable by `yaml.safe_load`, `yq` and a diff viewer. Reload fidelity is
+  unchanged.
+
+### Fixed
+
+- **Sibling markers could share one instance through a recycled `id()`.** Both engine memos key on
+  `id(marker)`, which is unique only while the marker is alive; the engine builds short-lived
+  broadcast copies, and CPython reuses a freed object's address, so the second item of a list could
+  land on the first one's address and read as a memo HIT. Measured on a three-stage pipeline: every
+  stage came back as stage one. Markers the memos key on are now pinned for the pass
+  (`_EngineState.memo_keepalive`). Pinned by
+  `tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
+
 ### Added
 
 - **A plain-YAML config format — no custom tags (2026-08-11).** A document may now

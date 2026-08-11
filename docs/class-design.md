@@ -1,4 +1,4 @@
-# Class Design: Lazy Init & Zero-Arg Construction
+# Class Design: Partial Init & Zero-Arg Construction
 
 The four rules below are the **convention** that unlocks confluid's post-construction machinery —
 `configure()` reconfiguration that never goes stale, cheap structure introspection, and tools that
@@ -9,7 +9,7 @@ first-class — see [Eager Classes](eager-classes.md) for that mode and its trad
 When your objects are configured **after** they are built, design them cheap and side-effect-free
 to construct. Four rules:
 
-1. **Lazy constructor — no functional work.** `__init__` only *stores* values. No I/O, network,
+1. **Partial constructor — no functional work.** `__init__` only *stores* values. No I/O, network,
    file reads, dataset/model materialization, or heavy compute. Real work is deferred to a property
    or method.
 2. **Zero-arg construction works.** `Cls()` must succeed — every parameter is defaulted. A value
@@ -24,17 +24,17 @@ to construct. Four rules:
    both are introspected.** The classic form keeps every knob in the signature (defaulted,
    documented in the `Args:` docstring). A class with *many* deferred dependencies may instead
    take a **minimal constructor** (only the genuinely required inputs and identity scalars) and
-   assign the rest as body attributes — `self.optimizer = LazyClass(Adam, lr=1e-3)` — reconfigured
+   assign the rest as body attributes — `self.optimizer = PartialClass(Adam, lr=1e-3)` — reconfigured
    after construction by YAML, broadcasting, or a subclass. Body slots are not hidden state:
    the schema surface (`to_pydantic`) scans the `__init__` body and surfaces every non-underscore
    `self.<name> = …` slot as an optional field, so the schema/help surface GUIs and agents read
    still enumerates them. Three rules for body slots:
    - a slot that needs a **runtime-injected** argument (`params=`, `dataset=`) must hold a
-     `LazyClass(...)` value (`!lazy:` in YAML) — a bare `Class(...)` body value is eagerly built
+     `PartialClass(...)` value (`!lazy:` in YAML) — a bare `Class(...)` body value is eagerly built
      during parent materialization and would crash a target missing its runtime argument;
-   - give the slot a **type annotation** in the body (`self.optimizer: Lazy[Optimizer] = …`) so
+   - give the slot a **type annotation** in the body (`self.optimizer: Partial[Optimizer] = …`) so
      the generated schema can type it (un-annotated slots degrade to `Any`);
-   - assign a **fresh `LazyClass(...)` per instance** in the body — never a shared mutable default.
+   - assign a **fresh `PartialClass(...)` per instance** in the body — never a shared mutable default.
 
    The body scan reads `__init__` *source*, so a compiled/frozen/zip deployment needs the
    build-time bake step (`confluid-bake <package>`) or an explicit
@@ -48,7 +48,7 @@ from confluid import configurable
 @configurable
 class DataSource:
     def __init__(self, path: str = "", split: str = "train") -> None:
-        # Lazy: store config only — no load here. `DataSource()` is valid.
+        # Partial: store config only — no load here. `DataSource()` is valid.
         self.path = path
         self.split = split
         self._data: Optional[Any] = None   # private cache for the expensive materialization

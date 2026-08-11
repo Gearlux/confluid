@@ -37,15 +37,15 @@ from confluid.exceptions import (
     ValidationModeError,
     WorkspaceEnvError,
 )
-from confluid.fluid import Class, Clone, Fluid, Instance
-from confluid.fluid import Lazy as LazyClass
-from confluid.fluid import Reference, format_yaml_loc
-from confluid.lazy import Lazy, lazy_param_names
+from confluid.fluid import Clone, Fluid
+from confluid.fluid import Partial as PartialClass
+from confluid.fluid import Reference, Target, format_yaml_loc
 from confluid.llm_schema import sanitize_schema
 from confluid.loader import get_app_name, load, load_config, load_config_with_paths, resolve_config_path, set_app_name
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
+from confluid.partial import Partial, partial_param_names
 from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
@@ -62,6 +62,21 @@ from confluid.schema import (
 from confluid.scopes import discover_dimension_values, discover_dimensions
 from confluid.state import active_context, collect_report
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
+
+# --------------------------------------------------------------------------- #
+# Deprecated aliases — REMOVED with the tag spelling (phase 5).
+#
+# `Class`/`Instance` were the deferred/eager marker pair `Target` replaced; they
+# are the SAME class now, so `isinstance(x, Instance)` no longer separates them —
+# code that relied on that wants `x.partial`. `Lazy`/`LazyClass`/`lazy_param_names`
+# are the old spelling of `Partial`/`PartialClass`/`partial_param_names`; the
+# rename made the Python API and the YAML `_partial_` key the same word.
+# --------------------------------------------------------------------------- #
+Class = Target
+Instance = Target
+Lazy = Partial
+LazyClass = PartialClass
+lazy_param_names = partial_param_names
 
 __all__ = [
     "ConfluidError",
@@ -103,16 +118,22 @@ __all__ = [
     "ConfigurationReport",
     "collect_report",
     "Fluid",
-    "Class",
+    "Target",
     "Clone",
-    "Instance",
     "Reference",
     "flow",
     "cast",
     "format_yaml_loc",
+    "Partial",
+    "PartialClass",
+    "partial_param_names",
+    # deprecated (see the alias block above)
+    "Class",
+    "Instance",
     "Lazy",
     "LazyClass",
     "lazy_param_names",
+    "partial_param_names",
     "Mandatory",
     "mandatory_param_names",
     "NoBroadcast",

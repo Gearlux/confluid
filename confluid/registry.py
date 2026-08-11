@@ -297,7 +297,7 @@ class ConfluidRegistry:
         task = task if task is not None else getattr(cls, "__confluid_task__", None)
         role = role if role is not None else getattr(cls, "__confluid_role__", None)
         framework = framework if framework is not None else getattr(cls, "__confluid_framework__", None)
-        lazy = lazy or bool(getattr(cls, "__confluid_lazy__", False))
+        lazy = lazy or bool(getattr(cls, "__confluid_partial__", False))
         random = random or bool(getattr(cls, "__confluid_random__", False))
         constant = constant or bool(getattr(cls, "__confluid_constant__", False))
         eager = eager or bool(getattr(cls, "__confluid_eager__", False))
@@ -340,11 +340,11 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_framework__", framework)
             if lazy:
                 # A "lazy" class is one whose constructed value should stay
-                # deferred (a LazyClass / runtime-injected slot — e.g. an
+                # deferred (a PartialClass / runtime-injected slot — e.g. an
                 # optimizer needing ``params``). Consumers (visual-editor object
-                # nodes) read this to emit a deferred ``LazyClass`` instead of a
+                # nodes) read this to emit a deferred ``PartialClass`` instead of a
                 # live instance.
-                setattr(cls, "__confluid_lazy__", True)
+                setattr(cls, "__confluid_partial__", True)
             if random:
                 setattr(cls, "__confluid_random__", True)
             if constant:
@@ -797,7 +797,7 @@ def marks(target: Any) -> Marks:
         task=getattr(cls, "__confluid_task__", None),
         role=getattr(cls, "__confluid_role__", None),
         framework=getattr(cls, "__confluid_framework__", None),
-        lazy=bool(getattr(cls, "__confluid_lazy__", False)),
+        lazy=bool(getattr(cls, "__confluid_partial__", False)),
         random=bool(getattr(cls, "__confluid_random__", False)),
         constant=bool(getattr(cls, "__confluid_constant__", False)),
         eager=bool(getattr(cls, "__confluid_eager__", False)),

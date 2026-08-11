@@ -50,7 +50,7 @@ What goes into the generated model:
   default, and — when the docstring carries a Google-style `Args:` block — its
   description.
 - **`__init__`-body slots** of the minimal-constructor pattern
-  (`self.optimizer = LazyClass(...)`) surface as optional fields too, so a
+  (`self.optimizer = PartialClass(...)`) surface as optional fields too, so a
   form can offer them ([Class Design](class-design.md)).
 - **Constraints ride along**: an `Annotated[..., Field(...)]` or
   `annotated_types` range mark reaches the JSON schema
@@ -59,7 +59,7 @@ What goes into the generated model:
 - **Un-schemable leaf types are coerced to `Any`** (tensors, arrays, exotic
   enums, `Callable` params) so schema generation never crashes on a
   registered third-party class — the config still validates structurally.
-- The internal marker aliases (`Lazy[T]`, `Mandatory[T]`, `NoBroadcast[T]`)
+- The internal marker aliases (`Partial[T]`, `Mandatory[T]`, `NoBroadcast[T]`)
   are **stripped** — they shape engine behaviour, not the schema.
 
 `to_pydantic` accepts a plain **builder function** as well as a class — the
@@ -68,7 +68,7 @@ factory surface in a picker exactly like a class does.
 
 Two metadata hooks ride on the generated model, so a consumer needs no side
 table: `confluid_class_of(Model)` names the origin class (the `!class:`
-target to emit), and `lazy_param_names_of(Model)` (in
+target to emit), and `partial_param_names_of(Model)` (in
 `confluid.pydantic_export`) lists the fields that stand for deferred slots —
 spell those `!lazy:` when emitting YAML.
 

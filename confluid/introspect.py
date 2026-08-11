@@ -7,8 +7,8 @@ projections that used to be near-identical scanners in ``loader`` and
 * :func:`init_setattr_names` — every assigned body-slot NAME (the broadcast /
   accept-list view; the widest — includes ``AugAssign`` and literal
   ``setattr(self, "x", …)``).
-* :func:`init_lazy_setattr_names` — names whose assigned VALUE is a
-  ``LazyClass(...)`` / ``Lazy(...)`` call (deferred body slots — emitted as
+* :func:`init_partial_setattr_names` — names whose assigned VALUE is a
+  ``PartialClass(...)`` / ``Partial(...)`` call (deferred body slots — emitted as
   ``!lazy:`` by serializers).
 
 (``pydantic_export`` consumes :func:`scan_init_body` directly for its typed
@@ -236,8 +236,8 @@ def init_setattr_names(init_func: Any) -> Set[str]:
     return {slot.name for slot in scan_init_body(init_func)}
 
 
-def init_lazy_setattr_names(init_func: Any) -> Set[str]:
-    """Names of assign/annassign slots whose VALUE is a ``LazyClass(...)``/``Lazy(...)`` call.
+def init_partial_setattr_names(init_func: Any) -> Set[str]:
+    """Names of assign/annassign slots whose VALUE is a ``PartialClass(...)``/``Partial(...)`` call.
 
     An annotated declaration without a value (``self.x: T``) and
     ``AugAssign``/``setattr`` slots never qualify.
@@ -250,30 +250,30 @@ def init_lazy_setattr_names(init_func: Any) -> Set[str]:
 
 
 def _is_lazy_call(value: Any) -> bool:
-    """True for a call whose callee is named ``LazyClass`` or ``Lazy``.
+    """True for a call whose callee is named ``PartialClass`` or ``Partial``.
 
-    Matches bare names AND attribute-qualified calls (``confluid.LazyClass(...)``)
+    Matches bare names AND attribute-qualified calls (``confluid.PartialClass(...)``)
     by inspecting only the final attribute — same rule as the original scanner.
     """
     if not isinstance(value, ast.Call):
         return False
     func = value.func
     name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
-    return name in ("LazyClass", "Lazy")
+    return name in ("PartialClass", "Partial")
 
 
 def annotation_has_marker(annotation: Any, marker: str) -> bool:
     """True iff ``marker`` appears in the annotation's ``Annotated`` metadata — at any wrapper depth.
 
-    The ONE detection rule behind ``is_lazy_annotation`` / ``is_mandatory_annotation`` /
+    The ONE detection rule behind ``is_partial_annotation`` / ``is_mandatory_annotation`` /
     ``is_no_broadcast_annotation``. Directly-nested ``Annotated`` layers flatten their
-    metadata (``Mandatory[Lazy[T]]`` carries both markers at the top), but a ``Union``
-    arm does NOT — and since ``Lazy[T]`` / ``Mandatory[T]`` expand to
+    metadata (``Mandatory[Partial[T]]`` carries both markers at the top), but a ``Union``
+    arm does NOT — and since ``Partial[T]`` / ``Mandatory[T]`` expand to
     ``Annotated[Union[T, Fluid], marker]``, composed spellings bury the inner marker
     inside a Union arm. This helper therefore also walks ``Union`` arms (PEP 604
     included) and ``Annotated`` payloads, so every composition order — and the natural
-    ``Optional[Lazy[T]] = None`` spelling — is detected. It deliberately does NOT
-    recurse into other generics (``List[Lazy[T]]`` marks the ELEMENT, not the param).
+    ``Optional[Partial[T]] = None`` spelling — is detected. It deliberately does NOT
+    recurse into other generics (``List[Partial[T]]`` marks the ELEMENT, not the param).
     """
     if marker in getattr(annotation, "__metadata__", ()):
         return True
@@ -288,10 +288,10 @@ def annotation_has_marker(annotation: Any, marker: str) -> bool:
 def marked_param_names(target: Any, marker: str, cache_attr: Optional[str] = None) -> Set[str]:
     """Signature-parameter names of ``target`` carrying ``marker`` — the ONE scan.
 
-    The scan-plus-cache behind ``lazy_param_names`` / ``mandatory_param_names`` /
+    The scan-plus-cache behind ``partial_param_names`` / ``mandatory_param_names`` /
     ``no_broadcast_param_names``, which used to carry three near-identical copies
     that had already drifted on callable support: two read
-    ``getattr(cls, "__init__")`` directly, so an identical ``Lazy[...]`` /
+    ``getattr(cls, "__init__")`` directly, so an identical ``Partial[...]`` /
     ``Mandatory[...]`` annotation was reported on a class and silently DROPPED on
     a registered builder FUNCTION (whose ``__init__`` is ``object.__init__`` —
     the exact failure :func:`init_callable` exists to prevent). Every reader goes
@@ -300,7 +300,7 @@ def marked_param_names(target: Any, marker: str, cache_attr: Optional[str] = Non
     ``cache_attr`` names the per-target stamp to read/write (own ``__dict__``
     only, never ``getattr`` — an MRO walk serves a parent's cached answer to
     every subclass); pass ``None`` when the caller caches a superset itself
-    (``lazy_param_names`` caches the union with the body-slot scan). A hint
+    (``partial_param_names`` caches the union with the body-slot scan). A hint
     named ``return`` is excluded — it is a function's return annotation, not a
     parameter.
     """
@@ -358,7 +358,7 @@ def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
     Lives here rather than beside its first caller because it is pure AST + ``typing``
     (the module map's rule: this module is the ONE stdlib-only scanning home) and has
     two consumers with nothing else in common — the pydantic exporter, which needs the
-    type, and :func:`confluid.lazy.lazy_param_names`, which needs only the marker and
+    type, and :func:`confluid.partial.partial_param_names`, which needs only the marker and
     must not reach into an optional-dependency module to get it.
 
     Evaluates the unparsed expression against the defining function's module
@@ -375,7 +375,7 @@ def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
     # UNWRAP first: `@configurable` replaces `__init__` with a validation wrapper whose
     # `__globals__` is confluid's own module dict, where the caller's names do not exist.
     # Resolving against it silently degraded EVERY body-slot annotation to `Any` — so a
-    # class that dutifully wrote `self.optimizer: Lazy[Optimizer] = ...` got an untyped
+    # class that dutifully wrote `self.optimizer: Partial[Optimizer] = ...` got an untyped
     # schema field and an undetected lazy slot. The scanners already see through the
     # wrapper for SOURCE; this makes the scope agree with them.
     target = inspect.unwrap(init_func)

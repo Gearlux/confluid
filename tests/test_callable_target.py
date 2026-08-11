@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, Optional
 import pytest
 
 import confluid
-from confluid import LazyClass, configurable, dump, flow, get_registry, load, set_policy, to_pydantic
+from confluid import PartialClass, configurable, dump, flow, get_registry, load, set_policy, to_pydantic
 from confluid.registry import resolve_class
 
 
@@ -65,17 +65,17 @@ def _make_model(
 
 
 def test_flow_function_target_honors_stored_kwargs() -> None:
-    out = flow(LazyClass(_make_widget, size=3, color="blue"))
+    out = flow(PartialClass(_make_widget, size=3, color="blue"))
     assert out == {"size": 3, "color": "blue", "extra": {}}
 
 
 def test_flow_function_target_honors_runtime_kwargs() -> None:
-    out = flow(LazyClass(_make_widget), size=5)
+    out = flow(PartialClass(_make_widget), size=5)
     assert out["size"] == 5 and out["color"] == "red"
 
 
 def test_flow_function_runtime_overrides_stored() -> None:
-    out = flow(LazyClass(_make_widget, size=3), size=9)
+    out = flow(PartialClass(_make_widget, size=3), size=9)
     assert out["size"] == 9
 
 
@@ -235,7 +235,7 @@ def test_configurable_function_round_trips(clean_registry: Any) -> None:
         return {"size": size, "color": color}
 
     # A real config references the target by NAME (a string), as authored YAML does.
-    marker = LazyClass("rt_builder", size=5, color="blue")
+    marker = PartialClass("rt_builder", size=5, color="blue")
     reloaded = load(dump(marker), flow=False)  # !lazy:rt_builder → resolved via registry
     assert flow(reloaded) == flow(marker) == {"size": 5, "color": "blue"}
 

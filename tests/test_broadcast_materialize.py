@@ -75,7 +75,7 @@ def test_broadcast_priority() -> None:
 
 def test_deep_broadcast_propagation() -> None:
     """Root-level scalars propagate through nested class instances (mnist_train_minimal scenario)."""
-    from confluid import Class, flow
+    from confluid import Class
 
     @configurable
     class Inner:
@@ -115,8 +115,7 @@ def test_deep_broadcast_propagation() -> None:
     result2 = materialize(data2, context=config2)
     assert isinstance(result2, OuterDeferred)
     # inner is deferred — flow it to materialize
-    assert isinstance(result2.inner, Class)
-    inner = flow(result2.inner)
+    inner = result2.inner
     assert isinstance(inner, Inner)
     assert inner.max_epochs == 10
 
@@ -247,11 +246,10 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
     result = materialize(data, context=config)
 
     assert isinstance(result, OuterCfg)
-    assert isinstance(result.inner, Class)
-    assert result.inner.kwargs.get("max_epochs") == 7
-    assert result.inner.kwargs.get("batch_size") == 16
-
-    inner = flow(result.inner)
+    # A body slot holding a plain ``Class(...)`` is BUILT — ``partial`` is the only
+    # thing that withholds construction, and this slot declared none. Broadcasting
+    # still reached it: pass 7 merges the keys, pass 8 constructs.
+    inner = result.inner
     assert isinstance(inner, InnerCfg)
     assert inner.max_epochs == 7
     assert inner.batch_size == 16

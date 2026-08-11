@@ -218,7 +218,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
       proceed (it may still fail naturally on the bad value).
     * ``"off"`` — return immediately without building the schema.
 
-    Fluid markers (``Class``, ``Instance``, ``Reference``, ``Lazy``, …) in
+    Fluid markers (``Class``, ``Instance``, ``Reference``, ``Partial``, …) in
     ``kwargs`` represent deferred construction — the live object hasn't been
     built yet, so the pydantic ``is_instance_of(<annotated_type>)`` check
     would always fail. The contract is "validate post-flow": when the Fluid
@@ -238,7 +238,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     if mode == "off" or not _have_pydantic():
         return
 
-    # Lazy import: ``pydantic_export`` pulls pydantic + inspect, which is
+    # Partial import: ``pydantic_export`` pulls pydantic + inspect, which is
     # heavier than this module needs to be eligible to import. ``Fluid`` is
     # imported lazily too so this module stays importable before fluid.py is
     # fully initialised (the loader → fluid → validation chain runs at startup).

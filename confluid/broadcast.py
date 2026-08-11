@@ -11,7 +11,7 @@ settability predicates.
 Split out of ``engine`` because the rule had been implemented TWICE — here and,
 over live objects, in ``configurator`` — and the two copies diverged four
 separate ways in a single day (which spellings deliver to a deferred slot,
-whether a ``Lazy`` is eagerly flowed, whether a bare key reaches a deferred slot
+whether a ``Partial`` is eagerly flowed, whether a bare key reaches a deferred slot
 at all, and whether any of it was ordered). Three of those four failed silently.
 One module both callers import is what stops the fifth.
 
@@ -1274,7 +1274,7 @@ def _settability_target(target: Any) -> Any:
     engine's nested-marker cascade, ``configurator._tune_deferred``). The idiom
     used to be inlined six ways, and five of the copies degraded a function
     OBJECT target to ``None`` (``resolve_class`` is string/type-only), so a
-    ``LazyClass(builder_fn, …)`` slot bypassed the NoBroadcast opt-outs on the
+    ``PartialClass(builder_fn, …)`` slot bypassed the NoBroadcast opt-outs on the
     engine cascade and could not be tuned by ``configure()`` at all — while the
     identical class-target slot behaved, and while these predicates answered
     correctly. Do not re-inline it.
@@ -1595,7 +1595,7 @@ def _scan_view(
     _positions: Optional[Dict[str, int]] = None
 
     def _bare_before() -> FrozenSet[str]:
-        # Lazy: only a dict-at-slot emission needs positions (the rare case),
+        # Partial: only a dict-at-slot emission needs positions (the rare case),
         # so the common pass never pays the extra view walk. The candidate set
         # is the ONE cascade definition (bare keys + '**'-rider scalars at the
         # rider's index) — a private non-dict filter here skipped the rider,

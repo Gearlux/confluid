@@ -266,3 +266,53 @@ alias: !ref:thing
     # Post-resolver, both should point at the SAME Instance marker
     assert isinstance(result["thing"], Instance)
     assert result["alias"] is result["thing"]
+
+
+def test_sibling_list_items_do_not_share_an_instance_via_recycled_ids() -> None:
+    """Distinct markers in one list must build distinct objects.
+
+    Both engine memos key on ``id(marker)``, which is unique only while the marker
+    is alive. The engine builds short-lived broadcast COPIES, and CPython reuses a
+    freed object's address — so without a keepalive the second list item's copy can
+    land on the first one's address and read as a memo HIT, handing back the wrong
+    instance. Measured before the fix: every stage of a pipeline came back as the
+    first stage.
+    """
+    from typing import List, Optional
+
+    from confluid import configurable, load
+
+    @configurable
+    class _Leaf:
+        def __init__(self, tag: str = "") -> None:
+            self.tag = tag
+
+    @configurable
+    class _Node:
+        def __init__(self, name: str = "", leaf: Optional[_Leaf] = None) -> None:
+            self.name, self.leaf = name, leaf
+
+    @configurable
+    class _Root:
+        def __init__(self, nodes: Optional[List[_Node]] = None) -> None:
+            self.nodes = nodes or []
+
+    root = load(
+        """
+root: !class:_Root()
+  nodes:
+    - !class:_Node()
+      name: a
+      leaf: !class:_Leaf(tag=a)
+    - !class:_Node()
+      name: b
+      leaf: !class:_Leaf(tag=b)
+    - !class:_Node()
+      name: c
+      leaf: !class:_Leaf(tag=c)
+"""
+    )["root"]
+
+    assert [n.name for n in root.nodes] == ["a", "b", "c"]
+    assert [n.leaf.tag for n in root.nodes] == ["a", "b", "c"]
+    assert len({id(n) for n in root.nodes}) == 3

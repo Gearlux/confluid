@@ -7,7 +7,7 @@ import pytest
 from pydantic import Field
 
 from confluid import configurable, get_registry
-from confluid.lazy import Lazy
+from confluid.partial import Partial
 from confluid.pydantic_export import to_pydantic
 
 
@@ -91,7 +91,7 @@ def test_to_pydantic_preserves_annotated_field_constraints() -> None:
 def test_lazy_param_does_not_leak_marker_and_is_recorded() -> None:
     @configurable
     class C:
-        def __init__(self, opt: Lazy[Any] = None) -> None:
+        def __init__(self, opt: Partial[Any] = None) -> None:
             self.opt = opt
 
     model = to_pydantic(C)
@@ -101,7 +101,7 @@ def test_lazy_param_does_not_leak_marker_and_is_recorded() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# lazy mark (__confluid_lazy__)
+# lazy mark (__confluid_partial__)
 # --------------------------------------------------------------------------- #
 
 
@@ -110,7 +110,7 @@ def test_configurable_lazy_sets_marker() -> None:
     class Opt:
         pass
 
-    assert getattr(Opt, "__confluid_lazy__") is True
+    assert getattr(Opt, "__confluid_partial__") is True
 
 
 def test_configurable_lazy_defaults_false_no_marker() -> None:
@@ -118,7 +118,7 @@ def test_configurable_lazy_defaults_false_no_marker() -> None:
     class Op:
         pass
 
-    assert getattr(Op, "__confluid_lazy__", False) is False
+    assert getattr(Op, "__confluid_partial__", False) is False
 
 
 def test_register_lazy_sets_marker_on_third_party_class() -> None:
@@ -128,7 +128,7 @@ def test_register_lazy_sets_marker_on_third_party_class() -> None:
         pass
 
     register(_ThirdParty, category="loader", lazy=True)
-    assert getattr(_ThirdParty, "__confluid_lazy__") is True
+    assert getattr(_ThirdParty, "__confluid_partial__") is True
 
 
 def test_lazy_marker_survives_reregister_without_lazy() -> None:
@@ -140,7 +140,7 @@ def test_lazy_marker_survives_reregister_without_lazy() -> None:
 
     # Mirror navigaitor's snapshot-restore path (only forwards category).
     get_registry().register_class(Opt, category="optimizer")
-    assert getattr(Opt, "__confluid_lazy__") is True
+    assert getattr(Opt, "__confluid_partial__") is True
 
 
 # --------------------------------------------------------------------------- #
@@ -246,7 +246,7 @@ _ALL_MARKS = (
     "__confluid_group__",
     "__confluid_task__",
     "__confluid_role__",
-    "__confluid_lazy__",
+    "__confluid_partial__",
     "__confluid_random__",
     "__confluid_constant__",
     "__confluid_strict_typing__",

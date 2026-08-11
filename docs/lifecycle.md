@@ -38,8 +38,8 @@ run in, what each one consumes, and what it decides **permanently**. Most
 | 4 | **Scope** | `scopes=[...]` from the caller | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |
 | 5 | **Interpolate** | `${ENV}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `!ref:` targets, which stay late-bound |
 | 6 | **Expand** | `trainer.lr: 0.1` | dotted keys nest, anchored where the dotted spelling was written | `'*'` / `'**'` — ordinary path segments here |
-| 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); `!ref:` resolves and is shared by identity | `Lazy` markers, unresolvable references |
-| 8 | **Flow** | the merged markers | objects are constructed, kwargs validated under `policy.yaml`, ctor kwargs captured for `dump()` | `Lazy` markers — construction is the one thing deferral withholds |
+| 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); `!ref:` resolves and is shared by identity | `Partial` markers, unresolvable references |
+| 8 | **Flow** | the merged markers | objects are constructed, kwargs validated under `policy.yaml`, ctor kwargs captured for `dump()` | `Partial` markers — construction is the one thing deferral withholds |
 | 9 | **Solidify** | the built graph | `solidify()` fires post-order — children final, then the parent | objects flowed with `solidify=False` |
 
 ## Where you can stop
@@ -74,7 +74,7 @@ override the paste, lines above it are overridden by it. See
 **"Why is my `!lazy:` slot still a marker?"** — Deferral withholds construction
 (8) only. Pass 7 still merges broadcast keys into it, which is why `lr: 0.001`
 tunes a deferred optimizer; you call `flow(slot, params=…)` when the runtime
-argument exists. See [Tags & deferred initialization](tags.md).
+argument exists. See [Tags & deferred initialization](targets.md).
 
 **"Why did `solidify()` see the old value?"** — It shouldn't: 9 runs after 7 and
 8, post-order, on both the load path and `configure()`. If derived state looks

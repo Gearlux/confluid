@@ -17,9 +17,9 @@ from typing import Any, Dict, Optional, cast
 
 import yaml
 
-# `LazyClass` is the MARKER class (what `!lazy:` parses to); `confluid.Lazy` is the
+# `PartialClass` is the MARKER class (what `!lazy:` parses to); `confluid.Partial` is the
 # annotation alias that declares a deferred SLOT — different things, easy to mix up.
-from confluid import Fluid, LazyClass, configurable, dump, flow, load, load_config, resolve
+from confluid import Fluid, PartialClass, configurable, dump, flow, load, load_config, resolve
 from confluid.loader import ConfluidLoader
 
 BASE_YAML = """
@@ -106,7 +106,7 @@ def _walk_the_passes(path: Path) -> None:
     print(f"optimizer: {raw['optimizer']!r}")
     print(f"profile: {raw['profile']!r}")
     print(f"run_root still literal: {raw['run_root']!r}")
-    assert isinstance(raw["optimizer"], LazyClass)
+    assert isinstance(raw["optimizer"], PartialClass)
     assert "${LIFECYCLE_ROOT}" in raw["run_root"]  # nothing is interpolated yet
 
     print("\n=== 2-3. IMPORT + INCLUDE — one document, includer read LAST ===")
@@ -133,7 +133,7 @@ def _walk_the_passes(path: Path) -> None:
     # it wins; `dropout: 0.0` reaches BOTH nodes, deferred slot included.
     assert markers["encoder"].kwargs["width"] == 32
     assert markers["optimizer"].kwargs["lr"] == 0.01  # the marker's own kwarg, untouched
-    assert isinstance(markers["optimizer"], LazyClass)  # resolve() builds nothing
+    assert isinstance(markers["optimizer"], PartialClass)  # resolve() builds nothing
 
     print("\n=== 8-9. FLOW + SOLIDIFY — live objects, finalized post-order ===")
     built = cast(Dict[str, Any], load(str(path), scopes=["mode=fast"]))
@@ -143,7 +143,7 @@ def _walk_the_passes(path: Path) -> None:
     assert built["encoder"].width == 32 and built["encoder"].dropout == 0.0
     assert built["head"].units == 128
     assert built["head"]._built == "head[128x0.0]"  # solidify() ran AFTER the values landed
-    assert isinstance(built["optimizer"], LazyClass)  # deferral withholds CONSTRUCTION only
+    assert isinstance(built["optimizer"], PartialClass)  # deferral withholds CONSTRUCTION only
 
     print("\n=== the deferred slot, built when its runtime argument exists ===")
     optimizer = flow(built["optimizer"], params="<model.parameters()>")

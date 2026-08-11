@@ -14,9 +14,9 @@ each branch of the ladder as an observable decision stream.
 
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
-from confluid import LazyClass, NoBroadcast, configurable
+from confluid import NoBroadcast, PartialClass, configurable
 from confluid.broadcast import _KeyScope, _receiver_for_target, _scan_view, _View
-from confluid.lazy import Lazy
+from confluid.partial import Partial
 
 
 class _ScOptim:
@@ -50,7 +50,7 @@ class _ScTrainer:
             child: A nested marker slot.
         """
         self.lr, self.name, self.child = lr, name, child
-        self.optimizer: Lazy[Any] = LazyClass(_ScOptim, weight_decay=0.05)
+        self.optimizer: Partial[Any] = PartialClass(_ScOptim, weight_decay=0.05)
 
 
 @configurable

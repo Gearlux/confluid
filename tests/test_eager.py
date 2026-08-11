@@ -14,7 +14,7 @@ the lazy-init/zero-arg convention. These tests pin the three pillars:
     staleness warning — a post-construction setattr of a ctor param cannot
     re-run the ``__init__`` work.
 
-See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction"
+See confluid ``AGENTS.md`` → "Partial Initialization & Zero-Arg Construction"
 (the convention remains the workspace mandate; eager classes are the
 supported alternative for plain-Python consumers) and ``docs/eager-classes.md``.
 """
@@ -194,7 +194,7 @@ def test_nested_configurable_in_captured_kwargs_round_trips() -> None:
     obj = load("thing: !class:EagerHolder()\n  child: !class:Child()\n    x: 3")["thing"]
     assert isinstance(obj._c, Child)
     text = dump(obj)
-    assert "!class:Child" in text
+    assert "_target_: Child" in text
     assert "x: 3" in text
     reloaded = load(text)
     assert isinstance(reloaded._c, Child)

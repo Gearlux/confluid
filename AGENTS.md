@@ -48,7 +48,7 @@ engine-timing run over a ~2,500-marker tree (`CONFLUID_BENCH_PROFILE=1` adds a c
 constructor-time configuration injection. (This covers *configuration*, not *type validation* —
 see Schema Enforcement.)
 
-### Lazy initialization & zero-arg construction (the class-design convention)
+### Partial initialization & zero-arg construction (the class-design convention)
 
 **Rule.** A `@configurable` class in this workspace should be cheap to build and configured
 afterwards. Rules 1, 3 and 4 are REQUIREMENTS; rule 2 is a RECOMMENDATION.
@@ -67,8 +67,8 @@ afterwards. Rules 1, 3 and 4 are REQUIREMENTS; rule 2 is a RECOMMENDATION.
    is prohibitively expensive AND the inputs are stable by first use. (Requirement.)
 4. **A configurable slot may be a constructor param OR an `__init__`-body attribute** — both are
    introspected. A body slot needing runtime injection or pre-flow kwarg mutation MUST hold a
-   `LazyClass(...)` (a bare `Class` post-init attr is eagerly flowed); give it a type annotation;
-   build a fresh `LazyClass(...)` per instance. (Requirement.)
+   `PartialClass(...)` (a plain `Target` post-init attr is built); give it a `Partial[T]`
+   annotation; build a fresh `PartialClass(...)` per instance. (Requirement.)
 
 **Why.** The preferred shape is what makes "never require constructor-time injection" structural,
 and keeps `configure()` reconfiguration, cheap introspection (`resolve()` / `solidify=False`) and
@@ -123,7 +123,7 @@ imports; extend the right module instead.
 
 | Module | Owns |
 |---|---|
-| `fluid` | the marker DATA classes (`Fluid`/`Class`/`Instance`/`Reference`/`Clone`/`Lazy`/`ScopeBlock`) + `format_yaml_loc`. A dependency LEAF — imports no other confluid module. |
+| `fluid` | the marker DATA classes (`Fluid`/`Target`/`Partial`/`Reference`/`Clone`/`ScopeBlock`) + `format_yaml_loc`. A dependency LEAF — imports no other confluid module. |
 | `state` | `_EngineState` / `_ENGINE_STATE` (one `ContextVar`) + the public `active_context` / `collect_report`. Exists so `broadcast` can read the ambient report without importing the engine. |
 | `broadcast` | the ONE precedence rule and all its machinery — see "Precedence & broadcasting". Materializes NOTHING. |
 | `engine` | `flow`/`cast`, `materialize`/`resolve`, `_flow_recursive`/`_deep_flow`, the construction-side broadcast consumers. |
@@ -268,22 +268,40 @@ group, `::test_a_full_document_is_readable_by_plain_yaml`,
 `::test_yaml_anchors_and_aliases_still_work`, `::test_the_two_spellings_can_be_mixed_in_one_document`.
 **Docs.** `docs/plain-format.md`. **Example.** `examples/plain_format.py`.
 
-### `!class:` eager-vs-deferred is the trailing `()`
+### There are exactly TWO construction modes
 
-**Rule.** `!class:Foo` → a deferred `Class` stub the receiver flows itself. `!class:Foo()` /
-`!class:Foo(k=v)` → an eager `Instance` built during load. The two are NOT interchangeable: pick
-deferred when the receiver builds the dependency itself (so broadcasting can still reach it).
+**Rule.** `partial` decides whether a marker is built, and NOTHING else does — not the parent's
+configurability, not the nesting depth, not document position. `Target` is built by
+materialization; `Partial` never is. `!class:Foo` and `!class:Foo()` are the SAME thing now (the
+trailing `()` is inert); `!lazy:` / `_partial_: true` is the only spelling that defers.
+
+**Rule.** A slot the RECEIVING class declared deferred (`Partial[T]`, or a body slot holding
+`PartialClass(...)`) keeps its value unbuilt whatever the value says — the receiver's declared
+contract, read via `partial_param_names(target)` in `_flow_target`. That is a slot declaration, not
+parent-context guessing: static, local to the class, and readable. The ONE promotion site (marker →
+`Partial`, with the warning) stays `_apply_post_init_attrs`.
+
+**Rule.** Never reintroduce a third mode or a context-dependent build rule. The deleted middle state
+(`Class`) was justified as "so broadcasting can still reach it", which is not a reason: broadcasting
+is pass 7 and construction is pass 8, so a BUILT node already receives every cascading key before
+its constructor runs.
+
+**Rule — the memos key on `id()`, which is only unique while the object is ALIVE.** Every marker a
+memo keys on MUST be pinned in `_EngineState.memo_keepalive` for the pass. The engine builds
+short-lived broadcast COPIES, and CPython reuses a freed address, so an unpinned copy reads as a
+memo HIT for an unrelated node — measured: every stage of a three-stage pipeline came back as stage
+one. **Pins.** `tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
 
 **Detail.** Inline `(k=v)` scalars are coerced via `parse_value` in both the unquoted and quoted
 forms, and MERGE with a mapping body (the block wins on conflict). The unquoted form cannot contain
 spaces or a nested tag (YAML allows one tag per node). `1e-3` is not a YAML float — write `1.0e-3`.
 A kwarg literally named `target` is legal (the loader assigns kwargs post-construction).
 
-**Pins.** `tests/test_loader.py`, `tests/test_lazy.py`. **Docs.** `docs/tags.md`.
+**Pins.** `tests/test_loader.py`, `tests/test_partial.py`. **Docs.** `docs/targets.md`.
 
 ### A target may be ANY callable
 
-**Rule.** `!class:`/`!lazy:` targets, `Class`/`Lazy`/`Instance`/`flow()` targets, AND the
+**Rule.** `!class:`/`!lazy:` targets, `Class`/`Partial`/`Instance`/`flow()` targets, AND the
 `@configurable` / `register` decorators all accept any callable — a class OR a builder function.
 Introspect the target's OWN signature (see `init_callable`).
 
@@ -297,25 +315,25 @@ returning a `__dict__`-less value is tolerated (the post-build broadcast step is
 
 **Rule.** Marker-target normalization goes through the ONE `broadcast._settability_target`; never
 re-inline it. Five of six inlined copies degraded a function OBJECT to `None`, so a code-built
-`LazyClass(builder_fn, …)` ran the cascade with no NoBroadcast gates.
+`PartialClass(builder_fn, …)` ran the cascade with no NoBroadcast gates.
 
 **Pins.** `tests/test_callable_target.py` (incl.
 `::test_settability_predicates_read_a_functions_own_signature`), `tests/test_cross_path_pins.py`
 (the D6 pair), `tests/test_no_broadcast.py` (the two `test_register_can_*` cases).
 
-### Deferred initialization — `!lazy:` / `Lazy[T]`
+### Deferred initialization — `_partial_: true` / `Partial[T]`
 
-**Rule.** A `Lazy` is never AUTO-flowed — not by `materialize()`, not by external deep-flow
-walkers. **Deferral withholds CONSTRUCTION only: a `Lazy` IS broadcast into, exactly like a
-`Class`.** Never re-add a blanket `isinstance(v, Lazy)` early return in `_resolve_kwarg_value`.
+**Rule.** A `Partial` is never AUTO-flowed — not by `materialize()`, not by external deep-flow
+walkers. **Deferral withholds CONSTRUCTION only: a `Partial` IS broadcast into, exactly like a
+`Class`.** Never re-add a blanket `isinstance(v, Partial)` early return in `_resolve_kwarg_value`.
 
 **Rule.** An EXPLICIT `flow(node)` builds it, even with no runtime kwargs. A mapping addressed at a
 slot already holding a deferred marker TUNES it, never replaces it. A marker kwarg set in CODE is a
 DEFAULT and does not block a bare key.
 
-**Rule.** Subscript the alias with the INTERFACE the slot flows into (`Lazy[Optimizer]`, never
-`Lazy[Any]` when the type is known). `lazy_param_names(cls)` is the single authority and reports a
-body slot deferred by EITHER signal — a `LazyClass(...)` value or a `Lazy[T]` annotation.
+**Rule.** Subscript the alias with the INTERFACE the slot flows into (`Partial[Optimizer]`, never
+`Partial[Any]` when the type is known). `partial_param_names(cls)` is the single authority and reports a
+body slot deferred by EITHER signal — a `PartialClass(...)` value or a `Partial[T]` annotation.
 
 **Rule.** `resolve_ast_annotation` MUST `inspect.unwrap` before reading `__globals__` — the
 validation wrapper's globals are confluid's own, which silently typed every body slot `Any`.
@@ -323,7 +341,7 @@ validation wrapper's globals are confluid's own, which silently typed every body
 **Why.** `docs/architecture.md` record 5. The engine flag that settles ordering is
 `Fluid._order_resolved`, never `_yaml_loc`.
 
-**Pins.** `tests/test_lazy.py`, `tests/test_deferred_broadcasting.py`.
+**Pins.** `tests/test_partial.py`, `tests/test_deferred_broadcasting.py`.
 
 ### Post-flow auto-solidification
 
@@ -358,7 +376,7 @@ passed by keyword is not a keyword slot. `VAR_KEYWORD` is deliberately KEPT (see
 routing rule).
 
 **Pins.** the "positional runtime args" group in `tests/test_fluid.py`.
-**Docs.** `docs/tags.md` → "Runtime injection that has no keyword".
+**Docs.** `docs/targets.md` → "Runtime injection that has no keyword".
 
 ### Introspection without cost — `resolve()` and `solidify=False`
 
@@ -400,7 +418,7 @@ configure: keys BEFORE the block); the candidate set may not differ again.
 
 **Rule.** The configure()-path verdict is CALL-SCOPED (`_LiveSink.beaten_per_slot` →
 `_tune_deferred(beaten=…)`), never marker state — a marker-stamped verdict outlives the document
-that produced it. Deferred slots are tuned by their OWNER's scan; `_walk` returns early on a `Lazy`.
+that produced it. Deferred slots are tuned by their OWNER's scan; `_walk` returns early on a `Partial`.
 
 **Rule.** The three engine fields on `Fluid` are read through `fluid.addressed_keys_of` /
 `is_order_resolved` / `late_bare_keys_of`, NEVER a bare `getattr`.
@@ -458,6 +476,12 @@ parity files (`test_basic_parity` / `test_names_parity` / `test_parity` / `test_
 `examples/broadcasting.py` demonstrates the `**kwargs` split.
 
 ### Configuration reports
+
+**Rule — naming.** The marker, the annotation and the YAML key are ONE word: `Partial` /
+`PartialClass` / `partial_param_names` / `_partial_`. `Class` / `Instance` / `Lazy` / `LazyClass` /
+`lazy_param_names` survive only as deprecation aliases, deleted with the tag spelling. `Class` and
+`Instance` are the SAME class now — code discriminating with `isinstance(x, Instance)` must read
+`x.partial`. **Pins.** `tests/test_partial.py` (the deprecated-alias group).
 
 **Rule.** `confluid/report.py` is a dependency LEAF (stdlib + loggair). Only `ConfigurationReport` and
 `collect_report` are top-level exports. Every instrumentation site is `if report is not None`-guarded
@@ -674,14 +698,14 @@ mark into the accept-lists.)
 **Rule — inputs.** `Mandatory[T]` flags a slot mandatory EVEN WHEN defaulted for zero-arg build.
 `input_specs.required` is `no-default OR is_mandatory_annotation`.
 
-**Rule — the three aliases.** `Lazy[T]` and `Mandatory[T]` are `Annotated[Union[T, Fluid], marker]`
+**Rule — the three aliases.** `Partial[T]` and `Mandatory[T]` are `Annotated[Union[T, Fluid], marker]`
 — subscript the flow-target INTERFACE; the `Fluid` arm is what lets a `Class(...)` default
 type-check under strict mypy. `NoBroadcast[T]` deliberately has NO `Fluid` arm: it gates
 generically-named SCALAR knobs, where a Fluid arm would misdescribe the value.
 
 **Rule.** Marker detection is the RECURSIVE `introspect.annotation_has_marker` (walks `Annotated`
-payloads + `Union` arms, so composed spellings and `Optional[Lazy[T]]` are detected; deliberately
-does NOT recurse into other generics — `List[Lazy[T]]` marks the ELEMENT). All three names come
+payloads + `Union` arms, so composed spellings and `Optional[Partial[T]]` are detected; deliberately
+does NOT recurse into other generics — `List[Partial[T]]` marks the ELEMENT). All three names come
 from the ONE `introspect.marked_param_names`. All three markers are STRIPPED by `to_pydantic`.
 
 **Rule.** `NoBroadcast` is enforced at the cascade gates via `broadcast._broadcast_blocked_keys` —
@@ -760,7 +784,7 @@ and a `None` value is omitted ONLY when the param's default is also `None` — a
 **Rule.** `confluid/__init__.py` re-exports ONLY the consumer-facing API. Internal machinery stays
 importable from its home module but is NOT top-level: validation plumbing (`confluid.validation`),
 scope resolution (`confluid.scopes` — only `discover_dimensions` / `discover_dimension_values` are
-public), annotation predicates (`confluid.lazy` / `confluid.mandatory` / `confluid.pydantic_export`),
+public), annotation predicates (`confluid.partial` / `confluid.mandatory` / `confluid.pydantic_export`),
 marker internals (`ScopeBlock` → `confluid.fluid`), and `load_workspace_env` (`confluid.env`).
 
 **Rule.** Before adding a name to `__all__`, ask which consumer reads it. Do not re-grow the surface

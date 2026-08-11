@@ -11,8 +11,8 @@ Coverage targets:
 * Mutable defaults (list/dict) become ``default_factory``
 * ``_confluid_class`` attribute carries the correct dotted path
 * ``lru_cache`` returns the same model on repeated calls
-* ``Lazy[T]`` annotations are unwrapped to ``T`` and recorded
-* ``confluid_class_of`` and ``lazy_param_names_of`` helpers
+* ``Partial[T]`` annotations are unwrapped to ``T`` and recorded
+* ``confluid_class_of`` and ``partial_param_names_of`` helpers
 """
 
 from typing import (
@@ -34,10 +34,10 @@ from typing import (
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from confluid import LazyClass, configurable, confluid_class_of, get_registry, to_pydantic
+from confluid import PartialClass, configurable, confluid_class_of, get_registry, to_pydantic
 from confluid.fluid import Fluid
-from confluid.lazy import Lazy
-from confluid.pydantic_export import _convert_annotation, _qualname, lazy_param_names_of
+from confluid.partial import Partial
+from confluid.pydantic_export import _convert_annotation, _qualname, partial_param_names_of
 
 
 @pytest.fixture(autouse=True)
@@ -296,26 +296,26 @@ def test_ignore_config_attributes_are_skipped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Lazy[T] support
+# Partial[T] support
 # ---------------------------------------------------------------------------
 
 
 def test_lazy_annotation_is_unwrapped_and_recorded() -> None:
     @configurable
     class HasOptim:
-        def __init__(self, optimizer: Lazy[Any] = None) -> None:
+        def __init__(self, optimizer: Partial[Any] = None) -> None:
             self.optimizer = optimizer
 
     Model = to_pydantic(HasOptim)
-    # The Lazy marker is stripped from the field type; the alias's honest
+    # The Partial marker is stripped from the field type; the alias's honest
     # ``Union[T, Fluid]`` shape survives (the Fluid arm gains its generated
     # mirror per the configurable-union rule).
     field = Model.model_fields["optimizer"]
     assert getattr(field.annotation, "__metadata__", ()) == ()  # no Annotated wrapper
     assert Fluid in get_args(field.annotation)
     # The lazy marker is recorded on the generated model.
-    assert "optimizer" in lazy_param_names_of(Model)
-    assert "optimizer" in lazy_param_names_of(Model())
+    assert "optimizer" in partial_param_names_of(Model)
+    assert "optimizer" in partial_param_names_of(Model())
 
 
 def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
@@ -326,19 +326,19 @@ def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
 
     @configurable
     class HasTyped:
-        def __init__(self, dep: Lazy[Leaf] = LazyClass(Leaf, n=2)) -> None:
+        def __init__(self, dep: Partial[Leaf] = PartialClass(Leaf, n=2)) -> None:
             self.dep = dep
 
     Model = to_pydantic(HasTyped)
     # All three legal runtime forms validate: a deferred Fluid, a live
     # instance of T, and the generated config mirror.
-    Model(dep=LazyClass(Leaf, n=3))
+    Model(dep=PartialClass(Leaf, n=3))
     Model(dep=Leaf(n=4))
     Model(dep=to_pydantic(Leaf)(n=5))
     # The marker never leaks into the JSON schema, which stays generable.
     schema = Model.model_json_schema()
-    assert "__confluid_lazy__" not in str(schema)
-    assert "dep" in lazy_param_names_of(Model)
+    assert "__confluid_partial__" not in str(schema)
+    assert "dep" in partial_param_names_of(Model)
 
 
 def test_range_marks_survive_inside_marker_union_arms() -> None:
@@ -386,7 +386,7 @@ def test_no_lazy_params_means_empty_set() -> None:
             self.x = x
 
     Model = to_pydantic(Plain)
-    assert lazy_param_names_of(Model) == frozenset()
+    assert partial_param_names_of(Model) == frozenset()
 
 
 # ---------------------------------------------------------------------------

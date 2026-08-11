@@ -15,13 +15,13 @@ Named ``Mandatory`` (NOT ``Required``) to avoid confusion with
 
 Subscript with the **interface the slot flows into** — a mandatory dependency
 slot typically receives either a live instance or a deferred ``Fluid`` stub, so
-the alias bakes the ``Fluid`` arm in (like :data:`confluid.Lazy`). The canonical
+the alias bakes the ``Fluid`` arm in (like :data:`confluid.Partial`). The canonical
 spellings::
 
     from torch import nn
     from torch.optim import Adam, Optimizer
 
-    from confluid import Class, Lazy, configurable, flow
+    from confluid import Class, Partial, configurable, flow
     from confluid.mandatory import Mandatory
 
     @configurable
@@ -29,7 +29,7 @@ spellings::
         def __init__(
             self,
             model: Mandatory[nn.Module] = Class(TimmModel),
-            optimizer: Mandatory[Lazy[Optimizer]] = Class(Adam, lr=1e-3),
+            optimizer: Mandatory[Partial[Optimizer]] = Class(Adam, lr=1e-3),
         ):
             self.model = model          # required contract slot
             self.optimizer = optimizer  # required AND kept deferred until run time
@@ -37,7 +37,7 @@ spellings::
         def configure_optimizers(self):
             return flow(self.optimizer, params=self.parameters())
 
-``Mandatory[Lazy[T]]`` is the composed form for a required slot that must also
+``Mandatory[Partial[T]]`` is the composed form for a required slot that must also
 stay deferred (runtime injection). The marker only affects runtime inspection
 (see :func:`is_mandatory_annotation`); detection walks nested ``Annotated`` /
 ``Union`` layers (:func:`confluid.introspect.annotation_has_marker`), so the
@@ -57,7 +57,7 @@ Mandatory = Annotated[Union[T, Fluid], _MANDATORY_MARKER]
 """Type alias: ``Mandatory[T]`` is ``Annotated[Union[T, Fluid], _MANDATORY_MARKER]``.
 
 ``T`` is the interface the slot flows into; the ``Fluid`` arm admits the deferred
-``Class``/``LazyClass`` stub a dependency slot holds pre-flow, so
+``Class``/``PartialClass`` stub a dependency slot holds pre-flow, so
 ``model: Mandatory[nn.Module] = Class(TimmModel)`` type-checks under strict mypy
 (previously this required spelling ``Mandatory[Union[nn.Module, Fluid]]`` by
 hand). The marker only affects runtime inspection (see

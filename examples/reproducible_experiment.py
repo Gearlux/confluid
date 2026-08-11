@@ -18,7 +18,7 @@ from confluid import configurable, dump, load
 @configurable
 class Preprocessor:
     def __init__(self, mode: str = "standard", scale: float = 1.0) -> None:
-        # Lazy constructor: only stores config (both knobs defaulted → ``Preprocessor()`` works).
+        # Partial constructor: only stores config (both knobs defaulted → ``Preprocessor()`` works).
         self.mode = mode
         self.scale = scale
         self._fitted: Optional[Dict[str, Any]] = None  # lazy derived state — see ``fitted_params``

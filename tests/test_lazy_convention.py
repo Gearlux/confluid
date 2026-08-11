@@ -1,4 +1,4 @@
-"""Pins the "Lazy Initialization & Zero-Arg Construction" class-design convention.
+"""Pins the "Partial Initialization & Zero-Arg Construction" class-design convention.
 
 These tests assert the convention's interactions WITH confluid's machinery (not just the style):
 
@@ -10,7 +10,7 @@ These tests assert the convention's interactions WITH confluid's machinery (not 
     cached property (private ``_backing``) materializes once;
   * fully-defaulted constructor params are all optional in the generated pydantic schema.
 
-See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction". The reference
+See confluid ``AGENTS.md`` → "Partial Initialization & Zero-Arg Construction". The reference
 implementation in the workspace is ``recordstream.sources.huggingface.HuggingFaceSource``.
 """
 
@@ -30,7 +30,7 @@ def test_zero_arg_construction_does_no_work() -> None:
     @configurable
     class Source:
         def __init__(self, path: str = "", split: str = "train") -> None:
-            # Lazy: store config only — no functional work.
+            # Partial: store config only — no functional work.
             self.path = path
             self.split = split
             self._data: Optional[List[int]] = None  # private lazy cache

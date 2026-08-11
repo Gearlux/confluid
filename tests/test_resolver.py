@@ -240,14 +240,17 @@ def test_quoted_class_string_uses_the_one_target_call_grammar() -> None:
     illegal one now falls to a deferred ``Class`` marker instead of minting an
     eager ``Instance`` under a name the registry can never resolve.
     """
-    from confluid.fluid import Class, Instance
+    from confluid.fluid import Target
 
     resolver = Resolver(context={})
 
     legal = resolver.resolve("!class:a.b.Widget@role=metric(k=3)")
-    assert isinstance(legal, Instance)
+    assert isinstance(legal, Target)
     assert legal.target == "a.b.Widget@role=metric"
     assert legal.kwargs == {"k": 3}
 
+    # A name the grammar rejects keeps the whole string as the target and parses
+    # NO inline kwargs — the marker type is the same either way now that eager and
+    # deferred are one class.
     illegal = resolver.resolve("!class:not a name(k=3)")
-    assert isinstance(illegal, Class) and not isinstance(illegal, Instance)
+    assert isinstance(illegal, Target)

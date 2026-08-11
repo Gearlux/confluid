@@ -121,7 +121,7 @@ def test_is_mandatory_annotation_and_param_names() -> None:
 def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
     """``Mandatory[T]`` == ``Annotated[Union[T, Fluid], marker]`` — the typed form
     admits a deferred ``Class(...)`` default under strict mypy (no ignore needed:
-    that absence is the static pin, like the ``Lazy`` twin)."""
+    that absence is the static pin, like the ``Partial`` twin)."""
     from typing import get_args
 
     from confluid import Class
@@ -146,11 +146,11 @@ def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
 
 
 def test_marker_composition_detected_in_both_orders() -> None:
-    """``Mandatory[Lazy[T]]`` AND ``Lazy[Mandatory[T]]`` carry both markers — the
+    """``Mandatory[Partial[T]]`` AND ``Partial[Mandatory[T]]`` carry both markers — the
     union-carrying aliases bury the inner marker in a Union arm, so detection
     walks nested Annotated/Union layers (``annotation_has_marker``)."""
-    from confluid import Class, Lazy
-    from confluid.lazy import lazy_param_names
+    from confluid import Class, Partial
+    from confluid.partial import partial_param_names
 
     class Dep:
         pass
@@ -158,14 +158,14 @@ def test_marker_composition_detected_in_both_orders() -> None:
     class Runner:
         def __init__(
             self,
-            a: Mandatory[Lazy[Dep]] = Class(Dep),
-            b: Lazy[Mandatory[Dep]] = Class(Dep),
+            a: Mandatory[Partial[Dep]] = Class(Dep),
+            b: Partial[Mandatory[Dep]] = Class(Dep),
         ) -> None:
             self.a = a
             self.b = b
 
     assert mandatory_param_names(Runner) == {"a", "b"}
-    assert lazy_param_names(Runner) == {"a", "b"}
+    assert partial_param_names(Runner) == {"a", "b"}
 
 
 def test_input_specs_three_way_required_and_nullable() -> None:

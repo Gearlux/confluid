@@ -14,7 +14,7 @@ import yaml
 
 from confluid import configurable, dump, flow, load
 from confluid.exceptions import ConfigurationError, ScopeError
-from confluid.fluid import Instance, Lazy
+from confluid.fluid import Instance, Partial
 from confluid.loader import ConfluidLoader
 
 
@@ -82,7 +82,7 @@ def test_target_builds_eagerly() -> None:
 
 def test_partial_true_stays_deferred_and_flows_with_runtime_args() -> None:
     graph = load("opt: {_target_: Opt, _partial_: true, lr: 0.5}")
-    assert isinstance(graph["opt"], Lazy)
+    assert isinstance(graph["opt"], Partial)
     built = flow(graph["opt"], params="MODEL_PARAMS")
     assert (built.params, built.lr) == ("MODEL_PARAMS", 0.5)
 
@@ -312,7 +312,7 @@ def _shape(value: Any) -> Any:
     Two separate ``load()`` calls necessarily produce distinct objects, so the
     graphs are compared by TYPE and attribute shape rather than by identity.
     """
-    if isinstance(value, (Instance, Lazy)):
+    if isinstance(value, (Instance, Partial)):
         return (type(value).__name__, value.target, {k: _shape(v) for k, v in value.kwargs.items()})
     if isinstance(value, dict):
         return {k: _shape(v) for k, v in value.items()}

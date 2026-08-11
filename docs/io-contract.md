@@ -37,7 +37,7 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
   the `property` object. Because the property is read-only/derived, it is already
   excluded from `to_pydantic` — it never becomes a config knob and round-trips
   cleanly. `output_specs(cls)` enumerates them (MRO-walked; subclass override wins).
-* **`Mandatory[T]`** (an `Annotated` marker, mirroring `Lazy[T]`; named to avoid
+* **`Mandatory[T]`** (an `Annotated` marker, mirroring `Partial[T]`; named to avoid
   `typing.Required` confusion) flags an input mandatory **even when it carries a
   default** for zero-arg construction — the structural signal (no default /
   non-`Optional`) already implies mandatory, but the marker restores the contract
@@ -46,22 +46,22 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
   reports `{required, nullable}` per param (`required = no-default OR Mandatory`).
   The marker is stripped by `to_pydantic`, so it never leaks into the JSON Schema.
 
-  Like `Lazy[T]`, the alias expands to `Annotated[Union[T, Fluid], marker]`:
+  Like `Partial[T]`, the alias expands to `Annotated[Union[T, Fluid], marker]`:
   subscript with the **interface the slot flows into**. The canonical spellings:
 
   ```python
   model: Mandatory[nn.Module] = Class(VisionModel)                 # required dependency slot
-  optimizer: Mandatory[Lazy[Optimizer]] = LazyClass(Adam, lr=1e-3)  # required AND deferred
+  optimizer: Mandatory[Partial[Optimizer]] = PartialClass(Adam, lr=1e-3)  # required AND deferred
   ```
 
-  The `Fluid` arm lets the deferred `LazyClass(...)` default type-check under strict
+  The `Fluid` arm lets the deferred `PartialClass(...)` default type-check under strict
   mypy (previously this had to be spelled `Mandatory[Union[nn.Module, Fluid]]`
-  by hand), and `Mandatory[Lazy[T]]` is the composed form for a required slot
+  by hand), and `Mandatory[Partial[T]]` is the composed form for a required slot
   that must also stay deferred for runtime injection. `NoBroadcast[T]`
   deliberately has **no** `Fluid` arm: it gates broadcasting on generically-named
   *scalar* knobs, where a `Fluid` arm would misdescribe the value. Marker
   detection walks nested `Annotated`/`Union` layers, so a composed spelling —
-  including `Optional[Lazy[T]] = None` — is always recognised.
+  including `Optional[Partial[T]] = None` — is always recognised.
 
 ## Runnable example
 

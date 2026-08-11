@@ -279,11 +279,12 @@ def test_yaml_materialization_uses_yaml_mode() -> None:
 obj: !class:YamlValidatedClass
   n: not_an_int
 """
-    loaded = load(yaml_doc)
-    # ``init='off'`` would let any value through if flow() didn't swap modes;
-    # the YAML path must surface this as an error under ``yaml='strict'``.
+    # ``init='off'`` would let any value through if the YAML path didn't swap
+    # modes; under ``yaml='strict'`` it must surface as an error. The error now
+    # fires during ``load()`` itself: a ``!class:`` with no parens is built by the
+    # load pass rather than left as a stub for a later ``flow()``.
     with pytest.raises(Exception) as excinfo:
-        flow(loaded["obj"])
+        load(yaml_doc)
     assert "YamlValidatedClass" in str(excinfo.value) or "validation" in str(excinfo.value).lower()
 
 

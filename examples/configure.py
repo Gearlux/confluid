@@ -9,7 +9,7 @@ values-before-``solidify()`` ordering.
 
 from typing import Any, List, Optional
 
-from confluid import LazyClass, configurable, configure, flow
+from confluid import PartialClass, configurable, configure, flow
 
 
 class Optimizer:
@@ -39,7 +39,7 @@ class Trainer:
         self.lr = lr
         self.name = name
         self.model = Model()  # a live configurable child — reached by recursion
-        self.optimizer: Any = LazyClass(Optimizer, lr=1e-4)  # a deferred slot
+        self.optimizer: Any = PartialClass(Optimizer, lr=1e-4)  # a deferred slot
 
 
 def main() -> None:
@@ -58,7 +58,7 @@ def main() -> None:
     # 2. The deferred slot was TUNED, never built: `lr` reached its kwargs, and
     #    the object still does not exist — its owner builds it when the runtime
     #    argument is available.
-    assert isinstance(trainer.optimizer, type(LazyClass(Optimizer))), "still a marker"
+    assert isinstance(trainer.optimizer, type(PartialClass(Optimizer))), "still a marker"
     assert trainer.optimizer.kwargs["lr"] == 0.9
     live = flow(trainer.optimizer, params=["p0", "p1"])
     assert live.lr == 0.9 and live.params == ["p0", "p1"]

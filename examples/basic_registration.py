@@ -12,7 +12,7 @@ from confluid import configurable, get_registry, register
 @configurable
 class MyModel:
     def __init__(self, layers: int = 3) -> None:
-        # Lazy constructor: only stores config (defaulted → ``MyModel()`` works).
+        # Partial constructor: only stores config (defaulted → ``MyModel()`` works).
         self.layers = layers
 
     @property

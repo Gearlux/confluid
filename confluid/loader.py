@@ -209,7 +209,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     space in ``!class:Model(a=1, b=2)`` produced a mangled target with both kwargs
     dropped and no error at all).
     """
-    from confluid.fluid import Clone, Instance, Lazy, Reference, ScopeBlock
+    from confluid.fluid import Clone, Partial, Reference, ScopeBlock, Target
 
     present = [k for k in _DISCRIMINATORS if k in mapping]
     if len(present) > 1:
@@ -254,7 +254,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
         raise ConfigurationError(f"{PARTIAL_KEY} must be true or false (got {partial!r})")
     # ``kwargs`` assigned POST-construction: a config kwarg literally named
     # ``target`` collides with the marker ctor's own first parameter when splatted.
-    target = Lazy(path.strip()) if partial else Instance(path.strip())
+    target = Partial(path.strip()) if partial else Target(path.strip())
     target.kwargs.update(body)
     return target
 
@@ -264,7 +264,7 @@ def _register_constructors() -> None:
 
     Invoked exactly once at module import (see the call below the definition).
     """
-    from confluid.fluid import Class, Clone, Instance, Lazy, Reference, ScopeBlock
+    from confluid.fluid import Clone, Partial, Reference, ScopeBlock, Target
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         """Parse inline ``key=value`` pairs from a ``Name(...)`` tag suffix.
@@ -299,7 +299,7 @@ def _register_constructors() -> None:
 
     def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         instant = _TARGET_CALL_RE.match(tag_suffix)
-        factory = Instance if instant else Class
+        factory = Target
         name = instant.group(1) if instant else tag_suffix
         inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
 
@@ -314,7 +314,7 @@ def _register_constructors() -> None:
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
             return _stamp(_make_fluid(factory, name, inline), loader, node)
 
-        return _stamp(Class(tag_suffix), loader, node)
+        return _stamp(Target(tag_suffix), loader, node)
 
     def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         if isinstance(node, yaml.nodes.MappingNode):
@@ -333,12 +333,12 @@ def _register_constructors() -> None:
 
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
-            return _stamp(_make_fluid(Lazy, name, {**inline, **mapping}), loader, node)
+            return _stamp(_make_fluid(Partial, name, {**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(_make_fluid(Lazy, name, inline), loader, node)
+            return _stamp(_make_fluid(Partial, name, inline), loader, node)
 
-        return _stamp(Lazy(tag_suffix), loader, node)
+        return _stamp(Partial(tag_suffix), loader, node)
 
     def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
         """Construct a ``ScopeBlock`` from any of the three YAML body shapes.
@@ -402,11 +402,11 @@ def _register_constructors() -> None:
             # literally named ``target`` collides with the marker ctor's own
             # first parameter when splatted.
             return _stamp(
-                _make_fluid(Instance, instant.group(1), _parse_inline_kwargs(instant.group(2))),
+                _make_fluid(Target, instant.group(1), _parse_inline_kwargs(instant.group(2))),
                 loader,
                 node,
             )
-        return _stamp(Class(val), loader, node)
+        return _stamp(Target(val), loader, node)
 
     ConfluidLoader.add_constructor("!ref", ref_compat)
     ConfluidLoader.add_constructor("!class", class_compat)
