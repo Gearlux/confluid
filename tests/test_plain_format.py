@@ -55,7 +55,7 @@ def test_a_full_document_is_readable_by_plain_yaml() -> None:
     alias: ${ref:model}
     copy: {_clone_: model}
     variant:
-      _scope_: mode=big
+      _scope_: {mode: big}
       model: {_target_: Box, size: 99}
     """
     raw = yaml.safe_load(doc)
@@ -192,10 +192,10 @@ def test_env_resolver_composes_with_a_config_key(monkeypatch: pytest.MonkeyPatch
 
 SCOPED = """
 default_block:
-  _notscope_: model
+  _notscope_: {model: }
   model: {_target_: Box, label: mlp}
 cnn_block:
-  _scope_: model=cnn
+  _scope_: {model: cnn}
   model: {_target_: Box, label: cnn}
 """
 
@@ -208,27 +208,33 @@ def test_scope_activation_swaps_the_block() -> None:
     assert load(SCOPED, scopes=["model=cnn"])["model"].label == "cnn"
 
 
-def test_scope_function_call_form() -> None:
-    doc = "b:\n  _scope_: model(cnn)\n  model: {_target_: Box, label: cnn}"
-    assert load(doc, scopes=["model=cnn"])["model"].label == "cnn"
+def test_several_dimensions_are_ANDed() -> None:
+    """One block conditional on two dimensions — what previously needed a block
+    nested inside another block."""
+    doc = "b:\n  _scope_: {model: cnn, size: big}\n  model: {_target_: Box, label: both}"
+    assert "model" not in load(doc, scopes=["model=cnn"])
+    assert load(doc, scopes=["model=cnn", "size=big"])["model"].label == "both"
 
 
 def test_boolean_scope() -> None:
-    doc = "b:\n  _scope_: debug\n  level: DEBUG"
+    doc = "b:\n  _scope_: {debug: }\n  level: DEBUG"
     assert "level" not in load(doc)
     assert load(doc, scopes=["debug"])["level"] == "DEBUG"
 
 
-def test_content_key_extends_a_list() -> None:
-    """A sequence body is the only way to write a conditional list ITEM, and a
-    mapping cannot express it — which is what ``_content_`` is for."""
-    doc = "ops:\n  - first\n  - {_scope_: extra=yes, _content_: [a, b]}\n  - last"
+def test_a_list_whose_first_item_is_a_scope_marker_is_a_block() -> None:
+    """A mapping body splices its KEYS; a list body splices its ITEMS. Both start
+    with ``_scope_:`` — only the container differs. This is the only way to write
+    a conditional list ITEM, because a YAML node cannot be both kinds at once."""
+    doc = "ops:\n  - first\n  - - _scope_: {extra: on_}\n    - a\n    - b\n  - last"
     assert load(doc)["ops"] == ["first", "last"]
-    assert load(doc, scopes=["extra=yes"])["ops"] == ["first", "a", "b", "last"]
+    assert load(doc, scopes=["extra=on_"])["ops"] == ["first", "a", "b", "last"]
 
 
-def test_content_key_substitutes_a_scalar() -> None:
-    doc = "ops:\n  - first\n  - {_scope_: v, _content_: 42}"
+def test_a_one_item_list_body_is_the_scalar_case() -> None:
+    """The old scalar body needs no spelling of its own — it is a list of one."""
+    doc = "ops:\n  - first\n  - - _scope_: {v: }\n    - 42"
+    assert load(doc)["ops"] == ["first"]
     assert load(doc, scopes=["v"])["ops"] == ["first", 42]
 
 
@@ -251,13 +257,13 @@ def test_asking_for_an_undeclared_scope_value_still_raises() -> None:
     [
         ("x: {_target_: Box, _ref_: y}", "Conflicting reserved keys"),
         ("x: {_partial_: true, lr: 1}", "needs a discriminator key"),
-        ("x: {_content_: [a]}", "needs a discriminator key"),
         ("x: {_target_: 42}", "_target_ must be a non-empty string"),
         ("x: {_target_: ''}", "_target_ must be a non-empty string"),
         ("x: {_target_: Box, _partial_: sometimes}", "_partial_ must be true or false"),
         ("x: {_ref_: 42}", "_ref_ must be a non-empty string"),
-        ("x: {_scope_: ''}", "_scope_ must be a non-empty string"),
-        ("x: {_scope_: a=b, _content_: [1], other: 2}", "mutually exclusive"),
+        ("x: {_scope_: ''}", "_scope_ must be a non-empty mapping"),
+        ("x: {_scope_: not-a-mapping}", "_scope_ must be a non-empty mapping"),
+        ("x: {_scope_: {extra: yes}}", "YAML boolean"),
     ],
 )
 def test_malformed_markers_raise(doc: str, match: str) -> None:

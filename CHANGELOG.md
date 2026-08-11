@@ -100,15 +100,40 @@ All notable changes to confluid are documented here. The format follows
   alias: ${ref:model}                          # was: !ref:model
   copy: {_clone_: model, hidden: 64}           # was: !clone:model + a block
   variant:                                     # was: !scope:size=big
-    _scope_: size=big
+    _scope_: {size: big}
     model: {_target_: MLP, hidden: 512}
   ```
 
   The keys are `_target_` / `_partial_` (construction), `_ref_` / `_clone_`
   (references, with `${ref:…}` / `${clone:…}` as scalar shorthand), and
-  `_scope_` / `_notscope_` / `_content_` (conditional blocks). Every other key in
-  the mapping becomes the marker's kwargs; a mapping carrying none of them is an
-  ordinary dict, untouched.
+  `_scope_` / `_notscope_` (conditional blocks). Every other key in the mapping
+  becomes the marker's kwargs; a mapping carrying none of them is an ordinary
+  dict, untouched.
+
+  **`_scope_` takes a MAPPING of dimension → value**, not the tag form's
+  `KEY=VAL` string — so it is data rather than a grammar packed into a scalar,
+  and several dimensions are ANDed for free (`{framework: mlx, model: convnet}`
+  replaces a block nested inside another block). `{debug: }` is a boolean
+  dimension. A value YAML would read as a boolean is rejected with a quote-it
+  message: unquoted `{extra: yes}` becomes `True` and would never match the
+  `extra=yes` an activation passes.
+
+  **A LIST whose first item is a `_scope_` mapping is a scope block**, the
+  remaining items its body — the only way to write a conditional list *item*,
+  since a YAML node is a mapping or a sequence and never both:
+
+  ```yaml
+  ops:
+    - always_first
+    - - _scope_: {extra: enabled}
+      - extra_a
+      - extra_b
+    - always_last
+  ```
+
+  This replaced a `_content_` key that briefly held the same thing. The list
+  shape needs no reserved key, no second body-shape rule, and no scalar special
+  case (a scalar body is a one-item list, and the resolver already extends).
 
   Both spellings produce the **same** Fluid markers, so broadcasting, scopes,
   interpolation, `configure()` and `dump()` are unchanged and cannot tell them

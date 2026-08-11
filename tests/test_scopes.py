@@ -59,8 +59,8 @@ if_task: !scope:task(classification)
     sb_a = raw_assign["if_task"]
     sb_p = raw_paren["if_task"]
     assert isinstance(sb_a, ScopeBlock) and isinstance(sb_p, ScopeBlock)
-    assert (sb_a.key, sb_a.value, sb_a.negate) == ("task", "classification", False)
-    assert (sb_p.key, sb_p.value, sb_p.negate) == ("task", "classification", False)
+    assert (sb_a.dims, sb_a.negate) == ({"task": "classification"}, False)
+    assert (sb_p.dims, sb_p.negate) == ({"task": "classification"}, False)
 
     out_a = load(raw_assign, flow=False, scopes=["task=classification"])
     out_p = load(raw_paren, flow=False, scopes=["task=classification"])
@@ -633,7 +633,7 @@ def test_normalize_active_alias_expansion() -> None:
 
 def test_resolve_scopes_directly_on_dict() -> None:
     """resolve_scopes is callable with hand-built dicts that contain ScopeBlocks."""
-    block = ScopeBlock(key="debug", value=None, negate=False, contents={"x": 2})
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents={"x": 2})
     config = {"x": 1, "_wrap": block}
     out = resolve_scopes(config, {"debug": None})
     assert out == {"x": 2}
@@ -641,39 +641,39 @@ def test_resolve_scopes_directly_on_dict() -> None:
 
 def test_resolve_scopes_bare_top_level_block_active() -> None:
     """A ScopeBlock as the root value resolves to its contents when active."""
-    block = ScopeBlock(key="debug", value=None, negate=False, contents={"x": 99})
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents={"x": 99})
     out = resolve_scopes(block, {"debug": None})
     assert out == {"x": 99}
 
 
 def test_resolve_scopes_bare_top_level_block_inactive() -> None:
     """A ScopeBlock as the root value resolves to None when inactive."""
-    block = ScopeBlock(key="debug", value=None, negate=False, contents={"x": 99})
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents={"x": 99})
     out = resolve_scopes(block, {})
     assert out is None
 
 
 def test_scope_block_as_direct_list_item() -> None:
     """A ScopeBlock element in a list — splices its contents into the list when active."""
-    block = ScopeBlock(key="debug", value=None, negate=False, contents={"x": 1})
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents={"x": 1})
     out = resolve_scopes([1, block, 2], {"debug": None})
     assert out == [1, {"x": 1}, 2]
 
 
 def test_scope_block_in_list_dropped_when_inactive() -> None:
-    block = ScopeBlock(key="debug", value=None, negate=False, contents={"x": 1})
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents={"x": 1})
     out = resolve_scopes([1, block, 2], {})
     assert out == [1, 2]
 
 
 def test_scope_block_in_list_with_list_contents() -> None:
-    block = ScopeBlock(key="debug", value=None, negate=False, contents=[1, 2])
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents=[1, 2])
     out = resolve_scopes(["a", block, "b"], {"debug": None})
     assert out == ["a", 1, 2, "b"]
 
 
 def test_scope_block_in_list_with_scalar_contents() -> None:
-    block = ScopeBlock(key="debug", value=None, negate=False, contents="literal")
+    block = ScopeBlock(dims={"debug": None}, negate=False, contents="literal")
     out = resolve_scopes(["a", block, "b"], {"debug": None})
     assert out == ["a", "literal", "b"]
 
@@ -927,10 +927,12 @@ def test_the_check_reaches_a_dimension_declared_inside_a_markers_kwargs() -> Non
 
 
 def test_repr_format() -> None:
-    """ScopeBlock.__repr__ surfaces the tag form for diagnostics."""
-    bk = ScopeBlock(key="debug", value=None, negate=False, contents={"x": 1})
-    assert "!scope:debug" in repr(bk)
-    kk = ScopeBlock(key="task", value="cls", negate=False, contents={"x": 1})
-    assert "!scope:task=cls" in repr(kk)
-    nk = ScopeBlock(key="debug", value=None, negate=True, contents={"x": 1})
-    assert "!notscope:debug" in repr(nk)
+    """ScopeBlock.__repr__ surfaces the reserved-key spelling for diagnostics."""
+    bk = ScopeBlock(dims={"debug": None}, negate=False, contents={"x": 1})
+    assert "_scope_: {debug}" in repr(bk)
+    kk = ScopeBlock(dims={"task": "cls"}, negate=False, contents={"x": 1})
+    assert "_scope_: {task: cls}" in repr(kk)
+    nk = ScopeBlock(dims={"debug": None}, negate=True, contents={"x": 1})
+    assert "_notscope_: {debug}" in repr(nk)
+    mk = ScopeBlock(dims={"framework": "keras", "model": "convnet"}, negate=False, contents={})
+    assert "_scope_: {framework: keras, model: convnet}" in repr(mk)

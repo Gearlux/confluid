@@ -56,8 +56,9 @@ def convert(text: str) -> str:
         ("m: !lazy:Opt(lr=0.5)", "m:\n  _target_: Opt\n  _partial_: true\n  lr: 0.5"),
         ("a: !ref:proto", "a: ${ref:proto}"),
         ("a: !clone:proto", "a: ${clone:proto}"),
-        ("b: !scope:size=big", "b:\n  _scope_: size=big"),
-        ("b: !notscope:size", "b:\n  _notscope_: size"),
+        ("b: !scope:size=big", "b:\n  _scope_: {size: big}"),
+        ("b: !notscope:size", "b:\n  _notscope_: {size: }"),
+        ("b: !scope:extra=yes", 'b:\n  _scope_: {extra: "yes"}'),
     ],
     ids=lambda v: v.splitlines()[0][:28],
 )
@@ -187,11 +188,21 @@ def test_a_document_key_selector_survives_too() -> None:
     assert findings == []
 
 
-def test_a_sequence_bodied_scope_is_reported_not_converted() -> None:
-    text = "ops:\n  - !scope:extra=yes\n    - a\n    - b\n"
+def test_a_sequence_bodied_scope_becomes_a_nested_list() -> None:
+    """The block becomes a LIST whose first item is the marker, so the body items
+    stay exactly where they are and the conversion is still line-local."""
+    text = "ops:\n  - first\n  - !scope:extra=yes\n    - a\n    - b\n  - last\n"
     migrated, _conversions, findings = migrate_text(text)
-    assert "!scope:extra=yes" in migrated
-    assert any("_content_" in f.reason for f in findings)
+    assert migrated == 'ops:\n  - first\n  - - _scope_: {extra: "yes"}\n    - a\n    - b\n  - last\n'
+    assert findings == []
+
+
+def test_a_yaml_boolean_scope_value_is_quoted() -> None:
+    """The tag stores `yes` as TEXT; unquoted it would become True and never match
+    the activation string a CLI passes."""
+    assert convert("b: !scope:extra=yes") == 'b:\n  _scope_: {extra: "yes"}'
+    assert convert("b: !scope:extra=no") == 'b:\n  _scope_: {extra: "no"}'
+    assert convert("b: !scope:model=cnn") == "b:\n  _scope_: {model: cnn}"
 
 
 def test_a_surviving_tag_is_always_reported() -> None:
@@ -202,9 +213,9 @@ def test_a_surviving_tag_is_always_reported() -> None:
 
 
 def test_findings_carry_the_line_number() -> None:
-    text = "a: 1\nb: 2\nops:\n  - !scope:verbose 42\n"
+    text = 'a: 1\nb: 2\nm: "!class:Box(lr=!ref:base)"\n'
     _migrated, _conversions, findings = migrate_text(text)
-    assert [f.line for f in findings] == [4]
+    assert [f.line for f in findings] == [3]
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +333,7 @@ def test_the_report_records_every_site(tmp_path: Path) -> None:
 def test_findings_make_the_run_signal(tmp_path: Path) -> None:
     """An unconvertible site must not exit 0 — CI has to notice."""
     path = tmp_path / "c.yaml"
-    path.write_text("ops:\n  - !scope:verbose 42\n")
+    path.write_text('m: "!class:Box(lr=!ref:base)"\n')
     assert main([str(path)]) == 1
 
 
@@ -364,9 +375,9 @@ def test_a_flow_value_may_contain_braces() -> None:
     assert yaml.safe_load(got)["ops"][0]["low_level"] == "-{reference_snr_level}"
 
 
-def test_a_scalar_bodied_scope_is_reported_not_mangled() -> None:
-    """``- !scope:verbose 42`` — a conditional list ITEM with a scalar body needs
-    ``_content_``; the grammar refuses it rather than guessing."""
-    migrated, _conversions, findings = migrate_text("ops:\n  - !scope:verbose 42\n")
-    assert "!scope:verbose 42" in migrated
-    assert findings
+def test_a_scalar_bodied_scope_becomes_a_one_item_list() -> None:
+    """The old scalar body needs no spelling of its own — it is a list of one, and
+    `_resolve_list` already extends, so the result is identical."""
+    migrated, _conversions, findings = migrate_text("ops:\n  - first\n  - !scope:verbose 42\n")
+    assert migrated == "ops:\n  - first\n  - - _scope_: {verbose: }\n    - 42\n"
+    assert findings == []

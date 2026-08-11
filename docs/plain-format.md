@@ -35,9 +35,8 @@ migration safe.
 | `_partial_: true` | **don't** build it — the receiver flows it later | `!lazy:Name` |
 | `_ref_: path` | a shared reference to another node | `!ref:path` |
 | `_clone_: path` | an independent deep copy | `!clone:path` |
-| `_scope_: KEY[=VAL]` | conditional block | `!scope:KEY[=VAL]` |
-| `_notscope_: KEY[=VAL]` | negated conditional block | `!notscope:…` |
-| `_content_: …` | a scope block's sequence / scalar body | *(the tag's body)* |
+| `_scope_: {dim: value}` | conditional block (several dims are ANDed) | `!scope:KEY[=VAL]` |
+| `_notscope_: {dim: value}` | negated conditional block | `!notscope:…` |
 
 Every **other** key in the mapping becomes the marker's kwargs. A mapping
 carrying none of these keys is an ordinary dict and is left completely alone.
@@ -114,31 +113,52 @@ placeholder. Config-key interpolation (`${train.dataset}`) is unchanged — see
 
 ## Scopes
 
-The block's key is inert scaffolding, as with the tag form; `_scope_` decides
-activation and every sibling key is the body:
+`_scope_` takes a **mapping of dimension → value**, and every sibling key is the
+body. The block's key is inert scaffolding — pick a descriptive label:
 
 ```yaml
 default_model:
-  _notscope_: model              # active while no model=… is selected
+  _notscope_: {model: }          # boolean: no value — active while model is unset
   model: {_target_: MLP}
 
 cnn_model:
-  _scope_: model=cnn             # load(doc, scopes=["model=cnn"])
+  _scope_: {model: cnn}          # load(doc, scopes=["model=cnn"])
   model: {_target_: CNN}
 ```
 
-A body that is a **sequence or a scalar** cannot be expressed as sibling keys, so
-it moves under `_content_` — the only way to write a conditional list *item*:
+The wrapper key **cannot** be the dimension name, because several blocks routinely
+share one dimension (`lightning:` / `torch:` / `keras:` all on `framework`) and
+YAML forbids duplicate keys in a mapping.
+
+**Several dimensions are ANDed**, which needs no extra spelling:
+
+```yaml
+mlx_convnet:
+  _scope_: {framework: mlx, model: convnet}   # fires only when BOTH are selected
+  model: {_target_: MlxConvNet}
+```
+
+**A list body** is a list whose **first item is the marker**; the rest is the
+body, spliced into the surrounding list. This is the only way to write a
+conditional list *item* — a YAML node is a mapping or a sequence, never both, so
+a mapping-bodied block cannot express it:
 
 ```yaml
 ops:
   - always_first
-  - _scope_: extra=yes
-    _content_: [extra_a, extra_b]   # extends the list
+  - - _scope_: {extra: enabled}    # the marker …
+    - extra_a                      # … and the items it guards
+    - extra_b
   - always_last
 ```
 
-`_content_` and sibling keys are mutually exclusive.
+Mapping body splices its **keys**; list body splices its **items**. Both start
+with `_scope_:` — only the container differs.
+
+> **Quote a value YAML would read as a boolean.** `{extra: yes}` becomes `True`,
+> which never matches the `extra=yes` an activation passes, so confluid rejects it
+> and tells you to write `{extra: "yes"}`. Use `{debug: }` for a boolean
+> *dimension* — one with no value at all.
 
 ## Malformed markers raise
 
@@ -180,9 +200,10 @@ Anything the grammar cannot convert is reported with its line, never guessed at:
 config/odd.yaml:128: tag survived conversion — convert by hand — - !scope:verbose 42
 ```
 
-Two forms need a hand edit, both rare: a `!scope:` block with a **sequence or
-scalar body** (it needs `_content_`), and the quoted-string marker spelling
-(`"!class:Adam(lr=!ref:base)"`).
+One form needs a hand edit, and it is rare: the quoted-string marker spelling
+(`"!class:Adam(lr=!ref:base)"`). Everything else converts, including sequence-
+and scalar-bodied scope blocks — measured over this workspace, 626 sites across
+56 files with zero findings.
 
 An `@axis=value` [target selector](discovery.md) needs no migration — it is part
 of the target NAME, so it rides along unchanged and stays ordinary YAML:

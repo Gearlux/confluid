@@ -5,24 +5,17 @@
 # or, in a CLI layer built on confluid, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
 #
 # ---------------------------------------------------------------------------
-# NOTE — this file is written in the TAG spelling (!class:, !lazy:, !ref:, ...).
-# Confluid also reads an equivalent RESERVED-KEY spelling that is ordinary YAML,
-# so `yaml.safe_load` / `yq` / editor schemas can read the file. Both produce the
-# same objects and may be mixed in one document. See docs/plain-format.md.
+# This file is written in the PLAIN-YAML spelling: ordinary YAML that
+# `yaml.safe_load`, `yq` and editor schemas can all read. Confluid also reads an
+# equivalent TAG spelling, and the two may be mixed in one document — see
+# docs/plain-format.md and docs/targets.md. The equivalences:
 #
-#   model:                          #  ==  model: !class:Model(layers=3)
-#     _target_: Model
-#     layers: 3
-#   optimizer:                      #  ==  optimizer: !lazy:Adam(lr=0.01)
-#     _target_: Adam
-#     _partial_: true               #     (deferred; the receiver flow()s it)
-#     lr: 0.01
-#   alias: ${ref:model}             #  ==  alias: !ref:model
-#   copy:  {_clone_: model}         #  ==  copy: !clone:model
-#   data_dir: ${env:DATA_ROOT}/set  #     explicit environment-variable read
-#   if_debug:                       #  ==  if_debug: !scope:debug
-#     _scope_: debug
-#     log_level: DEBUG
+#   _target_: Model            ==  !class:Model
+#   _partial_: true            ==  !lazy:Name   (deferred; the receiver flow()s it)
+#   ${ref:model}               ==  !ref:model
+#   {_clone_: model}           ==  !clone:model
+#   _scope_: {task: cls}       ==  !scope:task=cls
+#   ${env:DATA_ROOT}           ==  an explicit environment-variable read
 # ---------------------------------------------------------------------------
 
 # --- 1. Module Imports ---
@@ -41,16 +34,17 @@ include:
 # Standard top-level settings and object configurations.
 base_lr: 0.001
 
-# String interpolation (${...}). The name decides the source:
-#   plain name              -> environment variable  (${HOME}, ${PORT:8080})
-#   dotted / bracketed name -> another CONFIG KEY     (${train.dataset}, ${items[0]})
+# String interpolation (${...}):
+#   ${env:NAME} / ${env:NAME,default} -> an ENVIRONMENT variable
+#   ${train.dataset} / ${items[0]}    -> another CONFIG KEY
+#   ${ref:name} / ${clone:name}       -> a live OBJECT (shared / deep copy)
 # A whole-string match keeps the value's native type; embedded matches
-# substitute str(value). On a miss the :default applies, else the literal
-# ${...} is left in place. (For wiring a live OBJECT into a slot, use !ref:.)
+# substitute str(value). On a miss the default applies, else the literal
+# ${...} is left in place.
 train:
   dataset: RFUAV
   version: v3
-data_dir: "${HOME}/data/${train.dataset}/${train.version}"
+data_dir: "${env:HOME}/data/${train.dataset}/${train.version}"
 
 # Dotted Notation
 # These are expanded into nested dicts: {"Model": {"layers": 3, "dropout": 0.1}}
@@ -64,16 +58,18 @@ data_dir: "${HOME}/data/${train.dataset}/${train.version}"
 Model.layers: 3
 Model.dropout: 0.1
 
-# --- 4. Reference Syntax ---
-# Reference tags are used for late resolution and dependency injection.
-# !ref:key -> Lookup in config (dotted paths supported)
-# !class:Class -> Deferred class stub (the parent flows it)
-# !class:Class(args) -> Instantiate eagerly with arguments
+# --- 4. Object wiring ---
+# _target_ names the callable to build; every sibling key is a constructor kwarg.
+# _partial_: true withholds construction for a slot the receiver flows itself
+# (an optimizer needing params=, a model needing num_classes). ${ref:key} wires
+# the SAME object into another slot; {_clone_: key} wires an independent copy.
 Trainer:
-  lr: !ref:base_lr
-  model: !class:Model(layers=10)
+  lr: ${ref:base_lr}
+  model:
+    _target_: Model
+    layers: 10
   # Environment variable resolution
-  log_dir: "${HOME}/logs/my_app"
+  log_dir: "${env:HOME}/logs/my_app"
 
 # --- 5. Scopes ---
 # Optional aliases let one CLI name expand to multiple boolean scopes.
@@ -87,34 +83,43 @@ scope_aliases:
 # are spliced in at that slot.
 
 # Boolean scope: fires when the user passes `--scope debug`.
-if_debug: !scope:debug
+if_debug:
+  _scope_: {debug: }
   log_level: DEBUG
   base_lr: 0.0001
 
 # Keyed scope (assignment form): fires for `--scope task=classification`
 # or, equivalently, `--task classification` / `--task=classification`.
-if_classification: !scope:task=classification
-  model: !class:Model(layers=3)
+if_classification:
+  _scope_: {task: classification}
+  model:
+    _target_: Model
+    layers: 3
 
 # Keyed scope (function-call form) — semantically identical to the
 # assignment form above. Use whichever reads better in context.
-if_prod: !scope:env(prod)
+if_prod:
+  _scope_: {env: prod}
   log_level: WARNING
 
 # Negative scope. Active when no `--task ...` is supplied at all OR when
 # the supplied value differs from `segmentation` (the unset-⇒-active rule).
-unless_segmentation: !notscope:task=segmentation
-  postproc: !class:DefaultPost()
+unless_segmentation:
+  _notscope_: {task: segmentation}
+  postproc:
+    _target_: DefaultPost
 
-# A block's body may also be a SEQUENCE or a SCALAR — inside a LIST, where
-# "splice its keys" has no meaning. A sequence body EXTENDS the surrounding
-# list (the only way to write a conditional list item); a scalar body
-# substitutes one entry, type-coerced. Both are an error at a mapping slot
-# like the ones above, since there are no keys to splice.
+# A LIST whose FIRST item is the marker is a scope block whose body is the
+# remaining items — the only way to write a conditional list ITEM, since a YAML
+# node is a mapping or a sequence and never both. An active block splices its
+# items into the surrounding list; a one-item body is the scalar case.
+# Note the QUOTES on `"yes"`: unquoted, YAML reads it as the boolean True, which
+# would never match the `extra=yes` an activation passes (confluid rejects it).
 ops:
   - always_first
-  - !scope:extra=yes
+  - - _scope_: {extra: "yes"}
     - extra_a
     - extra_b
-  - !scope:verbose 42
+  - - _scope_: {verbose: }
+    - 42
   - always_last

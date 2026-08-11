@@ -163,36 +163,40 @@ class Clone(Fluid):
 class ScopeBlock:
     """A conditional block carried in the IR until ``resolve_scopes`` rewrites it.
 
-    Produced by the ``!scope:`` / ``!notscope:`` YAML constructors. Three forms
-    are accepted at parse time, all normalized to the same fields:
+    ``dims`` maps each dimension this block is conditional on to the value it
+    requires, or ``None`` for a boolean dimension. Every spelling normalizes to
+    it, and the block is active only when ALL of them match:
 
-    * ``!scope:debug``                  → ``key="debug"``, ``value=None`` (boolean)
-    * ``!scope:task=classification``    → ``key="task"``, ``value="classification"``
-    * ``!scope:task(classification)``   → ``key="task"``, ``value="classification"``
+    * ``!scope:debug``                → ``{"debug": None}``   (boolean)
+    * ``!scope:task=classification``  → ``{"task": "classification"}``
+    * ``_scope_: {task: classification, framework: keras}``  → both, ANDed
 
-    ``negate=True`` denotes the ``!notscope:`` variants, whose activation is
-    inverted with an "unset ⇒ active" convention (see ``confluid.scopes``).
+    Holding a MAPPING rather than one key/value pair is what lets the reserved-key
+    spelling express a multi-dimension condition directly; the tag spelling can
+    carry only one, because a tag suffix is a string.
+
+    ``negate=True`` denotes the ``!notscope:`` / ``_notscope_:`` variants, whose
+    activation is inverted with an "unset ⇒ active" convention (see
+    ``confluid.scopes``).
     """
 
     __confluid_configurable__ = False
 
     def __init__(
         self,
-        key: str,
-        value: Optional[str],
+        dims: Dict[str, Optional[str]],
         negate: bool,
         contents: Any,
     ) -> None:
-        self.key = key
-        self.value = value
+        self.dims = dims
         self.negate = negate
         self.contents = contents
         self._yaml_loc: Optional[YamlLoc] = None
 
     def __repr__(self) -> str:
-        tag = "!notscope" if self.negate else "!scope"
-        suffix = self.key if self.value is None else f"{self.key}={self.value}"
-        return f"{tag}:{suffix} {self.contents!r}"
+        marker = "_notscope_" if self.negate else "_scope_"
+        spec = ", ".join(k if v is None else f"{k}: {v}" for k, v in self.dims.items())
+        return f"{marker}: {{{spec}}} {self.contents!r}"
 
 
 class Partial(Target, Generic[T]):
