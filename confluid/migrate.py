@@ -41,11 +41,13 @@ Usage::
 
 import argparse
 import csv
+import os
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from loggair import get_logger
 
@@ -445,6 +447,27 @@ def _activations(raw: Dict[str, Any]) -> List[List[str]]:
     return out
 
 
+@contextmanager
+def _working_dir(directory: Optional[Path]) -> Iterator[None]:
+    """Run the block with ``directory`` as the process CWD.
+
+    Verification loads the document from TEXT, which has no location, so a
+    RELATIVE ``include:`` would resolve against wherever the tool was invoked
+    instead of against the file. Measured: a config three directories down whose
+    `include: ../base.yaml` resolves fine in a real run reported
+    ConfigFileNotFoundError here, and the file was then refused as unverifiable.
+    """
+    if directory is None:
+        yield
+        return
+    previous = Path.cwd()
+    os.chdir(directory)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
 def _resolved(text: str, scopes: Sequence[str]) -> Any:
     from confluid.engine import resolve
     from confluid.loader import load
@@ -452,8 +475,14 @@ def _resolved(text: str, scopes: Sequence[str]) -> Any:
     return _marker_shape(resolve(load(text, flow=False, scopes=list(scopes))))
 
 
-def verify_equivalence(before: str, after: str, *, path: str = "<config>") -> List[str]:
+def verify_equivalence(
+    before: str, after: str, *, path: str = "<config>", base_dir: Optional[Path] = None
+) -> List[str]:
     """Compare the two spellings' RESOLVED marker trees. Returns problem strings.
+
+    ``base_dir`` is the directory a relative ``include:`` resolves against — the
+    migrated file's own directory. Without it the load runs from the caller's CWD
+    and every relative include misses.
 
     Empty means the documents are equivalent under every activation they declare.
     Requires the config's own classes to be importable; an ImportError is returned
@@ -481,7 +510,9 @@ def verify_equivalence(before: str, after: str, *, path: str = "<config>") -> Li
     for scopes in activations:
         label = ",".join(scopes) or "<no scopes>"
         try:
-            if _resolved(before, scopes) != _resolved(after, scopes):
+            with _working_dir(base_dir):
+                differs = _resolved(before, scopes) != _resolved(after, scopes)
+            if differs:
                 problems.append(f"{path}: marker trees DIFFER under {label}")
         except ImportError as exc:
             problems.append(f"{path}: cannot verify under {label} (not importable: {exc})")
@@ -503,7 +534,7 @@ def migrate_file(path: Path, *, write: bool = True, verify: bool = False) -> Tup
 
     problems: List[str] = []
     if result.changed and verify:
-        problems = verify_equivalence(original, migrated, path=str(path))
+        problems = verify_equivalence(original, migrated, path=str(path), base_dir=path.parent)
     if write and result.changed and not problems:
         path.write_text(migrated)
     return result, problems

@@ -381,3 +381,29 @@ def test_a_scalar_bodied_scope_becomes_a_one_item_list() -> None:
     migrated, _conversions, findings = migrate_text("ops:\n  - first\n  - !scope:verbose 42\n")
     assert migrated == "ops:\n  - first\n  - - _scope_: {verbose: }\n    - 42\n"
     assert findings == []
+
+
+def test_verification_resolves_a_relative_include_against_the_FILE(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative ``include:`` must resolve against the migrated file's directory,
+    not the caller's working directory.
+
+    Verification loads the document from TEXT, which carries no location, so
+    without an explicit base the include resolves from wherever the tool was
+    invoked. Measured on a real config: `include: ../base.yaml` two directories
+    down reported ConfigFileNotFoundError under EVERY activation, and the file was
+    then refused as unverifiable — a silent no-op that looks like a safety check
+    doing its job.
+    """
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "base.yaml").write_text("shared: 1\n")
+    target = tmp_path / "nested" / "c.yaml"
+    target.write_text("include: ../base.yaml\nm: !class:Box(size=3)\n")
+
+    monkeypatch.chdir(tmp_path.parent)  # anywhere BUT the file's directory
+    result, problems = migrate_file(target, verify=True)
+
+    assert problems == [], problems
+    assert result.changed
+    assert "_target_: Box" in target.read_text()
