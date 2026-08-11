@@ -286,6 +286,12 @@ NOT written.
 post-pass sweep re-scans for surviving tags so nothing is dropped silently. A `Finding` makes the
 run exit non-zero.
 
+**Detail — the `@axis=` selector rides along.** It is part of the target STRING, not tag syntax,
+so `_target_: Loss@framework=keras` is ordinary YAML and `registry.parse_target_spec` reads it
+unchanged (the `$key` document form included). The codemod must NOT report it. Do not re-open
+deleting the selector: the "zero users" census that proposed it read YAML configs only, and it is
+the documented idiom in three consuming projects' user docs.
+
 **Detail — the line shapes.** Four, all found by running the tool over the workspace: `key: !tag`,
 `- !tag` (first key on the dash line), a tag ALONE on its line (keys join the block at the tag's
 OWN indent), and a trailing flow mapping (`!class:X {a: 1}`, merged inline). The flow scan is

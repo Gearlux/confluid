@@ -172,11 +172,19 @@ def test_interpolation_inside_a_comment_is_left_alone() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_an_axis_selector_is_reported_not_converted() -> None:
-    text = "m: !class:Loss@framework=keras\n"
-    migrated, _conversions, findings = migrate_text(text)
-    assert "!class:Loss@framework=keras" in migrated
-    assert any("@axis=" in f.reason for f in findings)
+def test_an_axis_selector_rides_along_in_the_target_string() -> None:
+    """The selector needs no migration: it is part of the target NAME, not tag
+    syntax, so it stays ordinary YAML and the registry reads it unchanged."""
+    migrated, _conversions, findings = migrate_text("m: !class:Loss@framework=keras\n")
+    assert migrated == "m:\n  _target_: Loss@framework=keras\n"
+    assert findings == []
+    assert yaml.safe_load(migrated)["m"]["_target_"] == "Loss@framework=keras"
+
+
+def test_a_document_key_selector_survives_too() -> None:
+    migrated, _conversions, findings = migrate_text("m: !lazy:Loss@framework=$engine\n")
+    assert migrated == "m:\n  _target_: Loss@framework=$engine\n  _partial_: true\n"
+    assert findings == []
 
 
 def test_a_sequence_bodied_scope_is_reported_not_converted() -> None:
@@ -194,9 +202,9 @@ def test_a_surviving_tag_is_always_reported() -> None:
 
 
 def test_findings_carry_the_line_number() -> None:
-    text = "a: 1\nb: 2\nm: !class:Loss@role=metric\n"
+    text = "a: 1\nb: 2\nops:\n  - !scope:verbose 42\n"
     _migrated, _conversions, findings = migrate_text(text)
-    assert [f.line for f in findings] == [3]
+    assert [f.line for f in findings] == [4]
 
 
 # --------------------------------------------------------------------------- #
@@ -314,7 +322,7 @@ def test_the_report_records_every_site(tmp_path: Path) -> None:
 def test_findings_make_the_run_signal(tmp_path: Path) -> None:
     """An unconvertible site must not exit 0 — CI has to notice."""
     path = tmp_path / "c.yaml"
-    path.write_text("m: !class:Loss@role=metric\n")
+    path.write_text("ops:\n  - !scope:verbose 42\n")
     assert main([str(path)]) == 1
 
 

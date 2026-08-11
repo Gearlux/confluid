@@ -72,9 +72,11 @@ All notable changes to confluid are documented here. The format follows
   before any marker is built. A file whose conversion is not provably equivalent
   is left untouched and reported.
 
-  Three forms need a hand edit and are reported with their line rather than
-  guessed at: a `!scope:` block with a sequence or scalar body (needs
-  `_content_`), the `@axis=` selector, and the quoted-string marker spelling. The
+  Two forms need a hand edit and are reported with their line rather than guessed
+  at: a `!scope:` block with a sequence or scalar body (needs `_content_`), and
+  the quoted-string marker spelling. An `@axis=value` target selector needs no
+  migration — it lives in the target string, so `_target_: Loss@framework=keras`
+  is ordinary YAML and the registry reads it unchanged. The
   tool also makes every environment read explicit (`${DATA_ROOT}` / `$DATA_ROOT`
   → `${env:DATA_ROOT}`), which is meaning-preserving today and is what removes
   every ambiguous spelling ahead of the eventual bare-`${name}` flip.
