@@ -92,3 +92,143 @@ def test_load_config_with_paths_circular_error(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Circular include"):
         load_config_with_paths(a)
+
+
+# ---------------------------------------------------------------------------
+# Includes and document order — the including file is read LAST (2026-08-11).
+#
+# Confluid has ONE precedence rule (document order, last spec wins), so the
+# merged KEY ORDER is the arbitration. `deep_merge` used to keep the base's
+# position for a key the includer re-stated, which made the include beat an
+# override written after it — the rule inverted by the most common composition
+# in the system. See `merger.deep_merge`.
+# ---------------------------------------------------------------------------
+
+
+def test_an_overridden_key_takes_the_including_files_position(tmp_path: Path) -> None:
+    """Key order after the merge is base-only keys, then the includer's keys."""
+    base = tmp_path / "base.yaml"
+    base.write_text("lr: 0.1\nStage:\n  lr: 0.2\nkept: 1\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: base.yaml\nlr: 0.3\nextra: 9\n")
+
+    assert list(load_config(main)) == ["Stage", "kept", "lr", "extra"]
+
+
+def test_an_override_written_after_an_include_beats_the_includes_addressed_block(tmp_path: Path) -> None:
+    """The measured defect: `lr: 0.3` lost to the include's `Stage: {lr: 0.2}`.
+
+    Both spellings of one document must agree — the flat form has always given
+    0.3, and the include form gave 0.2 with no diagnostic anywhere.
+    """
+    from confluid import configurable, load
+
+    @configurable(name="IncludeOrderStage")
+    class Stage:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    base = tmp_path / "base.yaml"
+    base.write_text("lr: 0.1\nIncludeOrderStage:\n  lr: 0.2\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: base.yaml\nlr: 0.3\ns: !class:IncludeOrderStage()\n")
+
+    via_include = load(load_config(main))["s"].lr
+    flat = load("IncludeOrderStage:\n  lr: 0.2\nlr: 0.3\ns: !class:IncludeOrderStage()\n")["s"].lr
+
+    assert via_include == flat == 0.3
+
+
+def test_an_include_still_wins_over_an_earlier_include(tmp_path: Path) -> None:
+    """Between two includes the LATER one wins, and keeps the later position."""
+    first = tmp_path / "first.yaml"
+    first.write_text("shared: 1\nonly_first: a\n")
+    second = tmp_path / "second.yaml"
+    second.write_text("shared: 2\nonly_second: b\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include:\n  - first.yaml\n  - second.yaml\nmine: z\n")
+
+    data = load_config(main)
+    assert data["shared"] == 2
+    assert list(data) == ["only_first", "shared", "only_second", "mine"]
+
+
+# ---------------------------------------------------------------------------
+# `include:` splices AT ITS POSITION (2026-08-11).
+#
+# The directive behaves as if the included document were pasted into the source
+# document at that line — the only reading consistent with the one precedence
+# rule, and the same rule `!scope:` blocks already follow. Until this change the
+# directive was popped and the WHOLE including file merged over the result, so
+# where you wrote it made no difference at all.
+# ---------------------------------------------------------------------------
+
+
+def test_an_include_splices_at_the_position_it_was_written(tmp_path: Path) -> None:
+    """Include first → my later lines win. Include last → the paste wins."""
+    (tmp_path / "base.yaml").write_text("a: from_base\nb: from_base\n")
+    first = tmp_path / "first.yaml"
+    first.write_text("include: base.yaml\na: from_main\n")
+    last = tmp_path / "last.yaml"
+    last.write_text("a: from_main\ninclude: base.yaml\n")
+
+    assert load_config(first)["a"] == "from_main"  # my line is later → mine wins
+    assert load_config(last)["a"] == "from_base"  # the paste is later → base wins
+    # A key written on ONE side only keeps the position of the side that has it.
+    assert list(load_config(first)) == ["b", "a"]
+    assert list(load_config(last)) == ["a", "b"]
+
+
+def test_an_include_in_the_middle_splits_the_document(tmp_path: Path) -> None:
+    """Keys above the include lose to it; keys below it win. One rule, one reading."""
+    (tmp_path / "base.yaml").write_text("x: from_base\ny: from_base\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("x: above\ninclude: base.yaml\ny: below\n")
+
+    data = load_config(main)
+    assert data["x"] == "from_base"  # written above the paste → the paste wins
+    assert data["y"] == "below"  # written below the paste → mine wins
+
+
+def test_an_include_at_the_bottom_makes_the_document_a_set_of_fallbacks(tmp_path: Path) -> None:
+    """The capability the old behaviour could not express at all.
+
+    With the include last, everything above it is a fallback the shared file
+    overrides — previously impossible without splitting into another file, since
+    the including file always won regardless of where the directive sat.
+    """
+    from confluid import configurable, load
+
+    @configurable(name="FallbackStage")
+    class Stage:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    (tmp_path / "base.yaml").write_text("lr: 0.1\nFallbackStage:\n  lr: 0.2\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("lr: 0.3\ns: !class:FallbackStage()\ninclude: base.yaml\n")
+
+    cfg = load_config(main)
+    assert list(cfg) == ["s", "lr", "FallbackStage"]
+    assert cfg["lr"] == 0.1  # one `lr`, at the paste's later position, base's value
+    assert load(cfg)["s"].lr == 0.2  # the addressed block is the last spec
+
+
+def test_a_positional_include_still_deep_merges_a_nested_block(tmp_path: Path) -> None:
+    """Splicing changes WHERE a block lands, not that blocks combine."""
+    (tmp_path / "base.yaml").write_text("Trainer:\n  lr: 0.1\n  epochs: 5\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: base.yaml\nTrainer:\n  lr: 0.9\n")
+
+    assert load_config(main)["Trainer"] == {"lr": 0.9, "epochs": 5}
+
+
+def test_two_includes_paste_in_the_order_they_are_listed(tmp_path: Path) -> None:
+    (tmp_path / "first.yaml").write_text("shared: 1\nonly_first: a\n")
+    (tmp_path / "second.yaml").write_text("shared: 2\nonly_second: b\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("shared: 0\ninclude:\n  - first.yaml\n  - second.yaml\n")
+
+    data = load_config(main)
+    assert data["shared"] == 2  # both pastes sit after my line; the later paste wins
+    assert list(data) == ["only_first", "shared", "only_second"]

@@ -696,3 +696,65 @@ strength: 0.75
     sink = graph["sink"]
     assert sink.name == "run-42" and sink.strength == 0.75
     assert any("accept-list unknown" in msg and "_CatchAll" in msg for msg in traces)
+
+
+# --------------------------------------------------------------------------- #
+# Log gates — a record no sink can accept must not be BUILT
+# --------------------------------------------------------------------------- #
+
+
+def test_trace_gate_closes_when_no_sink_accepts_trace() -> None:
+    """The gate is computed from loggair's RESOLVED levels, floor across all sinks."""
+    from confluid.broadcast import _compute_trace_gate
+
+    assert not _compute_trace_gate({"configured": True, "file_level": "DEBUG", "console_level": "INFO"})
+    assert _compute_trace_gate({"configured": True, "file_level": "TRACE", "console_level": "INFO"})
+    assert _compute_trace_gate({"configured": True, "file_level": "INFO", "console_level": "TRACE"})
+
+
+def test_trace_gate_is_open_whenever_the_answer_is_unknown() -> None:
+    """Conservative in ONE direction: logging too much costs time, too little costs a diagnostic."""
+    from confluid.broadcast import _compute_trace_gate
+
+    assert _compute_trace_gate({"configured": False})
+    assert _compute_trace_gate({"configured": True})  # no levels at all
+    assert _compute_trace_gate({"configured": True, "file_level": "WAT", "console_level": "INFO"})
+    # A per-module override anywhere at TRACE keeps the gate open.
+    assert _compute_trace_gate(
+        {"configured": True, "file_level": "INFO", "console_level": "INFO", "module_levels": {"confluid": "TRACE"}}
+    )
+
+
+def test_a_swapped_in_logger_is_never_gated() -> None:
+    """Otherwise every log-asserting test becomes a false green."""
+    from types import SimpleNamespace
+
+    import confluid.broadcast as broadcast_module
+
+    collector = SimpleNamespace(trace=lambda msg: None)
+    previous = broadcast_module._trace_on
+    try:
+        broadcast_module._trace_on = False
+        assert broadcast_module.trace_enabled(collector) is True
+        assert broadcast_module.trace_enabled() is False
+    finally:
+        broadcast_module._trace_on = previous
+
+
+def test_same_target_memo_is_per_pass_and_agrees_with_the_uncached_answer() -> None:
+    """The memo is a pure-function cache; a pass boundary drops it."""
+    from confluid import configurable
+    from confluid.broadcast import _resolves_to_same_class, _same_target, _same_target_cache, clear_pass_caches
+
+    @configurable(name="MemoProbe")
+    class MemoProbe:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    clear_pass_caches()
+    assert _same_target("MemoProbe", MemoProbe) == _resolves_to_same_class("MemoProbe", MemoProbe) is True
+    assert _same_target("NotAThing", MemoProbe) == _resolves_to_same_class("NotAThing", MemoProbe) is False
+    assert _same_target_cache  # the second call would have hit the registry again
+
+    clear_pass_caches()
+    assert not _same_target_cache

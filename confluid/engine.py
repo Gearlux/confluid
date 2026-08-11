@@ -52,6 +52,7 @@ from loggair import get_logger
 from confluid.broadcast import (  # noqa: F401
     _acceptable_keys_cache,
     _broadcast_pool,
+    _cache_key,
     _is_glob_key,
     _KeyScope,
     _late_bare_keys_per_slot,
@@ -103,7 +104,7 @@ logger = get_logger("confluid.engine")
 # violating that module's stated cache ownership. Registered with the ONE
 # per-pass clear (broadcast.clear_pass_caches — fired by materialize / resolve
 # / configure), so it never needs a second clear site.
-_parent_blacklist_cache: Dict[str, FrozenSet[str]] = register_pass_cache({})
+_parent_blacklist_cache: Dict[Any, FrozenSet[str]] = register_pass_cache({})
 
 
 def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any]) -> None:
@@ -271,7 +272,7 @@ def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
     from ``vars(obj)`` so the configurable surface reflects only what the
     user (and Confluid's own broadcast machinery) put there.
     """
-    cache_key = f"{cls.__module__}.{cls.__qualname__}"
+    cache_key = _cache_key(cls)
     if cache_key in _parent_blacklist_cache:
         return _parent_blacklist_cache[cache_key]
 

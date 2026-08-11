@@ -342,7 +342,8 @@ items:
 # ---------------------------------------------------------------------------
 
 
-def test_recursive_includes_with_scopes(tmp_path: Path) -> None:
+def test_an_included_scope_block_supplies_a_value_the_includer_did_not_set(tmp_path: Path) -> None:
+    """A scope block in an included file splices at ITS position and wins by default."""
     ext = tmp_path / "ext.yaml"
     base = tmp_path / "base.yaml"
     ext.write_text(
@@ -354,19 +355,42 @@ unless_debug: !notscope:debug
   port: 3000
 """
     )
-    base.write_text(
+    base.write_text("include: ext.yaml\nhost: localhost\n")
+
+    assert cast(Dict[str, Any], load(base, flow=False, scopes=["debug"]))["port"] == 2000
+    assert cast(Dict[str, Any], load(base, flow=False))["port"] == 3000
+
+
+def test_the_includer_overrides_an_included_scope_block(tmp_path: Path) -> None:
+    """The including file is read AFTER the file it includes — so its value wins.
+
+    Until 2026-08-11 it did not: ``deep_merge`` kept the BASE's position for a
+    key the includer re-stated, so ``port: 80`` was judged at the included
+    file's position 0 — ahead of the ``!scope:`` block that spliced at position
+    1 — and the include won, silently, against confluid's own "last spec wins"
+    rule. The identical document written flat gave the opposite answer. See
+    ``merger.deep_merge`` and ``docs/interpolation.md`` → "Includes and document
+    order".
+
+    The ``include:`` sits on line 1 here, so the paste lands first and everything
+    written below it is later — see ``tests/test_includes.py`` for the positional
+    rule itself (the directive's own position is meaningful since 2026-08-11).
+    """
+    ext = tmp_path / "ext.yaml"
+    base = tmp_path / "base.yaml"
+    ext.write_text(
         """
-include: ext.yaml
-port: 80
+port: 1000
+if_debug: !scope:debug
+  port: 2000
+unless_debug: !notscope:debug
+  port: 3000
 """
     )
-    # debug active → ext's if_debug wins on port
-    out_dbg = cast(Dict[str, Any], load(base, flow=False, scopes=["debug"]))
-    assert out_dbg["port"] == 2000
+    base.write_text("include: ext.yaml\nport: 80\n")
 
-    # debug inactive → ext's unless_debug fires
-    out_off = cast(Dict[str, Any], load(base, flow=False))
-    assert out_off["port"] == 3000
+    assert cast(Dict[str, Any], load(base, flow=False, scopes=["debug"]))["port"] == 80
+    assert cast(Dict[str, Any], load(base, flow=False))["port"] == 80
 
 
 # ---------------------------------------------------------------------------

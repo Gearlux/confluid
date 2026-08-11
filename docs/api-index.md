@@ -4,6 +4,11 @@ Every public name (`confluid.<name>`), grouped by the guide that explains it.
 This page is completeness-pinned: a name added to the public surface without a
 row here fails a test.
 
+New to confluid? The surface is wide because the engine has several audiences —
+start from [The Lifecycle](lifecycle.md), which shows where each of these names
+plugs into the passes, and from the eight names most configs need:
+`configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Lazy`, `dump`.
+
 ## Loading & materialization — [Tags & Deferred Initialization](tags.md)
 
 | Name | One line |

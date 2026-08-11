@@ -21,10 +21,26 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     if obj is None:
         return
 
-    # 1. Handle Functions/Callables specifically
-    if not isinstance(obj, type) and callable(obj) and not hasattr(obj, "__confluid_configurable__"):
+    # 1. Handle Functions/Callables specifically.
+    #
+    # The test is ``isroutine``, NOT ``callable(obj) and not
+    # __confluid_configurable__`` as it was until 2026-08-11: ``register()`` /
+    # ``@configurable`` STAMP that marker on the function object itself, so every
+    # registered builder function failed this branch, fell through to the class
+    # path below, and had its signature read off ``types.FunctionType.__init__``
+    # = ``object.__init__`` = ``(*args, **kwargs)`` — every parameter filtered
+    # out, ``get_hierarchy()`` returning ``{}`` for a target whose params
+    # ``input_specs`` / ``to_pydantic`` / ``parse_param_docs`` all reported. That
+    # is the exact failure ``introspect.init_callable`` exists to prevent (see
+    # the "A Target May Be ANY Callable" mandate); ``isroutine`` also keeps a
+    # CALLABLE INSTANCE (a ``__call__``-defining object) on the instance path,
+    # where it belongs.
+    if inspect.isroutine(obj):
+        init = init_callable(obj)  # a routine's OWN signature governs the call
+        if init is None:
+            return
         try:
-            sig = inspect.signature(obj)
+            sig = inspect.signature(init)
             type_hints = get_type_hints(obj)
             param_docs = parse_param_docs(obj)
 
@@ -72,7 +88,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     # class-doc fallback applies here exactly as on the instance walk (this
     # copy read ``__init__.__doc__`` alone and silently LOST the docs of every
     # class that keeps its Args: block at class level).
-    init_method = getattr(cls, "__init__", None)
+    init_method = init_callable(cls)
     param_docs = parse_param_docs(cls)
 
     # 3. Get type hints and defaults from __init__
@@ -179,8 +195,12 @@ def _walk_instance(
         return
 
     # Class objects fall through to type-based walk — defer to get_hierarchy's
-    # existing logic by recursing via the canonical helper.
-    if isinstance(obj, type):
+    # existing logic by recursing via the canonical helper. A FUNCTION target (a
+    # registered builder held in a slot) routes there too: its contract is its
+    # OWN signature, and the instance path below would read
+    # ``types.FunctionType.__init__`` and report nothing (see the callable branch
+    # in ``_build_hierarchy_recursive``).
+    if isinstance(obj, type) or inspect.isroutine(obj):
         _build_hierarchy_recursive(obj, prefix, hierarchy, visited)
         return
 
@@ -202,7 +222,9 @@ def _walk_instance(
     segment = str(instance_name) if instance_name else _configurable_class_name(cls)
     node_prefix = f"{prefix}.{segment}" if prefix else segment
 
-    init_method = getattr(cls, "__init__", None)
+    # The ONE class-vs-callable dispatch (``cls`` is a class here, so this is the
+    # ``__init__`` branch) — every signature reader goes through it.
+    init_method = init_callable(cls)
     if init_method is None:
         return
 

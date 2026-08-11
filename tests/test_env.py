@@ -107,3 +107,42 @@ def test_default_start_uses_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert load_workspace_env() == {"DATA_ROOT": str(tmp_path)}
     # Sanity check that os.environ was actually mutated by dotenv.
     assert os.environ["DATA_ROOT"] == str(tmp_path)
+
+
+def test_missing_dotenv_raises_an_import_error_naming_the_extra() -> None:
+    """``python-dotenv`` is the optional ``confluid[env]`` extra (2026-08-11).
+
+    Importing ``confluid`` — and even ``confluid.env`` — must work without it;
+    only the CALL raises, and the message must name the extra. Simulated exactly
+    as the pydantic extra is (``tests/test_optional_pydantic.py``): a subprocess
+    whose meta-path refuses the import.
+    """
+    import subprocess
+    import sys
+
+    script = """
+import importlib.abc
+import sys
+
+
+class _BlockDotenv(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] == "dotenv":
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
+sys.meta_path.insert(0, _BlockDotenv())
+
+import confluid                      # the engine must import without the extra
+from confluid.env import load_workspace_env   # so must this module
+
+try:
+    load_workspace_env()
+except ImportError as exc:
+    assert "confluid[env]" in str(exc), str(exc)
+    print("OK")
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout

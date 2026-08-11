@@ -28,7 +28,7 @@ from copy import copy
 from enum import Enum
 from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, TypeVar
 
-from loggair import get_logger
+from loggair import get_active_config, get_logger
 
 from confluid.fluid import Fluid, Reference
 from confluid.introspect import baked_init_attrs, init_callable, init_setattr_names, init_source_available
@@ -38,16 +38,16 @@ from confluid.state import _ENGINE_STATE
 
 logger = get_logger("confluid.broadcast")
 
-# Introspection caches, keyed by class name. Every reader is in this module;
-# all four are registered in ``_PASS_CACHES`` below and cleared together by
-# ``clear_pass_caches()`` at every entry point (materialize / resolve /
-# configure). ``engine._parent_blacklist_cache`` registers itself alongside —
-# cache ownership follows module ownership, the clear has ONE site.
-_acceptable_keys_cache: Dict[str, Optional[FrozenSet[str]]] = {}
-_post_init_attrs_cache: Dict[str, FrozenSet[str]] = {}
+# Introspection caches, keyed by TARGET IDENTITY (see :func:`_cache_key`). Every
+# reader is in this module; all four are registered in ``_PASS_CACHES`` below and
+# cleared together by ``clear_pass_caches()`` at every entry point (materialize /
+# resolve / configure). ``engine._parent_blacklist_cache`` registers itself
+# alongside — cache ownership follows module ownership, the clear has ONE site.
+_acceptable_keys_cache: Dict[Any, Optional[FrozenSet[str]]] = {}
+_post_init_attrs_cache: Dict[Any, FrozenSet[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
 # as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
-_param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
+_param_kind_cache: Dict[Any, Dict[str, Optional[str]]] = {}
 # Per-pass receiver cache: a _Receiver is a pure function of the (spelling,
 # target, instance-name) triple — its closures capture only per-pass-cached
 # accept-list data — so 2,500 same-class markers build ~one receiver instead
@@ -97,6 +97,141 @@ def clear_pass_caches() -> None:
     """Clear every registered per-pass introspection cache — the ONE clear site."""
     for cache in _PASS_CACHES:
         cache.clear()
+    refresh_log_gates()
+
+
+# --------------------------------------------------------------------------- #
+# Log gates — do not BUILD a record no sink can accept
+#
+# The scanner's diagnostics are per-KEY, so a single materialize pass emits one
+# TRACE record per applied broadcast: 10,000 of them for a 2,500-marker tree,
+# measured. Python evaluates the f-string before the logger can decide anything,
+# and loggair configures its handlers at TRACE with a filter — so loguru's own
+# ``level_no < core.min_level`` fast path never fires and every discarded record
+# is still formatted, stamped with a fresh timestamp, and dispatched to both
+# handlers. Measured on ``examples/performance.py``: 30.1 % of the pass.
+#
+# So the gate has to be at the CALL SITE, and it is refreshed once per pass by
+# ``clear_pass_caches()`` above — the hook every entry point already fires.
+# --------------------------------------------------------------------------- #
+
+#: Severity numbers loguru assigns its built-in levels. Only the floor matters
+#: here; an unrecognised name is treated as "could accept TRACE" (conservative).
+_LEVEL_NUMBERS: Dict[str, int] = {
+    "TRACE": 5,
+    "DEBUG": 10,
+    "INFO": 20,
+    "SUCCESS": 25,
+    "WARNING": 30,
+    "ERROR": 40,
+    "CRITICAL": 50,
+}
+_TRACE_LEVEL = 5
+
+#: The logger this module was handed at import (and its type). A test (or a
+#: consumer) that swaps a module's ``logger`` out gets an UNGATED logger back —
+#: the gate answers "can a loggair sink accept this?", which is not a question we
+#: can ask of a foreign object, and silently swallowing a collector's records
+#: would make every log-asserting test a false green.
+_NATIVE_LOGGER = logger
+_NATIVE_LOGGER_TYPE = type(logger)
+
+#: Whether a TRACE record can reach any sink. Defaults to True so a ``flow()``
+#: outside a pass (which never clears caches) keeps its diagnostics.
+_trace_on: bool = True
+
+
+def _level_floor(config: Dict[str, Any]) -> int:
+    """The lowest severity any configured sink could accept, per loggair's config."""
+    names = [config.get("file_level"), config.get("console_level")]
+    names.extend((config.get("module_levels") or {}).values())
+    floors = [_LEVEL_NUMBERS.get(str(name).upper(), _TRACE_LEVEL) for name in names if name]
+    return min(floors) if floors else _TRACE_LEVEL
+
+
+def _compute_trace_gate(config: Dict[str, Any]) -> bool:
+    """Whether TRACE output is worth building, given loggair's resolved config.
+
+    Conservative in one direction only: an unconfigured logger, an unknown level
+    name, or a per-module override anywhere at TRACE all answer True. Logging
+    slightly more than necessary costs time; logging less than asked costs a
+    diagnostic, and this module's diagnostics are what a "my knob did not take"
+    investigation greps.
+    """
+    if not config.get("configured"):
+        return True
+    return _level_floor(config) <= _TRACE_LEVEL
+
+
+def refresh_log_gates() -> None:
+    """Recompute the per-pass log gates from loggair's active configuration."""
+    global _trace_on
+    if logger is not _NATIVE_LOGGER:
+        _trace_on = True  # a swapped-in collector is never gated — see _NATIVE_LOGGER
+        return
+    try:
+        _trace_on = _compute_trace_gate(get_active_config())
+    except Exception:  # a logging probe must never break a configuration pass
+        _trace_on = True
+
+
+def trace_enabled(local_logger: Any = None) -> bool:
+    """Whether a per-KEY TRACE diagnostic is worth building — the shared gate.
+
+    Sibling modules with their own per-key TRACE sites (``configurator``) pass
+    their own ``logger`` so a monkeypatched collector is recognised the same way
+    :func:`refresh_log_gates` recognises one here. This module's own hot sites
+    read ``_trace_on`` directly — one global load per key rather than a call.
+    """
+    if local_logger is not None and not isinstance(local_logger, _NATIVE_LOGGER_TYPE):
+        return True
+    return _trace_on
+
+
+def _cache_key(target: Any) -> Any:
+    """The per-pass cache key for a target — its IDENTITY, never its dotted name.
+
+    ``f"{module}.{qualname}"`` looks unique and is not: two distinct classes
+    share it whenever they are defined in the same scope (a class factory, a
+    plugin loader building classes in a loop, a decorator that rebuilds a class,
+    a parametrised test fixture). The registry already knows this — see
+    ``registry._claim_key``, which suffixes ``~2`` for exactly this case — but
+    the introspection caches keyed on the raw name until 2026-08-11 and so
+    served one class's accept-list to its same-named sibling: the second class
+    was built on its defaults and had the FIRST one's key ``setattr``-ed onto it,
+    silently. Pinned by ``tests/test_duplicate_names.py::
+    test_same_qualname_classes_do_not_share_an_accept_list``.
+
+    Classes, functions and strings are all hashable, so the target itself is the
+    key; the identity-free fallback covers the rare callable whose class defines
+    ``__eq__`` without ``__hash__``. Holding the target as a key keeps it alive
+    only until the next :func:`clear_pass_caches`, which every entry point fires.
+    """
+    try:
+        hash(target)
+    except TypeError:
+        return id(target)
+    return target
+
+
+def _dotted_name(target: Any) -> str:
+    """``module.QualName`` for DIAGNOSTICS only — never a cache key.
+
+    Readable in a log line, and deliberately not unique: :func:`_cache_key` is
+    the identity answer.
+    """
+    qualname = getattr(target, "__qualname__", None)
+    if qualname is None:
+        return str(target)
+    return f"{getattr(target, '__module__', '?')}.{qualname}"
+
+
+#: Per-pass memo for :func:`_same_target`, the ONE uncached introspection helper
+#: until 2026-08-11. It is asked once per (view entry × marker) — 113,000 times
+#: for a 2,500-marker tree, 50,002 of which reached ``resolve_class`` — and it is
+#: a pure function of its two arguments within a pass. Measured: 9.5 % of
+#: ``materialize()`` on ``examples/performance.py``.
+_same_target_cache: Dict[Any, bool] = register_pass_cache({})
 
 
 def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
@@ -118,9 +253,23 @@ def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
     Bare-name strings (``"Trainer"``) that can't be registry-resolved are
     treated as "not same" — better to broadcast and let the receiver's
     accept-list filter than to silently skip across module boundaries.
+
+    Memoized per pass (``_same_target_cache``): the registry lookup below is the
+    expensive half and the answer cannot change within one materialization.
     """
     if fluid_target is cls:
         return True
+    memo_key = (_cache_key(fluid_target), _cache_key(cls))
+    cached = _same_target_cache.get(memo_key)
+    if cached is not None:
+        return cached
+    result = _resolves_to_same_class(fluid_target, cls)
+    _same_target_cache[memo_key] = result
+    return result
+
+
+def _resolves_to_same_class(fluid_target: Any, cls: Callable[..., Any]) -> bool:
+    """The uncached body of :func:`_same_target` — registry resolution included."""
     if isinstance(fluid_target, str):
         resolved = resolve_class(fluid_target)
         if resolved is cls:
@@ -145,7 +294,7 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
     ``loss_fn: !class:...`` flows into the Trainer without the user
     duplicating the key under the trainer block.
     """
-    cache_key = f"{target.__module__}.{target.__qualname__}"
+    cache_key = _cache_key(target)
     if cache_key in _post_init_attrs_cache:
         return _post_init_attrs_cache[cache_key]
 
@@ -179,14 +328,14 @@ def _get_post_init_attrs(target: type) -> frozenset[str]:
             names.update(baked_init_attrs(klass) or ())
 
     if declared is None:
-        _warn_if_init_unscannable(target, cache_key)
+        _warn_if_init_unscannable(target)
 
     result = frozenset(names)
     _post_init_attrs_cache[cache_key] = result
     return result
 
 
-def _warn_if_init_unscannable(target: type, cache_key: str) -> None:
+def _warn_if_init_unscannable(target: type) -> None:
     """Warn ONCE per class when the TARGET's own ``__init__`` can't be AST-scanned.
 
     In compiled / frozen / zip deployments ``inspect.getsource`` raises, the
@@ -196,8 +345,16 @@ def _warn_if_init_unscannable(target: type, cache_key: str) -> None:
     ``@configurable`` class with no ``broadcast_attrs`` declaration AND no
     build-time bake-table entry (``confluid.bake``); MRO parents with
     unreadable source stay silent (builtins are normal).
+
+    The warned-set is keyed by dotted NAME, not by the identity
+    :func:`_cache_key` uses: it is deliberately never cleared (once per class per
+    PROCESS), so holding class objects in it would pin them for the process
+    lifetime. The cost of the coarser key is that a same-named sibling defined in
+    the same scope inherits the warning — one missing diagnostic line, not a
+    wrong value.
     """
-    if cache_key in _warned_unscannable_inits:
+    name = _dotted_name(target)
+    if name in _warned_unscannable_inits:
         return
     if not getattr(target, "__confluid_configurable__", False):
         return
@@ -206,9 +363,9 @@ def _warn_if_init_unscannable(target: type, cache_key: str) -> None:
         return
     if baked_init_attrs(target) is not None:
         return  # covered by a build-time bake table — packaged mode is healthy
-    _warned_unscannable_inits.add(cache_key)
+    _warned_unscannable_inits.add(name)
     logger.warning(
-        f"cannot scan __init__ body of {cache_key} (source unavailable — compiled/frozen?): "
+        f"cannot scan __init__ body of {name} (source unavailable — compiled/frozen?): "
         f"post-init broadcast attrs are invisible; run 'confluid-bake <package>' at build time "
         f"or declare @configurable(broadcast_attrs=[...])"
     )
@@ -228,10 +385,10 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     those names flows into the target without having to be duplicated under
     the target's block.
 
-    Resolution order: a string name is resolved to its class FIRST, then
-    cached under the resolved class's fully-qualified name. This prevents
-    two classes that share a short name across different modules from
-    silently inheriting one another's accept-list.
+    Resolution order: a string name is resolved to its class FIRST, then cached
+    under the resolved class ITSELF (:func:`_cache_key`). This prevents two
+    classes that share a name — across modules, or across two definitions in one
+    scope — from silently inheriting one another's accept-list.
     """
     target: Any
     if isinstance(cls_or_name, type) or callable(cls_or_name):
@@ -255,7 +412,7 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
             return None
         target = resolved
 
-    cache_key = f"{target.__module__}.{target.__qualname__}"
+    cache_key = _cache_key(target)
     if cache_key in _acceptable_keys_cache:
         return _acceptable_keys_cache[cache_key]
 
@@ -276,7 +433,7 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
             # glob-delivered key broadcasts into instances of this class. See
             # docs/broadcasting.md → "Classes with **kwargs constructors".
             logger.trace(
-                f"accept-list unknown for {cache_key} (**kwargs constructor) — "
+                f"accept-list unknown for {_dotted_name(target)} (**kwargs constructor) — "
                 f"bare broadcasts are unfiltered for this class"
             )
             _acceptable_keys_cache[cache_key] = None
@@ -342,7 +499,7 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
         if target is None:
             return {}
 
-    cache_key = f"{target.__module__}.{target.__qualname__}"
+    cache_key = _cache_key(target)
     if cache_key in _param_kind_cache:
         return _param_kind_cache[cache_key]
 
@@ -370,7 +527,9 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
         # broken forward ref degrades to None — flipping a dict-annotated
         # param from VALUE to routing with no other trace. Once per class
         # per pass (this function is cached).
-        logger.debug(f"param-kind scan for {cache_key}: get_type_hints failed ({exc}) — raw annotations used")
+        logger.debug(
+            f"param-kind scan for {_dotted_name(target)}: get_type_hints failed ({exc}) — raw annotations used"
+        )
         hints = {}
 
     for name, param in sig.parameters.items():
@@ -1055,7 +1214,7 @@ def accepts_any_key(target: Any) -> bool:
 
 #: Per-pass cache for :func:`declares_key`'s named-surface enumeration — only
 #: consulted for ``**kwargs`` targets (everything else rides the accept-list).
-_declared_names_cache: Dict[str, FrozenSet[str]] = register_pass_cache({})
+_declared_names_cache: Dict[Any, FrozenSet[str]] = register_pass_cache({})
 
 
 def declares_key(target: Any, key: str) -> bool:
@@ -1079,7 +1238,7 @@ def declares_key(target: Any, key: str) -> bool:
     acceptable = _get_acceptable_keys(cls)
     if acceptable is not None:
         return key in acceptable
-    cache_key = f"{cls.__module__}.{cls.__qualname__}"
+    cache_key = _cache_key(cls)
     declared = _declared_names_cache.get(cache_key)
     if declared is None:
         names: Set[str] = set()
@@ -1212,7 +1371,7 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
     instance_name = own_kwargs.get("name")
     instance_str = instance_name if isinstance(instance_name, str) else None
 
-    cache_key = (cls_name, id(target) if target is not None else 0, instance_str)
+    cache_key = (cls_name, _cache_key(target), instance_str)
     cached = _receiver_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -1575,7 +1734,8 @@ class _MergeSink:
         if own:
             self.origins.pop(key, None)  # own kwargs are definitions, not overrides
             return
-        logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin})")
+        if _trace_on:  # per-KEY site — see the log-gate block
+            logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin})")
         if self.report is None:
             return
         self.origins[key] = origin
@@ -1583,7 +1743,8 @@ class _MergeSink:
             self._mark_used(key, origin)
 
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
-        logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin}, slot value)")
+        if _trace_on:  # per-KEY site — see the log-gate block
+            logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin}, slot value)")
         self.merged.set(key, block, _KeyScope.EXACT)
         if self.report is not None:
             self.origins[key] = origin
@@ -1789,7 +1950,8 @@ def merge_bare_pool_into_kwargs(
                 continue  # self-broadcast guard — would loop on re-materialization
         elif acceptable is not None and bk not in acceptable:
             continue
-        logger.trace(f"broadcast: {bk!r} -> {label} ({origin})")
+        if _trace_on:  # per-KEY site — see the log-gate block
+            logger.trace(f"broadcast: {bk!r} -> {label} ({origin})")
         marker_kwargs[bk] = bv
         if on_applied is not None:
             on_applied(bk)

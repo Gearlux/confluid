@@ -4,14 +4,20 @@ Walks up from a starting directory to locate the nearest ``.env`` file,
 loads it via ``python-dotenv``, and validates that the keys the workspace
 relies on (default: ``DATA_ROOT``) are present and -- for path-typed keys
 -- point at an existing filesystem location.
+
+``python-dotenv`` is the OPTIONAL ``confluid[env]`` extra, imported inside
+:func:`load_workspace_env` rather than here (2026-08-11). This module serves a
+convention of the codebase confluid grew up in, not the configuration engine —
+nothing else in the package imports ``dotenv`` — so making it a hard runtime
+dependency charged every installation of a general-purpose config library for a
+helper it will never call. Importing ``confluid.env`` still works without the
+extra; only the call raises, naming it.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 from confluid.exceptions import WorkspaceEnvError
 
@@ -33,7 +39,18 @@ def load_workspace_env(
     Raises :class:`confluid.WorkspaceEnvError` (a ``RuntimeError``) with an
     actionable message when no ``.env`` is found, a required key is missing,
     or a path-typed value does not exist on disk.
+
+    Raises ``ImportError`` naming the ``confluid[env]`` extra when
+    ``python-dotenv`` is not installed (see the module docstring).
     """
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError as exc:
+        raise ImportError(
+            "confluid.env.load_workspace_env requires python-dotenv, which is an optional "
+            "dependency — install the extra: pip install 'confluid[env]'"
+        ) from exc
+
     here = Path(start) if start is not None else Path.cwd()
     env_path: Path | None = None
     for candidate in [here, *here.parents]:

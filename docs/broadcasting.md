@@ -1,5 +1,7 @@
 # Broadcasting & Ordered Matching
 
+> New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
+
 Confluid **broadcasts** bare top-level YAML keys into every configurable node
 whose constructor (or `__init__`-body attribute set) accepts a parameter of that
 name — the mechanism that lets one flat `batch_size: 64` land on every loader in

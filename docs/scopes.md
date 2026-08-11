@@ -1,5 +1,7 @@
 # Scopes
 
+> New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
+
 Conditional config blocks live at an arbitrary key whose value carries a
 `!scope:` / `!notscope:` tag. The key is inert — pick a descriptive label
 (`if_debug`, `if_classification`, …); on activation the wrapper disappears
