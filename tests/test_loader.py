@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import pytest
 import yaml
@@ -449,3 +450,59 @@ def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch:
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/elsewhere")
     reloaded = load(dumped)["opt"]
     assert reloaded.kwargs["input_dir"] == "/store/opt"  # burned in — reload reproduces
+
+
+# --------------------------------------------------------------------------------------
+# A YAML mapping keeps the key TYPES it was written with.
+# --------------------------------------------------------------------------------------
+
+
+def test_non_string_mapping_keys_survive_load(tmp_path: Path) -> None:
+    """A mapping keyed by int/float reaches its consumer keyed by int/float.
+
+    ``_process_includes_recursive`` rebuilt every dict in the document with ``str(k)``,
+    so a class-id table written ``{1: drone}`` arrived as ``{'1': 'drone'}`` and a lookup
+    by the int id missed. The raw parse had it right the whole time — only this walk broke
+    it, and it had done so since 2026-03-13. (A consumer is free to normalize keys itself;
+    what is fixed here is confluid silently deciding for it.)
+    """
+    cfg = tmp_path / "keys.yaml"
+    cfg.write_text("table:\n  1: one\n  2.5: mid\n  plain: str\n")
+
+    table = load(str(cfg))["table"]
+
+    assert table == {1: "one", 2.5: "mid", "plain": "str"}
+    assert sorted(type(k).__name__ for k in table) == ["float", "int", "str"]
+
+
+def test_non_string_keys_survive_inside_a_markers_kwargs(tmp_path: Path) -> None:
+    """The same, for a mapping handed to a target as a constructor argument."""
+
+    @configurable
+    class Table:
+        def __init__(self, names: Optional[Dict[Any, str]] = None) -> None:
+            self.names = names
+
+    cfg = tmp_path / "marker.yaml"
+    cfg.write_text("node:\n  _target_: Table\n  names:\n    1: one\n    2: two\n")
+
+    assert load(str(cfg))["node"].names == {1: "one", 2: "two"}
+
+
+def test_a_dotted_STRING_key_still_expands_beside_non_string_keys(tmp_path: Path) -> None:
+    """The guard must not cost the dotted-path grammar its job.
+
+    ``expand_dotted_mapping`` asks ``"." in k``, which is why the loader used to stringify
+    everything up front. It now skips non-str keys instead — so a dotted key must still
+    expand in a document that also carries a non-str-keyed table.
+
+    Expansion is TOP-LEVEL only (a nested ``inner.value:`` stays literal); that is
+    pre-existing behaviour, and this pins the level where the two rules actually meet.
+    """
+    cfg = tmp_path / "mixed.yaml"
+    cfg.write_text("inner.value: 7\ntable:\n  1: an int key\n")
+
+    doc = load(str(cfg))
+
+    assert doc["inner"] == {"value": 7}
+    assert doc["table"] == {1: "an int key"}
