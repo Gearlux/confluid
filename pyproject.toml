@@ -67,6 +67,10 @@ dev = [
 # broadcasting keeps seeing post-init attrs in compiled/frozen/zip deployments where
 # inspect.getsource fails (see confluid/bake.py; `confluid-bake <pkg>` == `python -m confluid.bake <pkg>`).
 confluid-bake = "confluid.bake:main"
+# One-time migration of tagged configs (!class:/!lazy:/!ref:/!scope:) to the
+# plain-YAML reserved-key format, so a config is readable by yaml.safe_load and yq
+# (see confluid/migrate.py and docs/plain-format.md). Removed with the tag spelling.
+confluid-migrate = "confluid.migrate:main"
 
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"

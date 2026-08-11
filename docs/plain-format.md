@@ -154,6 +154,43 @@ x: {_target_: Box, _partial_: yes_please}   # _partial_ must be true or false
 
 Each message carries the file, line and column of the offending mapping.
 
+## Migrating an existing config — `confluid-migrate`
+
+```bash
+confluid-migrate config/                  # rewrite every YAML under config/
+confluid-migrate config/ --check          # exit 1 if anything would change; write nothing
+confluid-migrate config/ --verify         # + prove the conversion is equivalent
+confluid-migrate config/ --report out.csv # a row per converted site
+```
+
+It **edits lines rather than reparsing the document**, so everything it does not
+convert stays byte-identical — comments, key order, spacing and quoting are
+untouched. That matters because a config's comments are usually its
+documentation, and a migration diff has to be reviewable.
+
+`--verify` is the check worth running. It compares the *resolved marker trees* of
+the old and new documents, **once per scope activation the document declares** —
+a wrong conversion inside a variant block never shows up in a plain resolve,
+because the block is dropped before any marker is built. A file whose conversion
+is not provably equivalent is left untouched and reported.
+
+Anything the grammar cannot convert is reported with its line, never guessed at:
+
+```
+config/odd.yaml:128: tag survived conversion — convert by hand — - !scope:verbose 42
+```
+
+Three forms need a hand edit, all rare: a `!scope:` block with a **sequence or
+scalar body** (it needs `_content_`), the `@axis=` target selector (use a
+fully-qualified `_target_`, or `_target_: pkg.${engine}.Loss` for a dynamic
+choice), and the quoted-string marker spelling (`"!class:Adam(lr=!ref:base)"`).
+
+The tool also makes every environment read explicit — `${DATA_ROOT}` and
+`$DATA_ROOT` both become `${env:DATA_ROOT}`, and `${PORT:8080}` becomes
+`${env:PORT,8080}`. That is meaning-preserving today (a plain-named `${...}` is
+already an environment variable) and it is what lets a bare `${name}` later be
+read as a config key without any config being ambiguous.
+
 ## Runnable example
 
 [`examples/plain_format.py`](../examples/plain_format.py) loads one document in
