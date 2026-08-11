@@ -226,8 +226,22 @@ and any live `Optimizer` also satisfies it. `Partial[Any]` remains valid when th
 target type is genuinely open. To narrow the flowed result for a type-checker,
 use `cast(node, Optimizer)` (confluid's typed `flow`). The marker itself is
 runtime-only and is discovered via `partial_param_names(cls)`. `Partial[T]` is the
-Python-annotation twin of the YAML `!lazy:` tag: **the tag defers a *value*,
-the annotation defers a *slot*.**
+Python-annotation twin of `_partial_: true`: **the key defers a *value*, the
+annotation defers a *slot*.**
+
+The slot wins, and that is the point: a plain `_target_:` written into a
+`Partial[T]` slot **stays a marker**, because the receiving class declared that it
+supplies the missing runtime argument itself.
+
+```yaml
+optimizer:            # the slot is `Partial[Optimizer]`, so this is NOT built at load —
+  _target_: SGD       # `flow(self.optimizer, params=model.parameters())` builds it later
+  lr: 0.01
+```
+
+Writing `_partial_: true` as well is redundant but harmless. There is still no third
+construction mode here: `partial` decides, and a slot declaration is one of the two
+places it can be spelled.
 
 **Body slots count too.** A class with many deferred dependencies often takes a
 minimal constructor and assigns the rest in the `__init__` body. Annotate those

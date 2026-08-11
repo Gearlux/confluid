@@ -249,8 +249,17 @@ def init_partial_setattr_names(init_func: Any) -> Set[str]:
     }
 
 
+#: The call names that mark a body slot deferred. The ``Lazy*`` spellings are the
+#: pre-rename ones and MUST stay until the aliases go: this scan matches on the
+#: NAME in the source, so dropping them makes every consumer still written as
+#: ``self.x = LazyClass(...)`` — which is all of them, since the alias exists so
+#: they need not change — silently stop being deferred. No error, no diagnostic:
+#: the slot is simply built, and an optimizer gets constructed without its params.
+_PARTIAL_CALL_NAMES = ("PartialClass", "Partial", "LazyClass", "Lazy")
+
+
 def _is_lazy_call(value: Any) -> bool:
-    """True for a call whose callee is named ``PartialClass`` or ``Partial``.
+    """True for a call whose callee names a deferred-slot constructor.
 
     Matches bare names AND attribute-qualified calls (``confluid.PartialClass(...)``)
     by inspecting only the final attribute — same rule as the original scanner.
@@ -259,7 +268,7 @@ def _is_lazy_call(value: Any) -> bool:
         return False
     func = value.func
     name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
-    return name in ("PartialClass", "Partial")
+    return name in _PARTIAL_CALL_NAMES
 
 
 def annotation_has_marker(annotation: Any, marker: str) -> bool:

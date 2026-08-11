@@ -1160,15 +1160,27 @@ def _broadcast_onto_instance(
     are skipped. A second sweep covers ctor-default params that don't appear
     on ``__dict__`` (e.g. slot descriptors that getattr resolves but vars()
     misses).
+
+    A slot the class declared DEFERRED (``Partial[T]``, or a body slot holding a
+    ``PartialClass(...)``) is broadcast into but never BUILT here — the same rule
+    ``_flow_target`` applies to the constructor kwargs. Without it this sweep undid
+    that decision moments after the constructor honoured it: the instance was built
+    with the marker intact, then this loop re-resolved the attribute with no
+    knowledge of the slot and constructed it anyway, so an optimizer declared
+    ``Partial[Optimizer]`` reached its constructor without the ``params`` it was
+    waiting for (caught downstream by a CLI's flow-mode test, not here).
     """
     seen: set[str] = set()
+    partial_slots = partial_param_names(type(instance))
     instance_vars = getattr(instance, "__dict__", None)
     for attr_name, attr_val in list(instance_vars.items()) if instance_vars else []:
         if attr_name.startswith("__confluid_"):
             continue
         if not isinstance(attr_val, Fluid):
             continue
-        resolved = _resolve_kwarg_value(attr_val, context=context, broadcast_ctx=broadcast_ctx)
+        resolved = _resolve_kwarg_value(
+            attr_val, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=attr_name in partial_slots
+        )
         if resolved is not attr_val:
             try:
                 setattr(instance, attr_name, resolved)
@@ -1189,7 +1201,12 @@ def _broadcast_onto_instance(
         if param_name not in ctor:
             attr_val = getattr(instance, param_name, None)
             if isinstance(attr_val, Fluid):
-                resolved = _resolve_kwarg_value(attr_val, context=context, broadcast_ctx=broadcast_ctx)
+                resolved = _resolve_kwarg_value(
+                    attr_val,
+                    context=context,
+                    broadcast_ctx=broadcast_ctx,
+                    slot_is_partial=param_name in partial_slots,
+                )
                 if resolved is not attr_val:
                     try:
                         setattr(instance, param_name, resolved)
