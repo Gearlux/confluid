@@ -51,6 +51,14 @@ class _EngineState:
     # stage one. Document-owned markers are safe on their own; the copies are
     # not, and the memo cannot tell them apart.
     memo_keepalive: Optional[List[Any]] = None
+    # True inside `resolve()`: a STRUCTURAL pass that must construct nothing.
+    #
+    # Only one site reads it — the dotted-`!ref:` branch in `engine._flow_recursive`,
+    # which is the sole place a Reference triggers construction (reading
+    # `split.train` means building `split`). With it set the Reference is handed
+    # back late-bound, so `resolve()` keeps the promise its docstring makes.
+    # `materialize()` / `load()` leave it False and behave exactly as before.
+    structural: bool = False
     suppress_solidify: bool = False
     # Ambient ConfigurationReport installed by collect_report(). Mutable by
     # design (like the memo dicts riding this frozen dataclass); every

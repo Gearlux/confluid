@@ -44,6 +44,28 @@ All notable changes to confluid are documented here. The format follows
   archived config is readable by `yaml.safe_load`, `yq` and a diff viewer. Reload fidelity is
   unchanged.
 
+### Changed
+
+- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
+  documented as "markers returned, NOTHING constructed", but reading `split.train`
+  means BUILDING `split`, and that branch ran on this path too. A dotted reference
+  now stays a `Reference`, exactly as a plain `!ref:name` already did.
+
+  Measured on a real config whose split scans 37 rar archives: `resolve()` took
+  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
+  process still pays one-time imports of the classes the config names).
+
+  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
+  shared instance there, which is the whole point of writing `split.train` and
+  `split.val`.
+
+  Two consumers already documented behaviour they were not getting (a visual
+  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
+  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
+  test suites hand-rolled a tag-stubbing YAML parser specifically because
+  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
+  Those workarounds can now be deleted.
+
 ### Fixed
 
 - **`confluid-migrate --verify` reported three kinds of FALSE difference**, each
@@ -265,6 +287,28 @@ All notable changes to confluid are documented here. The format follows
   the real home. One caveat for test suites: broadcast
   diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
   target that module.
+
+### Changed
+
+- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
+  documented as "markers returned, NOTHING constructed", but reading `split.train`
+  means BUILDING `split`, and that branch ran on this path too. A dotted reference
+  now stays a `Reference`, exactly as a plain `!ref:name` already did.
+
+  Measured on a real config whose split scans 37 rar archives: `resolve()` took
+  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
+  process still pays one-time imports of the classes the config names).
+
+  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
+  shared instance there, which is the whole point of writing `split.train` and
+  `split.val`.
+
+  Two consumers already documented behaviour they were not getting (a visual
+  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
+  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
+  test suites hand-rolled a tag-stubbing YAML parser specifically because
+  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
+  Those workarounds can now be deleted.
 
 ### Fixed
 
@@ -626,6 +670,28 @@ All notable changes to confluid are documented here. The format follows
   precedence is discriminated by `Fluid._order_resolved` and never `_yaml_loc`,
   and why `${...}` interpolation burns in at load for every spelling (with the
   rejected late-bound/copy-on-write alternatives on record).
+
+### Changed
+
+- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
+  documented as "markers returned, NOTHING constructed", but reading `split.train`
+  means BUILDING `split`, and that branch ran on this path too. A dotted reference
+  now stays a `Reference`, exactly as a plain `!ref:name` already did.
+
+  Measured on a real config whose split scans 37 rar archives: `resolve()` took
+  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
+  process still pays one-time imports of the classes the config names).
+
+  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
+  shared instance there, which is the whole point of writing `split.train` and
+  `split.val`.
+
+  Two consumers already documented behaviour they were not getting (a visual
+  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
+  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
+  test suites hand-rolled a tag-stubbing YAML parser specifically because
+  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
+  Those workarounds can now be deleted.
 
 ### Fixed
 
@@ -1141,6 +1207,28 @@ All notable changes to confluid are documented here. The format follows
   silently-empty collections. The six above validate into a real `list` / `dict`
   holding the identical element objects, so they never had that problem.
 
+### Changed
+
+- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
+  documented as "markers returned, NOTHING constructed", but reading `split.train`
+  means BUILDING `split`, and that branch ran on this path too. A dotted reference
+  now stays a `Reference`, exactly as a plain `!ref:name` already did.
+
+  Measured on a real config whose split scans 37 rar archives: `resolve()` took
+  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
+  process still pays one-time imports of the classes the config names).
+
+  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
+  shared instance there, which is the whole point of writing `split.train` and
+  `split.val`.
+
+  Two consumers already documented behaviour they were not getting (a visual
+  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
+  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
+  test suites hand-rolled a tag-stubbing YAML parser specifically because
+  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
+  Those workarounds can now be deleted.
+
 ### Fixed
 
 - **A `**kwargs` constructor no longer drops every runtime kwarg.** `_ctor_params`
@@ -1466,6 +1554,28 @@ _First public release, published to PyPI as `confluid` (tag `v0.1.0`)._
 - **One AST scanner:** the three near-identical `__init__`-body scanners are
   unified in stdlib-only `confluid.introspect` (`scan_init_body` + three
   projections); the wraps-transparency dependency is now pinned by a test.
+
+### Changed
+
+- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
+  documented as "markers returned, NOTHING constructed", but reading `split.train`
+  means BUILDING `split`, and that branch ran on this path too. A dotted reference
+  now stays a `Reference`, exactly as a plain `!ref:name` already did.
+
+  Measured on a real config whose split scans 37 rar archives: `resolve()` took
+  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
+  process still pays one-time imports of the classes the config names).
+
+  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
+  shared instance there, which is the whole point of writing `split.train` and
+  `split.val`.
+
+  Two consumers already documented behaviour they were not getting (a visual
+  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
+  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
+  test suites hand-rolled a tag-stubbing YAML parser specifically because
+  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
+  Those workarounds can now be deleted.
 
 ### Fixed
 

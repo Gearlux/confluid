@@ -432,8 +432,23 @@ routing rule).
 markers returned, NOTHING constructed. `flow(obj, solidify=False)` constructs but suppresses the
 finalize. Neither changes default behaviour.
 
-**Detail.** A *dotted* `!ref:a.b` still instantiates its target to read the attribute; a plain
-whole-object `!ref:name` stays a marker. An unresolved `!ref:NAME` survives as a bare `Reference`.
+**Detail.** `resolve()` constructs NOTHING — a *dotted* `!ref:a.b` stays a `Reference` just as a
+plain `!ref:name` does. The dotted branch in `_flow_recursive` is the ONE place a Reference
+triggers construction (reading `split.train` means building `split`), and it is gated on
+`_EngineState.structural`, which only `resolve()` sets. `materialize()` / `load()` are unchanged,
+so a dotted ref still resolves off ONE shared instance there.
+
+**Why.** Until 2026-08-11 the dotted branch ran on this path too, so the "introspection without
+cost" API walked a dataset: 3.9s on a real config whose split scans 37 archives, for a call
+documented as constructing nothing. Two consumers already claimed behaviour they were not getting
+(a visual editor's YAML importer — "no instantiation, every node is a Fluid marker"; a flow-graph
+builder — "step markers stay UNbuilt"), and two projects' shipped-config suites hand-rolled a
+tag-stubbing parser because `resolve()` "is not an escape either". Steady-state cost is now 10ms.
+
+**Pins.** `tests/test_resolve.py::test_resolve_leaves_a_DOTTED_ref_deferred` and
+`::test_a_dotted_ref_still_resolves_through_load` (the two halves — the deferral is `resolve()`-only);
+`tests/test_ref_identity.py::test_dotted_attribute_ref_reuses_single_instance` (one construction
+through `load()`, unchanged).
 
 **Pins.** `tests/test_resolve.py`. **Docs.** `docs/lifecycle.md` → "Where you can stop".
 
