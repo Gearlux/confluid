@@ -3,6 +3,7 @@
 **Confluid** is a modern, hierarchical configuration and dependency injection framework for Python, built for researchers and engineers who need modularity and 100% reproducibility in their experiment pipelines.
 
 ## Key Features
+- **Plain YAML — no custom tags required:** write `model: {_target_: MLP, hidden: 32}` and the file stays ordinary YAML that `yaml.safe_load`, `yq`, editor schemas and linters all read. `_partial_: true` defers construction, `_ref_` / `_clone_` (or `${ref:…}` / `${clone:…}`) wire references, `_scope_` selects variants. The [tag spelling](https://github.com/Gearlux/confluid/blob/main/docs/tags.md) (`!class:`, `!lazy:`, …) still loads and the two may be mixed in one file. See the [Plain-YAML Format guide](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md).
 - **Works with plain Python classes:** Required constructor params and real work in `__init__` are fully supported for load/flow/dump — the lazy/zero-arg class-design convention is optional.
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
@@ -27,6 +28,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | Guide | What it covers | Example |
 |---|---|---|
 | [**The Lifecycle**](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md) — *start here* | How a document becomes objects: the nine passes in order (parse → include → scope → interpolate → expand → broadcast → flow → solidify), what each one decides permanently, and where you can stop | `lifecycle.py` |
+| [**The Plain-YAML Format**](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md) | Writing configs as ordinary YAML that `yaml.safe_load` and `yq` read: `_target_` / `_partial_` construction, `_ref_` / `_clone_` and their `${ref:…}` shorthand, `${env:…}`, `_scope_` blocks | `plain_format.py` |
 | [Tags & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/tags.md) | The six YAML tags, Fluid→Solid lifecycle, `!class:` eager-vs-deferred, `!lazy:` + `flow()`, `!ref:` vs `!clone:` | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |

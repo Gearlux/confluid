@@ -236,6 +236,38 @@ it late-bound for post-load overrides.
 **Pins.** `tests/test_method_ref.py`, `tests/test_list_index_refs.py`,
 `tests/test_ref_identity.py::test_dotted_attribute_ref_reuses_single_instance`.
 
+### Two spellings, ONE intermediate representation
+
+**Rule.** Confluid reads a document written with YAML TAGS (`!class:` / `!lazy:` / `!ref:` /
+`!clone:` / `!scope:`) or with RESERVED KEYS (`_target_` / `_partial_` / `_ref_` / `_clone_` /
+`_scope_` / `_notscope_` / `_content_`). Both MUST produce the SAME Fluid markers. A behaviour
+reachable from only one spelling is a BUG in that spelling — never a feature of it.
+
+**Rule.** The reserved-key path is a PARSE-TIME conversion and nothing else. Do not add
+reserved-key branches to `scopes`, `broadcast`, `engine`, `configurator` or `dumper` — by the time
+those run, only markers exist. `loader._reserved_to_marker` is the ONE conversion site.
+
+**Rule.** The conversion rides the DEFAULT MAPPING tag and MUST decide from the YAML NODE's key
+names, never by constructing values first. A mapping carrying no reserved key delegates to
+PyYAML's own constructor — that fast path is what preserves ordinary-mapping performance and alias
+/ recursion behaviour. Markers built this way are stamped via the shared `_stamp_loc`, so the new
+spelling keeps the tag form's located diagnostics.
+
+**Rule.** A malformed marker raises a located `ConfigurationError` at load. Never degrade one
+silently — that failure mode is precisely what this format replaces (`!class:Model(a=1, b=2)`,
+with one space, produced a target named `Model(a=1,` and dropped both kwargs, with no error).
+
+**Rule — scope grammar.** `loader._parse_scope_suffix` is the ONE splitter for every activation
+spelling (the tag suffix, the `_scope_:` value, a CLI `--scope` argument). Never add a second.
+
+**Why.** `docs/architecture.md` record 11. The tag format is not YAML anything else can read, which
+locks out `yq`, editor schemas and linters.
+
+**Pins.** `tests/test_plain_format.py` — the `test_both_spellings_agree` matrix, the malformed-marker
+group, `::test_a_full_document_is_readable_by_plain_yaml`,
+`::test_yaml_anchors_and_aliases_still_work`, `::test_the_two_spellings_can_be_mixed_in_one_document`.
+**Docs.** `docs/plain-format.md`. **Example.** `examples/plain_format.py`.
+
 ### `!class:` eager-vs-deferred is the trailing `()`
 
 **Rule.** `!class:Foo` → a deferred `Class` stub the receiver flows itself. `!class:Foo()` /
