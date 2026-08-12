@@ -108,6 +108,7 @@ def _freeze_package(pkg_dir: Path) -> None:
     linecache.clearcache()
     engine_module._post_init_attrs_cache.clear()
     engine_module._acceptable_keys_cache.clear()
+    introspect_module._slots_cache.clear()  # the ONE enumeration caches the scan too
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +225,18 @@ def test_unbaked_sourceless_class_still_warns_and_mentions_bake(
     mod = importlib.import_module("bakepkg_unbaked.mod")
     _freeze_package(pkg_dir)  # NO bake step ran
 
-    attrs = engine_module._get_post_init_attrs(mod.BakedTrainer)
-    assert "loss_fn" not in attrs  # the divergence the warning is about
+    # The scan finds nothing (the divergence the warning is about) ...
+    assert "loss_fn" not in engine_module._get_post_init_attrs(mod.BakedTrainer)
+
+    # ... and the warning fires from the ACCEPT-LIST, which is where the
+    # consequence lands: an unscannable ``__init__`` means the post-init slots are
+    # absent from that set, so broadcasting silently stops reaching them. It used
+    # to fire from inside the body scan; the scan moved to ``introspect``, which is
+    # stdlib-only and has no logger, so the diagnostic sits at its consequence
+    # instead. Every path that broadcasts into a class consults the accept-list, so
+    # nothing that warned before stops warning.
+    engine_module._get_acceptable_keys(mod.BakedTrainer)
+
     mine = [msg for msg in warnings_seen if "bakepkg_unbaked" in msg]
     assert len(mine) == 1
     assert "confluid-bake" in mine[0]

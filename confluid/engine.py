@@ -36,7 +36,6 @@ imports engine names from ``confluid.engine`` or, better, the real home
 modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
-import inspect
 from copy import copy
 from dataclasses import replace
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Type
@@ -88,7 +87,7 @@ from confluid.fluid import (
     is_order_resolved,
     late_bare_keys_of,
 )
-from confluid.introspect import init_callable, init_setattr_names
+from confluid.introspect import init_callable, init_setattr_names, slot_names, slots
 from confluid.merger import expand_dotted_keys
 from confluid.partial import partial_param_names
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
@@ -949,17 +948,13 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     kwargs, which are call arguments rather than config keys — is handled by
     :func:`_takes_var_keyword` at the one call site in :func:`_flow_target`.
     """
+    if init_callable(target) is None:
+        return None
     try:
-        init_method = init_callable(target)
-        if init_method is None:
-            return None
-        sig = inspect.signature(init_method)
-        return {
-            p.name
-            for p in sig.parameters.values()
-            if p.name not in ("self", "cls")
-            and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.POSITIONAL_ONLY)
-        }
+        # ONE enumeration, one projection. ``var_positional`` and ``positional_only``
+        # are dropped for the reason above; ``var_keyword`` is KEPT, and that
+        # asymmetry is load-bearing rather than an oversight.
+        return slot_names(target, frozenset({"keyword", "var_keyword"}))
     except (ValueError, TypeError):
         return _UNKNOWN_PARAMS
 
@@ -974,14 +969,7 @@ def _takes_var_keyword(target: Any) -> bool:
     requires either a `model` or `model_init` argument"* — a message pointing
     nowhere near confluid. :func:`_var_keyword_extras` says what to pass instead.
     """
-    try:
-        init_method = init_callable(target)
-        if init_method is None:
-            return False
-        sig = inspect.signature(init_method)
-    except (ValueError, TypeError):
-        return False
-    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    return any(slot.kind == "var_keyword" for slot in slots(target))
 
 
 def _var_keyword_extras(

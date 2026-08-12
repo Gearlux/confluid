@@ -914,3 +914,91 @@ load(doc)["trainer"].seed    # 7
 **What you may change.** Which keys are reserved, while they stay namespaced in the `_x_` form
 that no real parameter name occupies. Not the invariant that both spellings converge on one IR —
 a behaviour reachable from only one spelling is a bug in that spelling, not a feature.
+
+---
+
+## 12. One slot enumeration, six projections
+
+*2026-08-12*
+
+**Context.** Six readers ask "which slots does this target have": the broadcast accept-list (may
+a key land here at all), `engine._ctor_params` (constructor argument vs post-init setattr),
+`broadcast.declares_key` (does the target NAME this key), `schema.input_specs` (the I/O contract
+a GUI renders), `schema.get_hierarchy` (the dotted paths a CLI builds flags from), and
+`to_pydantic` (the validating model every AI surface reads).
+
+Each walked the signature itself and hand-rolled its own "minus `self`/`cls`" filter, with a
+different set of parameter-kind exclusions. Measured on one class, they gave **five different
+answers**:
+
+| reader | answer |
+|---|---|
+| accept-list | `['head', 'loaders', 'lr', 'pos_only']` |
+| `_ctor_params` | `['lr']` |
+| `input_specs` | `['pos_only', 'lr']` |
+| `get_hierarchy` | `['loaders', 'lr', 'pos_only']` |
+| `to_pydantic` | `['head', 'lr', 'pos_only']` |
+
+Three were defects rather than differences. `loaders` is a `*args` name — it can never be passed
+by keyword, so a config key of that name reaches nothing; the accept-list admitted it (landing it
+as a post-init attribute nothing reads) and `get_hierarchy` published it as a CLI flag Python
+rejects at the call. And `declares_key` — the public predicate consumers are told to call
+*instead of* re-deriving settability — gave **opposite** answers for the same parameter kind
+depending on whether the class also took `**kwargs`, because it short-circuited to the accept-list
+in one case and ran its own kind-filtered walk in the other.
+
+None of this raised. It produced a form with a missing field, a flag that does nothing, a schema
+that omits a knob.
+
+**Decision.** One enumeration, `introspect.slots(target) -> tuple[Slot, ...]`, returning rich
+records (`name`, `kind`, `annotation`, `default`, `source`) in signature order. Each reader keeps
+its difference as a **projection over kinds** rather than a private walk.
+
+This is the shape the earlier rejection of a shared helper demanded rather than forbade. That
+`NOTE` recorded three objections — the dumper needs ORDERED params, the accept-list needs its
+`**kwargs` → `None` sentinel, schema needs rich `inspect.Parameter` metadata — and every one is
+about the RETURN TYPE of a *name-set* helper. None is about the enumeration underneath, which was
+the same walk five times.
+
+**Consequences.**
+
+- **Five answers became three, one per question actually asked**: what is configurable at all
+  (accept-list, `to_pydantic`), what the signature declares (`input_specs`, `get_hierarchy`),
+  what the constructor can take (`_ctor_params`). A reader may still differ — but only on purpose.
+- **`var_positional` is no longer a slot anywhere.** This is a behaviour change: a bare key
+  matching a `*args` name previously landed as a post-init attribute and now does not.
+  `positional_only` is deliberately KEPT settable, because it falls through to a post-init
+  `setattr`, which is what `configure()` has always done for it — so both paths agree.
+- **The packaged-mode warning moved to the accept-list.** It used to fire from inside the body
+  scan; the scan now lives in `introspect`, which is stdlib-only and has no logger. The
+  accept-list is where the consequence lands anyway (an unscannable `__init__` means post-init
+  slots are absent from *that* set), and every path that broadcasts into a class consults it.
+- **`slots()` reports a name ONCE**, letting the signature claim it. `body_slot_names()` is the
+  sibling projection over the same walk for the different question "what does the body assign" —
+  `self.model = model` is both a parameter and a body assignment, and the accept-list unions them.
+- **`to_pydantic` still runs its own body-slot scan**, because it needs the AST-resolved
+  annotation of a typed body slot and `Slot.annotation` is `Any` for those. It was not drifting,
+  so this is a feature gap, not a half-finished rewire — tracked in `TASKS.md`.
+- **The cache is declared in `introspect` and registered from `broadcast`**, the reverse of the
+  `engine._parent_blacklist_cache` arrangement, for the same reason: `introspect` imports only the
+  stdlib and must keep doing so, while `broadcast` owns the one per-pass clear.
+
+**Example.**
+
+```python
+from confluid.introspect import slot_names, slots
+
+for slot in slots(Trainer):
+    print(slot.name, slot.kind, slot.source)
+# lr       keyword     signature
+# loaders  var_positional signature      <- named, but addresses nothing
+# head     body_slot   body_scan
+
+# each reader states its rule as a kind set, not a re-derived filter
+slot_names(Trainer, frozenset({"keyword", "var_keyword"}))   # what the ctor can take
+```
+
+**What you may change.** Which kinds a given reader projects — that is the knob, and each choice
+is pinned with its reason in `tests/test_introspection_agreement.py`. Not the invariant that they
+all read ONE enumeration: five private walks is what produced five answers, and the pins exist so
+the next change to a projection is a visible diff rather than a sixth answer.

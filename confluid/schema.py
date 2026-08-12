@@ -3,7 +3,21 @@ import re
 import types
 from typing import Annotated, Any, Dict, List, Set, Tuple, TypedDict, Union, get_args, get_origin, get_type_hints
 
-from confluid.introspect import init_callable
+from confluid.introspect import NO_DEFAULT, init_callable, slots
+
+
+def _skipped_param_names(target: Any) -> Set[str]:
+    """Signature names that are NOT configurable paths, by parameter KIND.
+
+    The three walkers below filtered by NAME — ``self`` / ``cls`` / ``args`` /
+    ``kwargs`` — which is wrong twice over: it misses a variadic spelled anything
+    else (``*loaders``, ``**extra``) and it would wrongly drop an ordinary
+    parameter that happens to be called ``args``. A ``*args`` name published here
+    becomes a CLI flag (``--loaders``) whose value Python rejects at the call,
+    because the name can never be passed by keyword.
+    """
+    variadic = {slot.name for slot in slots(target) if slot.kind in ("var_positional", "var_keyword")}
+    return variadic | {"self", "cls"}
 
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
@@ -45,7 +59,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
             param_docs = parse_param_docs(obj)
 
             for param_name, param in sig.parameters.items():
-                if param_name in ("self", "cls", "args", "kwargs"):
+                if param_name in _skipped_param_names(obj):
                     continue
 
                 path = f"{prefix}.{param_name}" if prefix else param_name
@@ -99,7 +113,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         type_hints = get_type_hints(init_method)
 
         for param_name, param in sig.parameters.items():
-            if param_name in ("self", "cls", "args", "kwargs"):
+            if param_name in _skipped_param_names(cls):
                 continue
 
             # Check visibility
@@ -241,7 +255,7 @@ def _walk_instance(
 
     ctor_param_names: set = set()
     for param_name, param in sig.parameters.items():
-        if param_name in ("self", "cls", "args", "kwargs"):
+        if param_name in _skipped_param_names(cls):
             continue
         ctor_param_names.add(param_name)
 
@@ -539,33 +553,25 @@ def input_specs(cls: Any) -> List[InputSpec]:
     # The ONE class-vs-callable dispatch — reading ``__init__`` directly on a
     # builder FUNCTION resolves to ``object.__init__`` (``*args, **kwargs``),
     # which reported an EMPTY contract for every registered function target.
-    init = init_callable(cls)
-    if init is None:
+    if init_callable(cls) is None:
         return []
-    try:
-        sig = inspect.signature(init)
-    except (TypeError, ValueError):
-        return []
-    try:
-        hints = get_type_hints(init, include_extras=True)
-    except Exception:
-        hints = {}
 
     specs: List[InputSpec] = []
-    for pname, param in sig.parameters.items():
-        if pname in ("self", "cls") or param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
+    for slot in slots(cls):
+        # The signature IS the input contract — a class attribute or a body slot
+        # is configurable but is not an INPUT, and the two variadic kinds name no
+        # single slot at all.
+        if slot.kind not in ("positional_only", "keyword"):
             continue
-        if pname in hints:
-            anno: Any = hints[pname]
-        elif param.annotation is not inspect.Parameter.empty:
-            anno = param.annotation
-        else:
-            anno = Any
-        stripped = _strip_annotated(anno)
+        stripped = _strip_annotated(slot.annotation)
         type_str = getattr(stripped, "__name__", str(stripped))
-        required = param.default is inspect.Parameter.empty or is_mandatory_annotation(anno)
-        specs.append(InputSpec(name=pname, type=type_str, required=required, nullable=_is_nullable_annotation(anno)))
+        required = slot.default is NO_DEFAULT or is_mandatory_annotation(slot.annotation)
+        specs.append(
+            InputSpec(
+                name=slot.name,
+                type=type_str,
+                required=required,
+                nullable=_is_nullable_annotation(slot.annotation),
+            )
+        )
     return specs

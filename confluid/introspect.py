@@ -41,6 +41,8 @@ from typing import (
     Annotated,
     Any,
     Dict,
+    FrozenSet,
+    List,
     Literal,
     NamedTuple,
     Optional,
@@ -333,14 +335,223 @@ def marked_param_names(target: Any, marker: str, cache_attr: Optional[str] = Non
     return names
 
 
-# NOTE — a shared "ctor params minus self/cls" helper was CONSIDERED here and
-# deliberately NOT shipped: the apparent duplicates each carry a load-bearing
-# difference the shared shape can't express — the dumper needs ORDERED params
-# (dump-key order is round-trip-pinned), the loader accept-list needs its
-# ``**kwargs`` → ``None`` broadcast-everything sentinel, and schema /
-# pydantic_export consume rich ``inspect.Parameter`` metadata, not name sets.
-# The AST body-slot scan above is the real duplication; the signature walks
-# are not.
+# --------------------------------------------------------------------------- #
+# The ONE slot enumeration
+#
+# A shared "ctor params minus self/cls" HELPER was considered here and rightly
+# rejected: the apparent duplicates each carry a load-bearing difference a name
+# set cannot express — the dumper needs ORDERED params (dump-key order is
+# round-trip-pinned), the accept-list needs its ``**kwargs`` → ``None``
+# broadcast-everything sentinel, and schema / pydantic_export consume rich
+# ``inspect.Parameter`` metadata.
+#
+# Every one of those objections is about the RETURN TYPE of a name-set helper.
+# None is about the ENUMERATION underneath, which was the same walk five times —
+# and five hand-rolled "minus self/cls" filters with DIFFERENT kind exclusions
+# gave five different answers for one class (measured; pinned in
+# ``tests/test_introspection_agreement.py``). So the shared thing is the walk,
+# returning rich records, and each consumer keeps its difference as a one-line
+# projection over them.
+# --------------------------------------------------------------------------- #
+
+SlotKindT = Literal[
+    "positional_only",  # can never be passed by keyword — not a keyword slot
+    "keyword",  # POSITIONAL_OR_KEYWORD / KEYWORD_ONLY — the ordinary case
+    "var_positional",  # ``*args`` — not a slot at all; its NAME addresses nothing
+    "var_keyword",  # ``**kwargs`` — the catchall; names nothing, refuses nothing
+    "class_attr",  # a public settable class attribute
+    "body_slot",  # ``self.x = …`` in ``__init__`` — a slot with no signature entry
+]
+
+_PARAM_KIND_MAP: Dict[Any, SlotKindT] = {
+    inspect.Parameter.POSITIONAL_ONLY: "positional_only",
+    inspect.Parameter.POSITIONAL_OR_KEYWORD: "keyword",
+    inspect.Parameter.KEYWORD_ONLY: "keyword",
+    inspect.Parameter.VAR_POSITIONAL: "var_positional",
+    inspect.Parameter.VAR_KEYWORD: "var_keyword",
+}
+
+#: Sentinel for "this slot has no default" — distinct from a default OF ``None``.
+NO_DEFAULT: Any = inspect.Parameter.empty
+
+
+class Slot(NamedTuple):
+    """One configurable slot of a target, however it is declared.
+
+    The fields are what the six readers between them need; each takes a subset —
+    the accept-list wants ``name`` + ``kind``, ``input_specs`` wants ``annotation``
+    and ``default``, ``to_pydantic`` wants all of it.
+    """
+
+    name: str
+    kind: SlotKindT
+    annotation: Any  #: resolved type hint, or ``Any`` when unresolvable
+    default: Any  #: :data:`NO_DEFAULT` when the slot has none
+    source: Literal["signature", "class_attr", "body_scan", "declared", "baked"]
+
+
+#: Per-target slot cache, keyed by identity. Declared HERE (this module owns the
+#: enumeration) and registered for the per-pass clear by ``broadcast``, which owns
+#: the ONE clear site and already imports this module — the reverse of the
+#: ``engine._parent_blacklist_cache`` arrangement, for the same reason: this
+#: module imports only the stdlib and must keep doing so.
+_slots_cache: Dict[Any, Tuple["Slot", ...]] = {}
+
+
+def slots(target: Any) -> Tuple["Slot", ...]:
+    """Every configurable slot of ``target`` — the ONE enumeration.
+
+    Signature parameters first, in SIGNATURE ORDER (which the dumper's round-trip
+    pins rest on), then class attributes, then ``__init__``-body slots. A name is
+    reported ONCE: a body slot that is also a signature parameter is the parameter.
+
+    ``target`` may be a class OR any callable — the signature comes from
+    :func:`init_callable`, so a registered builder FUNCTION answers like a class.
+    A callable has no class attributes and no ``__init__`` body, so it yields
+    signature slots alone.
+
+    Best-effort by construction, like every reader it replaces: an unreadable
+    signature yields no signature slots, an unresolvable annotation degrades to
+    ``Any`` (the SLOT survives — losing it would drop a knob from every GUI), and
+    an unscannable ``__init__`` (compiled / frozen) falls back to the declared and
+    baked names.
+    """
+    cache_key = target if _hashable(target) else id(target)
+    cached = _slots_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    found: List[Slot] = []
+    seen: Set[str] = set()
+
+    init = init_callable(target)
+    if init is not None:
+        try:
+            hints = get_type_hints(init, include_extras=True)
+        except Exception:  # noqa: BLE001 - an unresolvable hint must not lose the SLOT
+            hints = {}
+        try:
+            parameters = dict(inspect.signature(init).parameters)
+        except (TypeError, ValueError):
+            parameters = {}
+        for name, param in parameters.items():
+            if name in ("self", "cls"):
+                continue
+            seen.add(name)
+            annotation = hints.get(name, param.annotation)
+            found.append(
+                Slot(
+                    name=name,
+                    kind=_PARAM_KIND_MAP[param.kind],
+                    annotation=Any if annotation is inspect.Parameter.empty else annotation,
+                    default=param.default,
+                    source="signature",
+                )
+            )
+
+    found.extend(_non_signature_slots(target, seen))
+    result = tuple(found)
+    _slots_cache[cache_key] = result
+    return result
+
+
+def _hashable(target: Any) -> bool:
+    """Whether ``target`` can key a dict — a callable may define ``__eq__`` without ``__hash__``."""
+    try:
+        hash(target)
+    except TypeError:
+        return False
+    return True
+
+
+def _non_signature_slots(target: Any, seen: Set[str]) -> List[Slot]:
+    """Class attributes and ``__init__``-body slots — ``@configurable`` CLASSES only.
+
+    A plain callable has neither: its function attributes are not config slots,
+    and there is no body to ``setattr`` into post-construction.
+    """
+    if not (isinstance(target, type) and getattr(target, "__confluid_configurable__", False)):
+        return []
+
+    out: List[Slot] = []
+    for name in dir(target):
+        if name.startswith("_") or name in seen:
+            continue
+        member = getattr(target, name, None)
+        if member is None or callable(member):
+            continue
+        if getattr(member, "__confluid_ignore__", False):
+            continue
+        if isinstance(member, property) and member.fset is None:
+            continue  # derived state, per the class-design convention — never a config knob
+        seen.add(name)
+        out.append(Slot(name, "class_attr", Any, member, "class_attr"))
+
+    for name, source in _body_slot_sources(target):
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(Slot(name, "body_slot", Any, NO_DEFAULT, source))
+    return out
+
+
+def _body_slot_sources(target: type) -> List[Tuple[str, Any]]:
+    """Body-slot names with WHERE each was learned, MRO-wide.
+
+    The effective set is ``scan ∪ declared ∪ baked`` (the packaged-mode rule):
+    fresh source always governs in a dev checkout, and the build-time bake table
+    is consulted per MRO class only when that class's live scan finds nothing.
+    """
+    out: List[Tuple[str, Any]] = []
+    emitted: Set[str] = set()
+
+    def _add(name: str, source: str) -> None:
+        if name not in emitted:
+            emitted.add(name)
+            out.append((name, source))
+
+    for declared in getattr(target, "__confluid_broadcast_attrs__", None) or ():
+        _add(declared, "declared")
+    for klass in getattr(target, "__mro__", ()):
+        if klass is object:
+            continue
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        scanned = init_setattr_names(init)
+        for name in sorted(scanned):
+            _add(name, "body_scan")
+        if not scanned:
+            for name in baked_init_attrs(klass) or ():
+                _add(name, "baked")
+    return out
+
+
+def body_slot_names(target: Any) -> Set[str]:
+    """Every name ``__init__`` assigns, MRO-wide — INCLUDING ones that are also params.
+
+    The sibling projection of :func:`slots`, over the same walk, answering a
+    different question. ``slots()`` reports a name ONCE and lets the signature
+    claim it, because a slot is a slot; this asks what the BODY assigns, which is
+    what the broadcast layer's post-init injection needs to know (``self.model =
+    model`` is both a parameter and a body assignment, and the accept-list unions
+    the two).
+
+    Sharing the walk is the point — the two answers may differ, but they must
+    never disagree about what the body contains.
+    """
+    if not isinstance(target, type):
+        return set()
+    return {name for name, _ in _body_slot_sources(target)}
+
+
+def slot_names(target: Any, kinds: FrozenSet[str]) -> Set[str]:
+    """Names of ``target``'s slots whose kind is in ``kinds`` — the common projection.
+
+    A caller states its rule as a KIND SET instead of re-deriving a "minus
+    self/cls" filter, which is the drift this enumeration ends.
+    """
+    return {slot.name for slot in slots(target) if slot.kind in kinds}
 
 
 def contains_forwardref(anno: Any) -> bool:

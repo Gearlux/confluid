@@ -6,6 +6,42 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **One slot enumeration, six projections.** Six readers answer "which slots does this target
+  have", each walking the signature itself with its own hand-rolled "minus `self`/`cls`" filter.
+  Measured on one class, they gave **five different answers**; they now project from
+  `introspect.slots()` and give **three** — one per question actually being asked (what is
+  configurable at all · what the signature declares · what the constructor can take).
+
+  Three of the five differences were defects, each silent:
+
+  * the accept-list admitted a `*args` NAME, which can never be passed by keyword — it landed as
+    a post-init attribute nothing reads;
+  * `get_hierarchy` published the same name as a dotted CLI path, so a front-end offered a flag
+    Python rejects at the call. Its filter skipped `self`/`cls`/`args`/`kwargs` by NAME, which
+    misses a variadic spelled anything else and would wrongly drop an ordinary parameter called
+    `args`;
+  * `declares_key` — the public predicate `AGENTS.md` tells front-ends to call INSTEAD of
+    re-deriving settability — gave OPPOSITE answers for the same parameter kind depending on
+    whether the class also took `**kwargs`, because it short-circuited to the accept-list in one
+    case and ran its own kind-filtered walk in the other.
+
+  **Behaviour change:** a bare key matching a `*args` parameter name no longer lands as a
+  post-init attribute. `positional_only` is deliberately still settable — it falls through to a
+  post-init `setattr`, which is what `configure()` has always done for it, so both paths agree.
+
+  The `introspect.py` NOTE that rejected a shared "ctor params" helper was correct and shaped the
+  fix rather than blocking it: all three of its objections (the dumper needs ordered params, the
+  accept-list needs its `**kwargs` → `None` sentinel, schema needs rich metadata) are about the
+  RETURN TYPE of a name-set helper, none about the enumeration underneath. Rationale:
+  `docs/architecture.md` record 12. Measured cost: none — `materialize` 278.2 ms vs 276.9 ms on
+  the 2,500-marker benchmark, within noise, since one cached enumeration replaces several walks.
+
+  Two readers keep their own walk, deliberately: `to_pydantic` needs the AST-resolved annotation
+  of a typed body slot (a feature gap, filed), and the dumper's signature walk is `hasattr`-guarded
+  and outside the divergence.
+
 ### Added
 
 - **`tests/test_introspection_agreement.py` — the baseline for the `slots()` consolidation.**
