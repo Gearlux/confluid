@@ -6,6 +6,38 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`ConfigurationReport.explain(key)` — why a key has the value it has.** Confluid arbitrates by
+  document POSITION and nothing else, which is the one thing about it that surprises people: a
+  value written AT a node loses to a bare key that merely sits lower in the file. That is the
+  documented rule, and until now the only way to watch it happen was `LOGGAIR_CONSOLE_LEVEL=TRACE`
+  and a grep — even though both candidates already reached the report's sink and the loser was
+  simply discarded.
+
+  ```
+  lr on Trainer = 0.9
+      #0   block 'Trainer'    0.5          beaten — earlier in the document
+    ✓ #2   bare               0.9          applied
+  ```
+
+  Both paths report identically — a `configure()` report explains the same contest a `load()`
+  report does, because both run the one scanner. The candidates live on `AppliedKey.contest`
+  (`Candidate(origin, value, pos)`, document order, last entry wins) so a front-end can render
+  them; `value` is a bounded string, never the object.
+
+  Cost: `materialize()` / `resolve()` are unchanged (the ledger is behind the existing
+  `report is not None` guard), and `configure()` — which always has a report — pays 1.5 ms on a
+  2,500-marker pass. The first implementation cost 5.7 ms; rendering the `repr` at record time,
+  and only for keys something actually contested, removed 4.6 ms of that.
+
+- **`docs/broadcasting.md` → "What this costs you"** and a `RATIONALE.md` section naming the bet.
+  Nothing in the documentation said that **moving** a line — not just adding or removing one — can
+  change the result, which is the price of implicit reach-many. Libraries that make reach-many
+  explicit pay the opposite price in verbosity. `RATIONALE.md`'s comparison table listed confluid's
+  only weakness as "New implementation"; it now names order-dependence, with `explain()` as the
+  mitigation.
+
 ### Changed
 
 - **The examples and the README now teach the reserved-key spelling.** Twelve of the

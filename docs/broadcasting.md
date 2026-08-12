@@ -62,6 +62,46 @@ comes last in the document wins (no priority tiers). A `null` value is applied
 warning instead of failing silently, and property getters are never executed
 during configuration.
 
+## What this costs you: order-dependence
+
+The rule above has a consequence worth stating plainly, because it is the one
+thing about confluid that surprises people:
+
+> **Moving a line in a config can change the result.** Not only adding or
+> removing one — *moving* one. Position is the whole arbitration.
+
+That is the price of the bet this page describes. Confluid lets an unaddressed
+key reach every node that accepts it, so a sweep sets `lr` once for a whole tree
+with no parameter threading; the cost is that the same `lr` beats a value
+written *at* a node whenever it sits lower in the file. Libraries that make
+reach-many explicit — writing `Trainer.lr` at every site, or calling a
+`select(...)` API — pay the opposite price in verbosity and get order-independence
+back. Neither answer is free.
+
+Two habits keep it manageable:
+
+- **Put document-wide defaults at the TOP and overrides below them.** Reading
+  top-to-bottom then matches what the engine does, and a tidy-up that reorders
+  blocks cannot silently invert a value.
+- **When a value surprises you, ask the report** rather than reading the file
+  again. [`ConfigurationReport.explain`](report.md) prints the contest in
+  document order with the winner marked:
+
+```python
+from confluid import collect_report, load
+
+with collect_report() as report:
+    cfg = load("experiment.yaml")
+
+print(report.explain("lr"))
+```
+
+```
+lr on Trainer = 0.9
+    #0   block 'Trainer'    0.5          beaten — earlier in the document
+  ✓ #2   bare               0.9          applied
+```
+
 ## Opting out of broadcasting
 
 Broadcasting matches by name alone, which can bite very generic parameter

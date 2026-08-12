@@ -26,7 +26,7 @@ import inspect
 import typing
 from copy import copy
 from enum import Enum
-from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, TypeVar
+from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, Tuple, TypeVar
 
 from loggair import get_active_config, get_logger
 
@@ -1554,7 +1554,7 @@ class _ScanSink(Protocol):
     the scanner, behind a receiver predicate, or nowhere.
     """
 
-    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool) -> None: ...
+    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool, pos: int) -> None: ...
 
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None: ...
 
@@ -1645,10 +1645,10 @@ def _scan_view(
                 continue
             if gated:
                 if blocked is not None and bk not in blocked and accepts_value(bk, bv):
-                    apply(bk, bv, origin, _KeyScope.EXACT, False, True)
+                    apply(bk, bv, origin, _KeyScope.EXACT, False, True, current_pos)
                 continue
             if accepts_value(bk, bv):
-                apply(bk, bv, origin, _KeyScope.EXACT, False, False)
+                apply(bk, bv, origin, _KeyScope.EXACT, False, False, current_pos)
             else:
                 unknown(bk, bv, origin=origin)
 
@@ -1663,7 +1663,7 @@ def _scan_view(
             elif isinstance(v, dict) and receiver.own_dict_routes(k):
                 route(k, v)
             else:
-                apply(k, v, "own", _KeyScope.EXACT, True, False)
+                apply(k, v, "own", _KeyScope.EXACT, True, False, current_pos)
 
     self_unrolled = False
     skip_bare_value = receiver.skip_bare_value
@@ -1701,7 +1701,7 @@ def _scan_view(
             continue  # routing block for a sibling name — not mine
         # Plain broadcast — the only path the NoBroadcast opt-out gates.
         if blocked is not None and k not in blocked and accepts_value(k, v):
-            apply(k, v, "bare", _KeyScope.BARE, False, True)
+            apply(k, v, "bare", _KeyScope.BARE, False, True, pos)
 
     if not self_unrolled and own_kwargs is not None:
         _consume_own(own_kwargs)
@@ -1717,20 +1717,32 @@ class _MergeSink:
     do both).
     """
 
-    __slots__ = ("cls_name", "merged", "report", "origins")
+    __slots__ = ("cls_name", "merged", "report", "origins", "contest")
 
     def __init__(self, cls_name: str) -> None:
         self.cls_name = cls_name
         self.merged = _View()
         self.report = _ENGINE_STATE.get().report
         self.origins: Dict[str, str] = {}
+        # Every candidate the scanner emitted per key, as raw ``(origin, value,
+        # pos)`` in the order it emitted them — which IS document order, so the
+        # last one is the winner. Raw and un-rendered on purpose: the ``repr``
+        # happens in ``record_applied``, and only for keys something contested.
+        # Built only when a report is active; the default path stays zero-cost.
+        self.contest: Dict[str, List[Tuple[str, Any, int]]] = {}
 
     def _mark_used(self, k: str, origin: str) -> None:
         if self.report is not None:
             self.report.mark_used(_mark_used_key(k, origin))
 
-    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool) -> None:
+    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool, pos: int) -> None:
         self.merged.set(key, value, scope)
+        if self.report is not None:
+            # Recorded BEFORE the own-kwarg early return: a marker's own value is
+            # a legitimate competitor (it is unrolled at the marker's own slot and
+            # ordered like everything else), and "my kwarg lost to a bare key" is
+            # the contest readers most often need explained.
+            self.contest.setdefault(key, []).append((origin, value, pos))
         if own:
             self.origins.pop(key, None)  # own kwargs are definitions, not overrides
             return
@@ -1819,7 +1831,7 @@ def _prepare_kwargs(
         name = receiver.instance_name
         label = f"{receiver.cls_name} {name!r}" if name is not None else receiver.cls_name
         for k, origin in sink.origins.items():
-            sink.report.record_applied(k, label, origin)
+            sink.report.record_applied(k, label, origin, candidates=sink.contest.get(k, ()))
 
     return sink.merged
 

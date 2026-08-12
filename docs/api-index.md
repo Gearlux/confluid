@@ -55,7 +55,7 @@ plugs into the passes, and from the eight names most configs need:
 
 | Name | One line |
 |---|---|
-| `ConfigurationReport` | Applied / failed / unused keys for one pass |
+| `ConfigurationReport` | Applied / failed / unused keys for one pass; `.explain(key)` shows why a key has its value |
 | `collect_report` | Context manager collecting a report across `load`/`materialize`/`flow` |
 
 ## Settability & broadcasting — [Broadcasting & Ordered Matching](broadcasting.md)

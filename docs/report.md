@@ -57,6 +57,53 @@ reports `**.nope` unused while `**.lr` counts as applied.
 
 Nesting is safe: an inner `collect_report()` reuses the outer block's report.
 
+## `explain(key)` — why this key has this value
+
+Confluid arbitrates by POSITION and nothing else, which makes "why is `lr` 0.9
+and not 0.5?" a question about *where* each value was written, not which one is
+more specific. `explain` answers it directly — the contest for one key on one
+object, in document order, with the winner marked:
+
+```python
+from confluid import collect_report, load
+
+with collect_report() as report:
+    cfg = load("experiment.yaml")
+
+print(report.explain("lr"))
+```
+
+```
+lr on Trainer = 0.9
+    #0   block 'Trainer'    0.5          beaten — earlier in the document
+  ✓ #2   bare               0.9          applied
+```
+
+Pass `target=` to narrow to one receiver when several got the same key. Both
+paths report identically — a `configure()` report explains the same contest the
+`load()` report does, because both run the one scanner.
+
+The candidates live on `AppliedKey.contest` (a tuple of `Candidate(origin,
+value, pos)`, in document order, last entry wins), so a front-end can render
+them instead of the text form. `value` is a bounded *string*, never the object:
+a config value may be a dataset or a model, and holding one for the report's
+lifetime would turn a diagnostic into a leak.
+
+Three limits worth knowing:
+
+* **A key that overrode nothing has no line.** A marker's own kwarg and a
+  constructor default both produce a value nothing overrode — that is what
+  having no override record means, and `explain` says so rather than implying
+  the key is unset. An own kwarg still appears as a losing candidate when a
+  later key beats it, which is the case worth explaining.
+* **An uncontested key stores no candidates.** One source is not a contest: it
+  says nothing `origin` does not already say, and rendering it costs a `repr()`
+  per applied key — 80 % of what this ledger first added to a `configure()`
+  pass. Such a key prints `via <origin> — nothing else competed for it`.
+* **Some paths have no ordering to report** and land in the same place. The
+  deferred-slot cascade and a direct `flow()` fill kwargs from a pool rather
+  than scanning a view, so there is nothing to rank.
+
 ## Semantics worth knowing
 
 * **`unused` is diagnostic, not an error.** A bare key legitimately matches

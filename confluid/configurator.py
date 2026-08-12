@@ -34,7 +34,7 @@ so a load-then-configure pass aggregates into one report.
 """
 
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional, Set, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 import yaml
 from loggair import get_logger
@@ -283,7 +283,17 @@ class _LiveSink:
     module's logger (the monkeypatch target tests rely on).
     """
 
-    __slots__ = ("obj", "cls_name", "target_label", "report", "assignments", "origins", "recursions", "beaten_per_slot")
+    __slots__ = (
+        "obj",
+        "cls_name",
+        "target_label",
+        "report",
+        "assignments",
+        "origins",
+        "contest",
+        "recursions",
+        "beaten_per_slot",
+    )
 
     def __init__(self, obj: Any, cls_name: str, target_label: str, report: ConfigurationReport) -> None:
         self.obj = obj
@@ -294,6 +304,9 @@ class _LiveSink:
         # report gets ONE applied record per attribute — the final assignment.
         self.assignments: Dict[str, Any] = {}
         self.origins: Dict[str, str] = {}
+        # The marker path's ``_MergeSink.contest`` twin — raw ``(origin, value,
+        # pos)`` per key, rendered by ``record_applied`` only where contested.
+        self.contest: Dict[str, List[Tuple[str, Any, int]]] = {}
         self.recursions: Dict[str, Dict[str, Any]] = {}
         # attr name -> the bare keys a block addressed at that DEFERRED slot
         # out-positioned. Call-scoped by construction: lives and dies with this
@@ -303,11 +316,12 @@ class _LiveSink:
     def _mark_used(self, key: str, origin: str) -> None:
         self.report.mark_used(_mark_used_key(key, origin))
 
-    def apply(self, key: str, value: Any, origin: str, scope: Any, own: bool, gated: bool) -> None:
+    def apply(self, key: str, value: Any, origin: str, scope: Any, own: bool, gated: bool, pos: int) -> None:
         if trace_enabled(logger):  # per-KEY site — see broadcast's log-gate block
             logger.trace(f"configure: {key!r} -> {self.cls_name} ({origin})")
         self.assignments[key] = value
         self.origins[key] = origin
+        self.contest.setdefault(key, []).append((origin, value, pos))
         self._mark_used(key, origin)
 
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
@@ -366,7 +380,7 @@ def _apply(
     sink = _LiveSink(obj, receiver.cls_name, target_label, report)
     _scan_view(view, receiver, sink)
 
-    _assign(obj, sink.assignments, context, report, sink.origins, target_label)
+    _assign(obj, sink.assignments, context, report, sink.origins, target_label, sink.contest)
 
     # Deferred slots are tuned by their OWNER, here, because only this scan knows where
     # each block sat relative to the bare keys. ``_walk`` deliberately does not touch a
@@ -398,6 +412,7 @@ def _assign(
     report: ConfigurationReport,
     origins: Dict[str, str],
     target_label: str,
+    contest: Optional[Dict[str, List[Tuple[str, Any, int]]]] = None,
 ) -> None:
     """Resolve, coerce, materialize, validate, and setattr the merged assignments.
 
@@ -452,4 +467,10 @@ def _assign(
         if detail is not None:  # warn mode — recorded, value still applied below
             report.record_failed(attr_name, target_label, "validation", detail)
         setattr(obj, attr_name, resolved_val)
-        report.record_applied(attr_name, target_label, origins.get(attr_name, "block"), note)
+        report.record_applied(
+            attr_name,
+            target_label,
+            origins.get(attr_name, "block"),
+            note,
+            candidates=(contest or {}).get(attr_name, ()),
+        )

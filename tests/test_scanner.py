@@ -70,9 +70,14 @@ class _RecordingSink:
 
     def __init__(self) -> None:
         self.events: List[Tuple[Any, ...]] = []
+        #: ``(key, pos)`` per apply. Kept OUT of ``events`` on purpose — the
+        #: event tuples are compared whole by a dozen tests, and widening them
+        #: would have made a position-plumbing change look like a behaviour one.
+        self.positions: List[Tuple[str, int]] = []
 
-    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool) -> None:
+    def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool, pos: int) -> None:
         self.events.append(("apply", key, value, origin, scope, own, gated))
+        self.positions.append((key, pos))
 
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
         self.events.append(("dict_at_slot", key, block, origin, bare_before))

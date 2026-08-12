@@ -404,3 +404,163 @@ def test_marking_the_glob_spelling_itself_still_works() -> None:
     report.add_config_keys(["**.lr"])
     report.mark_used("**.lr")
     assert report.unused == []
+
+
+# --------------------------------------------------------------------------------------
+# explain() — why this key has this value
+# --------------------------------------------------------------------------------------
+
+
+def _tuned_cls() -> type:
+    """A two-knob receiver for the ordering contests below.
+
+    Defined per test (this file clears the registry in an autouse fixture, the
+    ``_model_cls`` convention above).
+    """
+
+    @configurable
+    class _Tuned:
+        def __init__(self, lr: float = 0.0, epochs: int = 1, name: Optional[str] = None) -> None:
+            """
+            Args:
+                lr: The knob every contest below competes over.
+                epochs: A knob nothing competes over.
+                name: Instance name, so two receivers can be told apart.
+            """
+            self.lr, self.epochs, self.name = lr, epochs, name
+
+    return _Tuned
+
+
+def test_explain_names_the_winner_the_loser_and_the_positions() -> None:
+    """The whole point: position decided it, so position is what the answer shows.
+
+    A value written AT the node losing to a bare key below it is confluid's most
+    surprising behaviour and its documented rule. Before ``explain`` the only way
+    to watch it happen was ``LOGGAIR_CONSOLE_LEVEL=TRACE`` and a grep, even though
+    both candidates already reached the report's sink — the loser was discarded.
+    """
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        cfg = load("_Tuned:\n  lr: 0.5\nt:\n  _target_: _Tuned\nlr: 0.9\n")
+
+    assert cfg["t"].lr == 0.9
+    text = report.explain("lr")
+    assert "lr on _Tuned = 0.9" in text
+    assert "block '_Tuned'" in text and "0.5" in text and "beaten" in text
+    assert "bare" in text and "applied" in text
+    # The loser must be reported EARLIER than the winner — that is the reason.
+    entry = next(a for a in report.applied if a.key == "lr")
+    positions = [c.pos for c in entry.contest]
+    assert positions == sorted(positions) and len(positions) == 2
+    assert entry.contest[-1].origin == "bare", "the last candidate is the winner"
+
+
+def test_explain_covers_a_markers_own_kwarg_losing_to_a_later_bare_key() -> None:
+    """An own kwarg is a competitor like any other, and loses by position like one.
+
+    ``_MergeSink.apply`` returns early for own kwargs (they are definitions, not
+    overrides, so they erase an origin) — the contest is therefore recorded BEFORE
+    that return, or the single case readers most need explained would be the one
+    case with no explanation.
+    """
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        cfg = load("t:\n  _target_: _Tuned\n  lr: 0.5\nlr: 0.9\n")
+
+    assert cfg["t"].lr == 0.9
+    entry = next(a for a in report.applied if a.key == "lr")
+    assert [c.origin for c in entry.contest] == ["own", "bare"]
+    assert "own" in report.explain("lr")
+
+
+def test_explain_agrees_across_the_load_and_configure_paths() -> None:
+    """One rule, one explanation — the two paths must not answer differently.
+
+    The ordered-merge rule was implemented twice before 2026-08-03 and the copies
+    diverged four ways in a day. A diagnostic that reported the contest differently
+    per path would be the same failure wearing a different hat.
+    """
+    _Tuned = _tuned_cls()
+    document = "_Tuned:\n  lr: 0.5\nlr: 0.9\n"
+
+    with collect_report() as load_report:
+        load(f"t:\n  _target_: _Tuned\n{document}")
+    live_report = configure(_Tuned(), config=document)
+
+    def shape(report: ConfigurationReport) -> list:
+        entry = next(a for a in report.applied if a.key == "lr")
+        return [(c.origin, c.value) for c in entry.contest]
+
+    assert shape(load_report) == shape(live_report) == [("block '_Tuned'", "0.5"), ("bare", "0.9")]
+
+
+def test_explain_says_so_when_a_key_overrode_nothing() -> None:
+    """ "Not applied" is not "not set" — conflating them sends the reader hunting.
+
+    A marker's own kwarg and a constructor default both produce a value nothing
+    overrode, which is exactly what having no override record means.
+    """
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        load("t:\n  _target_: _Tuned\n  epochs: 3\nlr: 0.9\n")
+
+    text = report.explain("epochs")
+    assert "overrode nothing" in text
+    assert "constructor default" in text, "must name the innocent explanations"
+    assert "lr" in text, "and list what DID override, so the reader can compare spellings"
+
+
+def test_explain_narrows_to_one_receiver() -> None:
+    """Two instances of one class both take the key; ``target`` picks one."""
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        load("a:\n  _target_: _Tuned\n  name: first\nb:\n  _target_: _Tuned\n  name: second\nlr: 0.9\n")
+
+    targets = {a.target for a in report.applied if a.key == "lr"}
+    assert len(targets) >= 1
+    one = sorted(targets)[0]
+    assert report.explain("lr", target=one).count("lr on ") == 1
+
+
+def test_a_contest_value_is_a_bounded_string_never_the_object() -> None:
+    """The ledger must not keep a config VALUE alive, and must not raise rendering one.
+
+    A config value is an arbitrary object — a dataset, a model, an array — so
+    holding one for the report's lifetime turns a diagnostic into a leak, and
+    calling its ``__repr__`` runs user code that may raise or be enormous.
+    """
+    from confluid.report import _short_repr
+
+    class Exploding:
+        def __repr__(self) -> str:
+            raise RuntimeError("nope")
+
+    assert _short_repr(Exploding()) == "<Exploding>"
+    assert len(_short_repr("x" * 500)) <= 48
+    assert _short_repr(0.9) == "0.9"
+
+
+def test_an_uncontested_key_still_explains_itself_and_stores_no_candidates() -> None:
+    """One source is not a contest — it must print, and it must not pay to render.
+
+    A single candidate says nothing ``origin`` does not already say, and building
+    one costs a ``repr()`` per applied key: measured at 4.6 ms of the 5.7 ms this
+    ledger first added to a 2,500-marker ``configure()`` pass. So a lone candidate
+    is dropped, and the same empty contest also covers the paths with no view to
+    order at all (the deferred-slot cascade, a direct ``flow()``).
+    """
+    report = ConfigurationReport()
+    report.record_applied("lr", "AdamW", "deferred slot")
+    report.record_applied("wd", "AdamW", "bare", candidates=[("bare", 0.1, 3)])
+
+    assert next(a for a in report.applied if a.key == "wd").contest == (), "one source stores nothing"
+    for key in ("lr", "wd"):
+        text = report.explain(key)
+        assert f"{key} on AdamW" in text
+        assert "nothing else competed" in text
+
+    # Two sources DO get rendered — that is the case explain() exists for.
+    report.record_applied("mom", "AdamW", "bare", candidates=[("block 'AdamW'", 0.8, 1), ("bare", 0.9, 4)])
+    contested = next(a for a in report.applied if a.key == "mom")
+    assert [c.value for c in contested.contest] == ["0.8", "0.9"]
