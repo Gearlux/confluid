@@ -584,7 +584,22 @@ unused summary, at DEBUG. "Failed" is deliberately configure()-path-only — eng
 validation fires below the engine in the layering and already raises located errors. A LEAF marked
 used satisfies its glob-registered spellings (`mark_used("lr")` also marks `**.lr`).
 
-**Pins.** `tests/test_report.py`. **Docs.** `docs/report.md`.
+**Rule — the contest ledger.** `AppliedKey.contest` records every source that competed for a key,
+in document order, last entry winning. Three invariants:
+
+1. A `Candidate` holds a BOUNDED STRING (`report._short_repr`), never the value — the report
+   outlives the pass and a config value may be a dataset or a model.
+2. The scanner appends RAW `(origin, value, pos)` tuples; `record_applied` renders them, and only
+   when `len > 1`. A single candidate is not a contest and costs a `repr()` per applied key —
+   measured as 4.6 ms of the 5.7 ms the ledger first added to a 2,500-marker `configure()` pass.
+3. `_MergeSink.apply` records BEFORE its own-kwarg early return. A marker's own kwarg is a
+   competitor like any other, and "my kwarg lost to a bare key" is the contest most worth
+   explaining; recording after the return would leave exactly that case unexplained.
+
+**Pins.** `tests/test_report.py` (the `explain` group, incl.
+`::test_explain_agrees_across_the_load_and_configure_paths` and
+`::test_an_uncontested_key_still_explains_itself_and_stores_no_candidates`).
+**Docs.** `docs/report.md`, `docs/broadcasting.md` → "What this costs you".
 
 ---
 

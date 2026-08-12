@@ -12,7 +12,7 @@
 | **Hydra** | Compositional YAML | **High** | Industry standard, massive plugin ecosystem. | Complex syntax; configuration *drives* instantiation (hard to wrap existing objects). |
 | **Gin-Config** | Dependency Injection | **High** | Simple, powerful DI for deep learning. | Code-heavy; hard to export/dump final state back to YAML. |
 | **Pydantic** | Schema Validation | **High** | Strict typing, excellent IDE support. | Not a hierarchical "config system" out-of-box; lacks @reference resolution. |
-| **Confluid** | Post-Construction + DI | **Optimized** | Decouples creation from config; supports full hierarchy dumping/reconstruction. | New implementation. |
+| **Confluid** | Post-Construction + DI | **Optimized** | Decouples creation from config; supports full hierarchy dumping/reconstruction; an unaddressed key reaches every node that accepts it, so a sweep sets one knob tree-wide with no parameter threading. | **Order-dependent** — position is the whole arbitration, so moving a line can change the result (see below); new implementation. |
 
 ---
 
@@ -45,6 +45,27 @@ Confluid is designed for the **Dump -> Reconstruct** lifecycle.
 Confluid uses a recursive traversal engine that walks through object graphs (including lists and dictionaries) to identify and configure all nodes. Matching is **flat-view ordered last-write-wins**: when a class materializes, its visible context is the document with the descent path popped (each ancestor's wrapper key is replaced in place by its kwargs); scalar values whose key is in the receiving class's accept-list are applied in YAML document order, with later positions overriding earlier. Class-name (`ClassName: {...}`) and instance-name blocks are spliced inline at their document position. There is no static priority over explicit kwargs — every source takes its slot at its YAML position.
 
 ---
+
+## The bet, and what it costs
+
+Confluid's distinguishing choice is **implicit reach-many**: a key you did not
+address reaches every node whose accept-list carries it, and precedence is
+**document position, last spec wins**. No mainstream config library makes that
+bet — Hydra and OmegaConf have no reach-many at all, gin-config requires you to
+write `Class.param` at every site, and Fiddle makes it an explicit
+`select(cfg, Trainer).set(...)` call.
+
+The win is the one `examples/deep_injection.py` demonstrates: one bare key
+configures a leaf four levels down, with zero parameter-threading code.
+
+The cost is **order-dependence**. Because position is the arbitration, moving a
+line — not just adding or removing one — can change the result. Libraries that
+make reach-many explicit pay the opposite price in verbosity and get
+order-independence back. The mitigations confluid ships for its side of the
+trade are the accept-list and the `NoBroadcast` / `broadcast=False` opt-outs
+(which bound *where* a key can land), and `ConfigurationReport.explain(key)`,
+which prints the contest for a key in document order with the winner marked, so
+a surprising value is one call rather than a bisect.
 
 ## Design Goals
 - **Explicit over Implicit:** If it's not marked `@configurable` or explicitly registered, it's not a config node.
