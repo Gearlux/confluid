@@ -157,19 +157,24 @@ def test_bare_env_var_unset_stays_literal(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_bare_env_pass_leaves_marker_strings_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ``"!class:..."`` STRING keeps its ``$`` text — flow-time parsing owns it.
+    """A marker STRING keeps its ``$`` text — the selector grammar owns it.
 
-    The ``@axis=$key`` document-selector grammar also spells ``$`` in tag
-    targets, so the bare pass skips every ``!``-prefixed string.
+    The ``@axis=$key`` document-selector spells ``$`` in a target, and it is
+    resolved at FLOW time against the active document. Expanding it here would
+    burn an environment variable in over a config key, so the bare-``$`` pass
+    skips every ``!``-prefixed string.
+
+    The vehicle is a TOP-LEVEL string: the same text inside a marker's own kwargs
+    is now refused outright (nothing ever honoured it there — see
+    ``tests/test_plain_format.py`` → the quoted-string group).
     """
     from confluid.fluid import Target
 
-    monkeypatch.setenv("DATA_ROOT", "/data")
-    marker = Target("Whatever")
-    marker.kwargs["child"] = "!class:X(dir=$DATA_ROOT)"
-    out = Resolver(context={}).resolve(marker)
-    assert out is marker
-    assert marker.kwargs["child"] == "!class:X(dir=$DATA_ROOT)"
+    monkeypatch.setenv("FRAMEWORK", "/env-value")
+    out = Resolver(context={}).resolve("!class:X@framework=$FRAMEWORK")
+
+    assert isinstance(out, Target)
+    assert out.target == "X@framework=$FRAMEWORK", "the selector survives to flow time"
 
 
 def test_braced_default_behavior_unchanged_by_bare_pass(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,13 +213,13 @@ def test_resolver_interpolates_marker_kwargs_in_place_and_keeps_references_late_
     marker.kwargs.update(
         path="${CONFLUID_TEST_ROOT}/x",
         ref=Reference("elsewhere"),
-        raw="!ref:${CONFLUID_TEST_ROOT}",  # string keeps its prefix — parsed at flow time
+        plain="not ${CONFLUID_TEST_ROOT} a marker",  # ordinary text still substitutes
     )
     out = Resolver(context={}).resolve(marker)
     assert out is marker  # identity preserved — the flow memo keys on id()
     assert marker.kwargs["path"] == "/store/x"
     assert isinstance(marker.kwargs["ref"], Reference)  # late-bound, untouched
-    assert marker.kwargs["raw"] == "!ref:/store"  # interpolate first, parse later
+    assert marker.kwargs["plain"] == "not /store a marker"
     # Idempotent: a second pass changes nothing.
     Resolver(context={}).resolve(marker)
     assert marker.kwargs["path"] == "/store/x"

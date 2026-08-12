@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 import pytest
 import yaml
 
-from confluid import configurable, get_registry, load, load_config
+from confluid import ConfigurationError, configurable, get_registry, load, load_config
 from confluid.fluid import Target
 from confluid.loader import ConfluidLoader
 
@@ -298,11 +298,71 @@ def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> No
     assert merged.kwargs == {"layers": 3, "extra": 5}  # block wins; inline-only kept
 
 
-def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> None:
-    """The quote-the-tag trick is ``!class:`` / ``!ref:`` only — a quoted ``!lazy:``
-    stays a plain string and is NEVER turned into a ``Partial``."""
-    value = load('m: "!lazy:Model(layers=5)"\n')["m"]
-    assert value == "!lazy:Model(layers=5)"  # untouched string
+@pytest.mark.parametrize(
+    ("text", "replacement"),
+    [
+        ('"!lazy:Model(layers=5)"', "{_target_: Model, _partial_: true, layers: 5}"),
+        ('"!clone:other"', "{_clone_: other}"),
+        ('"!scope:debug"', "{_scope_: {debug: }}"),
+        ('"!notscope:debug"', "{_notscope_: {debug: }}"),
+    ],
+)
+def test_a_quoted_marker_the_string_path_cannot_honour_is_REFUSED(
+    text: str, replacement: str, _register_grammar_model: None
+) -> None:
+    """The quote-the-tag trick is ``!class:`` / ``!ref:`` only — and now it SAYS so.
+
+    Until 2026-08-12 a quoted ``!lazy:`` stayed a plain string: no marker, no
+    error, no warning. A deferred optimizer written that way reached its
+    constructor as the literal text ``!lazy:Adam(lr=0.01)`` and nothing said so —
+    exactly the silent degradation the reserved-key format exists to end, which
+    this path was quietly exempt from. This test previously ASSERTED the silence.
+    """
+    with pytest.raises(ConfigurationError) as excinfo:
+        load(f"other: 7\nm: {text}\n")
+
+    message = str(excinfo.value)
+    assert text.strip('"') in message, "quote the offending text — a scalar carries no file:line"
+    assert replacement in message, "and name the exact plain-YAML line to write instead"
+    assert "0.4.0" in message, "name the release that removes the spelling"
+
+
+def test_the_refusal_names_the_plain_yaml_line_to_write(_register_grammar_model: None) -> None:
+    """An error that says "write it as plain YAML" must show WHICH plain YAML.
+
+    The suffix is already parsed by the shared ``Target(...)`` grammar, so the
+    replacement is derivable — and a message the reader can paste is the
+    difference between a fix and a search.
+    """
+    with pytest.raises(ConfigurationError) as excinfo:
+        load('m: "!lazy:Model(layers=5)"\n')
+
+    assert "{_target_: Model, _partial_: true, layers: 5}" in str(excinfo.value)
+
+
+def test_a_quoted_marker_inside_a_markers_own_kwargs_is_REFUSED(_register_grammar_model: None) -> None:
+    """Even ``!class:`` / ``!ref:`` are honoured by NOTHING in that position.
+
+    Measured against the pre-change engine: both reached the constructor as
+    literal text. It is also the position ``docs/targets.md`` recommended the
+    spelling for ("for a nested ``!ref:``, quote the tag"), so the one documented
+    use case was the one that silently did nothing.
+    """
+    for inner in ('"!class:Model(layers=7)"', '"!ref:other"'):
+        with pytest.raises(ConfigurationError, match="marker's own kwargs"):
+            load(f"other: 7\nm:\n  _target_: Model\n  extra: {inner}\n")
+
+
+def test_an_ordinary_value_starting_with_a_bang_is_untouched(_register_grammar_model: None) -> None:
+    """The refusal matches the exact marker prefixes, never a bare leading ``!``.
+
+    A config value may legitimately start with one — a shell negation, a CSS
+    ``!important``, a message — and refusing those would break real documents to
+    fix a spelling nobody uses.
+    """
+    out = load('a: "!important"\nb: "!not-a-marker:x"\nc: "!classroom: 3"\n')
+
+    assert out == {"a": "!important", "b": "!not-a-marker:x", "c": "!classroom: 3"}
 
 
 def test_import_key_warns_on_missing_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,6 +6,43 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A quoted marker string the resolver cannot honour now RAISES instead of reaching your
+  config as text.** `optimizer: "!lazy:Adam(lr=0.01)"` used to load as the literal string
+  `!lazy:Adam(lr=0.01)` — no marker, no error, no warning — and the constructor got the text.
+  So did `"!clone:…"` and `"!scope:…"`, in every position, and so did `"!class:…"` / `"!ref:…"`
+  **inside a marker's own kwargs**, which is the position `docs/targets.md` recommended the
+  spelling for. Measured against the pre-change engine before changing anything.
+
+  ```
+  '!lazy:Adam(lr=0.01)' is a marker written as a quoted STRING, which confluid cannot
+  honour here. Write it as plain YAML instead:
+
+      {_target_: Adam, _partial_: true, lr: 0.01}
+
+  (The quoted-string spelling is deprecated and is removed in confluid 0.4.0; only
+  "!class:" and "!ref:" were ever parsed from a string, and only outside a marker's own kwargs.)
+  ```
+
+  The replacement is derived from the same `Target(...)` grammar the tags use, so the message
+  is a line you can paste. The refusal matches the exact marker prefixes and never a bare
+  leading `!` — an ordinary config value may legitimately start with one (`!important`), and
+  breaking those to fix a spelling nobody uses would be the worse trade. No `file:line`: a
+  scalar carries none (only markers are stamped), so the message quotes the offending text
+  instead, which is greppable; a location side-table is filed in `TASKS.md`.
+
+  `tests/test_loader.py::test_quoted_lazy_tag_is_not_recognized` previously ASSERTED the
+  silence and is replaced by the refusal group. Two resolver tests used a marker string in
+  marker kwargs as a vehicle for unrelated rules (the bare-`$` skip, the in-place kwargs walk)
+  and were retargeted; one of them carried the comment *"string keeps its prefix — parsed at
+  flow time"*, which was false — nothing parsed it, there or later.
+
+  **The whole path is deleted in 0.4.0 with the tags** (`TASKS.md` phase 5e). It exists only
+  to work around a tag limitation — YAML forbids two tags on one node, so a nested `!ref:` had
+  to be quoted — and `{_target_: Adam, lr: ${ref:base}}` needs no escape at all. A census
+  found zero configs using it workspace-wide.
+
 ### Added
 
 - **`ConfigurationReport.explain(key)` — why a key has the value it has.** Confluid arbitrates by
