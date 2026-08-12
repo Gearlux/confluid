@@ -1,6 +1,6 @@
 from typing import Union
 
-from confluid import Class, cast, configurable
+from confluid import Target, cast, configurable
 
 
 @configurable
@@ -11,7 +11,7 @@ class CastModel:
 
 def test_cast_fluid() -> None:
     # 1. Cast a Fluid recipe
-    fluid_model = Class(CastModel, layers=10)
+    fluid_model = Target(CastModel, layers=10)
 
     # Static analysis hint: 'model' is seen as a CastModel instance
     model: CastModel = cast(fluid_model, CastModel)
@@ -32,7 +32,7 @@ def test_cast_solid() -> None:
 
 def test_cast_with_runtime_kwargs() -> None:
     # 3. Cast with runtime overrides
-    fluid_model = Class(CastModel, layers=10)
+    fluid_model = Target(CastModel, layers=10)
 
     model: CastModel = cast(fluid_model, CastModel, layers=20)
 
@@ -42,10 +42,10 @@ def test_cast_with_runtime_kwargs() -> None:
 
 def test_cast_union_type() -> None:
     # 4. Typical use case: Union[T, Fluid]
-    def get_model(eager: bool) -> Union[CastModel, Class]:
+    def get_model(eager: bool) -> Union[CastModel, Target]:
         if eager:
             return CastModel(layers=5)
-        return Class(CastModel, layers=10)
+        return Target(CastModel, layers=10)
 
     # Case A: Eager
     m1 = get_model(eager=True)

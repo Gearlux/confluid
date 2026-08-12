@@ -29,7 +29,7 @@ plugs into the passes, and from the eight names most configs need:
 | `Target` | A callable + its kwargs (`_target_:`) — built at load, shared by identity |
 | `Partial` / `PartialClass` | A runtime-injection slot (`_partial_: true`) — never auto-built; `PartialClass` is the Python spelling |
 | `partial_param_names` | Every slot of a class declared `Partial[...]` — ctor params and body slots |
-| `Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names` | *Deprecated aliases.* `Class`/`Instance` are both `Target` now; the `Lazy*` names are the old spelling of `Partial*` |
+| ~~`Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names`~~ | **Removed 2026-08-11.** Use `Target` / `Partial` / `PartialClass` / `partial_param_names` |
 | `Reference` | A `!ref:` — the same object reached twice |
 | `Clone` | A `!clone:` — an independent deep copy |
 

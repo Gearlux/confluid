@@ -1,7 +1,7 @@
 """Tags & deferred initialization — the runnable companion to ``docs/tags.md``.
 
-Covers the tag family end-to-end: ``!class:Name`` (deferred ``Class`` stub) vs
-``!class:Name(...)`` (eager ``Instance``), ``!lazy:`` + ``flow()`` runtime injection
+Covers the tag family end-to-end: ``!class:Name`` (deferred ``Target`` stub) vs
+``!class:Name(...)`` (eager ``Target``), ``!lazy:`` + ``flow()`` runtime injection
 (keyword AND positional), the Python-side ``Partial[T]`` annotation (typed with the
 interface the slot flows into), post-flow ``solidify()``, and ``!ref:`` (shared
 instance) vs ``!clone:`` (deep copy).
@@ -9,7 +9,7 @@ instance) vs ``!clone:`` (deep copy).
 
 from typing import Any, List, Optional
 
-from confluid import Class, Partial, PartialClass, configurable, flow, load
+from confluid import Partial, PartialClass, Target, configurable, flow, load
 
 
 @configurable
@@ -31,7 +31,7 @@ class Car:
         """A car that builds its own engine on demand (deferred-stub receiver).
 
         Args:
-            engine: The engine — may arrive as a deferred ``Class`` stub.
+            engine: The engine — may arrive as a deferred ``Target`` stub.
             color: Paint color.
         """
         self.engine = engine
@@ -76,12 +76,12 @@ ready_engine: {_target_: Engine, cylinders: 8}
     print(f"!lazy: built with runtime kwarg: {injected.cylinders} cylinders on {injected.fuel}")
 
     # --- Partial[T] annotation: the slot is typed with the INTERFACE it flows into ---------
-    # Partial[Engine] == Annotated[Union[Engine, Fluid], marker]: the Class(...) default
-    # type-checks (a Class IS a Fluid), auto-flow walkers leave the slot deferred,
+    # Partial[Engine] == Annotated[Union[Engine, Fluid], marker]: the Target(...) default
+    # type-checks (a Target IS a Fluid), auto-flow walkers leave the slot deferred,
     # and the subscript documents what an explicit flow() eventually builds.
     @configurable
     class Garage:
-        def __init__(self, spare: Partial[Engine] = Class(Engine, cylinders=3)) -> None:
+        def __init__(self, spare: Partial[Engine] = Target(Engine, cylinders=3)) -> None:
             """A garage holding a deferred spare-engine template.
 
             Args:
@@ -90,7 +90,7 @@ ready_engine: {_target_: Engine, cylinders: 8}
             self.spare = spare
 
     garage = Garage()
-    assert isinstance(garage.spare, Class), "Partial slot stays a deferred stub"
+    assert isinstance(garage.spare, Target), "Partial slot stays a deferred stub"
     spare = flow(garage.spare, fuel="e85")  # runtime kwarg injected at flow time
     assert isinstance(spare, Engine) and (spare.cylinders, spare.fuel) == (3, "e85")
     print(f"Partial[Engine] slot flowed on demand: {spare.cylinders} cylinders on {spare.fuel}")

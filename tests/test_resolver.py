@@ -35,37 +35,37 @@ def test_resolve_string_reference() -> None:
 
 
 def test_resolve_string_instantiation_marker() -> None:
-    """Verify that !class: strings are resolved into eager Instance Fluids."""
-    from confluid.fluid import Instance
+    """Verify that !class: strings are resolved into eager Target Fluids."""
+    from confluid.fluid import Target
 
     resolver = Resolver()
     marker = resolver.resolve("!class:Model(layers=10)")
-    assert isinstance(marker, Instance)
+    assert isinstance(marker, Target)
     assert marker.target == "Model"
     assert marker.kwargs["layers"] == 10
 
 
 def test_recursive_string_instantiation_marker() -> None:
-    """Verify nested !class: and !ref: strings produce nested Instance Fluids."""
-    from confluid.fluid import Instance
+    """Verify nested !class: and !ref: strings produce nested Target Fluids."""
+    from confluid.fluid import Target
 
     resolver = Resolver(context={"global_lr": 0.5})
     marker = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
 
-    assert isinstance(marker, Instance)
+    assert isinstance(marker, Target)
     assert marker.target == "Trainer"
     assert marker.kwargs["lr"] == 0.5
-    assert isinstance(marker.kwargs["model"], Instance)
+    assert isinstance(marker.kwargs["model"], Target)
     assert marker.kwargs["model"].target == "Model"
     assert marker.kwargs["model"].kwargs["layers"] == 5
 
 
 def test_resolve_empty_instantiation_marker() -> None:
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
     resolver = Resolver()
     marker = resolver.resolve("!class:Model()")
-    assert isinstance(marker, Instance)
+    assert isinstance(marker, Target)
     assert marker.target == "Model"
 
 
@@ -162,10 +162,10 @@ def test_bare_env_pass_leaves_marker_strings_untouched(monkeypatch: pytest.Monke
     The ``@axis=$key`` document-selector grammar also spells ``$`` in tag
     targets, so the bare pass skips every ``!``-prefixed string.
     """
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     monkeypatch.setenv("DATA_ROOT", "/data")
-    marker = Class("Whatever")
+    marker = Target("Whatever")
     marker.kwargs["child"] = "!class:X(dir=$DATA_ROOT)"
     out = Resolver(context={}).resolve(marker)
     assert out is marker
@@ -184,10 +184,10 @@ def test_braced_default_behavior_unchanged_by_bare_pass(monkeypatch: pytest.Monk
 
 def test_bare_env_var_expands_in_marker_kwargs_walk(monkeypatch: pytest.MonkeyPatch) -> None:
     """A marker kwargs mapping value ``"$DATA_ROOT/x"`` expands in place — and burns in."""
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     monkeypatch.setenv("DATA_ROOT", "/data")
-    marker = Class("Whatever")
+    marker = Target("Whatever")
     marker.kwargs["path"] = "$DATA_ROOT/x"
     out = Resolver(context={}).resolve(marker)
     assert out is marker  # identity preserved — the flow memo keys on id()
@@ -200,11 +200,11 @@ def test_resolver_interpolates_marker_kwargs_in_place_and_keeps_references_late_
     """The kwargs walk substitutes text IN PLACE (identity kept) and touches nothing deferred."""
     import pytest  # noqa: F401  (annotation only)
 
-    from confluid.fluid import Class, Reference
+    from confluid.fluid import Reference, Target
     from confluid.resolver import Resolver
 
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
-    marker = Class("Whatever")
+    marker = Target("Whatever")
     marker.kwargs.update(
         path="${CONFLUID_TEST_ROOT}/x",
         ref=Reference("elsewhere"),
@@ -222,11 +222,11 @@ def test_resolver_interpolates_marker_kwargs_in_place_and_keeps_references_late_
 
 def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
     """A marker whose kwargs reach itself is walked once, not forever."""
-    from confluid.fluid import Class
+    from confluid.fluid import Target
     from confluid.resolver import Resolver
 
-    a = Class("A")
-    b = Class("B")
+    a = Target("A")
+    b = Target("B")
     a.kwargs["child"] = b
     b.kwargs["parent"] = a  # cycle
     assert Resolver(context={}).resolve(a) is a
@@ -237,8 +237,8 @@ def test_quoted_class_string_uses_the_one_target_call_grammar() -> None:
 
     It used to hand-roll ``"(" in s and s.endswith(")")``, accepting names no
     tag can carry (spaces, braces). A legal spelling parses identically; an
-    illegal one now falls to a deferred ``Class`` marker instead of minting an
-    eager ``Instance`` under a name the registry can never resolve.
+    illegal one now falls to a deferred ``Target`` marker instead of minting an
+    eager ``Target`` under a name the registry can never resolve.
     """
     from confluid.fluid import Target
 

@@ -27,7 +27,7 @@ Four phases are timed independently (best/mean of 3 runs, plus throughput):
 | `resolve` | Broadcasting/reference resolution **without** constructing objects |
 | `configure` | The post-construction mirror walking the live object graph |
 
-Each phase re-parses the document because `flow()` memoizes `Instance`
+Each phase re-parses the document because `flow()` memoizes `Target`
 markers — re-using one parse would measure the memo hit, not the engine.
 
 ## Running it

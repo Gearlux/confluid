@@ -7,7 +7,7 @@ defaulted-for-zero-arg-construction input as genuinely required with ``Mandatory
 
 from typing import Any, Optional
 
-from confluid import Class, Mandatory, Partial, configurable, flow, input_specs, output, output_specs
+from confluid import Mandatory, Partial, Target, configurable, flow, input_specs, output, output_specs
 
 
 class Model:
@@ -27,11 +27,11 @@ class Trainer:
     # The canonical spellings — subscript the INTERFACE the slot flows into:
     #   model:     Mandatory[nn.Module]            (required dependency slot)
     #   optimizer: Mandatory[Partial[torch.optim.Optimizer]]  (required AND deferred)
-    # Both aliases union a Fluid arm, so the deferred Class(...) defaults type-check.
+    # Both aliases union a Fluid arm, so the deferred Target(...) defaults type-check.
     def __init__(
         self,
-        model: Mandatory[Model] = Class(Model),
-        optimizer: Mandatory[Partial[Optimizer]] = Class(Optimizer, lr=1e-3),
+        model: Mandatory[Model] = Target(Model),
+        optimizer: Mandatory[Partial[Optimizer]] = Target(Optimizer, lr=1e-3),
         num_classes: Optional[int] = None,
     ) -> None:
         """A minimal Runnable.

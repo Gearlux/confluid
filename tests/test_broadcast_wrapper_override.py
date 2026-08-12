@@ -12,7 +12,7 @@ YAML blocks set no ``ops:`` at all. The leak made the supposedly-empty
 inner Stream op chains carry the full heavy op list, turning an ~85ms JSON
 walk into a 2½-minute eager iteration on the main thread.
 
-That shape — outer-Class with kwarg X → wrapper-Class without kwarg X →
+That shape — outer-Target with kwarg X → wrapper-Target without kwarg X →
 inner-Classes that ALSO take kwarg X — is the abstract case pinned here.
 
 What this module tests (2026-07 exact-scoping semantics)
@@ -31,7 +31,7 @@ only and never cascade to descendants. The old leak is fixed by design:
 
 3. ``test_inner_overrides_beat_the_glob_cascade``
    With a ``'**'`` cascade active, pinning ``ops: []`` on one inner
-   Class shields that instance only — overrides are per-instance, and
+   Target shields that instance only — overrides are per-instance, and
    its sibling still receives the glob value (own kwargs unroll at the
    inner slot, later in document order than the outer glob).
 
@@ -46,15 +46,15 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import Instance, configurable, get_registry, materialize
+from confluid import Target, configurable, get_registry, materialize
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -147,7 +147,7 @@ def test_glob_restores_the_old_cascade_deliberately() -> None:
 
 
 def test_inner_overrides_beat_the_glob_cascade() -> None:
-    """Pinning ``ops: []`` on one inner Class shields that instance from an
+    """Pinning ``ops: []`` on one inner Target shields that instance from an
     active ``'**'`` cascade; its sibling still receives the glob value."""
     config = _inst(
         "_Outer",

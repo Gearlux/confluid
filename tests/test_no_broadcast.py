@@ -105,7 +105,7 @@ holder: !class:NoBroadcastHolder()
 """
     )
     child = doc["holder"].child
-    # The deferred Class stub received broadcasting during the holder's flow.
+    # The deferred Target stub received broadcasting during the holder's flow.
     from confluid import flow
 
     built = flow(child) if not isinstance(child, MarkedParam) else child
@@ -160,9 +160,9 @@ def test_to_pydantic_strips_marker_but_keeps_field() -> None:
 
 def test_round_trip_of_marked_class() -> None:
     from confluid import dump, flow
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
-    marker = Instance("MarkedParam")
+    marker = Target("MarkedParam")
     marker.kwargs.update({"name": "kept", "strength": 4.0})
     reloaded = load(dump(flow(marker)), flow=False)
     rebuilt = flow(reloaded)

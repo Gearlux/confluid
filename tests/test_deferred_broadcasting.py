@@ -2,15 +2,15 @@ from typing import Any
 
 import pytest
 
-from confluid import Class, Instance, PartialClass, Reference, configurable, flow, get_registry, load, materialize
+from confluid import PartialClass, Reference, Target, configurable, flow, get_registry, load, materialize
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -32,7 +32,7 @@ class Engine:
 
 @configurable
 class Car:
-    def __init__(self, engine: Any = Class(Engine), color: str = "red"):
+    def __init__(self, engine: Any = Target(Engine), color: str = "red"):
         self.engine = engine
         self.color = color
 
@@ -44,11 +44,11 @@ class Garage:
 
 
 def test_deferred_materialization_basic() -> None:
-    """Test that flow() correctly materializes a Class citizen."""
+    """Test that flow() correctly materializes a Target citizen."""
     car = Car(color="blue")
 
-    # engine is a Class citizen
-    assert isinstance(car.engine, Class)
+    # engine is a Target citizen
+    assert isinstance(car.engine, Target)
     assert car.engine.target == Engine
 
     # flow() should materialize it
@@ -138,14 +138,14 @@ def test_path_based_fallback_resolution() -> None:
 
 
 def test_deferred_instance_marker_flow() -> None:
-    """Test that a deferred Instance marker stored in an attribute is correctly flowed."""
+    """Test that a deferred Target marker stored in an attribute is correctly flowed."""
     config = {"engine": _inst("Engine", power=123)}
 
-    # Simulate an object created with a deferred Instance marker
+    # Simulate an object created with a deferred Target marker
     car = Car(engine=config["engine"])
-    assert isinstance(car.engine, Instance)
+    assert isinstance(car.engine, Target)
 
-    # flow() should recognize the Instance marker and materialize it
+    # flow() should recognize the Target marker and materialize it
     engine_instance = flow(car.engine)
     assert isinstance(engine_instance, Engine)
     assert engine_instance.power == 123
@@ -153,7 +153,7 @@ def test_deferred_instance_marker_flow() -> None:
 
 @configurable
 class BodyAssigned:
-    """Post-construction attr: ``self.nested = Class(Engine)`` — no ctor param for it.
+    """Post-construction attr: ``self.nested = Target(Engine)`` — no ctor param for it.
 
     Mirrors the Matrainer Trainer pattern where nested deferred objects are
     assigned inside __init__ rather than declared in the signature.
@@ -161,7 +161,7 @@ class BodyAssigned:
 
     def __init__(self, color: str = "red") -> None:
         self.color = color
-        self.nested = Class(Engine)
+        self.nested = Target(Engine)
 
 
 @configurable
@@ -182,7 +182,7 @@ class BodyAssignedLazy:
 
 
 def test_broadcast_reaches_body_assigned_LAZY_attribute() -> None:
-    """A Partial body slot is CONFIGURED by broadcasting, exactly like a Class one.
+    """A Partial body slot is CONFIGURED by broadcasting, exactly like a Target one.
 
     Deferral means "do not BUILD it", not "do not configure it" — merging keys into
     a marker's kwargs constructs nothing. Until 2026-08-03 a Partial was returned
@@ -268,19 +268,19 @@ def test_a_bare_key_does_NOT_override_a_marker_kwarg_written_in_the_DOCUMENT() -
 
 
 def test_broadcast_reaches_body_assigned_class_attribute() -> None:
-    """A Class assigned in __init__'s body (not as a ctor param) must still
+    """A Target assigned in __init__'s body (not as a ctor param) must still
     receive root-level broadcasting."""
     get_registry().register_class(BodyAssigned, name="BodyAssigned")
 
     config = {
         "obj": _inst("BodyAssigned", color="blue"),
-        "power": 321,  # Should reach BodyAssigned.nested (= Class(Engine))
+        "power": 321,  # Should reach BodyAssigned.nested (= Target(Engine))
     }
 
     obj = materialize(config["obj"], context=config)
 
-    # Class stays deferred but its kwargs are populated with broadcast scalars
-    # A plain ``Class(...)`` body slot is BUILT (only ``partial`` defers), and the
+    # Target stays deferred but its kwargs are populated with broadcast scalars
+    # A plain ``Target(...)`` body slot is BUILT (only ``partial`` defers), and the
     # broadcast key reached it before its constructor ran.
     engine = obj.nested
     assert isinstance(engine, Engine)

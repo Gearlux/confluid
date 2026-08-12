@@ -14,7 +14,7 @@ import yaml
 
 from confluid import configurable, dump, flow, load
 from confluid.exceptions import ConfigurationError, ScopeError
-from confluid.fluid import Instance, Partial
+from confluid.fluid import Partial, Target
 from confluid.loader import ConfluidLoader
 
 
@@ -97,7 +97,7 @@ def test_partial_false_is_the_default() -> None:
 def test_a_bare_key_broadcasts_into_a_reserved_key_marker() -> None:
     """Broadcasting is pass 7 and construction is pass 8, so an eagerly-built
     node receives cascading keys before its constructor runs — the property that
-    made the third ``Class``-stub state unnecessary."""
+    made the third ``Target``-stub state unnecessary."""
     graph = load("seed: 7\nh: {_target_: Holder, box: {_target_: Box}}")
     assert graph["h"].seed == 7
     assert graph["h"].box.seed == 7
@@ -318,7 +318,7 @@ def _shape(value: Any) -> Any:
     Two separate ``load()`` calls necessarily produce distinct objects, so the
     graphs are compared by TYPE and attribute shape rather than by identity.
     """
-    if isinstance(value, (Instance, Partial)):
+    if isinstance(value, (Target, Partial)):
         return (type(value).__name__, value.target, {k: _shape(v) for k, v in value.kwargs.items()})
     if isinstance(value, dict):
         return {k: _shape(v) for k, v in value.items()}

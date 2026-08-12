@@ -200,7 +200,7 @@ def test_d3_a_same_target_fluid_never_tunes_a_deferred_slot() -> None:
     merged it. A DIFFERENT-target Fluid at a declared key still tunes — the
     guard must not over-narrow.
     """
-    from confluid import Class as ConfluidClass
+    from confluid import Target as ConfluidClass
 
     holder = _holder_cls()()
     configure(holder, config={"spare": ConfluidClass(_Engine)})
@@ -279,7 +279,7 @@ def test_d3_a_fluid_never_rides_the_kwargs_catchall_into_a_deferred_slot() -> No
     pulled into every permissive nested target (and looping); it now gates the
     configure path exactly as it always gated the engine path.
     """
-    from confluid import Class as ConfluidClass
+    from confluid import Target as ConfluidClass
 
     class _Forwards:
         def __init__(self, **kwargs: Any) -> None:

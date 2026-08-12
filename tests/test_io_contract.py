@@ -120,11 +120,11 @@ def test_is_mandatory_annotation_and_param_names() -> None:
 
 def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
     """``Mandatory[T]`` == ``Annotated[Union[T, Fluid], marker]`` — the typed form
-    admits a deferred ``Class(...)`` default under strict mypy (no ignore needed:
+    admits a deferred ``Target(...)`` default under strict mypy (no ignore needed:
     that absence is the static pin, like the ``Partial`` twin)."""
     from typing import get_args
 
-    from confluid import Class
+    from confluid import Target
     from confluid.fluid import Fluid
 
     class Base:
@@ -137,7 +137,7 @@ def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
     assert get_args(ann)[0] == Union[Base, Fluid]
 
     class Runner:
-        def __init__(self, model: Mandatory[Base] = Class(Impl)) -> None:
+        def __init__(self, model: Mandatory[Base] = Target(Impl)) -> None:
             self.model = model
 
     assert mandatory_param_names(Runner) == {"model"}
@@ -149,7 +149,7 @@ def test_marker_composition_detected_in_both_orders() -> None:
     """``Mandatory[Partial[T]]`` AND ``Partial[Mandatory[T]]`` carry both markers — the
     union-carrying aliases bury the inner marker in a Union arm, so detection
     walks nested Annotated/Union layers (``annotation_has_marker``)."""
-    from confluid import Class, Partial
+    from confluid import Partial, Target
     from confluid.partial import partial_param_names
 
     class Dep:
@@ -158,8 +158,8 @@ def test_marker_composition_detected_in_both_orders() -> None:
     class Runner:
         def __init__(
             self,
-            a: Mandatory[Partial[Dep]] = Class(Dep),
-            b: Partial[Mandatory[Dep]] = Class(Dep),
+            a: Mandatory[Partial[Dep]] = Target(Dep),
+            b: Partial[Mandatory[Dep]] = Target(Dep),
         ) -> None:
             self.a = a
             self.b = b

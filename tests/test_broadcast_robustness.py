@@ -11,16 +11,16 @@ setattr).
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from confluid import Instance, configurable, flow, materialize, register
+from confluid import Target, configurable, flow, materialize, register
 from confluid.broadcast import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -365,7 +365,7 @@ def test_same_target_uses_class_identity_not_name() -> None:
     # A is registered under "A"; B's qualified name is still distinct.
     B.__name__ = "A"  # type: ignore[attr-defined]
 
-    # Class objects always compare by identity — even with matching names.
+    # Target objects always compare by identity — even with matching names.
     assert _same_target(B, A) is False
     assert _same_target(A, A) is True
 
@@ -393,7 +393,7 @@ def test_pop_glob_routing_applies_the_one_cascade_gate() -> None:
     ``merge_bare_pool_into_kwargs`` — one gate, one answer.
     """
     from confluid.broadcast import _pop_glob_routing
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     @configurable
     class GlobReceiver:
@@ -402,7 +402,7 @@ def test_pop_glob_routing_applies_the_one_cascade_gate() -> None:
             self.stages = stages
             self.helper = helper
 
-    same_target = Class(GlobReceiver)
+    same_target = Target(GlobReceiver)
     merged = {
         "**": {
             "lr": 0.9,  # scalar at a declared key — lands

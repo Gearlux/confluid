@@ -34,7 +34,7 @@ from confluid import (
     set_policy,
     to_pydantic,
 )
-from confluid.fluid import Class
+from confluid.fluid import Target
 
 # ---------------------------------------------------------------------------
 # Module-scope @configurable fixtures for the Fluid-marker regression tests.
@@ -391,7 +391,7 @@ def test_category_registered_and_filterable() -> None:
     assert {"CE", "Net", "Misc"}.issubset(reg.list_classes())
     # Category index visible
     assert reg.list_categories() == {"loss", "model"}
-    # Class attribute set
+    # Target attribute set
     assert getattr(CE, "__confluid_category__") == "loss"
 
 
@@ -444,9 +444,9 @@ def test_confluid_validation_exports_available() -> None:
 #
 # Regression cluster for the bug discovered when a YAML config with a nested
 # ``!class:_Leaf`` flowed into a ``_Parent(@configurable)``. flow() passes the
-# inner ``Class`` marker through to ``_Parent(**ctor)`` so the wrapped __init__
+# inner ``Target`` marker through to ``_Parent(**ctor)`` so the wrapped __init__
 # can flow it lazily with runtime injection. The pydantic validator was
-# applying ``is_instance_of(_Leaf)`` to the Class marker and rejecting
+# applying ``is_instance_of(_Leaf)`` to the Target marker and rejecting
 # instantiation outright — but Fluids are deferred-construction markers, not
 # bad values; the inner ``_Leaf.__init__`` (also @configurable) will validate
 # itself when the marker flows. validate_kwargs MUST therefore skip Fluid
@@ -454,7 +454,7 @@ def test_confluid_validation_exports_available() -> None:
 
 
 def test_fluid_kwarg_skipped_in_strict() -> None:
-    """A deferred Class marker as a kwarg value must not trip strict validation.
+    """A deferred Target marker as a kwarg value must not trip strict validation.
 
     Function-local classes work here because pydantic-lax-mode validation
     of ``title: str`` doesn't depend on a forward-ref lookup. The
@@ -474,12 +474,12 @@ def test_fluid_kwarg_skipped_in_strict() -> None:
             self.leaf = leaf
 
     set_policy(init="strict")
-    leaf_marker = Class(_Leaf, count=99)
-    # Pass the Class marker — pydantic's annotation would normally reject it
+    leaf_marker = Target(_Leaf, count=99)
+    # Pass the Target marker — pydantic's annotation would normally reject it
     # if it were resolvable. validate_kwargs must skip Fluids regardless.
     instance = _Parent(title="hello", leaf=leaf_marker)  # type: ignore[arg-type]
     assert instance.title == "hello"
-    assert isinstance(instance.leaf, Class)  # still deferred
+    assert isinstance(instance.leaf, Target)  # still deferred
 
 
 def test_fluid_kwarg_alongside_bad_concrete_still_raises() -> None:
@@ -497,7 +497,7 @@ def test_fluid_kwarg_alongside_bad_concrete_still_raises() -> None:
     ``is_instance_of`` check we depend on for the regression wouldn't fire.
     """
     set_policy(init="strict")
-    secondary_marker = Class(_FluidLeaf, count=99)  # deferred — must be skipped
+    secondary_marker = Target(_FluidLeaf, count=99)  # deferred — must be skipped
     with pytest.raises(ValidationError):
         _FluidParent(primary="not-a-leaf", secondary=secondary_marker)  # type: ignore[arg-type]
 
@@ -512,10 +512,10 @@ def test_fluid_kwarg_skipped_in_strict_module_scope() -> None:
     and must be skipped by ``validate_kwargs``.
     """
     set_policy(init="strict")
-    leaf_marker = Class(_FluidLeaf, count=99)
+    leaf_marker = Target(_FluidLeaf, count=99)
     instance = _FluidParent(primary=_FluidLeaf(count=1), secondary=leaf_marker)  # type: ignore[arg-type]
     assert instance.primary.count == 1
-    assert isinstance(instance.secondary, Class)
+    assert isinstance(instance.secondary, Target)
 
 
 def test_fluid_kwarg_in_yaml_load_does_not_explode() -> None:
@@ -548,9 +548,9 @@ parent:
         # The single point of the regression: ``flow()`` must not crash with
         # ``ValidationError: primary.is-instance[_FluidLeaf]`` (or the masked
         # ``TypeError: ValidationError.__new__() missing 1 required positional
-        # argument: 'line_errors'``) just because the nested ``Class(_FluidLeaf, …)``
+        # argument: 'line_errors'``) just because the nested ``Target(_FluidLeaf, …)``
         # markers haven't been materialised yet. ``@configurable`` targets keep
-        # nested Class kwargs deferred by design; the wrapped __init__ is
+        # nested Target kwargs deferred by design; the wrapped __init__ is
         # responsible for flowing them lazily later. Asserting only that the
         # outer flow() returns a live instance tests the bug without depending
         # on whether the test's _FluidParent happens to flow its children eagerly.
@@ -590,24 +590,24 @@ class _MappingParent:
 def test_fluid_nested_in_list_kwarg_is_skipped() -> None:
     """Fluid markers inside a ``list`` value must defer validation of the whole field.
 
-    Regression: ``CompositeAnnotationStore(stores=[Class(_Store, ...)])`` —
-    the list itself is concrete, but the inner ``Class`` marker would trip
+    Regression: ``CompositeAnnotationStore(stores=[Target(_Store, ...)])`` —
+    the list itself is concrete, but the inner ``Target`` marker would trip
     ``is_instance_of(_Store)`` on the per-element validator. The whole field
     has to be treated as deferred.
     """
     set_policy(init="strict")
-    fluid_leaf = Class(_StoreLeaf, name="deferred")
+    fluid_leaf = Target(_StoreLeaf, name="deferred")
     instance = _StoreParent(stores=[fluid_leaf])
     assert instance.stores == [fluid_leaf]
 
 
 def test_fluid_nested_in_dict_kwarg_is_skipped() -> None:
     """Same as the list case, but for dict values — covers the
-    ``data={"train": Class(...), "val": Class(...)}`` shape used by
+    ``data={"train": Target(...), "val": Target(...)}`` shape used by
     ultralytics-style trainer configs.
     """
     set_policy(init="strict")
-    fluid_leaf = Class(_StoreLeaf, name="deferred")
+    fluid_leaf = Target(_StoreLeaf, name="deferred")
     instance = _MappingParent(stores={"train": fluid_leaf})
     assert instance.stores == {"train": fluid_leaf}
 
@@ -619,7 +619,7 @@ def test_flow_wraps_validation_error_in_runtime_error() -> None:
     ``line_errors``); the fallback must wrap it in a ``RuntimeError`` rather
     than crashing with ``TypeError: __new__() missing 1 required positional argument``.
     """
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     @configurable
     class _StrictModel:
@@ -627,7 +627,7 @@ def test_flow_wraps_validation_error_in_runtime_error() -> None:
             self.count = count
 
     set_policy(init="strict")
-    marker = Class(_StrictModel, count="not-an-int")
+    marker = Target(_StrictModel, count="not-an-int")
     # The raw underlying ValidationError can't be reconstructed from a string;
     # the fallback path raises RuntimeError instead. Either way, the original
     # ValidationError chains via __cause__ so the structured info isn't lost.

@@ -8,6 +8,22 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
+### Removed — BREAKING
+
+- **The deprecation aliases are gone (2026-08-11).** `Class`, `Instance`, `Lazy`, `LazyClass`,
+  `lazy_param_names` and the `confluid.lazy` shim module are DELETED. They were the pre-merge /
+  pre-rename spellings, kept while both YAML formats were supported so a consumer need not change
+  in the same release. Use `Target`, `Partial`, `PartialClass`, `partial_param_names` and
+  `confluid.partial`. Importing an old name now fails loudly rather than resolving to something
+  that behaves differently: `Class` and `Instance` had become the same class, so code
+  discriminating with `isinstance(x, Instance)` reads `x.partial`.
+
+  `introspect._PARTIAL_CALL_NAMES` narrowed to `("PartialClass", "Partial")` with them. That list
+  matches on the call NAME in the SOURCE, so a body slot written with a removed spelling does not
+  raise — it silently stops deferring, and a runtime-injection target reaches its constructor
+  without its argument. That is why the removal is called out here rather than left to the import
+  error.
+
 ### Changed — BREAKING
 
 - **Two construction modes, not three (2026-08-11).** `Class` and `Instance` merged into one

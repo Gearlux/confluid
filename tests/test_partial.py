@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from confluid import Partial, configurable, partial_param_names
+from confluid import Partial, PartialClass, configurable, partial_param_names
 from confluid.partial import is_partial_annotation
 
 
@@ -110,19 +110,19 @@ def test_lazy_typed_alias_unions_fluid() -> None:
 
 
 def test_lazy_typed_slot_accepts_fluid_default() -> None:
-    """The docs' preferred form — ``Partial[Base] = Class(Impl, ...)`` — needs no
-    ``type: ignore``: a ``Class`` IS a ``Fluid``, so the union admits it. The
+    """The docs' preferred form — ``Partial[Base] = Target(Impl, ...)`` — needs no
+    ``type: ignore``: a ``Target`` IS a ``Fluid``, so the union admits it. The
     absence of an ignore comment here is itself the strict-mypy pin."""
-    from confluid import Class
+    from confluid import Target
 
     @configurable
     class _C:
-        def __init__(self, dep: Partial[_Base] = Class(_Impl, n=2)) -> None:
+        def __init__(self, dep: Partial[_Base] = Target(_Impl, n=2)) -> None:
             self.dep = dep
 
     assert partial_param_names(_C) == {"dep"}
     from confluid import flow
-    from confluid.fluid import Class as ClassFluid
+    from confluid.fluid import Target as ClassFluid
 
     c = _C()
     assert isinstance(c.dep, ClassFluid)  # stays deferred at construction
@@ -147,12 +147,12 @@ def test_mandatory_lazy_composition_carries_both_markers() -> None:
     """``Mandatory[Partial[T]]`` — nested Annotated flattens, both markers survive."""
     from typing import get_type_hints
 
-    from confluid import Class
+    from confluid import Target
     from confluid.mandatory import Mandatory, is_mandatory_annotation, mandatory_param_names
 
     @configurable
     class _C:
-        def __init__(self, dep: Mandatory[Partial[_Base]] = Class(_Impl)) -> None:
+        def __init__(self, dep: Mandatory[Partial[_Base]] = Target(_Impl)) -> None:
             self.dep = dep
 
     assert partial_param_names(_C) == {"dep"}
@@ -166,13 +166,13 @@ def test_lazy_typed_slot_round_trips_through_dump_load() -> None:
     import sys
     import types
 
-    from confluid import Class, PartialClass, dump, flow, load
+    from confluid import PartialClass, Target, dump, flow, load
 
     mod = types.ModuleType("_lazy_typed_probe")
 
     @configurable
     class _Owner:
-        def __init__(self, dep: Partial[_Base] = Class(_Impl, n=2), name: str = "o") -> None:
+        def __init__(self, dep: Partial[_Base] = Target(_Impl, n=2), name: str = "o") -> None:
             self.dep = dep
             self.name = name
 
@@ -277,7 +277,7 @@ def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any)
     """A ``!class:`` value landing in a slot whose own default is ``Partial`` is
     auto-deferred (kept ``!lazy:``) with a warning — not eagerly built.
 
-    Guards the minimal-ctor footgun: a deferred ``Class`` (``!class:`` no parens)
+    Guards the minimal-ctor footgun: a deferred ``Target`` (``!class:`` no parens)
     wired into a runtime-injection body slot (e.g. ``optimizer``) would otherwise
     be eagerly materialized on assignment and crash (``Adam()`` with no params).
 
@@ -484,121 +484,52 @@ def test_partial_param_names_reads_a_builder_functions_own_signature() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Deprecated aliases — removed with the tag spelling (phase 5)
+# The deprecated aliases are GONE (phase 5)
 # --------------------------------------------------------------------------- #
 
 
-def test_deprecated_marker_aliases_still_resolve() -> None:
-    """Downstream imports `Lazy` / `LazyClass` / `lazy_param_names` from the top
-    level; they must keep working while both spellings are supported."""
+def test_the_deprecated_aliases_are_removed() -> None:
+    """`Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names` no longer exist.
+
+    They were the pre-merge / pre-rename spellings, kept while both YAML formats were
+    supported so consumers need not change in the same release. The whole workspace is
+    on the canonical names now, so an import of the old one must fail LOUDLY rather
+    than resolve to something that quietly behaves differently.
+    """
     import confluid
-    from confluid.fluid import Partial as PartialMarker
-    from confluid.fluid import Target
 
-    assert confluid.Class is Target
-    assert confluid.Instance is Target
-    assert confluid.Lazy is confluid.Partial
-    assert confluid.LazyClass is PartialMarker
-    assert confluid.lazy_param_names is confluid.partial_param_names
+    for gone in ("Class", "Instance", "Lazy", "LazyClass", "lazy_param_names"):
+        assert not hasattr(confluid, gone), f"{gone} should have been deleted"
+        assert gone not in confluid.__all__
+
+    with pytest.raises(ImportError):
+        import confluid.lazy  # type: ignore[import-not-found]  # noqa: F401 — deleted with the names
 
 
-def test_class_and_instance_are_now_the_same_type() -> None:
-    """The eager/deferred marker pair collapsed into one. Code that discriminated
-    with `isinstance(x, Instance)` must read `x.partial` instead — the alias makes
-    the import keep working, not the distinction."""
-    from confluid.fluid import Class, Instance, Partial, Target
+def test_one_marker_type_two_modes() -> None:
+    """What replaced the eager/deferred PAIR: one class, and `partial` decides."""
+    from confluid.fluid import Partial, Target
 
-    assert Class is Instance is Target
     assert Target(int).partial is False
     assert Partial(int).partial is True
-    assert isinstance(Partial(int), Instance)  # the old check no longer separates them
+    assert isinstance(Partial(int), Target)  # Partial IS a Target that is not built
 
 
-def test_the_deprecated_Lazy_alias_stays_SUBSCRIPTABLE() -> None:
-    """``Lazy[T]`` must keep working for a type checker, not just at runtime.
+def test_the_body_slot_scan_matches_the_canonical_call_names_only() -> None:
+    """The scan matches on the call NAME in the SOURCE, which is why the list is pinned.
 
-    `Lazy = Partial` as a plain ASSIGNMENT loses the alias's genericity: mypy then
-    reports `Bad number of arguments for type alias, expected 0, given 1` at every
-    downstream `Lazy[DataLoader[Any]]`. Measured on three real slots in a consuming
-    project, which is why the alias is an IMPORT alias instead.
-
-    Runtime subscripting passing is NOT the check that matters here (an assignment
-    passes that too) — the guard is that `Lazy` IS `Partial`, the same alias object,
-    so a type checker sees one generic alias under two names.
+    Dropping a name here does not raise — the slot is simply built, and an optimizer
+    reaches its constructor without the params it was waiting for. That is what made
+    removing the deprecated spellings a real change rather than a tidy-up.
     """
-    import confluid
-    from confluid.partial import Partial as _PartialAnnotation
+    from confluid.introspect import _PARTIAL_CALL_NAMES
 
-    # Identity is the whole check: a type checker resolves `Lazy[T]` only if `Lazy`
-    # IS the generic alias, not a re-binding of it. (Subscripting here would need a
-    # `# type: ignore` precisely because mypy reads the annotation, not the runtime.)
-    assert confluid.Lazy is _PartialAnnotation, "must be the SAME alias, not a copy"
-
-
-def test_the_body_slot_scan_still_recognises_the_DEPRECATED_call_names() -> None:
-    """A body slot written ``self.x = LazyClass(...)`` must stay deferred.
-
-    The scan matches on the call NAME in the source, so the rename to
-    ``PartialClass`` silently un-deferred every consumer still using the alias —
-    which is all of them, since the alias exists so they need not change. Silent
-    is the operative word: no error, no diagnostic, the slot is just built, and
-    an optimizer reaches its constructor without the params it was waiting for.
-    """
-    from confluid import LazyClass, PartialClass, configurable, partial_param_names
+    assert _PARTIAL_CALL_NAMES == ("PartialClass", "Partial")
 
     @configurable
-    class _Old:
-        def __init__(self, n: int = 1) -> None:
-            self.n = n
-            self.slot = LazyClass(int)  # the deprecated spelling
-
-    @configurable
-    class _New:
+    class _Holder:
         def __init__(self, n: int = 1) -> None:
             self.n = n
             self.slot = PartialClass(int)
 
-    assert "slot" in partial_param_names(_Old), "the deprecated spelling must still defer"
-    assert "slot" in partial_param_names(_New)
-
-
-def test_a_Partial_ANNOTATED_ctor_param_keeps_its_value_deferred() -> None:
-    """A slot the class declared `Partial[T]` is broadcast into but never BUILT.
-
-    The declaration is the receiver's contract — "I will supply a runtime argument"
-    — so a plain `_target_:` wired into such a slot must not be constructed at load.
-    Regression: the constructor honoured it and a post-construction sweep
-    (`_broadcast_onto_instance`) then re-resolved the attribute with no knowledge of
-    the slot and built it anyway, so an optimizer reached its constructor without the
-    `params` it was waiting for. Caught by a CLI's flow-mode test, not by this suite.
-    """
-    from typing import Any, List
-
-    from confluid import Partial, Target, flow, load
-
-    @configurable
-    class _Needs:
-        def __init__(self, params: List[int], lr: float = 0.01) -> None:
-            self.params, self.lr = params, lr
-
-    @configurable
-    class _Plain:
-        def __init__(self, path: str = "") -> None:
-            self.path = path
-
-    @configurable
-    class _Holder:
-        def __init__(self, optimizer: Partial[Any] = None, model: Any = None) -> None:
-            self.optimizer, self.model = optimizer, model
-
-    held = load(
-        "h:\n"
-        "  _target_: _Holder\n"
-        "  optimizer: {_target_: _Needs, lr: 0.5}\n"
-        "  model: {_target_: _Plain, path: /m}\n"
-    )["h"]
-
-    assert isinstance(held.optimizer, Target), "a Partial[T] slot must stay deferred"
-    assert held.optimizer.kwargs["lr"] == 0.5, "deferral withholds CONSTRUCTION, not configuration"
-    assert isinstance(held.model, _Plain), "an undeclared slot is built as usual"
-    assert flow(held.optimizer, params=[1, 2]).params == [1, 2]
+    assert "slot" in partial_param_names(_Holder)

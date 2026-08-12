@@ -6,10 +6,9 @@ import pytest
 import yaml
 
 from confluid import (
-    Class,
     Fluid,
-    Instance,
     Reference,
+    Target,
     configurable,
     dump,
     flow,
@@ -128,7 +127,7 @@ def test_decorators_coverage() -> None:
 
 
 def test_dumper_coverage() -> None:
-    f = Class("M", x=1)
+    f = Target("M", x=1)
     assert "_target_: M" in dump(f)
     assert "- 1" in dump([1, (2,)])
     assert "42" in dump(42)
@@ -151,9 +150,9 @@ def test_dumper_coverage() -> None:
 def test_loader_coverage(tmp_path: Path) -> None:
     from confluid.loader import ConfluidLoader, _process_imports
 
-    # 39: ScalarNode class tag — now returns Class object
+    # 39: ScalarNode class tag — now returns Target object
     result = yaml.load("!class:Model", Loader=ConfluidLoader)
-    assert isinstance(result, Class)
+    assert isinstance(result, Target)
     assert result.target == "Model"
     # 45: ref_compat
     ref_result = yaml.load("!ref r", Loader=ConfluidLoader)
@@ -161,12 +160,12 @@ def test_loader_coverage(tmp_path: Path) -> None:
     assert ref_result.target == "r"
     # 48-61: class compat variants
     compat_result = yaml.load("!class Model(x=1)", Loader=ConfluidLoader)
-    assert isinstance(compat_result, Instance)
+    assert isinstance(compat_result, Target)
     assert compat_result.target == "Model"
     assert compat_result.kwargs["x"] == 1  # inline scalars are coerced (parse_value)
-    # Legacy !class tag also returns Class object
+    # Legacy !class tag also returns Target object
     legacy_result = yaml.load("!class Model", Loader=ConfluidLoader)
-    assert isinstance(legacy_result, Class)
+    assert isinstance(legacy_result, Target)
     assert legacy_result.target == "Model"
 
     # 89-90, 94: smart fallback
@@ -198,7 +197,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
         def __init__(self, x: int = 1):
             self.x = x
 
-    assert materialize(Instance("G"), context={"G": 42}).x == 1
+    assert materialize(Target("G"), context={"G": 42}).x == 1
 
 
 # --- 6. parser.py ---
@@ -245,11 +244,11 @@ def test_resolver_coverage() -> None:
     assert r.resolve(None) is None
     # 31: recursion
     assert r.resolve("!ref:r") == {"b": 1}
-    # 49, 53: !class string → eager Instance Fluids (a malformed arg is skipped)
+    # 49, 53: !class string → eager Target Fluids (a malformed arg is skipped)
     m_eager = r.resolve("!class:M()")
-    assert isinstance(m_eager, Instance) and m_eager.target == "M" and m_eager.kwargs == {}
+    assert isinstance(m_eager, Target) and m_eager.target == "M" and m_eager.kwargs == {}
     m_malformed = r.resolve("!class:M(x)")
-    assert isinstance(m_malformed, Instance) and m_malformed.target == "M" and m_malformed.kwargs == {}
+    assert isinstance(m_malformed, Target) and m_malformed.target == "M" and m_malformed.kwargs == {}
     # 103-104, 109: lookup miss
     assert r._resolve_ref("m", local_context={"x": 1}) == "!ref:m"
     # 121, 124, 130-132: navigate miss
@@ -296,7 +295,7 @@ def test_flow_coverage() -> None:
         def __init__(self, x: int = 1) -> None:
             self.x = x
 
-    # flow an Instance marker (the marker-dict IR is gone — Fluids only)
-    s_marker = Instance("S")
+    # flow an Target marker (the marker-dict IR is gone — Fluids only)
+    s_marker = Target("S")
     s_marker.kwargs.update({"x": 10})
     assert flow(s_marker).x == 10

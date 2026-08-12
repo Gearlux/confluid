@@ -3,15 +3,15 @@ from typing import Any
 import pytest
 
 import confluid
-from confluid import Instance, configurable, flow, get_registry, load, materialize
+from confluid import Target, configurable, flow, get_registry, load, materialize
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -54,7 +54,7 @@ def test_load_hierarchy() -> None:
     data = {"Model": {"layers": 15}}
     config_data = load(data, flow=False)
 
-    # Explicit materialize of an Instance marker built from the block
+    # Explicit materialize of an Target marker built from the block
     instance = materialize(_inst("Model", **config_data["Model"]))
     assert isinstance(instance, Model)
     assert instance.layers == 15
@@ -66,7 +66,7 @@ def test_materialize_shorthand() -> None:
         def __init__(self, val: int = 0) -> None:
             self.val = val
 
-    # materialize accepts Instance markers
+    # materialize accepts Target markers
     obj = materialize(_inst("Simple", val=42))
     assert obj.val == 42
 
@@ -480,5 +480,5 @@ def test_a_class_with_no_callable_init_is_left_unbuilt() -> None:
 
     result = load("o: !class:NulledInit()\n  k: 1\n")["o"]
 
-    assert isinstance(result, Instance)  # handed back as a marker, not constructed
+    assert isinstance(result, Target)  # handed back as a marker, not constructed
     assert result.kwargs["k"] == 1  # ...with its configuration intact

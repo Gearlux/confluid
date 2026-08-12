@@ -228,19 +228,6 @@ class Partial(Target, Generic[T]):
         super().__init__(target, **kwargs)
 
 
-# --------------------------------------------------------------------------- #
-# Deprecated marker aliases — removed once the tag spelling is retired.
-#
-# ``Class`` and ``Instance`` were the deferred/eager pair that ``Target`` replaced;
-# they are now the SAME class, so ``isinstance(x, Instance)`` no longer separates
-# them. Any code that relied on that distinction wants ``x.partial`` instead.
-# --------------------------------------------------------------------------- #
-
-Class = Target
-Instance = Target
-Lazy = Partial
-
-
 def __getattr__(name: str) -> Any:
     """Compat: ``flow`` moved to ``confluid.engine`` (2026-07).
 
