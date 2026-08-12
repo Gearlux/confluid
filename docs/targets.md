@@ -14,19 +14,22 @@ recognize them and will raise on the unknown tag, exactly as it would without
 confluid installed. Always go through `confluid.load` / `load_config` to parse
 tagged documents.
 
-| Tag | Purpose | Produces |
-|---|---|---|
-| `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |
-| `!clone:path` | Like `!ref:` but returns a deep copy | `Clone` |
-| `!class:Name` / `!class:Name(...)` | Class node — **deferred or eager depending on `()`** (below) | `Class` / `Instance` |
-| `!lazy:Name(...)` | Class node that **always** stays deferred (runtime injection) | `Partial` |
-| `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
+| Reserved key | Legacy tag | Purpose | Produces |
+|---|---|---|---|
+| `_ref_: path` (or `${ref:path}`) | `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |
+| `_clone_: path` (or `${clone:path}`) | `!clone:path` | Like a reference but returns a deep copy | `Clone` |
+| `_target_: Name` | `!class:Name` / `!class:Name(...)` | The callable to build — built at load | `Target` |
+| `_target_: Name` + `_partial_: true` | `!lazy:Name(...)` | Built by nobody until an explicit `flow()` (runtime injection) | `Partial` |
+| `_scope_: {KEY: VAL}` / `_notscope_: …` | `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
+
+The tag column is DEPRECATED and removed in 0.4.0 — this page documents it
+because it still parses and because `confluid-migrate` converts from it.
 
 ## The lifecycle: Fluid → Solid
 
 | State | What it is | Tag types |
 |---|---|---|
-| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Class`, `Partial`, `Reference`, `Clone` |
+| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Target`, `Partial`, `Reference`, `Clone` |
 | **Solid** (live) | The actual Python instance your code uses. | — |
 
 `load(text)` (≡ `load(text, flow=True)`) and `materialize(data)` walk the tree
@@ -34,23 +37,32 @@ and turn Fluids Solid — but **not all of them**, by design (see the flow table
 further down). `load(text, flow=False)` stops at the Fluid layer so you can
 inspect or re-merge the IR before anything is constructed.
 
-## `!class:` — one tag, two behaviours
+## `_target_` vs `_partial_` — the only thing that defers
 
-`!class:` is a single tag, but the **parentheses decide whether it is built
-eagerly or left deferred**. `!class:Model` and `!class:Model()` look almost
-identical and are *not* the same thing:
+There are exactly **two** construction modes, and `_partial_` is the whole
+difference. Nothing about the parent, the nesting depth or the document position
+changes whether a marker is built.
 
 | YAML | Parses to | After `load()` | Built? |
 |---|---|---|---|
-| `m: !class:Model` | `Class` Fluid | a deferred `Class` stub | **No** |
-| `m: !class:Model` + indented block | `Class` Fluid (+ block kwargs) | a deferred `Class` carrying those kwargs | **No** |
-| `m: !class:Model()` | `Instance` Fluid | a live `Model` | **Yes** |
-| `m: !class:Model(layers=10)` | `Instance` Fluid (+ kwargs) | a live `Model(layers=10)` | **Yes** |
-| `m: !class:Model()` + indented block | `Instance` Fluid (+ block kwargs) | a live `Model(**block)` | **Yes** |
+| `m: {_target_: Model}` | `Target` | a live `Model` | **Yes** |
+| `m: {_target_: Model, layers: 10}` | `Target` (+ kwargs) | a live `Model(layers=10)` | **Yes** |
+| `m: {_target_: Model, _partial_: true}` | `Partial` | a deferred stub | **No** |
 
-**Rule of thumb: a trailing `()` means "build it now."** `!class:Model` is a
-deferred stub; `!class:Model()` is a live instance. Everything else follows from
-that one bit.
+A `Partial` is never auto-flowed — only an explicit `flow(marker, **runtime)`
+builds it, which is the point: the receiving code supplies an argument that does
+not exist at config time (`params=model.parameters()`).
+
+> **Deferral withholds CONSTRUCTION only.** A `Partial` is broadcast into and
+> configured exactly like a built target — merging keys into its kwargs
+> constructs nothing — so a bare `lr: 0.001` still tunes a deferred optimizer.
+
+> **A trailing `()` in the legacy tag form is INERT.** `!class:Model` and
+> `!class:Model()` are the same thing and both build. Until 2026-08-11 the parens
+> chose between an eager `Instance` and a deferred `Class`; that middle mode was
+> deleted (broadcasting is pass 7 and construction is pass 8, so a built node
+> already receives every cascading key before its constructor runs) and the two
+> marker classes collapsed into one `Target` carrying `partial`.
 
 **The target may be any callable, not just a class.** A `!class:` / `!lazy:`
 target resolves to any callable — a class OR a plain builder/factory **function**
@@ -131,49 +143,60 @@ Four grammar notes (all pinned by the test suite):
 > kept for backward compatibility. It mirrors the same eager/deferred `()` rule
 > but supports scalars only, not a block body. Prefer the `!class:` form.
 
-## Deferred initialization: `Class` stubs, `!lazy:`, and `flow()`
+## Deferred initialization: `_partial_`, declared slots, and `flow()`
 
 A deferred node is built later by calling **`flow(node, **runtime_kwargs)`** —
 idempotent (live objects pass through unchanged), with runtime kwargs winning
-over stored ones. There are two distinct reasons to defer, and a tag for each.
+over stored ones. Deferral has exactly **two** sources, and neither of them is
+the document's shape:
 
-**1. `Class` stub — "broadcast into it, but I'll build it myself."**
-A bare `!class:Foo` (or a `Class(Foo)` default in Python) stays a stub so the
-*receiving* `@configurable` object can build it on its own terms — typically
-after Confluid's broadcasting has merged matching scalars into its kwargs.
+| Node | Eagerly built? |
+|---|---|
+| `{_target_: Foo}` anywhere — nested, root-level, under any parent | **Yes**, always |
+| `{_target_: Foo, _partial_: true}` | **No**, anywhere |
+| any value in a slot the RECEIVER declared deferred | **No** — see below |
+
+> **There is no context-dependent build rule.** Until 2026-08-11 a middle mode
+> existed (`Class`) whose construction depended on whether its parent was
+> `@configurable`. It was deleted: its stated purpose was "so broadcasting can
+> still reach it", which is not a reason — broadcasting is pass 7 and
+> construction is pass 8, so a built node already receives every cascading key
+> before its constructor runs.
+
+**1. The RECEIVER declares the slot deferred.** This is the replacement for the
+old `Class` stub, and it is a better one: the contract is static, local to the
+class, and readable — instead of the document having to guess. Annotate the slot
+`Partial[T]`, or give a body slot a `PartialClass(...)` value; either signal
+keeps whatever the config puts there unbuilt.
 
 ```python
-from typing import Any
-from confluid import Class, configurable, flow
+from confluid import Partial, PartialClass, configurable, flow
 
 @configurable
 class Car:
-    def __init__(self, engine: Any = Class(Engine), color: str = "red"):
-        self.engine = engine             # stays a Class stub after load()
+    def __init__(self, engine: Partial[Engine] = None):
+        # A declared-deferred slot: a plain `{_target_: Engine}` written in the
+        # config stays a marker here, broadcasts and all, instead of being built.
+        self.engine = engine if engine is not None else PartialClass(Engine)
+
     def start(self) -> None:
         self.engine = flow(self.engine)  # built here, with broadcasts applied
 ```
 
-What `materialize()` / `load()` actually build vs. leave deferred:
+Without the declaration the slot is built at load, because `_target_` means
+build. That is the whole rule.
 
-| Node | Eagerly built? |
-|---|---|
-| `Instance` (`!class:Foo()`) | **Yes**, always |
-| Root-level Fluid (the whole document is `!class:…`) | **Yes** |
-| `Class` nested in a **`@configurable`** parent | **No** — the parent receives the stub |
-| `Class` nested in a **non-`@configurable`** parent (e.g. `pl.Trainer`) | **Yes** — the third-party ctor won't flow it, so Confluid does |
-| `Partial` (`!lazy:…`) | **No**, anywhere — see below |
-
-**2. `Partial` — "this genuinely cannot be built until runtime."**
+**2. `_partial_: true` — "this genuinely cannot be built until runtime."**
 Some objects need an argument that does not exist at config time — the textbook
-case is an optimizer that needs `params=model.parameters()`. Declare it with the
-**`!lazy:`** tag, which mirrors the `!class:` grammar (`!lazy:Foo`,
-`!lazy:Foo(lr=1e-3)`, or `!lazy:Foo` + block) but **always** produces a deferred
-`Partial` — parentheses or not:
+case is an optimizer that needs `params=model.parameters()`. Add `_partial_: true`
+beside the `_target_` and the marker is **never** auto-flowed — not by
+`materialize()`, not by an external deep-flow walker:
 
 ```yaml
-# Inline kwargs are coerced just like !class: — lr is a float here.
-optimizer: !lazy:torch.optim.Adam(lr=0.01)
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.01
 ```
 
 ```python
@@ -182,36 +205,36 @@ def configure_optimizers(self):
     return flow(self.optimizer, params=self.parameters())
 ```
 
-> ⚠️ `!lazy:` must be written as a real (unquoted) YAML tag — the "quote the
-> tag" trick does **not** apply (a quoted `"!lazy:…"` stays a plain string,
-> never a `Partial`). Its inline kwargs are coerced and merge with a block body
-> exactly as for `!class:`; only the deferral differs.
+> ⚠️ In the legacy tag spelling, `!lazy:` must be a real (unquoted) YAML tag.
+> The "quote the tag" trick does **not** apply: a quoted `"!lazy:…"` stays a
+> plain **string** — no marker, no error, no warning. That silent degradation is
+> exactly what the reserved-key format removes, since `_partial_: true` is
+> ordinary YAML and a malformed marker raises a located `ConfigurationError`.
 
-**`Class` vs `Partial` — when to reach for which.** Both are deferred, but they
-differ in how *external* deep-flow walkers treat them. An auto-flowing caller
-(any framework that recursively flows a graph before handing it to your code)
-will **eagerly build a bare `Class`** — which crashes if the target needs a runtime
-argument. A `Partial` is *never* auto-flowed by anything; only an explicit
-`flow(node, …)` builds it. So:
+**Which of the two do I want?** Ask whether the target could be built from config
+alone:
 
-- Use a **`Class` stub** when the target *can* be built from config alone but
-  you want to build it yourself (to apply broadcasts, sequence side effects, …).
-- Use **`!lazy:` / `Partial`** when building the target without a runtime-injected
-  argument would fail.
+- If it **can**, but you want to build it yourself (to sequence side effects, or
+  to build it at a particular moment) — declare the SLOT deferred on the
+  receiving class (`Partial[T]` / a `PartialClass(...)` body value). The config
+  then writes an ordinary `_target_` and stays unaware.
+- If it **cannot** without a runtime-injected argument — write
+  `_partial_: true` in the config, so the deferral is visible to whoever reads
+  it and no walker anywhere will build it.
 
-**Python-side `Partial[T]` annotation.** The same deferral can be pinned on a
+**Python-side `Partial[T]` annotation.** The same deferral pinned on a
 *constructor parameter*, so an auto-flow walker leaves even a plain
-`Class` / `Instance` default in that slot alone:
+`Target` default in that slot alone:
 
 ```python
 from torch.optim import Adam, Optimizer
 
-from confluid import Class, configurable, flow
+from confluid import PartialClass, configurable, flow
 from confluid.partial import Partial   # Partial[T] == Annotated[Union[T, Fluid], <marker>]
 
 @configurable
 class Trainer:
-    def __init__(self, optimizer: Partial[Optimizer] = Class(Adam, lr=1e-3)):
+    def __init__(self, optimizer: Partial[Optimizer] = PartialClass(Adam, lr=1e-3)):
         self.optimizer = optimizer           # auto-flow walkers skip this slot
     def configure_optimizers(self):
         return flow(self.optimizer, params=self.parameters())
@@ -221,7 +244,7 @@ Subscript with the **interface the slot eventually flows into** — the abstract
 base (`Partial[Optimizer]`), not the concrete default (`Partial[Adam]`). Because
 `Partial[T]` expands to `Union[T, Fluid]`, the annotation is honest to strict type
 checkers about *both* states of the slot: pre-flow it holds a deferred `Fluid`
-stub (so the `Class(Adam, …)` default type-checks — a `Class` *is* a `Fluid`),
+stub (so the `PartialClass(Adam, …)` default type-checks — it *is* a `Fluid`),
 and any live `Optimizer` also satisfies it. `Partial[Any]` remains valid when the
 target type is genuinely open. To narrow the flowed result for a type-checker,
 use `cast(node, Optimizer)` (confluid's typed `flow`). The marker itself is
