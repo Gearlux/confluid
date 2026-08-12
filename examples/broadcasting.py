@@ -79,8 +79,10 @@ def main() -> None:
 Transform:                # class-name block, first in document order
   strength: 0.25
 name: global-label        # blocked by NoBroadcast[str] on Transform.name
-transform: !class:Transform()
-reporter: !class:Reporter()
+transform:
+  _target_: Transform
+reporter:
+  _target_: Reporter
 strength: 0.75            # bare broadcast, LATER in document order -> last write wins
 """
     )
@@ -95,7 +97,8 @@ strength: 0.75            # bare broadcast, LATER in document order -> last writ
     # Addressed blocks always keep working, even for opted-out classes/params.
     addressed = load(
         """
-reporter: !class:Reporter()
+reporter:
+  _target_: Reporter
 Reporter:
   strength: 9.0
 """
@@ -124,11 +127,14 @@ class Stage:
 
 
 _TREE = """
-outer: !class:Stage()
+outer:
+  _target_: Stage
   name: trainer
-  child: !class:Stage()
+  child:
+    _target_: Stage
     name: inner
-    child: !class:Stage()
+    child:
+      _target_: Stage
       name: leaf
 """
 
@@ -169,7 +175,9 @@ def kwargs_catch_all() -> None:
     """
     graph = load(
         """
-sink: !class:Passthrough(tag=addressed)
+sink:
+  _target_: Passthrough
+  tag: addressed
 name: run-42
 strength: 0.75
 """
@@ -233,7 +241,7 @@ def deferred_slot_ordering() -> None:
     slot behaves the same — the marker form is shown, the mapping / dotted /
     class-block forms order identically.
     """
-    slot = "runnable: !class:Fitter()\n  optimizer: !lazy:Optimizer(lr=0.5)"
+    slot = "runnable:\n  _target_: Fitter\n  optimizer:\n    _target_: Optimizer\n    _partial_: true\n    lr: 0.5"
     bare = "lr: 0.9"
 
     def built(document: str) -> float:
@@ -257,7 +265,7 @@ def rider_content_reaches_deferred_slots() -> None:
     ignored on the other.
     """
     for rider in ("'**.lr': 0.9", "'**.optimizer.lr': 0.9"):
-        built = flow(load(f"runnable: !class:Fitter()\n{rider}\n")["runnable"].optimizer)
+        built = flow(load(f"runnable:\n  _target_: Fitter\n{rider}\n")["runnable"].optimizer)
         assert float(built.lr) == 0.9, f"load path dropped {rider!r}"
 
         live = Fitter()

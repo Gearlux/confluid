@@ -10,7 +10,7 @@ try:
 except confluid.ConfigFileNotFoundError:
     ...  # the config file (or an include) does not exist
 except confluid.ConfigurationError:
-    ...  # bad content: unknown !class:, unresolvable !ref:, circular include, ...
+    ...  # bad content: unknown _target_, unresolvable ${ref:}, circular include, ...
 except confluid.ConfluidError:
     ...  # any other confluid-specific failure
 ```
@@ -40,9 +40,9 @@ than parsed from YAML has no location, and the suffix is simply omitted.
 |---|---|---|
 | `ConfigurationError` | `ValueError` | base for config-content errors (all seven below) |
 | `CircularIncludeError` | `ValueError` | an `include:` chain revisits a file |
-| `ReferenceResolutionError` | `ValueError` | a `!ref:` cannot be resolved (unknown or self-referential) |
-| `UnknownClassError` | `ValueError` | a `!class:` target is neither registered nor importable |
-| `AmbiguousClassError` | `ValueError` | a `!class:` target names a class registered by SEVERAL classes and nothing narrows the choice |
+| `ReferenceResolutionError` | `ValueError` | a `${ref:}` / `_ref_` cannot be resolved (unknown or self-referential) |
+| `UnknownClassError` | `ValueError` | a `_target_` is neither registered nor importable |
+| `AmbiguousClassError` | `ValueError` | a `_target_` names a class registered by SEVERAL classes and nothing narrows the choice |
 | `ConfigurableDefinitionError` | `ValueError` | a `@configurable` declaration is contradictory |
 | `ValidationModeError` | `ValueError` | a `CONFLUID_VALIDATE_*` env var holds an unknown mode |
 | `ScopeError` | `ValueError` | a scope alias chain is circular; a block's body shape cannot splice where it sits; an activation names a value no block declares |
@@ -61,8 +61,8 @@ confluid.AmbiguousClassError: 'FourierOp' is registered by 2 classes, so a bare 
 cannot choose between them:
   myops.numpy.FourierOp (category=op, group=fft/numpy)
   myops.torch.FourierOp (category=op, group=fft/torch)
-Disambiguate with the dotted path (!class:myops.numpy.FourierOp), a tag selector
-(!class:FourierOp@group=fft/numpy) or get_class('FourierOp', group='fft/numpy').
+Disambiguate with the dotted path (_target_: myops.numpy.FourierOp), a target selector
+(_target_: FourierOp@group=fft/numpy) or get_class('FourierOp', group='fft/numpy').
 ```
 
 See [Discovery](discovery.md) for when two classes may share a name in the first place.
@@ -73,13 +73,13 @@ The one worth calling out is an activation that matches nothing:
 ```console
 confluid.ScopeError: No scope block matches task='classifcation'. This document declares
 task with: classification, segmentation. Either use one of those values, or add a
-`!scope:task=classifcation` block.
+`_scope_: {task: classifcation}` block.
 ```
 
 It exists because the alternative is silence — a value matching no block used to resolve to
 the document's *unscoped* keys, so a typo ran the default configuration and reported nothing.
 Note that an entirely **undeclared** dimension is still an inert no-op, and a dimension with
-any `!notscope:` block accepts every value; see [Scopes](scopes.md) for why.
+any `_notscope_` block accepts every value; see [Scopes](scopes.md) for why.
 
 Note: a failing constructor normally re-raises with the **original** exception class (`Failed to construct X: ...`) — `ConstructionError` is only the fallback for exception classes that cannot be rebuilt from a plain message (e.g. pydantic's `ValidationError`).
 

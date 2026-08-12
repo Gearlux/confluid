@@ -30,8 +30,8 @@ plugs into the passes, and from the eight names most configs need:
 | `Partial` / `PartialClass` | A runtime-injection slot (`_partial_: true`) — never auto-built; `PartialClass` is the Python spelling |
 | `partial_param_names` | Every slot of a class declared `Partial[...]` — ctor params and body slots |
 | ~~`Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names`~~ | **Removed 2026-08-11.** Use `Target` / `Partial` / `PartialClass` / `partial_param_names` |
-| `Reference` | A `!ref:` — the same object reached twice |
-| `Clone` | A `!clone:` — an independent deep copy |
+| `Reference` | A `${ref:}` / `_ref_` — the same object reached twice |
+| `Clone` | A `${clone:}` / `_clone_` — an independent deep copy |
 
 ## Registration & discovery — [Discovery](discovery.md)
 
@@ -151,7 +151,7 @@ plugs into the passes, and from the eight names most configs need:
 | `CircularIncludeError` | An `include:` cycle |
 | `ConfigurableDefinitionError` | A class definition confluid cannot accept |
 | `ConstructionError` | A target could not be built (also a `RuntimeError`) |
-| `ReferenceResolutionError` | A `!ref:` that cannot resolve |
+| `ReferenceResolutionError` | A `${ref:}` that cannot resolve |
 | `UnknownClassError` | A name no registration or import satisfies |
 | `AmbiguousClassError` | A name several registrations satisfy — narrow with tag filters |
 | `ValidationModeError` | An invalid validation-mode value |

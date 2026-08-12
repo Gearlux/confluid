@@ -65,8 +65,10 @@ def main() -> None:
 
     # --- collect_report() spans a load-then-configure pass -------------------
     yaml_text = """
-trainer: !class:Trainer
-  model: !class:Model
+trainer:
+  _target_: Trainer
+  model:
+    _target_: Model
 lr: 0.005
 ghost: 2
 """

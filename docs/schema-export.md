@@ -67,10 +67,10 @@ function's own signature is introspected, which is what lets a registered
 factory surface in a picker exactly like a class does.
 
 Two metadata hooks ride on the generated model, so a consumer needs no side
-table: `confluid_class_of(Model)` names the origin class (the `!class:`
+table: `confluid_class_of(Model)` names the origin class (the `_target_`
 target to emit), and `partial_param_names_of(Model)` (in
 `confluid.pydantic_export`) lists the fields that stand for deferred slots —
-spell those `!lazy:` when emitting YAML.
+spell those `_partial_: true` when emitting YAML.
 
 ## `parse_param_docs` — the docstring on its own
 

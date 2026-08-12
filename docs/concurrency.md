@@ -10,7 +10,7 @@ propagation rules:
 - **NOT inherited**: a raw `threading.Thread` or `loop.run_in_executor`
   worker starts with a clean context.
 
-To make a bare `flow()` resolve `!ref:`/broadcasts outside a
+To make a bare `flow()` resolve `${ref:}`/broadcasts outside a
 `materialize()` pass — including on another thread — activate a context
 explicitly with the public `active_context`:
 

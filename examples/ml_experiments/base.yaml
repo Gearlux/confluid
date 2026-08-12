@@ -2,9 +2,9 @@
 #
 # Structure:
 #   * bare top-level keys  -> global knobs, broadcast tree-wide (implicit **.key)
-#   * !scope: / !notscope: -> "config groups": pick a model/optimizer per run
+#   * _scope_ / _notscope_ -> "config groups": pick a model/optimizer per run
 #                             without editing any file (scopes=["model=cnn"])
-#   * !class: / !ref: / !lazy: -> object wiring
+#   * _target_ / ${ref:} / _partial_ -> object wiring
 
 # --- global knobs: bare keys reach EVERY component that accepts them ---
 seed: 7
@@ -13,8 +13,8 @@ verbose: false
 base_lr: 0.5
 
 # --- data ---
-# Trailing () = build eagerly at load time (broadcast keys still reach it);
-# the mapping body supplies constructor kwargs.
+# _target_ names the callable to build; its sibling keys are the constructor
+# kwargs. Built at load time (broadcast keys still reach it) unless _partial_.
 dataset:
   _target_: SyntheticDataset
   n_records: 256
@@ -32,7 +32,7 @@ model_cnn:
     channels: 8
 
 # --- config group "optimizer" (default: SGD; select via scopes=["optimizer=adam"]) ---
-# !lazy: = deferred until the trainer flows it with params= at run time.
+# _partial_: true = deferred until the trainer flows it with params= at run time.
 optim_default:
   _notscope_: {optimizer: }
   optimizer:

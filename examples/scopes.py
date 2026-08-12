@@ -1,9 +1,9 @@
 """Scopes — companion to ``docs/scopes.md``.
 
 One document, three activations: no scopes, ``debug``, and ``task=classification``.
-``!notscope:`` demonstrates the *unset => active* convention.
+``_notscope_`` demonstrates the *unset => active* convention.
 
-The second half shows a scope block nested INSIDE a ``!class:`` marker — the way
+The second half shows a scope block nested INSIDE a ``_target_`` marker — the way
 to offer an alternative for a single slot without lifting it to the document
 root. A marker's kwargs are a mapping like any other, so the wrapper splices at
 its own position and the later write wins.
@@ -21,11 +21,14 @@ from confluid.loader import ConfluidLoader
 
 DOC = """
 log_level: INFO
-if_debug: !scope:debug
+if_debug:
+  _scope_: {debug: }
   log_level: DEBUG
-unless_debug: !notscope:debug
+unless_debug:
+  _notscope_: {debug: }
   log_level: WARNING
-if_classification: !scope:task=classification
+if_classification:
+  _scope_: {task: classification}
   head: classifier
 """
 
@@ -35,9 +38,11 @@ scope_aliases:
   ci: [quick, verbose]
 max_epochs: 50
 log_level: INFO
-quick_mode: !scope:quick
+quick_mode:
+  _scope_: {quick: }
   max_epochs: 1
-logging: !scope:verbose
+logging:
+  _scope_: {verbose: }
   log_level: DEBUG
 """
 
@@ -70,10 +75,14 @@ class Trainer:
 
 #: A scope block INSIDE the marker's own block, after the slot it overrides.
 SLOT_DOC = """
-runnable: !class:Trainer
-  model: !class:TimmModel()
-  alt: !scope:model=convnet
-    model: !class:ConvNet()
+runnable:
+  _target_: Trainer
+  model:
+    _target_: TimmModel
+  alt:
+    _scope_: {model: convnet}
+    model:
+      _target_: ConvNet
 """
 
 #: The three body shapes. A SEQUENCE body extends the surrounding list (the only
@@ -81,21 +90,22 @@ runnable: !class:Trainer
 BODY_DOC = """
 ops:
   - always_first
-  - !scope:extra=yes
+  - - _scope_: {extra: "yes"}
     - extra_a
     - extra_b
-  - !scope:extra=yes 42
+  - - _scope_: {extra: "yes"}
+    - 42
   - always_last
 """
 
 
 def main() -> None:
-    # No scopes: !notscope:debug is ACTIVE (unset => active), so WARNING wins (later in doc).
+    # No scopes: _notscope_ debug is ACTIVE (unset => active), so WARNING wins (later in doc).
     plain = load(DOC)
     assert plain["log_level"] == "WARNING" and "head" not in plain
     summarize("scopes=[]", plain)
 
-    # debug active: the !scope:debug block splices in, the !notscope: block disappears.
+    # debug active: the _scope_ debug block splices in, the _notscope_ block disappears.
     debug = load(DOC, scopes=["debug"])
     assert debug["log_level"] == "DEBUG"
     summarize("scopes=['debug']", debug)

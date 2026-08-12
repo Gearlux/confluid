@@ -2,49 +2,63 @@
 
 > New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
 
-Conditional config blocks live at an arbitrary key whose value carries a
-`!scope:` / `!notscope:` tag. The key is inert — pick a descriptive label
-(`if_debug`, `if_classification`, …); on activation the wrapper disappears
-and the block's contents are spliced in at that slot. Three activation
-forms are supported, all equivalent at the IR level:
+Conditional config blocks live at an arbitrary key whose mapping carries a
+`_scope_` / `_notscope_` entry. The wrapper key is inert — pick a descriptive
+label (`if_debug`, `if_classification`, …); on activation it disappears and the
+block's other keys are spliced in at that slot.
 
-> **Two spellings.** This page is written in the tag form; the plain-YAML form
-> uses a `_scope_:` key taking a MAPPING of dimension → value
-> (`_scope_: {task: classification}`), which additionally lets one block depend on
-> several dimensions at once. See [the plain-YAML format](plain-format.md#scopes).
+The value is a **mapping of dimension → required value**, which is what lets one
+block depend on several dimensions at once (all of them must match — it is an
+AND). Use `{name: }` with no value for a boolean dimension.
 
 ```yaml
 # Boolean — flips on with `--scope debug`
-if_debug: !scope:debug
+if_debug:
+  _scope_: {debug: }
   log_level: DEBUG
 
 # Keyed — flips on with `--scope task=classification` (or `--task classification`)
-if_classification: !scope:task=classification
-  model: !class:ClassifierModel
+if_classification:
+  _scope_: {task: classification}
+  model: {_target_: ClassifierModel}
 
-# Equivalent function-call form
-also_classification: !scope:task(classification)
-  model: !class:ClassifierModel
+# Several dimensions at once — active only when BOTH are selected
+if_keras_classification:
+  _scope_: {task: classification, framework: keras}
+  model: {_target_: KerasClassifier}
 
-# Negation. `!notscope:KEY=VAL` is also active when the user passes no
-# `--KEY ...` at all (the *unset ⇒ active* convention).
-unless_debug: !notscope:debug
+# Negation. `_notscope_` is also active when the user passes no `--KEY ...`
+# at all (the *unset ⇒ active* convention).
+unless_debug:
+  _notscope_: {debug: }
   log_level: WARNING
 ```
+
+> **The legacy tag spelling** (`!scope:debug`, `!scope:task=classification`, the
+> equivalent `!scope:task(classification)` call form, `!notscope:…`) still parses
+> and produces the same markers, but it is DEPRECATED and removed in 0.4.0 — and
+> a tag suffix is a string, so it can carry only ONE dimension. Convert a file
+> with `confluid-migrate`.
 
 ## Where a scope block may live
 
 Anywhere a mapping key does — the document root, a nested dict, a list item,
-**and inside a `!class:` / `!lazy:` marker's own block**. The last one is how you
-offer an alternative for a single slot without lifting it out to the root:
+**and inside a marker's own block**. The last one is how you offer an
+alternative for a single slot without lifting it out to the root:
 
 ```yaml
-runnable: !class:Trainer
-  model: !lazy:TimmModel
+runnable:
+  _target_: Trainer
+  model:
+    _target_: TimmModel
+    _partial_: true
     model_name: efficientvit_b0
   # Same slot, different value — `--model convnet` swaps it in.
-  alt: !scope:model=convnet
-    model: !lazy:TorchConvNet
+  alt:
+    _scope_: {model: convnet}
+    model:
+      _target_: TorchConvNet
+      _partial_: true
 ```
 
 A marker's kwargs are a mapping like any other, so the same rule applies: the
@@ -73,15 +87,23 @@ mapping body cannot express "add these entries here":
 ```yaml
 ops:
   - always_first
-  - !scope:extra=yes          # extends: two entries, not one nested list
+  - - _scope_: {extra: "yes"}   # extends: two entries, not one nested list
     - extra_a
     - extra_b
-  - !scope:verbose trace_it    # a scalar body: one conditional entry
+  - - _scope_: {verbose: }      # a one-item body: one conditional entry
+    - trace_it
   - always_last
 ```
 
-Scalar bodies are type-coerced the way inline `!class:Foo(n=7)` kwargs are, so
-`!scope:x=y 42` splices the integer `42`.
+A LIST whose FIRST item is a `_scope_` mapping IS a scope block, and the
+remaining items are its body — the only way to write a conditional list *item*,
+because a YAML node is a mapping or a sequence and never both. A one-item body
+is how the tag form's scalar body is spelled here, and it is type-coerced the
+same way: `- 42` splices the integer `42`.
+
+Quote a value YAML would read as a boolean. `{extra: yes}` becomes `True`, which
+then never matches the `extra=yes` string an activation carries — confluid
+rejects it with a quote-it message rather than silently never firing.
 
 A sequence or scalar body at a *mapping* slot raises `ScopeError` naming the file
 and line — the wrapper key cannot stand in for the keys the body doesn't have.
@@ -107,7 +129,7 @@ one it does not is a `ScopeError` that lists the real values:
 load("experiment.yaml", scopes=["task=classifcation"])   # note the typo
 # ScopeError: No scope block matches task='classifcation'. This document declares
 # task with: classification, segmentation. Either use one of those values, or add
-# a `!scope:task=classifcation` block.
+# a `_scope_: {task: classifcation}` block.
 ```
 
 Without the check a typo resolved to the document's *unscoped* keys — the run
@@ -120,9 +142,9 @@ The rule is narrow, and three neighbouring cases stay silent on purpose:
 |-----------|---------|
 | the dimension is **not declared** at all | inert no-op — a CLI may pass a dimension a config has not grown into yet |
 | the dimension is **not activated** | the document's unscoped keys apply (the default) |
-| the dimension carries **any** `!notscope:` block | every value is accepted — see below |
+| the dimension carries **any** `_notscope_` block | every value is accepted — see below |
 
-That last row follows from what a negation means: `!notscope:task=segmentation`
+That last row follows from what a negation means: `_notscope_: {task: segmentation}`
 is activated by *every* value except `segmentation`, and deactivated by that one.
 Both outcomes are meaningful, so no value can be rejected.
 
@@ -151,9 +173,11 @@ scope_aliases:
   ci: [quick, verbose]      # one alias -> a list of scope names
   smoke: ci                 # ... or another alias — chains expand recursively
 
-quick_mode: !scope:quick
+quick_mode:
+  _scope_: {quick: }
   max_epochs: 1
-logging: !scope:verbose
+logging:
+  _scope_: {verbose: }
   log_level: DEBUG
 ```
 

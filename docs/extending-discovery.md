@@ -141,7 +141,7 @@ Full text in [Class Design](class-design.md); the four rules discovery depends o
    for expensive external materialization whose inputs are stable by first use.
 4. **Params stay introspectable** — in the signature, or as **annotated** `__init__`-body attributes
    (`to_pydantic` surfaces them as optional fields). A runtime-injected body slot (`params=`,
-   `dataset=`) MUST hold a `PartialClass(...)` (`!lazy:`), not a bare `!class:`.
+   `dataset=`) MUST hold a `PartialClass(...)` (`_partial_: true`), not a plain `_target_`.
 
 This is *why* validation is on by default: fully-defaulted params validate cleanly, and
 required-at-use values are checked by your code, not by pydantic at construction time.
@@ -255,7 +255,7 @@ and the viewers. A missing op or visualizer is added to its home package, never 
 | Class missing, **no error** | stale `*.dist-info` after an entry-point change | reinstall the editable; confirm the entry-point count |
 | Op/source tagged but absent from the canvas | category not in `_NODE_CATEGORIES`, or no `@configurable` | tag `category ∈ {op, source, engine, sink, …}` upstream |
 | Submodule class missing (package-root entry point) | not in `__all__` | add it to `__all__` |
-| A bare library transform (albumentations, torchvision v2) has no node | it is not `@configurable` — libraries run AS-IS via the engine's op-family dispatch | drop it into an `ops:` list (`!class:albumentations.HorizontalFlip {p: 0.5}`); teach a new library with one `register_op_family(...)` call |
+| A bare library transform (albumentations, torchvision v2) has no node | it is not `@configurable` — libraries run AS-IS via the engine's op-family dispatch | drop it into an `ops:` list (`{_target_: albumentations.HorizontalFlip, p: 0.5}`); teach a new library with one `register_op_family(...)` call |
 | Model/loss not offered in a trainer slot | wrong/missing `task`/`role` | tag `@configurable(task=…, role=…)` to match the slot (§6) |
 | Canvas wire between two object nodes refused | role-qualified socket mismatch (correct) | wire compatible roles, or use the **Retag** node |
 | Op raises mid-run on an incompatible record | there is no connection-time type filter, by design (§7) | fix the pipeline order / key names |
@@ -264,7 +264,7 @@ and the viewers. A missing op or visualizer is added to its home package, never 
 | Fixed-choice param is free text | typed as `str` | type it `Literal[...]` |
 | Numeric widget clamps to `[0, 2048]` | no `Interval` mark | annotate `Annotated[float, Interval(...)]` (§3) |
 | Body slot becomes an OBJECT socket | un-annotated `self.x = …` | write `self.x: bool = …` |
-| Runtime-injected body slot crashes on materialize | bare `!class:` instead of `!lazy:` | hold a `PartialClass(...)` |
+| Runtime-injected body slot crashes on materialize | plain `_target_` instead of `_partial_: true` | hold a `PartialClass(...)` |
 | Body slots vanish in a frozen/zipped deployment | `inspect.getsource` fails, the AST scan is empty | run `confluid-bake <package>`, or declare `@configurable(broadcast_attrs=[...])` |
 | Discovery log shows a skipped module | optional dependency missing | expected; degrades at `debug` |
 
@@ -293,7 +293,7 @@ class Threshold(Transform):
 
 A task-scoped model — ranked first in classification trainer `model` slots (still offered to any
 other `role="model"` slot), canvas socket `DATASET_OBJECT:model`, and `lazy=True` so a config
-wires it `!lazy:` and the trainer injects the dataset-derived `num_classes` at flow time:
+wires it `_partial_: true` and the trainer injects the dataset-derived `num_classes` at flow time:
 
 ```python
 @configurable(task="classification", role="model", lazy=True)   # → "classification_model"

@@ -64,7 +64,7 @@ optimizer:
 **A `_partial_` slot is still configured.** Deferral withholds *construction*
 only — broadcast keys, addressed blocks and `configure()` all reach a partial
 marker and merge into its kwargs, exactly as they do for a built node. See
-[Broadcasting](broadcasting.md#deferred-lazy-slots-are-configured-not-skipped).
+[Broadcasting](broadcasting.md#deferred-_partial_-slots-are-configured-not-skipped).
 
 **Broadcasting reaches a built node too.** Keys are merged in pass 7 and
 constructors run in pass 8, so a `_target_` node receives every cascading key

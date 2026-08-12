@@ -49,8 +49,8 @@ with collect_report() as report:
 print(report.summary())
 ```
 
-On the engine path, a top-level key whose value is (or contains) a `!class:`
-/ `!ref:` marker — or is a list — is a **definition** (the node tree being
+On the engine path, a top-level key whose value is (or contains) a `_target_`
+/ `${ref:}` marker — or is a list — is a **definition** (the node tree being
 built), not an override candidate, and is excluded from unused-tracking.
 Glob blocks track per leaf: a partially consumed `'**': {lr: 1, nope: 2}`
 reports `**.nope` unused while `**.lr` counts as applied.

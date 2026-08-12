@@ -43,18 +43,19 @@ train:
         experiment.write_text(
             """
 include: common.yaml
-# Mix env + config keys in one string; embedded matches substitute str(value):
-data_dir: "${EXAMPLE_DATA_ROOT}/${train.dataset}/${train.version}/data"
+# Mix env + config keys in one string; embedded matches substitute str(value).
+# `${env:NAME}` is the explicit environment spelling; a dotted name is a config key:
+data_dir: "${env:EXAMPLE_DATA_ROOT}/${train.dataset}/${train.version}/data"
 # A whole-string match keeps the native type (int, not "20"):
 epochs: "${train.epochs}"
-# A miss falls back to the :default
-port: "${EXAMPLE_MISSING_PORT:8080}"
+# A miss falls back to the default (comma-separated after the name):
+port: "${env:EXAMPLE_MISSING_PORT,8080}"
 """
         )
 
         # The include tree: entrypoint first, then each transitively include:-d file.
         raw, paths = load_config_with_paths(experiment)
-        assert "${EXAMPLE_DATA_ROOT}" in raw["data_dir"], "load_config returns the RAW parse"
+        assert "${env:EXAMPLE_DATA_ROOT}" in raw["data_dir"], "load_config returns the RAW parse"
 
         # Interpolation happens at materialization — load() the same file.
         data = load(str(experiment))
@@ -70,20 +71,21 @@ port: "${EXAMPLE_MISSING_PORT:8080}"
         print(f"include tree: {[p.name for p in paths]}")
 
         # --- ${...} reaches a marker's own kwarg block, and BURNS IN ---------
-        # A placeholder inside a !class:/!lazy: mapping body substitutes in the
-        # same load-time pass as any plain key; the marker then CARRIES the
-        # substituted value (dump() emits it; a deferred !lazy: slot flowed
-        # later sees it). A slot that must stay late-bound uses !ref: instead.
-        tagged = Path(tmp) / "tagged.yaml"
-        tagged.write_text(
+        # A placeholder inside a marker's mapping body substitutes in the same
+        # load-time pass as any plain key; the marker then CARRIES the
+        # substituted value (dump() emits it; a deferred `_partial_` slot flowed
+        # later sees it). A slot that must stay late-bound uses `${ref:...}`.
+        marked = Path(tmp) / "marked.yaml"
+        marked.write_text(
             """
 run:
   name: exp42
-sink: !class:ExampleSink()
-  out_dir: "${EXAMPLE_DATA_ROOT}/${run.name}"
+sink:
+  _target_: ExampleSink
+  out_dir: "${env:EXAMPLE_DATA_ROOT}/${run.name}"
 """
         )
-        cfg = load(str(tagged))
+        cfg = load(str(marked))
         assert cfg["sink"].out_dir == "/store/exp42", cfg["sink"].out_dir
         print(f"marker kwarg: {cfg['sink'].out_dir}")
 

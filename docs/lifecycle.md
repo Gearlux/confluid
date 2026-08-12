@@ -10,14 +10,14 @@ run in, what each one consumes, and what it decides **permanently**. Most
    │  1  PARSE        yaml.load(ConfluidLoader)   tags -> Fluid markers       │
    │  2  IMPORT       import:                     modules imported            │
    │  3  INCLUDE      include:                    files merged (deep_merge)   │
-   │  4  SCOPE        !scope: / !notscope:        blocks spliced or dropped   │
+   │  4  SCOPE        _scope_ / _notscope_        blocks spliced or dropped   │
    │  5  INTERPOLATE  ${...} and $VAR             substituted — BURNS IN      │
    │  6  EXPAND       a.b.c: v                    nested at the written slot  │
    │                                                                          │
    │     ── flow=False stops here: the Fluid IR ──                            │
    │                                                                          │
    │  7  BROADCAST    document order, last wins   keys merged into kwargs     │
-   │                  !ref: resolution            shared by identity          │
+   │                  ${ref:} resolution          shared by identity          │
    │                                                                          │
    │     ── resolve() stops here: markers, no objects ──                      │
    │                                                                          │
@@ -32,13 +32,13 @@ run in, what each one consumes, and what it decides **permanently**. Most
 
 | # | Pass | Consumes | Decides — permanently | Leaves alone |
 |---|---|---|---|---|
-| 1 | **Parse** | the YAML text | `!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:` become typed markers, each stamped with its source location | everything else stays raw |
+| 1 | **Parse** | the YAML text | `_target_` / `_partial_` / `_ref_` / `_clone_` / `_scope_` mappings become typed markers, each stamped with its source location | everything else stays raw |
 | 2 | **Import** | `import: pkg.mod` | the module is imported, so its `@configurable` classes are registered | a failed import warns, it does not raise |
 | 3 | **Include** | `include: other.yaml` | files merge into ONE document; the included document is **pasted at the `include:` line** | nothing is resolved yet |
 | 4 | **Scope** | `scopes=[...]` from the caller | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |
-| 5 | **Interpolate** | `${ENV}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `!ref:` targets, which stay late-bound |
+| 5 | **Interpolate** | `${env:VAR}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `${ref:}` targets, which stay late-bound |
 | 6 | **Expand** | `trainer.lr: 0.1` | dotted keys nest, anchored where the dotted spelling was written | `'*'` / `'**'` — ordinary path segments here |
-| 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); `!ref:` resolves and is shared by identity | `Partial` markers, unresolvable references |
+| 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); `${ref:}` resolves and is shared by identity | `Partial` markers, unresolvable references |
 | 8 | **Flow** | the merged markers | objects are constructed, kwargs validated under `policy.yaml`, ctor kwargs captured for `dump()` | `Partial` markers — construction is the one thing deferral withholds |
 | 9 | **Solidify** | the built graph | `solidify()` fires post-order — children final, then the parent | objects flowed with `solidify=False` |
 
@@ -57,11 +57,11 @@ run in, what each one consumes, and what it decides **permanently**. Most
 
 **"Why is my `${...}` frozen?"** — Interpolation (5) runs *before* anything is
 built (8), and it is a single pass. The value it produced is what the marker
-carries from then on; `dump()` emits it and a `!lazy:` slot flowed an hour later
-still sees it. For a value that must stay late-bound, use `!ref:` — reference
+carries from then on; `dump()` emits it and a deferred slot flowed an hour later
+still sees it. For a value that must stay late-bound, use `${ref:}` — reference
 resolution happens in pass 7, and an unresolved reference survives even that.
 
-**"Why can't a `!scope:` block choose a `${...}` value?"** — Scopes (4) resolve
+**"Why can't a `_scope_` block choose a `${...}` value?"** — Scopes (4) resolve
 before interpolation (5), so a block's activation cannot depend on a substituted
 value. Activation comes from the caller (`scopes=[...]`), never from the document.
 
@@ -71,7 +71,7 @@ at the `include:` line, so the directive's position decides: lines below it
 override the paste, lines above it are overridden by it. See
 [Interpolation & config files](interpolation.md) → "`include:` and document order".
 
-**"Why is my `!lazy:` slot still a marker?"** — Deferral withholds construction
+**"Why is my `_partial_` slot still a marker?"** — Deferral withholds construction
 (8) only. Pass 7 still merges broadcast keys into it, which is why `lr: 0.001`
 tunes a deferred optimizer; you call `flow(slot, params=…)` when the runtime
 argument exists. See [Tags & deferred initialization](targets.md).

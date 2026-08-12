@@ -6,6 +6,85 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The examples and the README now teach the reserved-key spelling.** Twelve of the
+  twenty-four runnable examples still used the deprecated YAML tags — `lifecycle.py` (the
+  README's designated "start here"), `deep_injection.py` (the flagship pitch),
+  `broadcasting.py`, `eager_classes.py`, `error_handling.py`, `interpolation_includes.py`,
+  `introspection.py`, `performance.py`, `report.py` and `scopes.py` — so a reader following
+  the documentation path got a `FutureWarning` saying their config was obsolete. Every one
+  was converted with `confluid-migrate` and its equivalence check; the two that document the
+  tag form itself (`plain_format.py`, `tags_deferred.py`) keep it.
+
+  Three more were fixed that no runtime check could have found: `ml_pipeline.py` used the
+  QUOTED-STRING spelling (`"!class:Adam(lr=!ref:base_lr)"`), which emits no deprecation
+  warning at all and which `confluid-migrate` reports rather than converts;
+  `examples/ml_experiments/` had migrated YAML with its comments, its `run.py` docstrings and
+  its README still describing tags — including a Hydra-comparison table telling a Hydra user
+  that confluid's answer to `_target_:` is `!class:Name()`; and `examples/schema_export.py`
+  named `!class:` in a comment.
+
+- **The guides now match their companion examples.** Converting the examples left 69 tag
+  lines across nine guides showing configs their own runnable companion no longer matched —
+  `docs/broadcasting.md` displayed `sink: !class:Passthrough(tag=addressed)` while
+  `examples/broadcasting.py` had moved to the reserved keys. `broadcasting.md`, `scopes.md`,
+  `interpolation.md`, `lifecycle.md`, `errors.md`, `eager-classes.md`, `introspection.md`,
+  `report.md` and `class-design.md` were converted, and `scopes.md` was reoriented around
+  `_scope_` (it opened by announcing "this page is written in the tag form"). Every YAML
+  snippet written into `scopes.md` and `discovery.md` was executed to confirm it does what
+  the page claims. A further 25 stale prose references were fixed across seven more guides.
+
+- **README corrections.** The "Design Goals" bullet advertised a "Tag-Based IR" with
+  `!class:Name` deferred / `!class:Name()` eager — a distinction deleted in 0.3.0 when
+  `Class` and `Instance` collapsed into `Target`. The Quick Start's first config used the
+  quoted-string spelling. The Scopes bullet spelled a scope `_scope_: debug`, which is not
+  valid: the value must be a MAPPING, and that spelling raises `ConfigurationError`.
+
+- **`confluid-migrate` is no longer suggested for a document that has no file.** PyYAML names
+  a string-loaded document `<unicode string>`, which the deprecation notice interpolated
+  straight into its remediation — `confluid-migrate <unicode string>`, a command that cannot
+  be copied or run, from a message whose only job is to say what to do next. Such a document
+  now gets an explanation instead of an uncopyable command. Pinned by
+  `tests/test_plain_format.py::test_a_string_loaded_document_is_not_told_to_run_an_uncopyable_command`.
+
+### Fixed
+
+- **`Resolver._parse_class_string`'s docstring described behaviour that was deleted** —
+  "`Name(...)` (with parens) is eager → `Instance`; a bare `Name` is deferred → `Class`".
+  Both classes are gone and both branches return a `Target` with `partial=False`; the
+  trailing `()` has been inert since the IR collapse. It now also records that this is the
+  QUOTED-STRING grammar, a third input spelling beside the tags and the reserved keys, whose
+  inline values resolve EAGERLY where `_target_`'s `${ref:...}` stays late-bound — so the two
+  are not interchangeable for a slot flowed outside the document.
+
+- **`docs/targets.md` documented a construction rule that was deleted.** Its table said
+  `!class:Model` parses to a deferred `Class` stub and only `!class:Model()` builds — the
+  "rule of thumb: a trailing `()` means build it now" — and a second table said a nested
+  marker under a `@configurable` parent is NOT built. Both are false since the IR collapse
+  (2026-08-11): the trailing `()` is inert, `_target_` always builds, and the only things
+  that defer are `_partial_: true` and a slot the RECEIVER declared deferred (`Partial[T]` /
+  a `PartialClass(...)` body value). Verified against the engine before rewriting — a reader
+  following the old text would write `child: {_target_: Optimizer}` expecting a stub and get
+  a constructed optimizer with no `params`. The "Deferred initialization" section, the
+  marker-family table and the `Class(...)` code samples were rewritten around the two real
+  modes.
+
+- **`examples/ml_experiments/README.md` linked to `docs/tags.md`**, renamed to `targets.md`.
+  `tests/test_docs_links.py` scanned `docs/` and the root README only, so a directory
+  example's README — which IS its documentation page, per the AGENTS rule — was outside every
+  link check. It now covers them.
+
+### Added
+
+- **`tests/test_canonical_spelling.py`** — two scans at two strictnesses: no example may name
+  a tag anywhere (config or prose), and no guide may carry one inside a fenced ```` ```yaml ````
+  block. Prose in `docs/` stays free, because naming the deprecated spelling is how a reader
+  with old configs learns what to convert. Static over source text rather than a run of each
+  example: a runtime check costs seconds per file, sees no prose, and would have passed
+  `ml_pipeline.py`. Two inverse pins keep the allow-lists honest — an entry naming a file that
+  no longer exists, and an entry that is no longer needed.
+
 ## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
 ### Deprecated

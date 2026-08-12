@@ -122,13 +122,15 @@ because the constructor would take either:
 
 | The key | Reaches | Why |
 |---|---|---|
-| written on the marker (`!class:Passthrough(tag=x)`), or in a block naming it | the **constructor** (`kwargs`) | it says what to build this node *with* |
+| written on the marker (`{_target_: Passthrough, tag: x}`), or in a block naming it | the **constructor** (`kwargs`) | it says what to build this node *with* |
 | injected at flow time (`flow(node, model=…)`) | the **constructor** (`kwargs`) | a call argument by construction |
 | bare, cascading (`name: "x"` at the top level) | a post-init **attribute** | it was aimed at the whole document, not at this node |
 
 ```python
 graph = load("""
-sink: !class:Passthrough(tag=addressed)
+sink:
+  _target_: Passthrough
+  tag: addressed
 name: run-42
 """)
 graph["sink"].options   # {"tag": "addressed"}  — addressed at the node
@@ -185,7 +187,7 @@ Which predicate to use follows the addressing, not the source:
 | names its receiver (`ClassName:` block, exact dotted path, a marker's own kwargs) | `accepts_key` | the accept-list |
 | is bare and cascades | `accepts_broadcast` | the accept-list **and** both opt-outs |
 
-All accept a class, a live instance, or the dotted string a `!class:` marker
+All accept a class, a live instance, or the dotted string a `_target_` marker
 carries; an unresolvable target accepts nothing. Re-deriving this yourself is
 the mistake they exist to prevent — a hand-rolled accept-list typically misses
 `**kwargs` targets, `__init__`-body slots, and both opt-outs, so a class that
@@ -232,7 +234,7 @@ a caller sizing such targets checks `declares_key` before passing a dimension.
 For a target with no catchall it agrees with `accepts_key` by construction.
 
 
-## Deferred (`!lazy:`) slots are configured, not skipped
+## Deferred (`_partial_`) slots are configured, not skipped
 
 A slot that needs a runtime argument is declared deferred, typically in code:
 
@@ -257,7 +259,8 @@ lr: 0.5                     # bare — cascades like any other key
 '**.lr': 0.5                # a rider SCALAR — cascades to every accepting slot target
 '**.optimizer.lr': 0.5      # a rider MAPPING — tunes every declared `optimizer` slot
 
-trainer: !class:Trainer()
+trainer:
+  _target_: Trainer
   optimizer:                # a block TUNES the marker ...
     lr: 0.5                 # ... `weight_decay: 0.05` survives untouched
   optimizer.lr: 0.5         # the dotted form, same effect
@@ -277,7 +280,8 @@ Two points worth knowing:
   a copy of itself.
 - **A block merges, it does not replace.** `optimizer: {lr: 0.5}` keeps every
   kwarg you did not mention. To replace the marker outright — a different
-  optimizer class, say — write one: `optimizer: !lazy:torch.optim.SGD(lr=0.5)`.
+  optimizer class, say — write one:
+  `optimizer: {_target_: torch.optim.SGD, _partial_: true, lr: 0.5}`.
   That form starts from scratch, so restate what you need.
 - **Position decides, not the spelling.** There is no "addressed beats bare" tier:
   whichever of the two you write *later* in the document wins, exactly as two bare
@@ -285,15 +289,23 @@ Two points worth knowing:
   identically here.
 
   ```yaml
-  lr: 0.9                              # a document-wide default ...
-  runnable: !class:Trainer()
-    optimizer: !lazy:AdamW(lr=0.5)     # ... overridden per-slot below it  -> 0.5
+  lr: 0.9                          # a document-wide default ...
+  runnable:
+    _target_: Trainer
+    optimizer:
+      _target_: AdamW
+      _partial_: true
+      lr: 0.5                      # ... overridden per-slot below it  -> 0.5
   ```
 
   ```yaml
-  runnable: !class:Trainer()
-    optimizer: !lazy:AdamW(lr=0.5)     # a per-slot value ...
-  lr: 0.9                              # ... overridden by a later sweep   -> 0.9
+  runnable:
+    _target_: Trainer
+    optimizer:
+      _target_: AdamW
+      _partial_: true
+      lr: 0.5                      # a per-slot value ...
+  lr: 0.9                          # ... overridden by a later sweep   -> 0.9
   ```
 
   A value set in *code* — `self.optimizer = PartialClass(AdamW, lr=1e-4)` — has no

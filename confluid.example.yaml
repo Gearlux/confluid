@@ -1,6 +1,6 @@
 # Confluid: Example Configuration File
 # This file illustrates the configuration options confluid handles directly.
-# Scope overlays (!scope:NAME, !scope:KEY=VAL, !notscope:...) live at the
+# Scope overlays (_scope_: {NAME: }, _scope_: {KEY: VAL}, _notscope_: ...) live at the
 # bottom of this file. Activate them via `confluid.load(path, scopes=[...])`
 # or, in a CLI layer built on confluid, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
 #
@@ -77,8 +77,8 @@ scope_aliases:
   dev: [debug, local]
 
 # A scope wrapper lives at an arbitrary key whose VALUE carries the
-# !scope:/!notscope: tag. The key itself is inert — it's just YAML
-# scaffolding because top-level mappings can't hold bare tags. Pick a
+# _scope_ / _notscope_ entry. The key itself is inert — it's just YAML
+# scaffolding, because a mapping cannot be its own condition. Pick a
 # descriptive label; on activation the key disappears and its contents
 # are spliced in at that slot.
 
