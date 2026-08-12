@@ -445,13 +445,21 @@ class Resolver:
         return value
 
     def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
-        """Parse a string ``'ClassName(args)'`` / ``'ClassName'`` into a Fluid marker.
+        """Parse a string ``'ClassName(args)'`` / ``'ClassName'`` into a :class:`Target` marker.
 
-        ``Name(...)`` (with parens) is eager → :class:`Instance`; a bare
-        ``Name`` is deferred → :class:`Class` — the same eager-vs-deferred
-        rule as the ``!class:`` YAML tag. Kwargs are assigned
-        post-construction so a kwarg literally named ``target`` can't collide
-        with the Fluid ctor's own parameter.
+        Both spellings produce the SAME thing — the trailing ``()`` is inert. It
+        marked an eager ``Instance`` against a deferred ``Class`` until the two
+        collapsed into one ``Target`` carrying ``partial`` (2026-08-11); ``partial``
+        is now the only thing that withholds construction, and this string form has
+        no way to spell it. Kwargs are assigned post-construction so a kwarg
+        literally named ``target`` can't collide with the marker ctor's own
+        parameter.
+
+        Note this is the QUOTED-STRING spelling — a third input grammar beside the
+        YAML tags and the reserved keys, reached only through
+        :meth:`Resolver.resolve`. It resolves each inline value against the context
+        EAGERLY (see below), where ``_target_``'s ``${ref:...}`` stays late-bound, so
+        the two are not interchangeable for a slot flowed outside the document.
         """
         from confluid.fluid import Target
 
