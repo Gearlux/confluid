@@ -1,6 +1,7 @@
 import importlib
 import os
 import re
+import warnings
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union, cast
@@ -272,6 +273,11 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     return target
 
 
+#: Documents already told their tag syntax is deprecated (once per file, not per tag).
+#: Module-level so the notice survives across `load()` calls in one process.
+_TAG_SPELLING_WARNED: set[str] = set()
+
+
 def _register_constructors() -> None:
     """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
 
@@ -397,13 +403,6 @@ def _register_constructors() -> None:
     def notscope_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         return _build_scope(loader, tag_suffix, node, negate=True)
 
-    ConfluidLoader.add_multi_constructor("!ref:", ref_constructor)
-    ConfluidLoader.add_multi_constructor("!class:", class_constructor)
-    ConfluidLoader.add_multi_constructor("!clone:", clone_constructor)
-    ConfluidLoader.add_multi_constructor("!lazy:", lazy_constructor)
-    ConfluidLoader.add_multi_constructor("!scope:", scope_constructor)
-    ConfluidLoader.add_multi_constructor("!notscope:", notscope_constructor)
-
     def ref_compat(loader: yaml.SafeLoader, node: Any) -> Any:
         return _stamp(Reference(loader.construct_scalar(node)), loader, node)
 
@@ -421,8 +420,56 @@ def _register_constructors() -> None:
             )
         return _stamp(Target(val), loader, node)
 
-    ConfluidLoader.add_constructor("!ref", ref_compat)
-    ConfluidLoader.add_constructor("!class", class_compat)
+    # ---- the tag spelling is DEPRECATED — tell the user, once per document -------
+    #
+    # A deprecation nobody sees is not a deprecation: the alias round in this same
+    # release found consumers still on names that had been "deprecated" for months,
+    # because nothing ever said so at runtime. So every tag constructor announces it.
+    #
+    # ONCE PER DOCUMENT, naming the file: per-tag would emit hundreds of lines for one
+    # config, and once-per-process would tell a user about the first of their configs
+    # and stay silent about the rest. `FutureWarning` rather than `DeprecationWarning`
+    # because Python SHOWS it by default — this is aimed at the person who wrote the
+    # YAML, not at library code, which is exactly the split the two categories encode.
+    def _announce(loader: Any, node: Any) -> None:
+        where = getattr(loader, "name", None) or "<config>"
+        if where in _TAG_SPELLING_WARNED:
+            return
+        _TAG_SPELLING_WARNED.add(where)
+        mark = getattr(node, "start_mark", None)
+        line = f":{mark.line + 1}" if mark is not None else ""
+        warnings.warn(
+            f"{where}{line}: the YAML tag syntax (!class: / !lazy: / !ref: / !clone: / "
+            f"!scope:) is DEPRECATED and is removed in confluid 0.4.0. Convert this file "
+            f"with `confluid-migrate {where}` — it rewrites the tags to the reserved-key "
+            f"format (_target_ / _partial_ / ${{ref:}}) and verifies the marker tree is "
+            f"unchanged before writing. The new format is also plain YAML, so yq, editor "
+            f"schemas and linters can read it.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
+    def _deprecated(constructor: Any) -> Any:
+        """Wrap a tag constructor so parsing a tag announces the deprecation."""
+
+        def wrapped(loader: Any, *args: Any) -> Any:
+            _announce(loader, args[-1])  # the NODE is last in both constructor arities
+            return constructor(loader, *args)
+
+        return wrapped
+
+    for _tag, _ctor in (
+        ("!ref:", ref_constructor),
+        ("!class:", class_constructor),
+        ("!clone:", clone_constructor),
+        ("!lazy:", lazy_constructor),
+        ("!scope:", scope_constructor),
+        ("!notscope:", notscope_constructor),
+    ):
+        ConfluidLoader.add_multi_constructor(_tag, _deprecated(_ctor))
+
+    ConfluidLoader.add_constructor("!ref", _deprecated(ref_compat))
+    ConfluidLoader.add_constructor("!class", _deprecated(class_compat))
 
     # ---- the reserved-key format: plain mappings that carry ``_target_`` & co ----
     #

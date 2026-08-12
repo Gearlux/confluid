@@ -7,12 +7,14 @@ by side during the migration — a divergence is a test failure, not a surprise 
 someone's training run.
 """
 
+import warnings
+from pathlib import Path
 from typing import Any, Optional
 
 import pytest
 import yaml
 
-from confluid import configurable, dump, flow, load
+from confluid import configurable, dump, flow, load, load_config
 from confluid.exceptions import ConfigurationError, ScopeError
 from confluid.fluid import Partial, Target
 from confluid.loader import ConfluidLoader
@@ -384,3 +386,62 @@ def test_a_reserved_key_document_round_trips_through_dump() -> None:
     assert reloaded.seed == 5
     assert isinstance(reloaded.box, Box)
     assert reloaded.box.size == 3
+
+
+# --------------------------------------------------------------------------------------
+# The tag spelling is DEPRECATED — and says so
+# --------------------------------------------------------------------------------------
+
+
+def _load_capturing(text: str, tmp_path: Path, name: str = "legacy.yaml") -> list:
+    """Load a config from a real FILE, returning the warnings it emitted.
+
+    A file rather than a string because the notice names the document, and naming it
+    is the whole point — a user with several configs needs to know WHICH to convert.
+    """
+    from confluid.loader import _TAG_SPELLING_WARNED
+
+    path = tmp_path / name
+    path.write_text(text)
+    _TAG_SPELLING_WARNED.discard(str(path))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        load_config(str(path))
+    return list(caught)
+
+
+def test_a_tagged_document_announces_the_deprecation(tmp_path: Path) -> None:
+    """The user must be TOLD, or the removal in 0.4.0 arrives as a surprise.
+
+    A deprecation nobody sees is not a deprecation: this project's own alias round
+    found consumers still on names deprecated for months, because nothing said so at
+    runtime. ``FutureWarning`` rather than ``DeprecationWarning`` because Python shows
+    it by DEFAULT — the audience is whoever wrote the YAML, not library code.
+    """
+    caught = _load_capturing("model: !class:Model\n  layers: 3\n", tmp_path)
+
+    assert len(caught) == 1
+    warning = caught[0]
+    assert warning.category is FutureWarning
+    message = str(warning.message)
+    assert "legacy.yaml" in message, "must name the file to convert"
+    assert "confluid-migrate" in message, "must name the tool that fixes it"
+    assert "0.4.0" in message, "must name the release that removes it"
+
+
+def test_the_notice_is_ONCE_PER_DOCUMENT_not_once_per_tag(tmp_path: Path) -> None:
+    """A 400-line tagged config must not emit 400 warnings.
+
+    Per-tag would bury the message it is trying to deliver; once-per-PROCESS would
+    name the user's first config and stay silent about every other one.
+    """
+    caught = _load_capturing("a: !class:Model\nb: !lazy:SGD\nc: !ref:a\nd: !clone:a\n", tmp_path, name="many.yaml")
+
+    assert len(caught) == 1, f"one document, one notice — got {len(caught)}"
+
+
+def test_the_reserved_key_format_is_silent(tmp_path: Path) -> None:
+    """The migrated spelling is the destination, so it must warn about nothing."""
+    caught = _load_capturing("model:\n  _target_: Model\n  layers: 3\n", tmp_path, name="plain.yaml")
+
+    assert caught == []

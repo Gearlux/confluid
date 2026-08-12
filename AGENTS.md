@@ -19,10 +19,14 @@ if you are new to this codebase — most rules below are about one pass.
 ## Current state
 
 **Feature-complete.** Confluid is the hierarchical configuration + dependency-injection engine:
-YAML tag markers (`!class:` / `!lazy:` / `!ref:` / `!scope:`) materialized by `flow()` /
-`materialize()` / `resolve()`, scoped broadcasting, post-construction `configure()`, recursive DI,
-and the introspection surface (`to_pydantic` / `parse_param_docs` / `sanitize_schema`) that every
-AI- and GUI-facing consumer reads for tool schemas and form specs.
+plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_scope_`) materialized by
+`flow()` / `materialize()` / `resolve()`, scoped broadcasting, post-construction `configure()`,
+recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` /
+`sanitize_schema`) that every AI- and GUI-facing consumer reads for tool schemas and form specs.
+
+The equivalent TAG spelling (`!class:` / `!lazy:` / `!ref:` / `!scope:`) still parses in 0.3.0 and
+is REMOVED in 0.4.0 — it warns on every document it loads. Write the reserved keys; convert an
+old file with `confluid-migrate`.
 
 **Published on PyPI — v0.1.0 and v0.2.0. v0.3.0 is prepared and DELIBERATELY HELD** (user
 instruction 2026-08-04): do not tag it until confluid's functionality is verified complete against
@@ -262,11 +266,26 @@ with one space, produced a target named `Model(a=1,` and dropped both kwargs, wi
 **Rule — scope grammar.** `loader._parse_scope_suffix` is the ONE splitter for every activation
 spelling (the tag suffix, the `_scope_:` value, a CLI `--scope` argument). Never add a second.
 
+**Rule — the TAG spelling is DEPRECATED and goes in 0.4.0.** Parsing a tag emits a
+`FutureWarning` naming the file, the line and `confluid-migrate`, ONCE PER DOCUMENT (per-tag
+buries the message; per-process names one config and hides the rest). `FutureWarning`, not
+`DeprecationWarning`: Python shows it by default, and the audience is whoever wrote the YAML.
+Never downgrade or silence it — the alias round in this same release found consumers still on
+names "deprecated" for months because nothing ever said so at runtime.
+
+**Rule — 0.3.0 ships BOTH the tags and `confluid-migrate`, and that pairing is deliberate.**
+`migrate.verify_equivalence` parses the ORIGINAL tagged text to prove a conversion equivalent, so
+a release that deleted the constructors while shipping the tool would make it refuse every file it
+exists to convert. Deleting the constructors is 0.4.0 work, together with the `${PLAIN}`
+env→config-key flip (both are the breaking half; see `TASKS.md`).
+
 **Why.** `docs/architecture.md` record 11. The tag format is not YAML anything else can read, which
 locks out `yq`, editor schemas and linters.
 
 **Pins.** `tests/test_plain_format.py` — the `test_both_spellings_agree` matrix, the malformed-marker
-group, `::test_a_full_document_is_readable_by_plain_yaml`,
+group, `::test_a_full_document_is_readable_by_plain_yaml`, the deprecation trio
+(`::test_a_tagged_document_announces_the_deprecation` / `::test_the_notice_is_ONCE_PER_DOCUMENT_not_once_per_tag` /
+`::test_the_reserved_key_format_is_silent`),
 `::test_yaml_anchors_and_aliases_still_work`, `::test_the_two_spellings_can_be_mixed_in_one_document`.
 **Docs.** `docs/plain-format.md`. **Example.** `examples/plain_format.py`.
 
