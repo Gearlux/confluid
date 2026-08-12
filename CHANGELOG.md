@@ -8,6 +8,32 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
+### Deprecated
+
+- **The YAML tag syntax (`!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:` / `!notscope:`)
+  is deprecated and is REMOVED in 0.4.0.** Loading a tagged document now emits a `FutureWarning`
+  naming the file, the line, and the fix:
+
+  ```
+  config/train.yaml:12: the YAML tag syntax (…) is DEPRECATED and is removed in confluid 0.4.0.
+  Convert this file with `confluid-migrate config/train.yaml` — it rewrites the tags to the
+  reserved-key format (_target_ / _partial_ / ${ref:}) and verifies the marker tree is unchanged
+  before writing.
+  ```
+
+  Once per DOCUMENT, not per tag (a 400-line config would otherwise bury the message it is
+  delivering) and not per process (which would name your first config and stay silent about the
+  rest). `FutureWarning` rather than `DeprecationWarning` because Python shows it by default —
+  the audience is whoever wrote the YAML, not library code, which is the split the two categories
+  encode.
+
+  **0.3.0 deliberately ships BOTH the tags and `confluid-migrate`**, because the codemod's safety
+  check parses the tagged original to prove a conversion equivalent (`verify_equivalence`) — a
+  release that removed the tags and shipped the tool would make it refuse every file it exists to
+  convert. 0.4.0 removes the tag constructors, and with them the `${PLAIN}` → config-key
+  interpolation flip (a bare `${VAR}` becomes a config-key reference, so every one must already be
+  `${env:VAR}` — which is what the codemod converts it to).
+
 ### Removed — BREAKING
 
 - **The deprecation aliases are gone (2026-08-11).** `Class`, `Instance`, `Lazy`, `LazyClass`,
