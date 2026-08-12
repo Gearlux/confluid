@@ -1,15 +1,23 @@
-"""What each subsystem thinks a class's configurable slots are — the BASELINE.
+"""What each subsystem thinks a class's configurable slots are — and why they differ.
 
-Five subsystems answer "which slots does this target have", and for one class they
-give **five different answers**. This file records those answers exactly as they
-are today, so the `slots()` consolidation (``TASKS.md``) lands as a visible diff
-rather than a surprise: every line that changes is a decision someone made, not a
-behaviour that moved on its own.
+Six readers ask "which slots does this target have". They gave **five different
+answers** for one class until 2026-08-12, because five of them hand-rolled their
+own "minus self/cls" filter with a different set of parameter-kind exclusions.
+They now project from the ONE ``introspect.slots()`` enumeration, and the answers
+collapse to **three** — one per question actually being asked:
 
-That is the whole purpose here. These are NOT assertions that the current
-behaviour is right — several of them assert that it is wrong (see the
-``test_DRIFT_*`` group, which names the defect each one pins). Pinning a defect
-before touching the layer that produces it is what makes the refactor reviewable.
+===========================================  =========================  ==============================
+answer                                        readers                    question
+===========================================  =========================  ==============================
+``['head', 'pos_only', 'lr']``                accept-list, to_pydantic   what is CONFIGURABLE at all
+``['pos_only', 'lr']``                        input_specs, get_hierarchy what the SIGNATURE declares
+``['lr']``                                    _ctor_params               what the CONSTRUCTOR can take
+===========================================  =========================  ==============================
+
+This file was written as the BASELINE before that change (recording five answers,
+with the drift pinned under ``test_DRIFT_*`` names), which is what made the
+refactor reviewable: every line below that moved is a decision, recorded here with
+its reason, rather than a behaviour that shifted unnoticed.
 
 The readers, and what each is FOR:
 
@@ -81,24 +89,47 @@ def _readers(cls: type) -> Dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
-def test_the_five_readers_give_five_different_answers_for_one_class() -> None:
-    """The measurement that motivates the consolidation, pinned verbatim.
+def test_the_readers_give_one_answer_per_question_they_ask() -> None:
+    """Five answers became three, and the three are explainable.
 
-    If a line here changes, the `slots()` refactor changed a reader's answer —
-    which is allowed, and is exactly what must be reviewed rather than absorbed.
-    Do not "fix" this test by updating the numbers; update it by deciding what
-    the new answer should be and saying so in the commit.
+    Was, before the ``slots()`` consolidation::
+
+        accept-list      ['head', 'loaders', 'lr', 'pos_only']   <- 'loaders' is a *args name
+        _ctor_params     ['lr']
+        input_specs      ['pos_only', 'lr']
+        get_hierarchy    ['loaders', 'lr', 'pos_only']            <- likewise
+        to_pydantic      ['head', 'lr', 'pos_only']
+
+    If a line here changes, a reader's answer changed — which is allowed, and is
+    exactly what must be REVIEWED rather than absorbed. Do not "fix" this test by
+    updating the numbers; update it by deciding what the new answer should be and
+    saying so in the commit.
     """
     assert _readers(Spread) == {
-        "accept-list": ["head", "loaders", "lr", "pos_only"],
+        "accept-list": ["head", "lr", "pos_only"],
         "_ctor_params": ["lr"],
         "input_specs": ["pos_only", "lr"],
-        "get_hierarchy": ["loaders", "lr", "pos_only"],
+        "get_hierarchy": ["lr", "pos_only"],
         "to_pydantic": ["head", "lr", "pos_only"],
     }
 
-    distinct = {tuple(answer or ()) for answer in _readers(Spread).values()}
-    assert len(distinct) == 5, "five readers, five answers — this is the baseline, not the goal"
+    # Compared as SETS: ``input_specs`` reports in signature order by contract (a
+    # GUI renders fields in the order the author declared them), the others sort.
+    distinct = {frozenset(answer or ()) for answer in _readers(Spread).values()}
+    assert len(distinct) == 3, "three questions, three answers — a reader may differ, but only on purpose"
+
+
+def test_no_reader_reports_a_var_positional_name() -> None:
+    """``*loaders`` addresses nothing, so no surface may offer it.
+
+    It cannot be passed by keyword, so a config key of that name reaches no
+    constructor: it used to pass the accept-list and land as a post-init attribute
+    nothing reads, and ``get_hierarchy`` used to publish it as a CLI flag Python
+    rejects at the call. This is the rule the three former ``test_DRIFT_*`` cases
+    were pinning the absence of.
+    """
+    for reader, answer in _readers(Spread).items():
+        assert "loaders" not in (answer or []), f"{reader} still reports a *args name"
 
 
 # --------------------------------------------------------------------------------------
@@ -146,55 +177,45 @@ def test_deliberate_a_var_keyword_class_has_no_accept_list_at_all() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Differences that are DRIFT — a consolidation should REMOVE these
+# Drift the consolidation REMOVED — each of these was a ``test_DRIFT_*`` pin
 # --------------------------------------------------------------------------------------
 
 
-def test_DRIFT_get_hierarchy_reports_a_var_positional_as_a_configurable_path() -> None:
-    """``loaders`` is a ``*args`` name: it can never be passed by keyword.
+def test_get_hierarchy_no_longer_publishes_a_var_positional_as_a_cli_flag() -> None:
+    """``get_hierarchy`` is what a CLI builds dotted override flags from.
 
-    ``get_hierarchy`` is what a CLI builds dotted override flags from, so this
-    publishes ``--loaders`` — a flag whose value Python rejects at the call.
-    ``_ctor_params`` reasons about this exact parameter name in its docstring and
-    excludes it; ``get_hierarchy``'s own filter (``self``/``cls``/``args``/``kwargs``
-    by NAME, not by kind) never got the same treatment.
-
-    EXPECTED FIX: ``slots()`` classifies by ``inspect.Parameter.kind``, and this
-    assertion flips to ``not in``.
+    It used to publish ``--loaders`` for a ``*args`` parameter — a flag whose
+    value Python rejects at the call. Its filter skipped ``self``/``cls``/``args``/
+    ``kwargs`` by NAME, which is wrong twice: it misses a variadic spelled
+    anything else, and it would wrongly drop an ordinary parameter named ``args``.
+    It now filters by KIND.
     """
-    assert "loaders" in _leaves(get_hierarchy(Spread)), "pinning the defect, not blessing it"
+    assert "loaders" not in _leaves(get_hierarchy(Spread))
+    assert "extra" not in _leaves(get_hierarchy(Forwards)), "a **kwargs name is not a path either"
 
 
-def test_DRIFT_declares_key_answers_differently_for_the_same_parameter_kind() -> None:
-    """One function, two code paths, opposite answers about ``*loaders``.
+def test_declares_key_answers_the_same_for_the_same_parameter_kind() -> None:
+    """One function, one answer — it used to have two code paths that disagreed.
 
-    ``declares_key`` short-circuits to the accept-list for a target WITH an
-    accept-list, and runs its own kind-filtered walk only for a ``**kwargs``
-    target. So the identical ``*loaders`` parameter is "declared" or "not
-    declared" depending on whether the class also happens to take ``**kwargs``.
-
-    It is the public predicate ``AGENTS.md`` tells front-ends to call instead of
-    re-deriving settability — so the drift is in the answer confluid hands out to
-    stop exactly this kind of drift.
-
-    EXPECTED FIX: both paths project from one ``slots()`` enumeration and agree.
+    ``declares_key`` short-circuited to the accept-list for a target WITH an
+    accept-list and ran its own kind-filtered walk only for a ``**kwargs`` target,
+    so the identical ``*loaders`` parameter was "declared" on one class and not on
+    the other. It is the public predicate ``AGENTS.md`` tells front-ends to call
+    INSTEAD of re-deriving settability, so the drift sat in the answer that exists
+    to prevent exactly this.
     """
-    assert declares_key(Spread, "loaders") is True, "via the accept-list"
-    assert declares_key(Forwards, "loaders") is False, "via the inline kind-filtered walk"
+    assert declares_key(Spread, "loaders") is False
+    assert declares_key(Forwards, "loaders") is False
+    assert declares_key(Spread, "lr") is True and declares_key(Forwards, "lr") is True
 
 
-def test_DRIFT_the_accept_list_admits_keys_the_constructor_can_never_receive() -> None:
-    """``accepts_key`` says yes to ``loaders`` / ``pos_only``; the engine never passes them.
+def test_the_accept_list_admits_only_keys_that_can_actually_land() -> None:
+    """``accepts_key`` and the engine now agree about which names are slots.
 
-    They fall through to a post-init ``setattr``, creating an attribute nothing
-    reads. For ``pos_only`` that is deliberate and documented (``configure()`` has
-    always done it, so both paths agree); for ``loaders`` it is not — a ``*args``
-    name is not a slot at all.
-
-    EXPECTED FIX: ``slots()`` distinguishes the two kinds, and the accept-list
-    keeps ``positional_only`` while dropping ``var_positional``.
+    A ``positional_only`` name stays accepted deliberately — it falls through to a
+    post-init ``setattr``, which is what ``configure()`` has always done for it, so
+    both paths agree. A ``var_positional`` name does not: it is not a slot at all.
     """
-    assert accepts_key(Spread, "loaders") is True
-    assert accepts_key(Spread, "pos_only") is True
-    assert "loaders" not in (_ctor_params(Spread) or set())
-    assert "pos_only" not in (_ctor_params(Spread) or set())
+    assert accepts_key(Spread, "loaders") is False, "a *args name addresses nothing"
+    assert accepts_key(Spread, "pos_only") is True, "reaches a post-init setattr, as on the configure path"
+    assert "pos_only" not in (_ctor_params(Spread) or set()), "...but never the constructor"

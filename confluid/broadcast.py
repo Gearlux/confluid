@@ -31,7 +31,15 @@ from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Prot
 from loggair import get_active_config, get_logger
 
 from confluid.fluid import Fluid, Reference
-from confluid.introspect import baked_init_attrs, init_callable, init_setattr_names, init_source_available
+from confluid.introspect import (
+    _slots_cache,
+    baked_init_attrs,
+    body_slot_names,
+    init_callable,
+    init_source_available,
+    slot_names,
+    slots,
+)
 from confluid.merger import expand_dotted_mapping
 from confluid.registry import resolve_class
 from confluid.state import _ENGINE_STATE
@@ -78,7 +86,15 @@ _ClearableT = TypeVar("_ClearableT", bound=_Clearable)
 #: and ``configure()`` cleared nothing at all — a same-qualname class redefined
 #: between calls (a notebook cell re-run) served its previous definition's
 #: accept-list with no diagnostic.
-_PASS_CACHES: List[_Clearable] = [_acceptable_keys_cache, _post_init_attrs_cache, _param_kind_cache, _receiver_cache]
+_PASS_CACHES: List[_Clearable] = [
+    _acceptable_keys_cache,
+    _post_init_attrs_cache,
+    _param_kind_cache,
+    _receiver_cache,
+    # ``introspect`` owns the slot enumeration but cannot import this module
+    # (it is the stdlib-only leaf), so the clear is registered from here.
+    _slots_cache,
+]
 
 
 def register_pass_cache(cache: _ClearableT) -> _ClearableT:
@@ -281,58 +297,24 @@ def _resolves_to_same_class(fluid_target: Any, cls: Callable[..., Any]) -> bool:
 
 
 def _get_post_init_attrs(target: type) -> frozenset[str]:
-    """Extract attribute names assigned in ``__init__`` bodies via AST.
+    """Attribute names assigned in ``__init__`` bodies — a projection, not a second walk.
 
-    Walks the class MRO, parses each class's ``__init__`` source, and collects
-    every ``self.<name> = ...`` target. Private names (underscore-prefixed) are
-    skipped to avoid broadcasting into implementation details. Results cache
-    per-class by dotted module name.
+    This is what lets broadcasting see post-init attributes (a trainer's
+    ``self.loss_fn = nn.CrossEntropyLoss()``) in addition to the constructor
+    signature, so a top-level ``loss_fn:`` reaches the trainer without being
+    duplicated under its block.
 
-    This is what lets broadcasting see post-init attributes (e.g.
-    ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's ``__init__``
-    body) in addition to the constructor signature — so a top-level YAML
-    ``loss_fn: !class:...`` flows into the Trainer without the user
-    duplicating the key under the trainer block.
+    The enumeration (AST scan ∪ ``broadcast_attrs=`` declaration ∪ build-time bake
+    table, MRO-wide) lives in ``introspect``; this is its ``body_slot_names``
+    projection. Note that is NOT the same as ``slots(...)``'s ``body_slot`` kind:
+    ``slots`` reports a name once and lets the signature claim it, while this
+    reports what the BODY assigns — ``self.model = model`` is both, and the
+    accept-list unions them. Same walk, two honest answers.
+
+    It kept its own copy of that walk until 2026-08-12, which is half of what let
+    five readers disagree about one class.
     """
-    cache_key = _cache_key(target)
-    if cache_key in _post_init_attrs_cache:
-        return _post_init_attrs_cache[cache_key]
-
-    # Declared escape hatch: ``@configurable(broadcast_attrs=[...])``. UNIONED
-    # with the scanned names, never a replacement — declaring can't lose scanned
-    # attrs (redundant in dev checkouts, load-bearing in compiled/frozen
-    # deployments where ``inspect.getsource`` fails and the scan is empty).
-    declared = getattr(target, "__confluid_broadcast_attrs__", None)
-    names: Set[str] = set(declared or ())
-    try:
-        mro = target.__mro__
-    except AttributeError:
-        result = frozenset(names)
-        _post_init_attrs_cache[cache_key] = result
-        return result
-
-    for klass in mro:
-        if klass is object:
-            continue
-        init = klass.__dict__.get("__init__")
-        if init is None:
-            continue
-        scanned = init_setattr_names(init)
-        names.update(scanned)
-        if not scanned:
-            # Source unavailable (compiled/frozen) or a genuinely empty body:
-            # fall back to the build-time bake table (``python -m confluid.bake``,
-            # emitted while source still existed). An empty-body class bakes an
-            # empty entry, so the union is a no-op for it. Applies per MRO
-            # class, so baked in-package base classes contribute too.
-            names.update(baked_init_attrs(klass) or ())
-
-    if declared is None:
-        _warn_if_init_unscannable(target)
-
-    result = frozenset(names)
-    _post_init_attrs_cache[cache_key] = result
-    return result
+    return frozenset(body_slot_names(target))
 
 
 def _warn_if_init_unscannable(target: type) -> None:
@@ -371,6 +353,18 @@ def _warn_if_init_unscannable(target: type) -> None:
     )
 
 
+#: Kinds a key may be ADDRESSED at. ``var_positional`` is excluded and that is the
+#: point: a ``*args`` name can never be passed by keyword, so a config key of that
+#: name addresses nothing — it used to pass the accept-list and land as a post-init
+#: attribute nothing reads. ``var_keyword`` is handled separately (its presence
+#: makes the whole list ``None``), and a setterless property never becomes a slot.
+_SETTABLE_KINDS: FrozenSet[str] = frozenset({"positional_only", "keyword", "class_attr", "body_slot"})
+
+#: Kinds a target NAMES. Identical to the settable set — the ``**kwargs`` catchall
+#: names nothing, which is the whole distinction :func:`declares_key` draws.
+_DECLARED_KINDS: FrozenSet[str] = _SETTABLE_KINDS
+
+
 def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     """Return constructor params (+ configurable properties + post-init attrs) for a class.
 
@@ -399,7 +393,6 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
         target = cls_or_name
     else:
         # Always resolve the string first so the cache key is module-qualified.
-
         resolved = resolve_class(cls_or_name)
         if resolved is None:
             # Truly unresolvable — cache the negative result under the raw
@@ -416,66 +409,34 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     if cache_key in _acceptable_keys_cache:
         return _acceptable_keys_cache[cache_key]
 
-    keys: Set[str] = set()
-    try:
-        # Class → its __init__; plain callable (a registered builder FUNCTION) →
-        # the callable itself. Reading ``target.__init__`` unconditionally gave a
-        # function ``object.__init__`` = ``(*args, **kwargs)``, so every builder
-        # function answered "accepts everything" (see introspect.init_callable).
-        init_method = init_callable(target)
-        if init_method is None:
-            _acceptable_keys_cache[cache_key] = None
-            return None
-        sig = inspect.signature(init_method)
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-            # A **kwargs constructor makes the accept-list unknowable, and the
-            # gates treat ``None`` as accept-EVERYTHING: every bare top-level /
-            # glob-delivered key broadcasts into instances of this class. See
-            # docs/broadcasting.md → "Classes with **kwargs constructors".
-            logger.trace(
-                f"accept-list unknown for {_dotted_name(target)} (**kwargs constructor) — "
-                f"bare broadcasts are unfiltered for this class"
-            )
-            _acceptable_keys_cache[cache_key] = None
-            return None
-        keys.update(p for p in sig.parameters if p not in ("self", "cls"))
-    except (ValueError, TypeError):
+    target_slots = slots(target)
+    if init_callable(target) is None:
+        _acceptable_keys_cache[cache_key] = None
+        return None
+    if any(slot.kind == "var_keyword" for slot in target_slots):
+        # A **kwargs constructor makes the accept-list unknowable, and the
+        # gates treat ``None`` as accept-EVERYTHING: every bare top-level /
+        # glob-delivered key broadcasts into instances of this class. See
+        # docs/broadcasting.md → "Classes with **kwargs constructors".
+        logger.trace(
+            f"accept-list unknown for {_dotted_name(target)} (**kwargs constructor) — "
+            f"bare broadcasts are unfiltered for this class"
+        )
         _acceptable_keys_cache[cache_key] = None
         return None
 
-    keys |= _class_extra_keys(target, keys)
+    # The packaged-mode diagnostic. It used to ride inside the body-slot scan; with
+    # the scan moved to ``introspect`` (stdlib-only, so it has no logger) the warning
+    # lives here, at the accept-list — which is where its consequence lands anyway:
+    # an unscannable ``__init__`` means post-init slots are absent from THIS set, so
+    # broadcasting silently stops reaching them.
+    if getattr(target, "__confluid_broadcast_attrs__", None) is None:
+        _warn_if_init_unscannable(target)
 
+    keys = {slot.name for slot in target_slots if slot.kind in _SETTABLE_KINDS}
     result = frozenset(keys)
     _acceptable_keys_cache[cache_key] = result
     return result
-
-
-def _class_extra_keys(target: Any, existing: Optional[Set[str]] = None) -> Set[str]:
-    """Class-only extras: settable class attributes and ``__init__``-body slots.
-
-    A plain callable has neither (its function attributes are not config slots,
-    and there is no body to setattr into post-construction). The body-slot names
-    come from the AST scan — instance attributes invisible via ``dir(cls)`` that
-    the engine's post-init injection loop assigns via setattr, so broadcasting
-    (and :func:`declares_key`) just needs the names. Shared by
-    :func:`_get_acceptable_keys` and :func:`declares_key` — one enumeration.
-    """
-    skip = existing or set()
-    keys: Set[str] = set()
-    if isinstance(target, type) and getattr(target, "__confluid_configurable__", False):
-        for name in dir(target):
-            if name.startswith("_") or name in skip:
-                continue
-            member = getattr(target, name, None)
-            if member is None or callable(member):
-                continue
-            if getattr(member, "__confluid_ignore__", False):
-                continue
-            if isinstance(member, property) and member.fset is None:
-                continue
-            keys.add(name)
-        keys.update(_get_post_init_attrs(target))
-    return keys
 
 
 def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
@@ -1212,11 +1173,6 @@ def accepts_any_key(target: Any) -> bool:
     return _get_acceptable_keys(cls) is None
 
 
-#: Per-pass cache for :func:`declares_key`'s named-surface enumeration — only
-#: consulted for ``**kwargs`` targets (everything else rides the accept-list).
-_declared_names_cache: Dict[Any, FrozenSet[str]] = register_pass_cache({})
-
-
 def declares_key(target: Any, key: str) -> bool:
     """True if ``target`` NAMES ``key`` — the ``**kwargs`` catchall never counts.
 
@@ -1235,28 +1191,12 @@ def declares_key(target: Any, key: str) -> bool:
     cls = _settability_target(target)
     if cls is None:
         return False
-    acceptable = _get_acceptable_keys(cls)
-    if acceptable is not None:
-        return key in acceptable
-    cache_key = _cache_key(cls)
-    declared = _declared_names_cache.get(cache_key)
-    if declared is None:
-        names: Set[str] = set()
-        try:
-            init_method = init_callable(cls)
-            if init_method is not None:
-                names = {
-                    p.name
-                    for p in inspect.signature(init_method).parameters.values()
-                    if p.name not in ("self", "cls")
-                    and p.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
-                }
-        except (ValueError, TypeError):
-            names = set()
-        names |= _class_extra_keys(cls)
-        declared = frozenset(names)
-        _declared_names_cache[cache_key] = declared
-    return key in declared
+    # ONE projection for both branches. It used to short-circuit to the
+    # accept-list here and run a separate kind-filtered walk only for a
+    # ``**kwargs`` target — so the identical ``*loaders`` parameter was
+    # "declared" on a plain class and "not declared" on one that also took
+    # ``**kwargs``. Pinned by tests/test_introspection_agreement.py.
+    return key in slot_names(cls, _DECLARED_KINDS)
 
 
 def _settability_target(target: Any) -> Any:

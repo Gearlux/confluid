@@ -158,6 +158,30 @@ capturing broadcast diagnostics monkeypatches `confluid.broadcast.logger`, not `
 diverged four ways in one day, three silently. `docs/architecture.md` records 3 and 8.
 **Docs.** `docs/concurrency.md`.
 
+### Every slot reader projects from `introspect.slots`
+
+**Rule.** "Which slots does this target have?" has ONE answer: `introspect.slots(target)`,
+returning `Slot(name, kind, annotation, default, source)` in signature order. A reader states its
+rule as a KIND SET (`slot_names(target, {"keyword", "var_keyword"})`), never as a re-derived
+"minus self/cls" filter. `body_slot_names(target)` is the sibling projection for the different
+question "what does the ``__init__`` body assign" — `slots()` reports a name once and lets the
+signature claim it, so `self.model = model` is a parameter there and a body assignment here.
+
+**Rule.** `var_positional` is NOT a slot on any surface: a `*args` name can never be passed by
+keyword, so a config key of that name addresses nothing. `positional_only` IS settable and that
+asymmetry is deliberate — it falls through to a post-init `setattr`, which is what `configure()`
+has always done for it, so both paths agree. `var_keyword` makes the accept-list `None`
+(accept-everything) and is kept by `_ctor_params`; it is never a DECLARED name.
+
+**Why.** Six readers each walked the signature with a different kind filter and gave FIVE
+different answers for one class — including the public `declares_key`, which answered OPPOSITELY
+for the same parameter depending on whether the class also took `**kwargs`. None of it raised:
+it produced a form with a missing field, a CLI flag that does nothing, a schema that omits a knob.
+`docs/architecture.md` record 12.
+
+**Pins.** `tests/test_introspection_agreement.py` — the three-answer table, and one test per
+difference stating whether it is deliberate.
+
 ### Every signature reader goes through `introspect.init_callable`
 
 **Rule.** "Whose signature governs calling this target?" has ONE answer: `init_callable(target)` —
