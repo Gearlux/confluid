@@ -77,7 +77,7 @@ Python, no ML dependencies — run them as-is):
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
 - **Tag-Based IR:** Use standard YAML tags (`!class:Name` deferred / `!class:Name()` eager, `!lazy:Name`, `!ref:path`, `!clone:path`) instead of proprietary symbols like `@`.
-- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Class`, `Instance`, `Lazy`, `Reference`, `Clone`) for internal resolution.
+- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `Partial`, `Reference`, `Clone`) for internal resolution.
 
 ### Dependency Injection
 - **Automatic Hydration:** Support `@configurable` decorator for automatic class registration and instantiation.

@@ -7,7 +7,7 @@ include/interpolation guide (docs/interpolation.md).
 
 from pathlib import Path
 
-from confluid import Instance, configurable, load_config, materialize
+from confluid import Target, configurable, load_config, materialize
 
 
 @configurable
@@ -25,7 +25,7 @@ def main() -> None:
     # Load the include tree (experiment.yaml -> base.yaml), then build the
     # Model from its class-name config block.
     cfg = load_config(str(Path(__file__).with_name("experiment.yaml")))
-    model = materialize(Instance("Model"), context=cfg)
+    model = materialize(Target("Model"), context=cfg)
 
     print(f"Loaded Object: {model}")
     print(f"Verified Layers: {model.layers} (from experiment.yaml)")
@@ -54,7 +54,7 @@ def main() -> None:
     # `fallbacks.yaml` writes its own values and includes base.yaml LAST, so the
     # paste lands after them: everything it declares is a fallback base overrides.
     fallback_cfg = load_config(str(Path(__file__).with_name("fallbacks.yaml")))
-    fallback_model = materialize(Instance("Model"), context=fallback_cfg)
+    fallback_model = materialize(Target("Model"), context=fallback_cfg)
 
     print(f"fallbacks.yaml (include LAST):  {fallback_model}")
     print("  -> base.yaml won, because the paste lands after this file's own lines")

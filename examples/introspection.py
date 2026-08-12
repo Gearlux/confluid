@@ -7,7 +7,7 @@ with ``cast``, and closes with a ``dump`` -> ``load`` round-trip.
 
 from typing import Optional
 
-from confluid import Instance, cast, configurable, dump, load, materialize, resolve
+from confluid import Target, cast, configurable, dump, load, materialize, resolve
 
 
 @configurable
@@ -34,7 +34,7 @@ backbone: !class:Backbone(depth=101)
 def main() -> None:
     # (a) resolve(): broadcast-resolved MARKERS — nothing is instantiated.
     markers = resolve(load_config_text(DOC))
-    assert isinstance(markers["backbone"], Instance), "still a Fluid marker, not a live object"
+    assert isinstance(markers["backbone"], Target), "still a Fluid marker, not a live object"
     print(f"resolve(): backbone stays a {type(markers['backbone']).__name__} marker")
 
     # (b) solidify=False: constructed (cheap) but the expensive solidify() is suppressed.

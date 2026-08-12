@@ -7,7 +7,7 @@ the expensive ``solidify()`` finalize (e.g. building a model backbone).
 
 from typing import Any
 
-from confluid import Class, Instance, PartialClass, Reference, configurable, flow, load, materialize, resolve
+from confluid import PartialClass, Reference, Target, configurable, flow, load, materialize, resolve
 
 
 def test_resolve_returns_markers_without_instantiating() -> None:
@@ -20,9 +20,9 @@ def test_resolve_returns_markers_without_instantiating() -> None:
             built.append(name)
             self.name = name
 
-    doc = {"a": Instance(_R1, name="x")}
+    doc = {"a": Target(_R1, name="x")}
     out = resolve(doc)
-    assert isinstance(out["a"], Instance)
+    assert isinstance(out["a"], Target)
     assert out["a"].kwargs["name"] == "x"
     assert built == []  # never constructed
 
@@ -32,7 +32,7 @@ def test_resolve_merges_broadcast_into_kwargs() -> None:
 
     Mirrors the flat-broadcast shape of sonair's train config: a top-level
     ``trainer`` plus sibling ``inner`` / ``n`` that broadcast into it. The
-    deferred ``Class`` (no-parens ``!class:``) is the form real configs use.
+    deferred ``Target`` (no-parens ``!class:``) is the form real configs use.
     """
 
     @configurable
@@ -48,13 +48,13 @@ def test_resolve_merges_broadcast_into_kwargs() -> None:
             self.k = k
 
     doc = {
-        "trainer": Class(_R2Trainer, name="t"),  # deferred (no-parens !class:) form
-        "inner": Instance(_R2Inner, k=3),
+        "trainer": Target(_R2Trainer, name="t"),  # deferred (no-parens !class:) form
+        "inner": Target(_R2Inner, k=3),
         "n": 9,
     }
     out = resolve(doc)
     trainer = out["trainer"]
-    assert isinstance(trainer, (Class, Instance))
+    assert isinstance(trainer, (Target, Target))
     # `n` (scalar) and `inner` (Fluid) both broadcast into the trainer's accept-list.
     assert trainer.kwargs["n"] == 9
     assert trainer.kwargs["inner"] is out["inner"]  # shared by identity (fan-out detectable)
@@ -75,8 +75,8 @@ def test_resolve_shares_ref_by_identity_for_fanout() -> None:
             self.p = p
 
     doc = {
-        "node": Instance(_R3, src=Reference("shared"), alt=Reference("shared")),
-        "shared": Instance(_R3Src, p="z"),
+        "node": Target(_R3, src=Reference("shared"), alt=Reference("shared")),
+        "shared": Target(_R3Src, p="z"),
     }
     out = resolve(doc)
     assert out["node"].kwargs["src"] is out["node"].kwargs["alt"]
@@ -96,7 +96,7 @@ def test_resolve_preserves_lazy_markers() -> None:
         def __init__(self, lr: float = 0.0) -> None:
             self.lr = lr
 
-    doc = {"node": Instance(_R4, opt=PartialClass(_R4Opt, lr=0.1))}
+    doc = {"node": Target(_R4, opt=PartialClass(_R4Opt, lr=0.1))}
     out = resolve(doc)
     assert isinstance(out["node"].kwargs["opt"], PartialClass)
 
@@ -115,7 +115,7 @@ def test_materialize_solidify_false_builds_but_skips_solidify() -> None:
             calls.append(self.name)
             self.built = True
 
-    doc = {"m": Instance(_R5, name="h")}
+    doc = {"m": Target(_R5, name="h")}
 
     g = materialize(doc, solidify=False)
     assert isinstance(g["m"], _R5)  # constructed
@@ -149,13 +149,13 @@ def test_flow_solidify_false_skips_nested_solidify() -> None:
         def solidify(self) -> None:
             calls.append(self.name)
 
-    root = flow(Instance(_R6Root, name="root", leaf=Instance(_R6Leaf, name="leaf")), solidify=False)
+    root = flow(Target(_R6Root, name="root", leaf=Target(_R6Leaf, name="leaf")), solidify=False)
     assert isinstance(root, _R6Root)
     assert calls == []  # neither root nor nested leaf solidified
 
     # Default path still solidifies (and the flag is restored — no leakage).
     calls.clear()
-    flow(Instance(_R6Leaf, name="again"))
+    flow(Target(_R6Leaf, name="again"))
     assert calls == ["again"]
 
 

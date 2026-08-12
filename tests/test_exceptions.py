@@ -18,7 +18,6 @@ import confluid
 from confluid import (
     AmbiguousClassError,
     CircularIncludeError,
-    Class,
     ConfigFileNotFoundError,
     ConfigurableDefinitionError,
     ConfigurationError,
@@ -28,6 +27,7 @@ from confluid import (
     Reference,
     ReferenceResolutionError,
     ScopeError,
+    Target,
     UnknownClassError,
     ValidationModeError,
     WorkspaceEnvError,
@@ -111,7 +111,7 @@ def test_circular_include_raises_circular_include_error(tmp_path: Path) -> None:
 
 def test_unknown_class_target_raises_unknown_class_error() -> None:
     with pytest.raises(UnknownClassError) as ei:
-        flow(Class("DefinitelyNotARegisteredClass"))
+        flow(Target("DefinitelyNotARegisteredClass"))
     assert isinstance(ei.value, ValueError)
 
 
@@ -164,7 +164,7 @@ class _BoomValueError:
 
 def test_unrebuildable_constructor_failure_raises_construction_error() -> None:
     with pytest.raises(ConstructionError) as ei:
-        flow(Class(_BoomUnrebuildable))
+        flow(Target(_BoomUnrebuildable))
     assert isinstance(ei.value, RuntimeError)
     assert isinstance(ei.value.__cause__, _Unrebuildable)
 
@@ -173,7 +173,7 @@ def test_rebuildable_constructor_failure_preserves_original_class() -> None:
     # The ``type(exc)(msg)`` preserving path must stay untouched: a plain
     # ValueError from a constructor re-raises as ValueError, NOT ConstructionError.
     with pytest.raises(ValueError) as ei:
-        flow(Class(_BoomValueError))
+        flow(Target(_BoomValueError))
     assert not isinstance(ei.value, ConfluidError)
 
 

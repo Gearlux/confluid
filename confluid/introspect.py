@@ -249,13 +249,13 @@ def init_partial_setattr_names(init_func: Any) -> Set[str]:
     }
 
 
-#: The call names that mark a body slot deferred. The ``Lazy*`` spellings are the
-#: pre-rename ones and MUST stay until the aliases go: this scan matches on the
-#: NAME in the source, so dropping them makes every consumer still written as
-#: ``self.x = LazyClass(...)`` — which is all of them, since the alias exists so
-#: they need not change — silently stop being deferred. No error, no diagnostic:
-#: the slot is simply built, and an optimizer gets constructed without its params.
-_PARTIAL_CALL_NAMES = ("PartialClass", "Partial", "LazyClass", "Lazy")
+#: The call names that mark a body slot deferred. This scan matches on the NAME in
+#: the SOURCE, so a name dropped here stops deferring silently — no error, no
+#: diagnostic, the slot is simply built and an optimizer is constructed without its
+#: params. The pre-rename ``PartialClass`` / ``Partial`` spellings were carried here for
+#: exactly that reason and went with the aliases (2026-08-11); adding a new spelling
+#: means adding it here in the same change.
+_PARTIAL_CALL_NAMES = ("PartialClass", "Partial")
 
 
 def _is_lazy_call(value: Any) -> bool:

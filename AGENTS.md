@@ -541,10 +541,18 @@ parity files (`test_basic_parity` / `test_names_parity` / `test_parity` / `test_
 ### Configuration reports
 
 **Rule — naming.** The marker, the annotation and the YAML key are ONE word: `Partial` /
-`PartialClass` / `partial_param_names` / `_partial_`. `Class` / `Instance` / `Lazy` / `LazyClass` /
-`lazy_param_names` survive only as deprecation aliases, deleted with the tag spelling. `Class` and
-`Instance` are the SAME class now — code discriminating with `isinstance(x, Instance)` must read
-`x.partial`. **Pins.** `tests/test_partial.py` (the deprecated-alias group).
+`PartialClass` / `partial_param_names` / `_partial_`. The deprecation aliases `Class` / `Instance` /
+`Lazy` / `LazyClass` / `lazy_param_names` and the `confluid.lazy` shim module are DELETED
+(2026-08-11) — importing one now fails loudly, which is the point. `Class` and `Instance` had
+become the SAME class, so code discriminating with `isinstance(x, Instance)` reads `x.partial`.
+
+**Rule.** `introspect._PARTIAL_CALL_NAMES` is the pinned list of call names that mark a body slot
+deferred, and it matches on the NAME IN THE SOURCE — a name missing from it does not raise, the
+slot is simply BUILT and a runtime-injection target reaches its constructor without its argument.
+Adding a spelling means adding it there in the same change.
+
+**Pins.** `tests/test_partial.py` (`::test_the_deprecated_aliases_are_removed`,
+`::test_the_body_slot_scan_matches_the_canonical_call_names_only`).
 
 **Rule.** `confluid/report.py` is a dependency LEAF (stdlib + loggair). Only `ConfigurationReport` and
 `collect_report` are top-level exports. Every instrumentation site is `if report is not None`-guarded

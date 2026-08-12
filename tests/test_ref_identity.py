@@ -211,10 +211,10 @@ b: !ref:loader.tail
 
 
 def test_ref_inside_list_shares_instance() -> None:
-    """!ref: inside a YAML list must resolve to the same Instance marker as the source.
+    """!ref: inside a YAML list must resolve to the same Target marker as the source.
 
-    Note: _deep_flow only materializes Instance markers at the top dict level;
-    markers buried inside plain lists remain as Instance markers. The identity
+    Note: _deep_flow only materializes Target markers at the top dict level;
+    markers buried inside plain lists remain as Target markers. The identity
     invariant we care about (``!ref: == same object``) is tested on the raw
     markers via ``flow=False``.
     """
@@ -256,15 +256,15 @@ def test_ref_preserves_identity_without_flow() -> None:
         def __init__(self) -> None:
             pass
 
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
     yaml_str = """
 thing: !class:Thing()
 alias: !ref:thing
 """
     result: Any = load(yaml_str, flow=False)
-    # Post-resolver, both should point at the SAME Instance marker
-    assert isinstance(result["thing"], Instance)
+    # Post-resolver, both should point at the SAME Target marker
+    assert isinstance(result["thing"], Target)
     assert result["alias"] is result["thing"]
 
 

@@ -26,11 +26,11 @@ import pytest
 
 from confluid import NoBroadcast, configurable, configure, get_registry, load, materialize, resolve
 from confluid.dumper import dump
-from confluid.fluid import Instance
+from confluid.fluid import Target
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    marker = Instance(target)
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -403,9 +403,9 @@ def test_in_block_dotted_key_merges_with_sibling_block_materialize() -> None:
 
 def test_direct_flow_honours_glob_kwargs() -> None:
     """A hand-built marker flowed OUTSIDE materialize still honours '**' kwargs."""
-    from confluid import Class, flow
+    from confluid import Target, flow
 
-    child_stub = Class("_Node")
+    child_stub = Target("_Node")
     marker = _inst("_Node", name="root", child=child_stub, **{"**": {"lr": 0.5}})
     root = flow(marker)
     assert root.lr == 0.5
@@ -465,9 +465,9 @@ mid:
 
 
 def test_direct_flow_star_kwargs_feed_nested_stubs() -> None:
-    from confluid import Class, flow
+    from confluid import Target, flow
 
-    marker = _inst("_Node", name="root", child=Class("_Node"), **{"*": {"lr": 0.5}})
+    marker = _inst("_Node", name="root", child=Target("_Node"), **{"*": {"lr": 0.5}})
     root = flow(marker)
     assert root.lr == 0.0  # '*' addresses the children, not the receiver
     assert flow(root.child).lr == 0.5
@@ -538,7 +538,7 @@ def test_inner_rider_merges_with_outer_rider_configure() -> None:
 
 
 def test_two_matched_blocks_merge_strict_routing_configure() -> None:
-    """Class-name AND instance-name blocks hoisting the same sub-block merge."""
+    """Target-name AND instance-name blocks hoisting the same sub-block merge."""
     root = _tree()
     configure(root, config="_Node:\n  mid:\n    momentum: 0.1\nroot.mid.lr: 0.5")
     mid = root.child

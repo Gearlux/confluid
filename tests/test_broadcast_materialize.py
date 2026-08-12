@@ -1,14 +1,14 @@
 from typing import Any
 
-from confluid import Instance, configurable, materialize, register
+from confluid import Target, configurable, materialize, register
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -75,7 +75,7 @@ def test_broadcast_priority() -> None:
 
 def test_deep_broadcast_propagation() -> None:
     """Root-level scalars propagate through nested class instances (mnist_train_minimal scenario)."""
-    from confluid import Class
+    from confluid import Target
 
     @configurable
     class Inner:
@@ -101,10 +101,10 @@ def test_deep_broadcast_propagation() -> None:
     assert isinstance(result.inner, Inner)
     assert result.inner.max_epochs == 10
 
-    # Case 2: Inner is a Python default Class (not in config) — the mnist_train_minimal scenario
+    # Case 2: Inner is a Python default Target (not in config) — the mnist_train_minimal scenario
     @configurable
     class OuterDeferred:
-        def __init__(self, inner: "Inner" = Class(Inner), name: str = "outer") -> None:  # type: ignore[assignment]
+        def __init__(self, inner: "Inner" = Target(Inner), name: str = "outer") -> None:  # type: ignore[assignment]
             self.inner = inner
             self.name = name
 
@@ -166,7 +166,7 @@ def test_parameter_aware_broadcast_filtering() -> None:
 
 def test_unregistered_class_broadcast_filtering() -> None:
     """Deferred defaults with unregistered class objects must filter by actual constructor params."""
-    from confluid import Class, flow
+    from confluid import Target, flow
 
     # Unregistered classes — not in confluid registry
     class PlainTrainer:
@@ -183,8 +183,8 @@ def test_unregistered_class_broadcast_filtering() -> None:
     class Pipeline:
         def __init__(
             self,
-            trainer: Any = Class(PlainTrainer),
-            loader: Any = Class(PlainLoader),
+            trainer: Any = Target(PlainTrainer),
+            loader: Any = Target(PlainLoader),
             experiment_name: str = "default",
         ) -> None:
             self.trainer = trainer
@@ -216,14 +216,14 @@ def test_unregistered_class_broadcast_filtering() -> None:
 
 
 def test_broadcast_into_body_assigned_class_attribute() -> None:
-    """Broadcasting reaches Class attrs assigned in __init__'s body.
+    """Broadcasting reaches Target attrs assigned in __init__'s body.
 
     Mirrors the Matrainer Trainer pattern: deferred injection points are
     assigned inside __init__ rather than pre-declared in the constructor
     signature. The broadcaster must reach them just like it does for
     constructor defaults.
     """
-    from confluid import Class, flow
+    from confluid import Target, flow
 
     @configurable
     class InnerCfg:
@@ -236,7 +236,7 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
         def __init__(self, name: str = "outer") -> None:
             # Body-assigned: no `inner` ctor param; broadcaster must still reach it.
             self.name = name
-            self.inner = Class(InnerCfg)
+            self.inner = Target(InnerCfg)
 
     register(InnerCfg)
     register(OuterCfg)
@@ -246,7 +246,7 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
     result = materialize(data, context=config)
 
     assert isinstance(result, OuterCfg)
-    # A body slot holding a plain ``Class(...)`` is BUILT — ``partial`` is the only
+    # A body slot holding a plain ``Target(...)`` is BUILT — ``partial`` is the only
     # thing that withholds construction, and this slot declared none. Broadcasting
     # still reached it: pass 7 merges the keys, pass 8 constructs.
     inner = result.inner

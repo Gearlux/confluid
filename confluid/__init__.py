@@ -46,13 +46,9 @@ from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
 
-# `Lazy` is an IMPORT alias, not `Lazy = Partial`: a plain assignment loses the
-# alias's genericity for a type checker, so every downstream `Lazy[DataLoader]`
 # became `Bad number of arguments for type alias, expected 0, given 1` (measured
 # in three real slots). An import alias stays the same generic alias.
-from confluid.partial import Partial  # noqa: F401  (deprecated spelling)
-from confluid.partial import Partial as Lazy
-from confluid.partial import partial_param_names
+from confluid.partial import Partial, partial_param_names
 from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
@@ -71,19 +67,6 @@ from confluid.state import active_context, collect_report
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
 
 # --------------------------------------------------------------------------- #
-# Deprecated aliases — REMOVED with the tag spelling (phase 5).
-#
-# `Class`/`Instance` were the deferred/eager marker pair `Target` replaced; they
-# are the SAME class now, so `isinstance(x, Instance)` no longer separates them —
-# code that relied on that wants `x.partial`. `Lazy`/`LazyClass`/`lazy_param_names`
-# are the old spelling of `Partial`/`PartialClass`/`partial_param_names`; the
-# rename made the Python API and the YAML `_partial_` key the same word.
-# --------------------------------------------------------------------------- #
-Class = Target
-Instance = Target
-LazyClass = PartialClass
-lazy_param_names = partial_param_names
-
 __all__ = [
     "ConfluidError",
     "ConfigurationError",
@@ -134,11 +117,6 @@ __all__ = [
     "PartialClass",
     "partial_param_names",
     # deprecated (see the alias block above)
-    "Class",
-    "Instance",
-    "Lazy",
-    "LazyClass",
-    "lazy_param_names",
     "partial_param_names",
     "Mandatory",
     "mandatory_param_names",

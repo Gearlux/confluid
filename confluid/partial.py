@@ -12,13 +12,13 @@ base, not the concrete default) — ``Partial[Optimizer]``, not ``Partial[Adam]`
 
     from torch.optim import Adam, Optimizer
 
-    from confluid import Class, configurable, flow
+    from confluid import Target, configurable, flow
     from confluid.partial import Partial
 
     @configurable
     class Trainer:
-        def __init__(self, optimizer: Partial[Optimizer] = Class(Adam, lr=1e-3)):
-            self.optimizer = optimizer  # stays a Class stub
+        def __init__(self, optimizer: Partial[Optimizer] = Target(Adam, lr=1e-3)):
+            self.optimizer = optimizer  # stays a Target stub
 
         def configure_optimizers(self):
             return flow(self.optimizer, params=self.parameters())
@@ -47,8 +47,8 @@ Partial = Annotated[Union[T, Fluid], _PARTIAL_MARKER]
 
 ``T`` is the type the slot flows into once ``flow()``'d; the ``Fluid`` arm is
 what makes the alias honest to static checkers — pre-flow, the slot holds a
-deferred ``Class``/``PartialClass`` stub, so ``optimizer: Partial[Optimizer] =
-Class(Adam, lr=1e-3)`` type-checks (a ``Class`` *is* a ``Fluid``). Use the
+deferred ``Target``/``PartialClass`` stub, so ``optimizer: Partial[Optimizer] =
+Target(Adam, lr=1e-3)`` type-checks (a ``Target`` *is* a ``Fluid``). Use the
 interface type for ``T`` (``Partial[Optimizer]``); ``Partial[Any]`` stays valid when
 the target type is genuinely open. Post-flow narrowing is served by
 ``confluid.cast(node, Optimizer)``. The marker only affects runtime inspection

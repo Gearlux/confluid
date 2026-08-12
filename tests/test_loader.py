@@ -5,7 +5,7 @@ import pytest
 import yaml
 
 from confluid import configurable, get_registry, load, load_config
-from confluid.fluid import Instance
+from confluid.fluid import Target
 from confluid.loader import ConfluidLoader
 
 
@@ -34,7 +34,7 @@ def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> No
     """A YAML kwarg literally named ``target`` must not collide with the marker ctors.
 
     The Fluid constructors' own first parameter is ``target`` — building a marker via
-    ``Instance(name, **mapping)`` raised ``got multiple values for argument 'target'``
+    ``Target(name, **mapping)`` raised ``got multiple values for argument 'target'``
     whenever a config carried a ``target:`` kwarg (e.g. recordstream ``ConfigureOp.target``).
     The loader assigns kwargs post-construction instead.
     """
@@ -62,14 +62,14 @@ def test_kwarg_named_target_survives_the_legacy_class_spelling() -> None:
     """The colon-free ``!class`` compat constructor is collision-proof too.
 
     It was the ONE tag constructor building its marker via
-    ``Instance(name, **kwargs)`` instead of ``_make_fluid``, so the legacy
+    ``Target(name, **kwargs)`` instead of ``_make_fluid``, so the legacy
     spelling raised ``got multiple values for argument 'target'`` on a config
     the modern ``!class:`` form loads fine.
     """
     data = yaml.load("x: !class Widget(target=inner, param=low)", Loader=ConfluidLoader)
     marker = data["x"]
 
-    assert isinstance(marker, Instance)
+    assert isinstance(marker, Target)
     assert marker.target == "Widget"
     assert marker.kwargs == {"target": "inner", "param": "low"}
 
@@ -93,14 +93,14 @@ def test_load_config_with_import() -> None:
 
 
 def test_load_with_custom_tags(tmp_path: Path) -> None:
-    from confluid.fluid import Class, Reference
+    from confluid.fluid import Reference, Target
 
     config_file = tmp_path / "tags.yaml"
     config_file.write_text("model: !class:Model\n  layers: 10\nref: !ref:base_lr")
 
     data = load_config(config_file)
-    # Tags produce Class/Reference objects
-    assert isinstance(data["model"], Class)
+    # Tags produce Target/Reference objects
+    assert isinstance(data["model"], Target)
     assert data["model"].target == "Model"
     assert data["model"].kwargs["layers"] == 10
     assert isinstance(data["ref"], Reference)
@@ -115,13 +115,13 @@ def test_load_config_root_level_class(tmp_path: Path) -> None:
     that point at a YAML file containing a single class doc don't blow
     up in `_process_imports` (which assumes a dict).
     """
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     config_file = tmp_path / "root_class.yaml"
     config_file.write_text("!class:Model\nlayers: 10\nactivation: relu\n")
 
     data = load_config(config_file)
-    assert isinstance(data, Class)
+    assert isinstance(data, Target)
     assert data.target == "Model"
     assert data.kwargs["layers"] == 10
     assert data.kwargs["activation"] == "relu"
@@ -152,7 +152,7 @@ def _register_grammar_model() -> None:
 
 def _parse_tags(text: str) -> dict:
     """Parse a YAML string through ConfluidLoader (the tag-aware loader class),
-    WITHOUT materializing — so the raw ``Class`` / ``Instance`` Fluids are visible."""
+    WITHOUT materializing — so the raw ``Target`` / ``Target`` Fluids are visible."""
     from typing import cast
 
     import yaml
@@ -163,37 +163,37 @@ def _parse_tags(text: str) -> dict:
 
 
 def test_class_form_bare_parses_to_deferred_class() -> None:
-    """``!class:Model`` (no parens) parses to a deferred ``Class`` — never built."""
-    from confluid.fluid import Class
+    """``!class:Model`` (no parens) parses to a deferred ``Target`` — never built."""
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model\n")
-    assert isinstance(data["m"], Class)
+    assert isinstance(data["m"], Target)
     assert data["m"].kwargs == {}
 
 
 def test_class_form_bare_with_body_keeps_deferred_with_kwargs() -> None:
     """A bare ``!class:Model`` plus a mapping body stays deferred but captures kwargs."""
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model\n  layers: 9\n")
-    assert isinstance(data["m"], Class)
+    assert isinstance(data["m"], Target)
     assert data["m"].kwargs["layers"] == 9
 
 
 def test_class_form_empty_parens_parses_to_instance() -> None:
-    """``!class:Model()`` (empty parens) parses to an eager ``Instance``."""
-    from confluid.fluid import Instance
+    """``!class:Model()`` (empty parens) parses to an eager ``Target``."""
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model()\n")
-    assert isinstance(data["m"], Instance)
+    assert isinstance(data["m"], Target)
 
 
 def test_class_form_inline_kwargs_parses_to_instance() -> None:
-    """``!class:Model(layers=7)`` parses to an eager ``Instance`` carrying coerced kwargs."""
-    from confluid.fluid import Instance
+    """``!class:Model(layers=7)`` parses to an eager ``Target`` carrying coerced kwargs."""
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model(layers=7)\n")
-    assert isinstance(data["m"], Instance)
+    assert isinstance(data["m"], Target)
     # Inline values are coerced to native types at parse time (parse_value).
     assert data["m"].kwargs["layers"] == 7
     assert isinstance(data["m"].kwargs["layers"], int)
@@ -270,9 +270,9 @@ def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None)
     # Inline width=7 has no body entry → survives. Inline layers=99 is overridden
     # by the body's layers=3.
     built = _parse_tags("m: !class:Model(layers=99,extra=7)\n  layers: 3\n")["m"]
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
-    assert isinstance(built, Instance)
+    assert isinstance(built, Target)
     assert built.kwargs["layers"] == 3  # block body wins on conflict
     assert built.kwargs["extra"] == 7  # inline-only key is preserved, not discarded
 
@@ -337,9 +337,9 @@ def test_global_safe_loader_stays_clean() -> None:
     with pytest.raises(yaml.constructor.ConstructorError):
         yaml.safe_load("r: !ref:base\n")
     # ...while confluid's own entry point parses them fine.
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
-    assert isinstance(load("m: !class:Model\n", flow=False)["m"], Class)
+    assert isinstance(load("m: !class:Model\n", flow=False)["m"], Target)
 
 
 def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:

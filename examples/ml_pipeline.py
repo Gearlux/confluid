@@ -14,7 +14,7 @@ from typing import Any, List, Optional
 
 import yaml
 
-from confluid import Class, configurable, configure, flow, register
+from confluid import Target, configurable, configure, flow, register
 
 # --- 1. Define modular components ---
 
@@ -63,9 +63,9 @@ class Trainer:
         # is valid; the dependency graph is wired afterwards via ``configure`` (build → configure → use).
         self.model = model
         self.epochs = epochs
-        # The optimizer arrives as a deferred recipe (a ``Class`` stub by default, or a
+        # The optimizer arrives as a deferred recipe (a ``Target`` stub by default, or a
         # ``!class:Adam(...)`` from YAML). The *live* optimizer is materialized lazily by the property.
-        self.optimizer: Any = Class(AdamOptimizer)
+        self.optimizer: Any = Target(AdamOptimizer)
 
     @property
     def built_optimizer(self) -> Any:
@@ -73,7 +73,7 @@ class Trainer:
 
         A recomputing property so it reflects the recipe set by ``configure`` (a cached one could
         freeze the pre-config default — see ``Model.weights``). ``flow`` is idempotent: a recipe
-        (``Class`` / ``!class:`` Fluid) or an already-live object both resolve correctly.
+        (``Target`` / ``!class:`` Fluid) or an already-live object both resolve correctly.
         """
         return flow(self.optimizer)
 
@@ -100,7 +100,7 @@ Model:
 def main() -> None:
     # Zero-arg construction works — no functional work happens in any constructor.
     print("--- Zero-Arg Construction ---")
-    print(Trainer())  # Trainer(epochs=5, model=None, optimizer=<Class AdamOptimizer>)
+    print(Trainer())  # Trainer(epochs=5, model=None, optimizer=<Target AdamOptimizer>)
 
     # Build the components, then apply the hierarchical config post-construction.
     model = Model()

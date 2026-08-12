@@ -21,15 +21,15 @@ spellings::
     from torch import nn
     from torch.optim import Adam, Optimizer
 
-    from confluid import Class, Partial, configurable, flow
+    from confluid import Target, Partial, configurable, flow
     from confluid.mandatory import Mandatory
 
     @configurable
     class Trainer:
         def __init__(
             self,
-            model: Mandatory[nn.Module] = Class(TimmModel),
-            optimizer: Mandatory[Partial[Optimizer]] = Class(Adam, lr=1e-3),
+            model: Mandatory[nn.Module] = Target(TimmModel),
+            optimizer: Mandatory[Partial[Optimizer]] = Target(Adam, lr=1e-3),
         ):
             self.model = model          # required contract slot
             self.optimizer = optimizer  # required AND kept deferred until run time
@@ -57,8 +57,8 @@ Mandatory = Annotated[Union[T, Fluid], _MANDATORY_MARKER]
 """Type alias: ``Mandatory[T]`` is ``Annotated[Union[T, Fluid], _MANDATORY_MARKER]``.
 
 ``T`` is the interface the slot flows into; the ``Fluid`` arm admits the deferred
-``Class``/``PartialClass`` stub a dependency slot holds pre-flow, so
-``model: Mandatory[nn.Module] = Class(TimmModel)`` type-checks under strict mypy
+``Target``/``PartialClass`` stub a dependency slot holds pre-flow, so
+``model: Mandatory[nn.Module] = Target(TimmModel)`` type-checks under strict mypy
 (previously this required spelling ``Mandatory[Union[nn.Module, Fluid]]`` by
 hand). The marker only affects runtime inspection (see
 :func:`is_mandatory_annotation`).

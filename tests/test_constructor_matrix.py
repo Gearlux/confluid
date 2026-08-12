@@ -163,7 +163,7 @@ def test_configure_reaches_every_constructor_shape(shape: type) -> None:
 @pytest.mark.parametrize("shape", SHAPES, ids=lambda c: c.__name__)
 def test_runtime_injection_reaches_every_constructor_shape(shape: type) -> None:
     """`flow(marker, k=42)` — the channel that bypasses the document entirely."""
-    assert flow(confluid.Class(shape), k=42).k == 42
+    assert flow(confluid.Target(shape), k=42).k == 42
 
 
 # --------------------------------------------------------------------------- #
