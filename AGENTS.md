@@ -266,6 +266,24 @@ with one space, produced a target named `Model(a=1,` and dropped both kwargs, wi
 **Rule — scope grammar.** `loader._parse_scope_suffix` is the ONE splitter for every activation
 spelling (the tag suffix, the `_scope_:` value, a CLI `--scope` argument). Never add a second.
 
+**Rule — the QUOTED-STRING spelling refuses what it cannot honour.** A marker written as a
+quoted string (`optimizer: "!class:Adam(lr=!ref:base)"`) is a THIRD grammar, parsed by
+`Resolver.resolve` / `_parse_class_string`, not by a tag constructor. It parses `!class:` and
+`!ref:` ONLY, and only OUTSIDE a marker's own kwargs. Every other combination now raises a
+`ConfigurationError` quoting the offending text and naming the plain-YAML line to write
+(`resolver._refuse_marker_string` / `_plain_yaml_for`). The refusal matches the exact marker
+prefixes, NEVER a bare leading `!` — an ordinary value may start with one. It carries no
+`file:line` because a scalar has none to carry (only markers are `_stamp_loc`-ed); that is
+tracked in `TASKS.md`, not worked around.
+
+**Rule — the whole path is DELETED in 0.4.0 with the tags.** It exists only to work around a
+tag limitation (YAML forbids two tags on one node, so a nested `!ref:` had to be quoted), and
+the reserved keys have no such limitation. Do NOT extend it — no new marker support, no
+codemod rule. Census 2026-08-12: zero configs use it workspace-wide.
+
+**Pins.** `tests/test_loader.py` — the quoted-marker refusal group (incl.
+`::test_an_ordinary_value_starting_with_a_bang_is_untouched`, the false-positive guard).
+
 **Rule — the TAG spelling is DEPRECATED and goes in 0.4.0.** Parsing a tag emits a
 `FutureWarning` naming the file, the line and `confluid-migrate`, ONCE PER DOCUMENT (per-tag
 buries the message; per-process names one config and hides the rest). `FutureWarning`, not

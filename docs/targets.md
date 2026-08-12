@@ -121,11 +121,15 @@ Four grammar notes (all pinned by the test suite):
   form: it can't contain **spaces** (YAML ends a tag at whitespace — write
   `(a=1,b=2)`, not `(a=1, b=2)`), and it can't carry a **nested tag**
   (`!ref:` / another `!class:`), because YAML allows only one tag per node.
-- **For a nested `!ref:` / `${ENV}`, or for spaces, quote the tag.** The
-  quoted-string form `"!class:Adam(lr=!ref:base_lr)"` is resolved through the
-  resolver, which both coerces scalars *and* resolves a nested reference. (A
-  block body works too: nested tags are valid as block values.) Note `1e-3`
-  is *not* a YAML float — write `1.0e-3` or `0.001`.
+- **For a nested reference, spaces, or `${ENV}` — use the reserved keys.** The
+  tag form's escape hatch was to QUOTE it (`"!class:Adam(lr=!ref:base_lr)"`), and
+  that quoted-string form is a third grammar with sharp edges: it parses only
+  `!class:` and `!ref:`, refuses the rest, and is honoured by nothing inside a
+  marker's own kwargs. It is deprecated and removed in 0.4.0. `_target_` has none
+  of these problems, because nesting a mapping in a mapping needs no escape at
+  all: `{_target_: Adam, lr: ${ref:base_lr}}`. (A tag block body works too:
+  nested tags are valid as block values.) Note `1e-3` is *not* a YAML float —
+  write `1.0e-3` or `0.001`.
 - **Inline kwargs and a block body merge.** When both are present the inline
   `(k=v)` kwargs combine with the block; on a key in both, the **block body
   wins** (it's later in document order — last-write-wins). Inline-only keys are
@@ -205,11 +209,13 @@ def configure_optimizers(self):
     return flow(self.optimizer, params=self.parameters())
 ```
 
-> ⚠️ In the legacy tag spelling, `!lazy:` must be a real (unquoted) YAML tag.
-> The "quote the tag" trick does **not** apply: a quoted `"!lazy:…"` stays a
-> plain **string** — no marker, no error, no warning. That silent degradation is
-> exactly what the reserved-key format removes, since `_partial_: true` is
-> ordinary YAML and a malformed marker raises a located `ConfigurationError`.
+> ⚠️ In the legacy tag spelling, `!lazy:` must be a real (unquoted) YAML tag —
+> the "quote the tag" trick does **not** apply to it. A quoted `"!lazy:…"` used
+> to become a plain **string**: no marker, no error, no warning, and a deferred
+> optimizer reached its constructor as the literal text `!lazy:Adam(lr=0.01)`.
+> Since 0.3.0 it raises instead, naming the plain-YAML line to write. Writing
+> `_partial_: true` avoids the question — it is ordinary YAML, so there is no
+> escape hatch to get wrong.
 
 **Which of the two do I want?** Ask whether the target could be built from config
 alone:

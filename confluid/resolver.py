@@ -56,6 +56,71 @@ _MARKER_RESOLVERS: FrozenSet[str] = frozenset({"ref", "clone"})
 _TARGET_CALL_RE = re.compile(r"^([\w.@=/,~$-]+)\((.*)\)$")
 
 
+#: Marker prefixes the QUOTED-STRING spelling can be written with. Only the first
+#: two are ever honoured, and only outside a marker's own kwargs — the rest, and
+#: every one of them in the wrong position, used to reach the config as the literal
+#: TEXT with no error, no warning and no diagnostic. See :func:`_refuse_marker_string`.
+_STRING_MARKERS_PARSED: FrozenSet[str] = frozenset({"!class:", "!ref:"})
+_STRING_MARKERS_ALL: Tuple[str, ...] = ("!class:", "!lazy:", "!ref:", "!clone:", "!notscope:", "!scope:")
+
+
+def _plain_yaml_for(value: str) -> str:
+    """The reserved-key spelling of a quoted marker string, for the error message.
+
+    Best effort by design: the point is to hand the author the line to write, not
+    to be a second parser. An unparseable suffix falls back to naming the keys.
+    """
+    from confluid.loader import CLONE_KEY, PARTIAL_KEY, REF_KEY, SCOPE_KEY, TARGET_KEY
+
+    prefix = next((m for m in _STRING_MARKERS_ALL if value.startswith(m)), "")
+    body = value[len(prefix) :].strip()
+    if prefix in ("!ref:", "!clone:"):
+        key = REF_KEY if prefix == "!ref:" else CLONE_KEY
+        return f"{{{key}: {body}}}" if body else f"{{{key}: <path>}}"
+    if prefix in ("!scope:", "!notscope:"):
+        key = SCOPE_KEY if prefix == "!scope:" else "_notscope_"
+        dim, _, val = body.partition("=")
+        return f"{{{key}: {{{dim or '<dimension>'}: {val}}}}}"
+    call = _TARGET_CALL_RE.match(body)
+    name = call.group(1) if call else body
+    parts = [f"{TARGET_KEY}: {name or '<Target>'}"]
+    if prefix == "!lazy:":
+        parts.append(f"{PARTIAL_KEY}: true")
+    parts.extend(f"{k}: {v}" for k, v in (_split_inline_pairs(call.group(2)) if call else []))
+    return "{" + ", ".join(parts) + "}"
+
+
+def _refuse_marker_string(value: str, *, where: str) -> None:
+    """Raise when a quoted marker string cannot be honoured where it was written.
+
+    The QUOTED-STRING spelling (``optimizer: "!class:Adam(lr=!ref:base)"``) is a
+    third input grammar beside the YAML tags and the reserved keys, and it exists
+    only to work around a limitation of the tags: YAML forbids two tags on one
+    node, so a nested ``!ref:`` had to be quoted. The reserved-key format has no
+    such limitation, and this spelling is deleted with the tags in 0.4.0.
+
+    Until then it must not fail SILENTLY, which is what it did in two whole
+    classes of position — ``!lazy:`` / ``!clone:`` / ``!scope:`` anywhere, and
+    even ``!class:`` / ``!ref:`` inside a marker's own kwargs, the very position
+    ``docs/targets.md`` recommended it for. The value reached the constructor as
+    the literal text ``!lazy:Adam(lr=0.01)`` and nothing said so. That is exactly
+    the failure mode the plain-YAML format exists to end.
+
+    No ``file:line`` here, and it is not an oversight: only Fluid MARKERS carry a
+    location (``loader._stamp_loc``) — PyYAML discards per-key marks for ordinary
+    scalars, so a bare string has none to report (tracked in ``TASKS.md``). The
+    message therefore quotes the offending text verbatim, which is greppable, and
+    names the exact line to write instead.
+    """
+    raise ConfigurationError(
+        f"{value!r} is a marker written as a quoted STRING, which confluid cannot honour "
+        f"{where}. Write it as plain YAML instead:\n\n    {_plain_yaml_for(value)}\n\n"
+        f"(The quoted-string spelling is deprecated and is removed in confluid 0.4.0; only "
+        f'"!class:" and "!ref:" were ever parsed from a string, and only outside a marker\'s '
+        f"own kwargs.)"
+    )
+
+
 def _split_inline_pairs(args_str: str) -> List[Tuple[str, str]]:
     """Split an inline-kwargs suffix ``"a=1, b=x"`` into raw ``(key, value)`` pairs.
 
@@ -353,6 +418,12 @@ class Resolver:
                 content = value[7:]
                 return self._parse_class_string(content, local_context)
 
+            # Every OTHER marker prefix is a marker attempt this path cannot honour.
+            # Narrow on purpose: only these exact prefixes, never a bare leading "!",
+            # because an ordinary config value may legitimately start with one.
+            if any(value.startswith(m) for m in _STRING_MARKERS_ALL if m not in _STRING_MARKERS_PARSED):
+                _refuse_marker_string(value, where="here")
+
             return value
 
         # 2. Handle Fluid citizens
@@ -428,6 +499,13 @@ class Resolver:
         from confluid.fluid import Fluid, Reference
 
         if isinstance(value, str):
+            # A marker string inside a marker's own kwargs is honoured by NOTHING —
+            # not here (this walk is text substitution only, deliberately, so that
+            # deferred values keep binding when they bind), and not downstream. It
+            # reached the constructor as literal text, which is the position
+            # ``docs/targets.md`` used to recommend the spelling for.
+            if any(value.startswith(m) for m in _STRING_MARKERS_ALL):
+                _refuse_marker_string(value, where="inside a marker's own kwargs")
             return self._interpolate(value, local_context)
         if isinstance(value, Reference):
             return value  # late-bound by design — flow() resolves it

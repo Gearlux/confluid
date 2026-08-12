@@ -201,9 +201,12 @@ config/odd.yaml:128: tag survived conversion — convert by hand — - !scope:ve
 ```
 
 One form needs a hand edit, and it is rare: the quoted-string marker spelling
-(`"!class:Adam(lr=!ref:base)"`). Everything else converts, including sequence-
-and scalar-bodied scope blocks — measured over this workspace, 626 sites across
-56 files with zero findings.
+(`"!class:Adam(lr=!ref:base)"`). It is a third grammar the codemod deliberately
+reports rather than guesses at — it parses only `!class:` and `!ref:`, and since
+0.3.0 every other marker written that way raises a `ConfigurationError` naming
+the plain-YAML line to write, instead of reaching your config as literal text.
+Everything else converts, including sequence- and scalar-bodied scope blocks —
+measured over this workspace, 626 sites across 56 files with zero findings.
 
 An `@axis=value` [target selector](discovery.md) needs no migration — it is part
 of the target NAME, so it rides along unchanged and stays ordinary YAML:
