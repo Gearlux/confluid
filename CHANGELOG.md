@@ -6,6 +6,18 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`tests/test_introspection_agreement.py` — the baseline for the `slots()` consolidation.**
+  Five subsystems answer "which slots does this target have", and for one class they give five
+  different answers; nothing checked that, so a divergence could only ever be found by someone
+  hitting it. The file records each answer verbatim and separates the DELIBERATE differences (an
+  accept-list is not a form spec; the `**kwargs` → `None` sentinel; `_ctor_params` keeping
+  VAR_KEYWORD while dropping VAR_POSITIONAL) from the DRIFT, which it pins under `test_DRIFT_*`
+  names that say what the fix should make each one do. Pinning a defect before touching the layer
+  that produces it is what makes that refactor reviewable — verified by breaking `_ctor_params`
+  with a one-line change and confirming three tests trip, each naming a different consequence.
+
 ### Fixed
 
 - **A quoted marker string the resolver cannot honour now RAISES instead of reaching your
