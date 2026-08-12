@@ -429,6 +429,30 @@ def test_a_tagged_document_announces_the_deprecation(tmp_path: Path) -> None:
     assert "0.4.0" in message, "must name the release that removes it"
 
 
+def test_a_string_loaded_document_is_not_told_to_run_an_uncopyable_command() -> None:
+    """The remediation must be a command the reader can actually run — or no command.
+
+    PyYAML names a string-loaded document ``<unicode string>``, and the notice
+    interpolated that straight into its fix: ``confluid-migrate <unicode string>``.
+    A message whose entire job is "here is what to do next" ended in an instruction
+    that cannot be copied, pasted or acted on — and the project's own
+    ``examples/performance.py`` (which builds its config as a string) printed it on
+    every run. Naming the pseudo-file is fine; offering it as an argument is not.
+    """
+    from confluid.loader import _TAG_SPELLING_WARNED
+
+    _TAG_SPELLING_WARNED.discard("<unicode string>")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        load("model: !class:Model\n  layers: 3\n", flow=False)
+
+    message = str(caught[0].message)
+    assert "confluid-migrate <unicode string>" not in message, "the command must not name a pseudo-file"
+    assert "loaded from a string" in message, "say WHY no file is named"
+    assert "_target_" in message, "still has to say what to write instead"
+    assert "0.4.0" in message, "must name the release that removes it"
+
+
 def test_the_notice_is_ONCE_PER_DOCUMENT_not_once_per_tag(tmp_path: Path) -> None:
     """A 400-line tagged config must not emit 400 warnings.
 

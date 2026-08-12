@@ -431,20 +431,35 @@ def _register_constructors() -> None:
     # and stay silent about the rest. `FutureWarning` rather than `DeprecationWarning`
     # because Python SHOWS it by default — this is aimed at the person who wrote the
     # YAML, not at library code, which is exactly the split the two categories encode.
+    #
+    # The remediation line is only offered when there IS a file to run it against.
+    # PyYAML names a string-loaded document `<unicode string>`, so the notice used to
+    # end in `confluid-migrate <unicode string>` — a command that cannot be copied,
+    # run, or acted on, from a message whose whole job is to say what to do next.
     def _announce(loader: Any, node: Any) -> None:
-        where = getattr(loader, "name", None) or "<config>"
+        name = str(getattr(loader, "name", None) or "")
+        from_file = bool(name) and not (name.startswith("<") and name.endswith(">"))
+        where = name or "<config>"
         if where in _TAG_SPELLING_WARNED:
             return
         _TAG_SPELLING_WARNED.add(where)
         mark = getattr(node, "start_mark", None)
         line = f":{mark.line + 1}" if mark is not None else ""
+        remedy = (
+            f"Convert this file with `confluid-migrate {where}` — it rewrites the tags to "
+            f"the reserved-key format (_target_ / _partial_ / ${{ref:}}) and verifies the "
+            f"marker tree is unchanged before writing."
+            if from_file
+            else (
+                "This document was loaded from a string, so there is no file to convert — "
+                "rewrite it in the reserved-key format (_target_ / _partial_ / ${ref:}), or "
+                "run `confluid-migrate` on the file it came from."
+            )
+        )
         warnings.warn(
             f"{where}{line}: the YAML tag syntax (!class: / !lazy: / !ref: / !clone: / "
-            f"!scope:) is DEPRECATED and is removed in confluid 0.4.0. Convert this file "
-            f"with `confluid-migrate {where}` — it rewrites the tags to the reserved-key "
-            f"format (_target_ / _partial_ / ${{ref:}}) and verifies the marker tree is "
-            f"unchanged before writing. The new format is also plain YAML, so yq, editor "
-            f"schemas and linters can read it.",
+            f"!scope:) is DEPRECATED and is removed in confluid 0.4.0. {remedy} The new "
+            f"format is also plain YAML, so yq, editor schemas and linters can read it.",
             FutureWarning,
             stacklevel=2,
         )
