@@ -1035,6 +1035,31 @@ scenario `examples/deep_injection.py` stays a flat script — inline YAML, no fi
 **Rule.** An example that DEMONSTRATES A RULE should assert it, not just print it — a print-only
 script exits 0 while printing the wrong number, and these files double as the documentation's proof.
 
+**Rule — the CANONICAL spelling, at two strictnesses.** No file under `examples/` may contain
+`!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:` / `!notscope:` anywhere — not in a YAML
+literal, not in a docstring, not in a comment, not in a directory example's `README.md`. In
+`docs/`, prose MAY name the deprecated spelling (that is how a reader with old configs learns
+what to convert), but a fenced ```` ```yaml ```` block MUST NOT: a guide's config samples have
+to agree with the companion example that proves them. Convert a config with `confluid-migrate`;
+rewrite prose to name the reserved key.
+
+Exemptions live with their reason in `tests/test_canonical_spelling.py` — examples
+`plain_format.py` (proves the spellings agree) and `tags_deferred.py` (documents the tag form);
+guides `targets.md` (the marker reference it converts FROM) and `architecture.md` (records
+quoting the configs that motivated them). All four go with the constructors in 0.4.0.
+
+**Why.** These are the first confluid a reader writes by hand. Twelve of the twenty-four
+examples still taught the tag spelling on 2026-08-12 — including `lifecycle.py`, which the
+README designates "start here" — so following the documentation path emitted the deprecation
+warning; converting them then left 69 tag lines across nine guides showing configs their own
+companion no longer matched. Running the examples proves nothing here: `ml_pipeline.py` warned
+about nothing because it used the QUOTED-STRING spelling, and `examples/ml_experiments/` had
+migrated YAML with comments, docstrings and a README still describing tags. The check is
+therefore static, over source text.
+
+**Pins.** `tests/test_canonical_spelling.py` (including the two inverse pins: an allow-list
+entry naming a missing file, and an entry that is no longer needed).
+
 ---
 
 ## Releasing to PyPI

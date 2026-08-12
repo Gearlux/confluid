@@ -41,7 +41,7 @@ as `_partial_: true` — deferred in, deferred out.
   ([Class Design](class-design.md)).
 - **Runtime-injected arguments** — the `params=` / positional inputs handed
   to `flow()` at build time are call arguments, not configuration; the slot
-  they fed round-trips as its `!lazy:` recipe.
+  they fed round-trips as its `_partial_` recipe.
 - **A `None` that is the default** — omitted only when the parameter's
   default is also `None` (lossless); any other default dumps an explicit
   `param: null`, because omitting it would silently restore the default on
@@ -58,7 +58,7 @@ as `_partial_: true` — deferred in, deferred out.
   substituted at load time, and `dump()` emits the substituted value — so
   reloading the dump in a different environment reproduces *this* run rather
   than resolving afresh ([Architecture Decisions](architecture.md) §7). A
-  value that must stay late-bound uses `!ref:` to a plain key.
+  value that must stay late-bound uses `${ref:}` to a plain key.
 
 An eager class may opt out of kwargs capture (`capture=False`) when a
 constructor argument is too heavy to hold; that deliberately relaxes the

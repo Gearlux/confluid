@@ -14,7 +14,7 @@
 - **Schema Export & Validation:** Auto-generated pydantic schemas validate every `@configurable` constructor; docstring `Args:` blocks become machine-readable parameter help (`parse_param_docs`); `sanitize_schema` downgrades schemas to the subset strict LLM function-calling APIs accept.
 - **I/O Contract:** `@output` properties and `Mandatory[T]` inputs declare a Runnable's contract for GUIs and agents from one source.
 - **Flat-View Ordered Matching:** Bare keys broadcast tree-wide (an implicit `**.key`), addressed keys (`trainer.lr` / `trainer: {lr: …}`) are **exact** — no cascade to descendants — and glob wildcards opt back in (`trainer.*.lr` = direct children, `trainer.**.lr` = the node and all descendants). Matching scalars apply in YAML document order with **last-write-wins** semantics — no hidden priority tiers.
-- **Scopes:** conditional overlays (`_scope_: debug`, `_scope_: task=classification`, `_notscope_: …`) activated per run.
+- **Scopes:** conditional overlays (`_scope_: {debug: }`, `_scope_: {task: classification}`, `_notscope_: {…}`) activated per run — the value is a mapping of dimension to required value, so one block can require several at once.
 
 ## Documentation
 
@@ -43,7 +43,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | [Discovery](https://github.com/Gearlux/confluid/blob/main/docs/discovery.md) | `category` / `group` tags, behavioral marks (`random` / `constant`), docstring-derived help | `discovery.py` |
 | [Extending the Discovery Surface](https://github.com/Gearlux/confluid/blob/main/docs/extending-discovery.md) | The end-to-end contract a tagged class must satisfy to surface automatically in an MCP tool server and a visual node editor: the `task` × `role` taxonomy, entry-point registration, signature-to-widget/schema mapping, and the common failure modes | `discovery.py` |
 | [Error Handling](https://github.com/Gearlux/confluid/blob/main/docs/errors.md) | The typed exception hierarchy (each also inherits the builtin it replaces) | `error_handling.py` |
-| [Scopes](https://github.com/Gearlux/confluid/blob/main/docs/scopes.md) | `!scope:` / `!notscope:` conditional overlays, their activation, and `discover_dimension_values` — what a document offers, and the error when you ask for something else | `scopes.py` |
+| [Scopes](https://github.com/Gearlux/confluid/blob/main/docs/scopes.md) | `_scope_` / `_notscope_` conditional overlays, their activation, and `discover_dimension_values` — what a document offers, and the error when you ask for something else | `scopes.py` |
 | [Introspection](https://github.com/Gearlux/confluid/blob/main/docs/introspection.md) | `cast()` for type checkers, `resolve()` markers, `solidify=False`, dump/reconstruct | `introspection.py` |
 | [Serialization](https://github.com/Gearlux/confluid/blob/main/docs/serialization.md) | `dump()` and the round trip: per-param reconstruction (live attr, captured kwargs), what a dump omits and why, registry-handle class names, burned-in interpolation | `reproducible_experiment.py` |
 | [Threads & Async](https://github.com/Gearlux/confluid/blob/main/docs/concurrency.md) | ContextVar propagation, `active_context`, worker-thread recipes | `concurrency.py` |
@@ -58,7 +58,7 @@ Python, no ML dependencies — run them as-is):
 - [`examples/ml_experiments/`](https://github.com/Gearlux/confluid/tree/main/examples/ml_experiments)
   — an ML experiment suite in the Hydra style: one base config, model/optimizer
   **config groups** selected per run via scopes (`scopes=["model=cnn"]`),
-  `include:` experiment overlays, `!class:`/`!ref:`/`!lazy:` object wiring,
+  `include:` experiment overlays, `_target_`/`${ref:}`/`_partial_` object wiring,
   bare-key broadcast of global knobs (`seed`, `device`), and a `dump()`
   snapshot that reloads into the identical experiment. Its README maps each
   Hydra concept to the confluid feature that plays its role.
@@ -76,7 +76,7 @@ Python, no ML dependencies — run them as-is):
 
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
-- **Tag-Based IR:** Use standard YAML tags (`!class:Name` deferred / `!class:Name()` eager, `!lazy:Name`, `!ref:path`, `!clone:path`) instead of proprietary symbols like `@`.
+- **Reserved-Key IR:** Markers are ordinary YAML mappings carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_clone_`, `_scope_`) — no proprietary symbols and no custom tags, so the file stays readable by any YAML parser.
 - **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `Partial`, `Reference`, `Clone`) for internal resolution.
 
 ### Dependency Injection
@@ -114,12 +114,15 @@ class Trainer:
 
 ### 2. Configure via YAML
 ```yaml
-# experiment.yaml
-n_layers: 10
+# experiment.yaml — ordinary YAML: `yaml.safe_load`, `yq` and editor schemas all read it
+defaults:
+  n_layers: 10
 
 Trainer:
   lr: 0.0001
-  model: "!class:Model(layers=!ref:n_layers)"
+  model:
+    _target_: Model
+    layers: ${defaults.n_layers}    # config-key interpolation — one source of truth
 ```
 
 ### 3. Load and Apply
@@ -137,7 +140,7 @@ report = configure(trainer, config=config)
 print(trainer.lr) # 0.0001
 print(trainer.model.layers) # 10
 print(report.summary()) # "2 applied, 0 failed, 1 unused"
-# (the "1 unused": `n_layers` feeds the `!ref:` but sets no attribute
+# (the "1 unused": `defaults` feeds the interpolation but sets no attribute
 #  itself, so it counts as an unused OVERRIDE — see docs/report.md)
 ```
 
@@ -150,7 +153,7 @@ from confluid import configure_from_file
 configure_from_file(trainer, path="experiment.yaml")
 ```
 
-It reads the file via `load_config` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
+It reads the file via `load_config` (so `include:` / `import:` directives and `_target_` / `${ref:}` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
 
 ### 4. Dump and Reconstruct
 ```python

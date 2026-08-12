@@ -148,9 +148,9 @@ carries the same filter into the lookup.
 In a config, three spellings choose one:
 
 ```yaml
-op: !class:myops.torch.FourierOp()      # the dotted path — always unambiguous
-op: !class:FourierOp@group=fft/torch()  # a tag selector
-op: !class:FourierOp@framework=$engine() # ...whose value may come from the document
+op: {_target_: myops.torch.FourierOp}       # the dotted path — always unambiguous
+op: {_target_: "FourierOp@group=fft/torch"}  # a target selector
+op: {_target_: "FourierOp@framework=$engine"}  # ...whose value may come from the document
 engine: torch
 ```
 
@@ -172,11 +172,13 @@ Pair it with a [scope block](targets.md) that declares the key, and one config d
 either engine:
 
 ```yaml
-torch_run: !scope:engine=torch
+torch_run:
+  _scope_: {engine: torch}
   engine: torch
-keras_run: !scope:engine=keras
+keras_run:
+  _scope_: {engine: keras}
   engine: keras
-loss: !class:CrossEntropy@framework=$engine()
+loss: {_target_: "CrossEntropy@framework=$engine"}
 ```
 
 **When it is a mistake instead.** If a second class claims a name and NO tag distinguishes
@@ -200,7 +202,7 @@ class Resampler: ...                          # from its params (a plain Python 
 class Embedder: ...                           # captured — heavy args aren't kept alive
 ```
 
-`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no record input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `!class:` entry and rewire consumers via dotted `!ref:<name>.<output>` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
+`constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no record input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `_target_` entry and rewire consumers via a dotted `${ref:<name>.<output>}` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
 
 `eager=True` declares a plain-constructor class — see [Eager Classes](eager-classes.md). Its runtime effect: `configure()` warns when a constructor-param attribute is set post-construction (the `__init__` work will not re-run). Orthogonal to `random`/`constant`.
 

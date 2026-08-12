@@ -29,10 +29,12 @@ Unlike general-purpose serializers that attempt to dump every attribute, Conflui
 ### 3. Third-Party Integration
 Confluid provides a registration mechanism for objects from third-party libraries (e.g., `torch.optim.Adam`, `sklearn.svm.SVC`) that cannot be directly decorated. Once registered, these objects are treated as first-class configurable nodes within the Confluid hierarchy.
 
-### 4. Smart Reference Resolution (Tag Syntax)
-Confluid bridges the gap between YAML and Source Code.
-- **Dependency Graph:** Define your model hierarchy in YAML using `!class:ClassName(...)`.
-- **DRY Configuration:** Use `!ref:key` to reference other values in the same file, ensuring a single source of truth for paths and hyperparameters.
+### 4. Smart Reference Resolution (Plain YAML)
+Confluid bridges the gap between YAML and Source Code, without leaving YAML behind:
+markers are ordinary mappings carrying a reserved key, so `yaml.safe_load`, `yq`,
+editor schemas and linters all still read the file.
+- **Dependency Graph:** Define your model hierarchy with `{_target_: ClassName, ...}`.
+- **DRY Configuration:** Use `${ref:key}` for a shared instance and `${a.b}` interpolation for a shared value, so a path or hyperparameter has one source of truth.
 
 ### 5. Round-Trip Reproducibility
 Confluid is designed for the **Dump -> Reconstruct** lifecycle.
@@ -48,5 +50,5 @@ Confluid uses a recursive traversal engine that walks through object graphs (inc
 - **Explicit over Implicit:** If it's not marked `@configurable` or explicitly registered, it's not a config node.
 - **Reproducibility First:** The final config dump MUST be able to reconstruct the object graph.
 - **Dotted-Path Resolution:** Support for complex dotted-path resolution (e.g. `model.layers: 10`).
-- **Tag-Driven Scopes:** Conditional overlays are tag-marked (`!scope:KEY[=VAL]` / `!notscope:KEY[=VAL]`) and resolved in confluid. Boolean (`!scope:debug`) and keyed (`!scope:task=classification`) forms share the same sentinel; a CLI layer forwards activations via the `scopes=` kwarg on `load()`.
+- **Declarative Scopes:** Conditional overlays carry a `_scope_` / `_notscope_` entry whose value is a mapping of dimension to required value (ANDed), resolved in confluid. Boolean (`_scope_: {debug: }`) and keyed (`_scope_: {task: classification}`) forms share one grammar; a CLI layer forwards activations via the `scopes=` kwarg on `load()`.
 - **Zero Blocking:** Lightweight, non-blocking configuration application.

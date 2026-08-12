@@ -17,8 +17,8 @@ from typing import Any, Dict, Optional, cast
 
 import yaml
 
-# `PartialClass` is the MARKER class (what `!lazy:` parses to); `confluid.Partial` is the
-# annotation alias that declares a deferred SLOT — different things, easy to mix up.
+# `PartialClass` is the MARKER class (what `_partial_: true` parses to); `confluid.Partial`
+# is the annotation alias that declares a deferred SLOT — different things, easy to mix up.
 from confluid import Fluid, PartialClass, configurable, dump, flow, load, load_config, resolve
 from confluid.loader import ConfluidLoader
 
@@ -32,17 +32,23 @@ Encoder:
 EXPERIMENT_YAML = """
 include: base.yaml
 
-run_root: "${LIFECYCLE_ROOT}/runs"     # env interpolation — burns in at load
+run_root: "${env:LIFECYCLE_ROOT}/runs"  # env interpolation — burns in at load
 width: 32                             # a bare key: broadcasts to any node taking `width`
 
-profile: !scope:mode=fast
+profile:
+  _scope_: {mode: fast}
   dropout: 0.0
 
-encoder: !class:Encoder()
-head: !class:Head()
+encoder:
+  _target_: Encoder
+head:
+  _target_: Head
 head.units: 128                       # dotted key — nests at the position written here
 
-optimizer: !lazy:Adam(lr=0.01)        # deferred: configured, never built by load()
+optimizer:                            # deferred: configured, never built by load()
+  _target_: Adam
+  _partial_: true
+  lr: 0.01
 """
 
 
@@ -100,14 +106,14 @@ def main() -> None:
 
 
 def _walk_the_passes(path: Path) -> None:
-    print("=== 1. PARSE — tags become typed markers ===")
+    print("=== 1. PARSE — reserved keys become typed markers ===")
     raw = yaml.load(path.read_text(), Loader=ConfluidLoader)
     print(f"encoder: {raw['encoder']!r}")
     print(f"optimizer: {raw['optimizer']!r}")
     print(f"profile: {raw['profile']!r}")
     print(f"run_root still literal: {raw['run_root']!r}")
     assert isinstance(raw["optimizer"], PartialClass)
-    assert "${LIFECYCLE_ROOT}" in raw["run_root"]  # nothing is interpolated yet
+    assert "${env:LIFECYCLE_ROOT}" in raw["run_root"]  # nothing is interpolated yet
 
     print("\n=== 2-3. IMPORT + INCLUDE — one document, includer read LAST ===")
     merged = load_config(str(path))
@@ -120,7 +126,7 @@ def _walk_the_passes(path: Path) -> None:
     print(f"scope spliced its contents:  dropout = {ir['dropout']}")
     print(f"interpolation burned in:     run_root = {ir['run_root']!r}")
     print(f"dotted key nested:           head kwargs = {ir['head'].kwargs}")
-    assert ir["dropout"] == 0.0  # the !scope:mode=fast block replaced base.yaml's 0.9
+    assert ir["dropout"] == 0.0  # the `_scope_: {mode: fast}` block replaced base.yaml's 0.9
     assert ir["run_root"] == "/store/runs"
     assert ir["head"].kwargs["units"] == 128
     assert isinstance(ir["encoder"], Fluid)  # still a marker — nothing is built yet

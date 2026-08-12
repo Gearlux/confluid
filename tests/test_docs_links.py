@@ -49,7 +49,19 @@ def _headings(path: Path) -> Set[str]:
 
 
 def _markdown_files() -> List[Path]:
-    return sorted(_DOCS.glob("*.md")) + [_README]
+    """Every documentation page: the guides, the README, and each directory example's own.
+
+    A directory example's ``README.md`` IS its documentation page (no ``docs/*.md``
+    twin — the AGENTS "directory examples" rule), so it rots the same way and was
+    outside this check until 2026-08-12: ``examples/ml_experiments/README.md`` pointed
+    at ``../../docs/tags.md``, a file renamed to ``targets.md``, and nothing noticed.
+    """
+    return sorted(_DOCS.glob("*.md")) + [_README] + sorted((_REPO / "examples").glob("*/README.md"))
+
+
+def _doc_id(path: Path) -> str:
+    """Repo-relative id — three files are named ``README.md`` and ``p.name`` collides."""
+    return str(path.relative_to(_REPO))
 
 
 def _strip_code(text: str) -> str:
@@ -76,7 +88,7 @@ def _links(path: Path) -> List[str]:
     return _RELATIVE_LINK.findall(_strip_code(path.read_text()))
 
 
-@pytest.mark.parametrize("path", _markdown_files(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _markdown_files(), ids=_doc_id)
 def test_relative_links_name_a_file_that_exists(path: Path) -> None:
     """A `[text](other.md)` must point at a real file.
 
@@ -93,7 +105,7 @@ def test_relative_links_name_a_file_that_exists(path: Path) -> None:
     assert not missing, f"{path.name} links to files that do not exist: {missing}"
 
 
-@pytest.mark.parametrize("path", _markdown_files(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _markdown_files(), ids=_doc_id)
 def test_anchors_name_a_heading_that_exists(path: Path) -> None:
     """A `#anchor` must match a heading in the file it points at.
 

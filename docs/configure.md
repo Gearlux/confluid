@@ -32,12 +32,12 @@ configure_from_file(*instances, path=..., context=None) -> ConfigurationReport
 - **`*instances`** — one or more already-constructed objects; each is walked
   recursively (its attribute values too, so a nested configurable child is
   reached without naming it).
-- **`config`** — a mapping, or YAML **text** (tags like `!class:` work — the
+- **`config`** — a mapping, or YAML **text** (markers like `_target_` work — the
   text is parsed with confluid's own loader). A plain file *name* is not YAML
   text: it applies nothing, warns, and points you at `configure_from_file`,
   which loads the path first (honouring `include:` directives and the
   [config-file search tiers](search-paths.md)) and then behaves identically.
-- **`context`** — an optional explicit resolution context for `!ref:` /
+- **`context`** — an optional explicit resolution context for `${ref:}` /
   `${...}` values; defaults to the config itself.
 - **Returns** a [`ConfigurationReport`](report.md): every applied override
   with its receiver and origin, failed keys, and the document keys that
@@ -77,7 +77,7 @@ attributes only), and it never touches private (`_`-prefixed) state.
 
 ## Deferred slots are tuned, not built
 
-A `!lazy:` marker — or a `PartialClass(...)` body slot — stands for an object
+A `_partial_` marker — or a `PartialClass(...)` body slot — stands for an object
 built *later*, usually because a constructor argument only exists at runtime
 (`params=model.parameters()`). `configure()` treats such a slot exactly as
 loading does: keys aimed at it are merged **into the marker's kwargs**, and

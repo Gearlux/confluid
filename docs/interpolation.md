@@ -7,7 +7,7 @@
 A `${...}` placeholder in a string value is substituted at load time. The name decides the source:
 
 - **Plain name → environment variable** (the historical behaviour): `${HOME}`, `${PORT:8080}` (with an optional `:default`).
-- **Dotted / bracketed name → another config key**, resolved against the config tree with the same path machinery `!ref:` uses: `${train.dataset}`, `${items[0]}`, `${db.port:5432}`.
+- **Dotted / bracketed name → another config key**, resolved against the config tree with the same path machinery `${ref:}` uses: `${train.dataset}`, `${items[0]}`, `${db.port:5432}`.
 
 ```yaml
 train:
@@ -18,7 +18,7 @@ data_dir: "${DATA_ROOT}/${train.dataset}/${train.version}/data"   # -> /store/RF
 epochs:   "${train.epochs}"                                        # whole match keeps the native int type
 ```
 
-A whole-string match (`"${train.epochs}"`) returns the value with its real type; an embedded match substitutes `str(value)` (scalars only). Local (sibling) keys win over global, mirroring `!ref:`. On a miss the `:default` applies, else the literal `${...}` is left in place. Interpolation is a single pass, so a referenced key must already be a literal/scalar — for wiring a live object into another config slot, use `!ref:` instead.
+A whole-string match (`"${train.epochs}"`) returns the value with its real type; an embedded match substitutes `str(value)` (scalars only). Local (sibling) keys win over global, mirroring `${ref:}`. On a miss the `:default` applies, else the literal `${...}` is left in place. Interpolation is a single pass, so a referenced key must already be a literal/scalar — for wiring a live object into another config slot, use `${ref:}` instead.
 
 Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps meaning an environment variable — only names containing a `.` or `[` hit the config tree.
 
@@ -38,8 +38,8 @@ on a front-end re-implementing `os.path.expandvars` before handing the file to t
 - **Unset stays literal.** An unset variable leaves the `$name` text in place,
   mirroring `os.path.expandvars`. (An unresolved `${...}` literal is likewise
   untouched — the bare pattern cannot match a `${`.)
-- **Marker strings are exempt.** A string starting with `!` (`"!class:..."`,
-  `"!lazy:..."`, `"!ref:..."`) keeps its `$` text for flow-time parsing — the
+- **Marker strings are exempt.** A string starting with `!` (the legacy
+  quoted-string spelling) keeps its `$` text for flow-time parsing — the
   `@axis=$key` document-selector grammar also spells `$` in tag targets.
 - **Burn-in.** Like every interpolation, the substitution is a single load-time
   pass: a marker kwarg `"$DATA_ROOT/x"` carries the expanded value from then on
@@ -50,11 +50,11 @@ root: $DATA_ROOT/RFUAV/v3        # -> /store/RFUAV/v3 (same as ${DATA_ROOT}/RFUA
 ```
 
 > **Marker kwargs interpolate too — and burn in.** A `${...}` written inside a
-> `!class:` / `!lazy:` tag's mapping body (or its quoted-string form) is
+> `_target_` marker's mapping body is
 > substituted in the same load-time pass as any plain key. The substituted
 > value is what the marker then carries — `dump()` emits it, and a later
-> `flow()` of a deferred `!lazy:` slot sees it, even if the environment changed
-> in between. A slot that must stay **late-bound** uses `!ref:` to a plain key
+> `flow()` of a deferred (`_partial_`) slot sees it, even if the environment changed
+> in between. A slot that must stay **late-bound** uses `${ref:}` to a plain key
 > instead of `${...}`.
 
 ## `include:` and document order
@@ -67,7 +67,7 @@ order, last spec wins — and the include obeys it like everything else.
 # base.yaml                    # main.yaml
 lr: 0.1                        include: base.yaml
 Stage:                         lr: 0.3
-  lr: 0.2                      s: !class:Stage()
+  lr: 0.2                      s: {_target_: Stage}
 ```
 
 Read the composed document top to bottom:
@@ -76,7 +76,7 @@ Read the composed document top to bottom:
 Stage:
   lr: 0.2         # from the paste
 lr: 0.3           # your line, where you wrote it
-s: !class:Stage()
+s: {_target_: Stage}
 ```
 
 `s` gets `lr = 0.3` — your bare key is the last spec. Note that base's `lr: 0.1`
@@ -90,14 +90,14 @@ Move the directive to the bottom and the same two files mean the opposite thing:
 ```yaml
 # main.yaml
 lr: 0.3
-s: !class:Stage()
+s: {_target_: Stage}
 include: base.yaml     # everything above is a FALLBACK; base overrides it
 ```
 
 composes to
 
 ```yaml
-s: !class:Stage()
+s: {_target_: Stage}
 lr: 0.1           # base's value now, at the paste's later position
 Stage:
   lr: 0.2         # the last spec addressing Stage

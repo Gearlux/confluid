@@ -30,7 +30,7 @@ to construct. Four rules:
    `self.<name> = …` slot as an optional field, so the schema/help surface GUIs and agents read
    still enumerates them. Three rules for body slots:
    - a slot that needs a **runtime-injected** argument (`params=`, `dataset=`) must hold a
-     `PartialClass(...)` value (`!lazy:` in YAML) — a bare `Class(...)` body value is eagerly built
+     `PartialClass(...)` value (`_partial_: true` in YAML) — a plain `Target(...)` body value is eagerly built
      during parent materialization and would crash a target missing its runtime argument;
    - give the slot a **type annotation** in the body (`self.optimizer: Partial[Optimizer] = …`) so
      the generated schema can type it (un-annotated slots degrade to `Any`);

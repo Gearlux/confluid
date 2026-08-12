@@ -12,8 +12,6 @@ Demonstrates the class-design convention (``docs/class-design.md``):
 
 from typing import Any, List, Optional
 
-import yaml
-
 from confluid import Target, configurable, configure, flow, register
 
 # --- 1. Define modular components ---
@@ -64,7 +62,7 @@ class Trainer:
         self.model = model
         self.epochs = epochs
         # The optimizer arrives as a deferred recipe (a ``Target`` stub by default, or a
-        # ``!class:Adam(...)`` from YAML). The *live* optimizer is materialized lazily by the property.
+        # ``_target_: Adam`` block from YAML). The *live* optimizer is materialized lazily by the property.
         self.optimizer: Any = Target(AdamOptimizer)
 
     @property
@@ -73,7 +71,7 @@ class Trainer:
 
         A recomputing property so it reflects the recipe set by ``configure`` (a cached one could
         freeze the pre-config default — see ``Model.weights``). ``flow`` is idempotent: a recipe
-        (``Target`` / ``!class:`` Fluid) or an already-live object both resolve correctly.
+        (a ``Target`` Fluid) or an already-live object both resolve correctly.
         """
         return flow(self.optimizer)
 
@@ -84,12 +82,19 @@ class Trainer:
 # --- 2. Define the experiment in YAML ---
 
 experiment_yaml = """
-base_lr: 0.0001
+defaults:
+  base_lr: 0.0001
 
 Trainer:
   epochs: 10
-  # Dependency Injection: a deferred Adam recipe, built lazily by Trainer.built_optimizer
-  optimizer: "!class:Adam(lr=!ref:base_lr)"
+  # Dependency Injection: a deferred Adam recipe, built lazily by Trainer.built_optimizer.
+  # `${defaults.base_lr}` is config-key INTERPOLATION: it substitutes at load and burns
+  # the value in, so the recipe carries `lr: 0.0001` and stays flowable later, outside
+  # any document context. `${ref:...}` would instead stay a late-bound Reference — right
+  # when the whole graph materializes together, wrong for a slot flowed on demand.
+  optimizer:
+    _target_: Adam
+    lr: ${defaults.base_lr}
 
 Model:
   layers: 50
@@ -109,9 +114,12 @@ def main() -> None:
     print("\n--- Before Configuration ---")
     print(trainer)
 
-    config_data = yaml.safe_load(experiment_yaml)
-    configure(trainer, config=config_data)
-    configure(model, config=config_data)
+    # `configure` parses a YAML STRING with confluid's own loader, which is what turns
+    # the `_target_:` mapping into a marker. Reserved keys keep the document readable by
+    # `yaml.safe_load` / `yq` / an editor schema — but a plain parser hands back plain
+    # data, so let confluid do the parse whenever you want markers back.
+    configure(trainer, config=experiment_yaml)
+    configure(model, config=experiment_yaml)
 
     print("\n--- After Configuration ---")
     print(trainer)

@@ -27,7 +27,9 @@ class Backbone:
 
 
 DOC = """
-backbone: !class:Backbone(depth=101)
+backbone:
+  _target_: Backbone
+  depth: 101
 """
 
 
@@ -59,7 +61,7 @@ def main() -> None:
 
 
 def load_config_text(text: str) -> dict:
-    """Parse the tagged YAML into the dict form ``resolve``/``materialize`` consume."""
+    """Parse the YAML into the dict form ``resolve``/``materialize`` consume."""
     import yaml
 
     from confluid.loader import ConfluidLoader

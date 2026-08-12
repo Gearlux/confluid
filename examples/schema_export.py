@@ -72,7 +72,7 @@ def main() -> None:
     print("validate_model: strict re-validation passed")
 
     # 4. The generated model remembers its origin class (module-qualified) — a
-    #    schema consumer can emit the right `!class:` target with no side table.
+    #    schema consumer can emit the right `_target_` with no side table.
     origin = confluid_class_of(model_cls)
     assert origin is not None and origin.split(".")[-1] == "Trainer", origin
     print(f"origin class: {origin}")

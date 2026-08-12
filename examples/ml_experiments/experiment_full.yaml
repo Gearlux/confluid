@@ -2,7 +2,7 @@
 # gentler learning rate. Same base, different overlay.
 include: base.yaml
 
-base_lr: 0.1            # picked up by the optimizer via !ref:base_lr
+base_lr: 0.1            # picked up by the optimizer via ${ref:base_lr}
 trainer.max_epochs: 400
 
 MLP:
