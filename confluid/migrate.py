@@ -62,7 +62,7 @@ _TAG_RE = re.compile(r"!(?P<kind>class|lazy|ref|clone|scope|notscope):(?P<suffix
 #: Everything after the tag is captured raw and split by :func:`_split_flow` —
 #: a tag may be followed by an inline FLOW mapping (``!class:X {}`` /
 #: ``!class:X {a: 1}``), which a regex cannot delimit correctly because the value
-#: may itself contain braces: waivefront writes
+#: may itself contain braces: a real consumer config writes
 #: ``{ low_level: "-{reference_snr_level}" }``, a per-record template inside a
 #: quoted string, and a ``\{[^}]*\}`` pattern stops at the wrong brace.
 _TAG_TAIL = r"(?P<tag>!(?:class|lazy|ref|clone|notscope|scope):\S*)(?P<rest>.*)$"
@@ -77,7 +77,7 @@ _ITEM_TAG_RE = re.compile(r"^(?P<indent>[ ]*)-[ ]+" + _TAG_TAIL + _TRAILING)
 #: A tag ALONE on its line, applying to the block that follows at the SAME indent::
 #:
 #:     stream:
-#:       !class:recordstream.Stream
+#:       !class:pkg.Stream
 #:       source: ...
 #:
 #: Valid YAML and common in real configs. Its keys go at the TAG's own indent, not

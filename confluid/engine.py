@@ -36,7 +36,7 @@ imports engine names from ``confluid.engine`` or, better, the real home
 modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import replace
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Type
 
@@ -141,12 +141,12 @@ def _contains_fluid(value: Any) -> bool:
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
-    """Resolve config data and instantiate all Class objects recursively.
+    """Resolve config data and instantiate all ``Target`` markers recursively.
 
     Within a single materialize pass, identical raw markers (reached directly
-    or via ``!ref:``) produce a single flowed ``Instance`` object, which is
-    materialized into a single live instance. ``!clone:`` opts out of this
-    sharing with an explicit deepcopy.
+    or via ``${ref:...}``) flow to a single marker object, which is
+    materialized into a single live instance. ``${clone:...}`` opts out of
+    this sharing with an explicit deepcopy.
 
     ``solidify=False`` suppresses the post-flow ``solidify()`` hook for every
     object built in this pass (see :func:`flow`) — for static
@@ -202,22 +202,23 @@ def resolve(
     """Broadcast-resolve a config to a Fluid marker graph WITHOUT instantiating.
 
     Like :func:`materialize`, but stops before ``_deep_flow``: it parses,
-    resolves scopes/includes, applies broadcasting and ``!ref:`` resolution
+    resolves scopes/includes, applies broadcasting and reference resolution
     (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
-    ``!ref:`` is one object reached twice), and returns the resulting
-    ``Instance`` / ``Partial`` / ``Class`` markers with their broadcast siblings
-    merged into ``.kwargs`` — WITHOUT constructing any live object.
+    ``${ref:...}`` is one object reached twice), and returns the resulting
+    ``Target`` / ``Partial`` markers with their broadcast siblings merged into
+    ``.kwargs`` — WITHOUT constructing any live object.
 
-    Use for static structural introspection of a config (e.g. StreamStudio's
-    YAML→graph import) when even side-effect-free construction is undesirable.
-    ``materialize(data, solidify=False)`` is the instantiate-but-cheap
-    counterpart; prefer it unless you specifically need un-built markers.
+    Use for static structural introspection of a config (a visual editor's
+    YAML→graph import, a flow-graph builder) when even side-effect-free
+    construction is undesirable. ``materialize(data, solidify=False)`` is the
+    instantiate-but-cheap counterpart; prefer it unless you specifically need
+    un-built markers.
 
-    A *dotted* ``!ref:a.b`` (attribute/method access) stays a ``Reference`` here,
-    exactly as a plain whole-object ``!ref:name`` does: reading ``split.train``
-    would mean BUILDING ``split``, and this function constructs nothing. Use
-    ``materialize()`` / ``load()`` when you want the attribute's value — those
-    still resolve it off ONE shared instance.
+    A *dotted* reference (``${ref:a.b}`` — attribute/method access) stays a
+    ``Reference`` here, exactly as a plain whole-object ``${ref:name}`` does:
+    reading ``split.train`` would mean BUILDING ``split``, and this function
+    constructs nothing. Use ``materialize()`` / ``load()`` when you want the
+    attribute's value — those still resolve it off ONE shared instance.
     """
     # The ONE deliberate engine->YAML seam: resolve() accepts a str/Path for
     # convenience, which needs the YAML loader. Partial import keeps the module
@@ -472,17 +473,12 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 return resolved
         return data
 
-    # 3b. Clone — resolve reference then deepcopy, merging extra kwargs
+    # 3b. Clone — resolve the referent, then apply the ONE clone semantic
     if isinstance(data, Clone):
         if parent_context and data.target in parent_context:
-            from copy import deepcopy
-
             resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
-            cloned = deepcopy(resolved)
-            if data.kwargs and isinstance(cloned, Target):
-                resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
-                cloned.kwargs.update(resolved_kwargs)
-            return cloned
+            resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
+            return _clone_of(resolved, resolved_kwargs, data)
         return data
 
     # 4. Generic Fluid — pass through
@@ -497,13 +493,13 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
 
 
 def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: Any) -> Any:
-    """Instantiate a deferred object (Class, Reference, string tag) into a live instance.
+    """Instantiate a deferred object (a ``Target`` / ``Reference`` marker) into a live instance.
 
     Idempotent: already-live objects are returned unchanged.
     Accepts runtime kwargs that merge with stored kwargs (runtime wins).
 
-    **Positional runtime args.** A marker carries KWARGS only (that is all a YAML
-    tag can express), but a target may take its inputs POSITIONALLY — the case
+    **Positional runtime args.** A marker carries KWARGS only (that is all a
+    config mapping can express), but a target may take its inputs POSITIONALLY — the case
     that forced this is a variadic signature, ``DataLoaders(*loaders, path=…,
     device=…)``, where the loaders have no keyword to arrive under. So
     ``flow(node, a, b, key=value)`` calls ``target(a, b, **merged_kwargs)``: the
@@ -513,15 +509,15 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
     none is the target's own ``TypeError``, raised through the located
     construction wrapper.
 
-    Within a ``materialize()`` pass, the same ``Instance`` marker (reached
-    directly or via ``!ref:``) produces a single live object — subsequent
+    Within a ``materialize()`` pass, the same ``Target`` marker (reached
+    directly or via ``${ref:...}``) produces a single live object — subsequent
     ``flow()`` calls on the same marker return the cached instance.
 
     **Auto-solidification:** if the object has a ``solidify()`` method, it is
     called — after instantiation for a marker, and on the pass-through for an
     ALREADY-LIVE object, because "``flow(model)`` handles it transparently" has
-    to hold whichever way the model reached the slot. A live model wired with
-    ``!class:Model()`` (or handed in from Python) otherwise arrives unbuilt, and
+    to hold whichever way the model reached the slot. A model wired with a
+    ``_target_:`` marker (or handed in live from Python) otherwise arrives unbuilt, and
     the failure lands far away: an optimizer flowed with ``params=`` gets an
     empty parameter list. ``solidify()`` is therefore expected to be IDEMPOTENT
     (build-once-and-cache), since a live object may be flowed more than once.
@@ -714,7 +710,7 @@ def _resolve_target_callable(node: Any) -> Any:
 
     Takes the marker, **never the bare target string**, because the marker is what carries
     ``_yaml_loc`` — handed only the string, this reported ``Cannot resolve class:
-    waivefront.sources.HDF5WindwoSource`` with no file and no line, leaving the reader a
+    pkg.sources.HDF5WindwoSource`` with no file and no line, leaving the reader a
     30-frame traceback and a config tree to grep (measured 2026-08-11, on the exact defect a
     rename produces). ``ConstructionError`` a few frames later named its line the whole time.
 
@@ -1113,10 +1109,10 @@ def _apply_post_init_attrs(
             if isinstance(v, Fluid) and not getattr(v, "partial", False):
                 if isinstance(v, Target) and isinstance(existing, Partial):
                     logger.warning(
-                        f"Config slot {k!r} on {getattr(target, '__name__', target)} received a "
-                        "'!class:' value but the slot is a deferred (lazy) runtime-injection slot; "
-                        "treating it as '!lazy:'. Wire it '!lazy:' in YAML to make the intent "
-                        "explicit and silence this."
+                        f"Config slot {k!r} on {getattr(target, '__name__', target)} received an "
+                        "eager '_target_:' value but the slot is a deferred runtime-injection "
+                        "slot; deferring it. Add '_partial_: true' to the marker to make the "
+                        "intent explicit and silence this."
                     )
                     v = Partial(v.target, **v.kwargs)
                 else:
@@ -1338,14 +1334,89 @@ def _flow_reference(
     raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
 
 
-def _flow_clone(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
-    """Resolve a ``Clone``: flow the referenced value, deepcopy it, apply overrides."""
-    from copy import deepcopy
+def _clone_of(referent: Any, overrides: Dict[str, Any], node: Any) -> Any:
+    """The ONE Clone semantic — deepcopy the referent, then apply overrides by its KIND.
 
-    resolved = flow(Reference(obj.target), *runtime_args, **runtime_kwargs)
-    cloned = deepcopy(resolved)
-    for k, v in obj.kwargs.items():
-        setattr(cloned, k, v)
+    Both engine paths call this (the document branch in ``_flow_recursive`` and the
+    direct-flow ``_flow_clone``), which is what makes one document give one answer
+    (adjudicated 2026-08-13; the paths used to differ on every row):
+
+    * a MARKER referent — overrides merge into the copy's ``kwargs``, override wins,
+      and the clone is then BUILT like any other marker (so an eager class's
+      constructor runs WITH the override, and the dump round-trip holds);
+    * a MAPPING referent — keys merge, override wins (they were silently dropped);
+    * a LIVE object — overrides land as post-construction setattrs, exactly what
+      ``configure()`` does for the identical situation (a live constructor cannot
+      re-run; the document path silently dropped these). A non-partial marker
+      VALUE is flowed first, matching ``_apply_post_init_attrs``;
+    * anything else (a scalar, a list) has no keys or attributes to set — a located
+      ``ConfigurationError``, never a silent drop.
+
+    Deepcopy FIRST, so the referent — a template, by intent — is never mutated by
+    its clones' overrides.
+    """
+    cloned = deepcopy(referent)
+    if isinstance(cloned, Target):
+        cloned.kwargs.update(overrides)
+        return cloned
+    if not overrides:
+        return cloned
+    if isinstance(cloned, dict):
+        cloned.update(overrides)
+        return cloned
+    if hasattr(cloned, "__dict__"):
+        for k, v in overrides.items():
+            if isinstance(v, Target) and not v.partial:
+                v = flow(v)
+            setattr(cloned, k, v)
+        return cloned
+    raise ConfigurationError(
+        f"clone of {node.target!r}{_at_yaml_loc(node)} cannot take overrides "
+        f"({', '.join(sorted(overrides))}): the referent is a {type(referent).__name__}, which has "
+        f"no keys or attributes to set. Clone a marker or a mapping, or drop the overrides."
+    )
+
+
+def _flow_clone(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
+    """Resolve a ``Clone`` on the direct-flow path — the same ONE semantic as the document path.
+
+    The referent is taken from the active context AS IT IS: a marker referent stays a
+    marker, so the clone is BUILT from its merged kwargs exactly as ``load()`` builds
+    it. It used to flow the REFERENT first and deep-copy the built object — which
+    handed an eager class the original's constructor run with the overrides pasted on
+    afterwards, and fed the runtime kwargs to the referent's build instead of the
+    clone's. Runtime kwargs now configure the CLONE, runtime wins (``flow()``'s
+    documented contract); on a live-referent copy they land as setattrs, and the
+    positional channel has nothing to attach to and is dropped, as ``flow()`` drops
+    it for any already-live object.
+
+    The fresh cloned marker is pinned in ``memo_keepalive``: the memos key on
+    ``id()``, and an unpinned short-lived marker's recycled address reads as a memo
+    HIT for an unrelated node (see the memo mandate).
+    """
+    context = get_active_context()
+    referent: Any = None
+    if context and obj.target in context:
+        referent = context[obj.target]
+    elif context:
+        referent = resolve_reference_path(obj.target, context)
+    if referent is None:
+        resolver = Resolver(context=context or {})
+        resolved = resolver._resolve_ref(obj.target)
+        if resolved is not None and resolved != f"!ref:{obj.target}":
+            referent = resolved
+    if referent is None:
+        raise ReferenceResolutionError(f"Cannot resolve Clone: {obj.target}{_at_yaml_loc(obj)}")
+
+    cloned = _clone_of(referent, dict(obj.kwargs), obj)
+    if isinstance(cloned, Target):
+        keepalive = _ENGINE_STATE.get().memo_keepalive
+        if keepalive is not None:
+            keepalive.append(cloned)
+        return flow(cloned, *runtime_args, **runtime_kwargs)
+    if runtime_kwargs and hasattr(cloned, "__dict__"):
+        for k, v in runtime_kwargs.items():
+            setattr(cloned, k, v)  # runtime wins on a live copy too
     return cloned
 
 

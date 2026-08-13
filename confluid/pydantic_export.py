@@ -7,8 +7,8 @@ unchanged (primitives, ``Optional``, ``Literal``, ``Union``, ``List``,
 ``Dict``, ``Tuple``, library types).
 
 Generated models carry a ``_confluid_class`` class attribute holding the
-dotted importable path of the target class. Downstream serializers (e.g.
-``navigaitor.serialize``) read this to emit Confluid ``!class:`` tags.
+dotted importable path of the target class. A downstream serializer reads
+this to emit a confluid ``_target_:`` marker for the filled model.
 
 Auto-generated models are intentionally permissive — they expose every
 ``__init__`` parameter without extra constraints. Hand-written pydantic
@@ -141,7 +141,7 @@ def _is_opaque_type(anno: Any) -> bool:
     # torchvision's ``*_Weights`` enums, whose values are ``Weights`` dataclasses
     # carrying a ``type``) builds a valid pydantic CORE schema — so the config
     # validates — but blows up in ``model_json_schema()`` ("Unable to serialize
-    # unknown type: <class 'type'>"), which the navigaitor form-spec / MCP surface
+    # unknown type: <class 'type'>"), which the form-spec / MCP surface
     # calls. Coerce such enums to ``Any`` (a free-text widget — torchvision accepts
     # the "DEFAULT" string alias anyway); a plain str/int Enum stays enumerable.
     if issubclass(anno, enum.Enum):
@@ -220,7 +220,7 @@ def _convert_annotation_unwrapped(anno: Any) -> Any:
     # Abstract iterable / sequence / mapping types: coerce to ``Any`` so
     # pydantic doesn't wrap inputs in ``ValidatorIterator`` (which would
     # strip the original Python object identity needed for shared-instance
-    # composition in downstream tools like navigaitor's serializer).
+    # composition in a downstream serializer).
     if origin in _ITER_TYPES_AS_ANY:
         return Any
 
@@ -264,8 +264,8 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
 
     The workspace range-mark convention allows marking a ``(min, max)`` container
     param on the OUTER annotation — ``Annotated[Tuple[float, float], Interval(ge=0.0)]``
-    (waivefront.torchsig's ``WattRange``/``DbRange``) — because that is where
-    StreamStudio's ``_interval_bounds`` reads the ``__lo``/``__hi`` widget bounds.
+    (a signal-domain consumer's ``WattRange``/``DbRange`` aliases) — because that
+    is where a GUI reads its ``__lo``/``__hi`` widget bounds.
     Pydantic, however, applies ``annotated_types`` constraints to the field VALUE:
     ``(0.0, 30.0) >= 0.0`` raises ``TypeError: Unable to apply constraint 'ge'`` the
     first time the kwarg is actually validated. Relocating the marks element-wise
@@ -342,7 +342,7 @@ def _post_init_field_specs(
     reconfigured post-construction (YAML / broadcasting / a subclass), so a config
     may omit them. This keeps body-attribute config slots — a trainer's
     ``optimizer`` / ``train_loader`` / ``lightning`` / ``*_metrics`` — visible to
-    ``to_pydantic`` (navigaitor form-spec, MCP schemas, StreamStudio widgets) even
+    ``to_pydantic`` (form specs, MCP schemas, GUI widgets) even
     though they aren't constructor parameters.
     """
     specs: Dict[str, Tuple[Any, Any]] = {}
@@ -462,7 +462,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # Also surface post-init body slots (``self.optimizer = PartialClass(...)`` etc.)
     # that aren't constructor parameters — the minimal-ctor / post-construction
     # pattern keeps configurable slots in the ``__init__`` body, and they must
-    # still be enumerable by the form-spec / MCP / StreamStudio surfaces. Signature
+    # still be enumerable by the form-spec / MCP / GUI surfaces. Signature
     # params already in ``fields`` win (never overwritten).
     signature_params = set(fields)
     if isinstance(cls, type):  # post-init body-slot scan walks ``cls.__mro__`` (classes only)
@@ -488,8 +488,8 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # Preserve the lazy-param marker set as MODEL METADATA, queryable via
     # ``partial_param_names_of`` — which fields of this generated model stand for
     # deferred (runtime-injected) slots. A schema consumer emitting YAML from a
-    # filled model can use it to spell those slots ``!lazy:`` rather than
-    # ``!class:`` (which would be eagerly flowed on assignment and crash a
+    # filled model can use it to spell those slots ``_partial_: true`` rather
+    # than as an eager marker (which would be flowed on assignment and crash a
     # runtime-injection target); no in-tree consumer does so today — the
     # class-side scan ``confluid.partial.partial_param_names`` is what serializers
     # actually consult. Two sources, unioned: ``Partial[T]``-annotated constructor
@@ -508,7 +508,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
 
 
 def confluid_class_of(model_or_instance: Any) -> str | None:
-    """Return the ``!class:`` target stored on a generated model, or ``None``."""
+    """Return the ``_target_`` path stored on a generated model, or ``None``."""
     if isinstance(model_or_instance, BaseModel):
         cls: type = type(model_or_instance)
     elif isinstance(model_or_instance, type):

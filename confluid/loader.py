@@ -1,3 +1,22 @@
+"""YAML parsing and composition — the TOP of the module layering.
+
+Owns everything between a file on disk and the marker tree the engine
+materializes: :class:`ConfluidLoader` (the ONLY loader carrying confluid's
+constructors — the global ``yaml.SafeLoader`` is never touched),
+``_reserved_to_marker`` (the ONE site converting the reserved-key spelling
+``_target_`` / ``_partial_`` / ``_ref_`` / ``_clone_`` / ``_scope_`` /
+``_notscope_`` into Fluid markers, at parse time and nowhere downstream),
+:func:`resolve_config_path` (the ONE path-probe site — CWD → ``./config/`` →
+XDG tiers), ``include:`` splicing AT the directive's line (document order IS
+precedence, so where an include is written is meaningful), ``import:``
+side-effect imports, and the once-per-document tag-deprecation notice.
+
+Layering: ``fluid → state → broadcast → engine → loader`` — this module may
+import the engine (one deliberate late import at the bottom); nothing below
+imports it. Docs: ``docs/lifecycle.md`` (the nine passes), ``docs/plain-format.md``,
+``docs/search-paths.md``.
+"""
+
 import importlib
 import os
 import re
@@ -305,8 +324,8 @@ def _register_constructors() -> None:
         """Build a Fluid marker with its kwargs assigned POST-construction.
 
         ``factory(name, **kwargs)`` collides when a YAML kwarg is literally named
-        ``target`` (the marker ctor's own first parameter — e.g. recordstream
-        ``ConfigureOp.target``). The marker stores ``self.kwargs = kwargs`` verbatim,
+        ``target`` (the marker ctor's own first parameter — e.g. a consumer op
+        whose own parameter is named ``target``). The marker stores ``self.kwargs = kwargs`` verbatim,
         so the post-construction update is exactly equivalent and collision-proof.
         """
         fluid = factory(name)
@@ -757,10 +776,10 @@ def load(
     """Load and (optionally) materialize a config.
 
     ``scopes`` is a list of activation strings forwarded from the CLI layer
-    (typically liquifai). Each entry is either a bare boolean name
+    (typically a CLI framework). Each entry is either a bare boolean name
     (``"debug"``) or a ``"key=value"`` pair (``"task=classification"``). Scope
-    blocks tagged with ``!scope:…`` / ``!notscope:…`` in the YAML are resolved
-    against this set before flow runs. See :mod:`confluid.scopes`.
+    blocks (``_scope_:`` / ``_notscope_:``) in the YAML are resolved against
+    this set before flow runs. See :mod:`confluid.scopes`.
     """
     if isinstance(data, (str, Path)):
         str_data = str(data)

@@ -78,7 +78,7 @@ def get_active_context() -> Optional[Dict[str, Any]]:
 def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
     """Activate ``context`` for bare ``flow()`` calls inside the block.
 
-    The public way to make ``!ref:`` resolution work for ``flow()`` calls made
+    The public way to make reference resolution work for ``flow()`` calls made
     OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a deferred
     ``Partial`` slot later, on another thread).
 

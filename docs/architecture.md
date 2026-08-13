@@ -147,7 +147,7 @@ config. The deferral mechanism failed on a signature shape, not on a semantic di
   name `loaders`, so a config key of that name passed the kwarg filter and reached the call as a
   keyword — where Python rejects it. The name can never be passed by keyword, so it is not a
   keyword slot.
-- **Positional args suppress `Instance` memoization**, for the reason runtime kwargs already did:
+- **Positional args suppress marker memoization**, for the reason runtime kwargs already did:
   they override the stored spec, so the result is not the shared object the marker names.
 - **One path cannot take them.** A registry-*configurable* bare type (`flow(MyClass, …)`)
   materializes through a synthesized marker so broadcasting applies, and a marker is kwargs-only.
@@ -512,7 +512,7 @@ object at all.
 merge that applies it runs once per marker, when `_prepare_kwargs` walks the surrounding context
 and unrolls the marker's own kwargs at its slot's position. But a later pass exists: the
 nested-marker broadcast in `engine._resolve_kwarg_value`, which fills markers that never met the
-document (a constructor default `Class(Engine, power=7)`, a body slot `PartialClass(AdamW, lr=1e-4)`).
+document (a constructor default `Target(Engine, power=7)`, a body slot `PartialClass(AdamW, lr=1e-4)`).
 Left alone, that pass re-applies a bare key over a contest the ordered merge already settled —
 which is a specificity tier by another name, the exact thing the one rule forbids.
 
@@ -1116,3 +1116,62 @@ in `tests/test_introspection_agreement.py`. What must not come back is an exclus
 answer the accept-list and the engine can disagree about**. If a "settable via config but hidden from
 display" need ever arrives, it has to be honoured by the display enumerators *and* the accept-list in
 the same change, or it rebuilds exactly the divergence removed here.
+
+---
+
+## 14. A Clone means one thing, whichever path resolves it
+
+*2026-08-13*
+
+**Context.** `Clone` (`_clone_:` / `${clone:...}`) is the deep-copy reference — where a
+reference shares the single materialized instance, a clone gets an independent copy, optionally
+with overrides. Its overrides were applied by TWO different mechanisms depending on which engine
+path resolved the marker: the document path (`_flow_recursive`) deep-copied the *marker* and
+merged overrides into its kwargs (they reached the constructor), while the direct-flow path
+(`_flow_clone`) built the *referent*, deep-copied the live result, and pasted overrides on as
+setattrs. For a class following the class-design convention the two are indistinguishable — a
+store-only constructor makes "built with the override" and "patched after building" the same
+object — which is how the split survived unnoticed. It was visible in three places, each
+measured: an `eager=True` class computed from the template's value on one path and the
+override's on the other (`step_size` 0.4 vs 0.1 for the same document); `flow(clone, lr=0.9)`
+fed the runtime kwarg to the *referent's* build and the clone's own kwarg then beat it —
+inverting `flow()`'s "runtime wins" contract for every class, compliant or not; and overrides on
+non-marker referents were silently dropped (live objects and mappings on the document path,
+scalars everywhere), the exact failure mode the reserved-key format exists to end.
+
+**Decision.** One helper, `engine._clone_of(referent, overrides, node)`, called by both paths.
+The semantic is decided by what the REFERENT is, never by which path resolved it: a marker
+referent merges overrides into the copy's kwargs and the clone is *built* from them; a mapping
+merges keys; a live object takes setattrs (the `configure()` semantic — its constructor cannot
+re-run); a scalar/list with overrides raises a located `ConfigurationError`. `_flow_clone` takes
+the referent from the active context *as it is* (a marker stays a marker) instead of flowing it
+first, passes runtime kwargs to the clone's own build (runtime wins), and pins the fresh cloned
+marker in `memo_keepalive` per the memos-key-on-`id()` rule.
+
+**Consequences.** The two paths now agree on every referent kind (the parity pin uses an eager
+class, the one family that can tell them apart). Cloning no longer force-builds the referent on
+the direct-flow path — the clone builds itself, so a document-path load runs the constructor
+once per clone, which the direct path now matches. Dump fidelity holds for eager clones: the
+copy's captured kwargs are the merged ones it was actually built with. The silent-drop corners
+are gone; the scalar case is the one new *raise*, and it fires only where the override could
+never have meant anything.
+
+**Example.**
+
+```python
+@configurable(eager=True)
+class EagerOpt:
+    def __init__(self, lr: float = 0.1) -> None:
+        self.step_size = lr / 2          # real work — only this family can tell the paths apart
+
+# proto: {_target_: EagerOpt, lr: 0.2}
+# copy:  {_clone_: proto, lr: 0.8}
+load(doc)["copy"].step_size              # 0.4 — document path, unchanged
+flow(clone_marker).step_size             # 0.4 — direct flow; was 0.1 (copied from the 0.2 build)
+flow(clone_marker, lr=0.9).lr            # 0.9 — runtime wins; was 0.8 (runtime value lost)
+```
+
+**What you may change.** The per-kind answers may be tuned (e.g. a mapping clone could refuse
+instead of merge) — but only in `_clone_of`, for both paths at once, with the parity pin
+updated in the same change. What must not come back is a second application site: an override
+semantic living in one path is precisely how this drift arrived, twice.

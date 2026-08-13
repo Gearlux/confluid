@@ -120,7 +120,9 @@ Three limits worth knowing:
 
   On the load path the own-kwarg form (`{_target_: Node, pathh: /x}`) **still
   applies** the value — that branch is the post-init attribute mechanism, so the
-  warning makes it audible rather than removing it. Three things are never
+  warning makes it audible rather than removing it. A class that wants the same
+  key REFUSED instead opts in with `@configurable(strict_attrs=True)` — see
+  [Closing the Config Surface](strict-attrs.md). Three things are never
   reported: a `**kwargs` class (no accept-list — it accepts everything by design),
   a **bare** key (it legitimately matches nothing, so it is `unused`, not
   `failed`), and a declared body slot.

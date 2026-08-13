@@ -23,7 +23,7 @@ An error raised while processing a document carries `file:line:col`, so a failur
 away instead of a traceback to read and a config tree to grep:
 
 ```console
-UnknownClassError: Cannot resolve class: waivefront.sources.HDF5WindwoSource
+UnknownClassError: Cannot resolve class: mypkg.sources.HDF5WindwoSource
                    at /path/to/config/utils/hdf5_rewindow.yaml:22:7
 ```
 

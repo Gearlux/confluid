@@ -2,7 +2,7 @@
 
 Mark a constructor parameter with ``Partial[T]`` to declare that the attribute is
 **intentionally** kept as a deferred ``Fluid`` even when an external walker
-(e.g. liquifai's ``flow_mode="auto"``) would otherwise eagerly flow it. Use
+(e.g. a CLI framework's auto-flow mode) would otherwise eagerly flow it. Use
 this when the attribute will be flowed at runtime with extra kwargs that
 aren't available at construction time — the canonical case is an optimizer
 that wants ``params=self.parameters()``.
@@ -73,7 +73,7 @@ def body_slot_partial_names(cls: Any) -> Set[str]:
     and both are reported here so there is one answer rather than one per caller:
 
     * its **value** is a ``PartialClass(...)`` — what the serializer keys off, so the slot
-      round-trips as ``!lazy:`` instead of a ``!class:`` the engine would eagerly flow;
+      round-trips as ``_partial_: true`` instead of an eager marker the engine would flow;
     * its **annotation** is ``Partial[T]`` — the declaration a reader and a type-checker see.
 
     Best-effort by construction. The scan reads ``__init__`` SOURCE, so a compiled /

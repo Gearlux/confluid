@@ -107,7 +107,7 @@ is recorded in [Architecture Decisions](architecture.md) §5.
 ## Values first, finalization second
 
 If an object defines a `solidify()` method (the lazy-finalize hook `flow()`
-fires — see [Tags & Deferred Initialization](targets.md)), `configure()` re-fires
+fires — see [Targets & Deferred Initialization](targets.md)), `configure()` re-fires
 it **after** the object and its whole subtree carry their new values — never
 before. An object that was already finalized keeps its built state: the hook
 is idempotent by contract, and fresh derived state after reconfiguration is
@@ -133,7 +133,7 @@ configure(trainer, config={"lr": 0.7})                        # nothing competes
 - **Layer override documents** over a graph a previous pass produced.
 
 If you are starting from YAML and have no live objects yet, you want
-`load()` — see [Tags & Deferred Initialization](targets.md).
+`load()` — see [Targets & Deferred Initialization](targets.md).
 
 ## Runnable example
 

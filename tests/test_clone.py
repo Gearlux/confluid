@@ -136,3 +136,97 @@ def test_clone_flow_directly() -> None:
         # Verify independence
         result.value = 100
         assert item.value == 42
+
+
+# ---------------------------------------------------------------------------
+# The ONE override semantic (2026-08-13) — same answer on both engine paths.
+# ---------------------------------------------------------------------------
+
+
+def test_clone_overrides_reach_the_constructor_on_BOTH_paths() -> None:
+    """An eager class tells the two paths apart: 'built with the override' computes
+    from it, 'copied then patched' does not. Direct flow used to deep-copy the BUILT
+    referent and paste the override on afterwards (step_size stayed the template's);
+    it now builds the clone from the merged kwargs, exactly as load() always has."""
+    from confluid import active_context
+
+    @configurable(eager=True)
+    class EagerOpt:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.step_size = lr / 2  # real work from the param — the eager family's point
+
+    doc = load("proto: {_target_: EagerOpt, lr: 0.2}\ncopy: {_clone_: proto, lr: 0.8}")
+    assert doc["copy"].step_size == 0.4  # document path — unchanged
+
+    markers = load("proto: {_target_: EagerOpt, lr: 0.2}", flow=False)
+    clone = Clone("proto", lr=0.8)
+    with active_context(markers):
+        flowed = flow(clone)
+    assert flowed.step_size == 0.4  # direct flow — the fix (was 0.1)
+
+
+def test_runtime_kwargs_on_a_flowed_clone_win() -> None:
+    """flow()'s contract is 'runtime wins'; the clone's own kwarg used to beat it."""
+    from confluid import active_context
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    markers = load("proto: {_target_: Opt, lr: 0.2}", flow=False)
+    with active_context(markers):
+        flowed = flow(Clone("proto", lr=0.8), lr=0.9)
+    assert flowed.lr == 0.9  # was 0.8 — the runtime value was lost
+
+
+def test_a_live_referents_override_is_applied_not_dropped() -> None:
+    """A clone of a LIVE object applies its overrides as setattrs (the configure()
+    semantic) — the document path used to drop them silently."""
+    from confluid import materialize
+
+    @configurable
+    class Opt2:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    live = Opt2(lr=0.2)
+    result = materialize({"proto": live, "copy": Clone("proto", lr=0.8)})
+    assert result["copy"].lr == 0.8  # was 0.2 — the override vanished
+    assert live.lr == 0.2  # the referent is untouched
+    assert result["copy"] is not live
+
+
+def test_clone_of_a_mapping_merges_overrides() -> None:
+    """A dict clone merges its overrides (override wins) — they used to vanish."""
+    result = load("defaults: {lr: 0.1, momentum: 0.9}\nvariant: {_clone_: defaults, lr: 0.5}")
+    assert result["variant"] == {"lr": 0.5, "momentum": 0.9}
+    assert result["defaults"] == {"lr": 0.1, "momentum": 0.9}  # template untouched
+
+
+def test_clone_of_a_scalar_with_overrides_raises_located() -> None:
+    """A scalar has no keys or attributes to override — refuse loudly, never drop
+    silently (the failure mode the reserved-key format exists to end)."""
+    from confluid import ConfigurationError
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        load("base_lr: 0.1\nweird: {_clone_: base_lr, lr: 0.5}")
+    message = str(excinfo.value)
+    assert "cannot take" in message and "base_lr" in message
+
+
+def test_clone_overrides_never_mutate_the_template_marker() -> None:
+    """The referent MARKER survives the clone untouched, so the template stays
+    reusable — the clone deep-copies before merging."""
+    from confluid import active_context
+
+    @configurable
+    class Opt3:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    markers = load("proto: {_target_: Opt3, lr: 0.2}", flow=False)
+    with active_context(markers):
+        flowed = flow(Clone("proto", lr=0.8))
+    assert flowed.lr == 0.8
+    assert markers["proto"].kwargs["lr"] == 0.2  # template kwargs untouched

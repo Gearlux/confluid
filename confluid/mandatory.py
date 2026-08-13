@@ -7,7 +7,7 @@ the structural convention confluid already uses (a parameter with no default, or
 a non-``Optional`` type, reads as required): under the **Zero-Arg Construction**
 mandate every parameter tends to be defaulted, which would make a genuinely
 mandatory class / ``Fluid`` slot *look* optional. ``Mandatory[T]`` restores the
-contract so consumers (StreamStudio sockets, navigaitor's form-spec, MCP schemas)
+contract so consumers (GUI sockets, form specs, MCP schemas)
 can render the slot as required even when it is defaulted for zero-arg build.
 
 Named ``Mandatory`` (NOT ``Required``) to avoid confusion with

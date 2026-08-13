@@ -23,11 +23,11 @@ class CircularIncludeError(ConfigurationError):
 
 
 class ReferenceResolutionError(ConfigurationError):
-    """A ``!ref:`` target cannot be resolved (unknown or self-referential)."""
+    """A reference (``${ref:...}`` / ``_ref_``) target cannot be resolved (unknown or self-referential)."""
 
 
 class UnknownClassError(ConfigurationError):
-    """A ``!class:`` / ``Fluid`` target names a class not in the registry and not importable."""
+    """A ``_target_`` / ``Fluid`` marker names a class not in the registry and not importable."""
 
 
 class AmbiguousClassError(ConfigurationError):

@@ -16,7 +16,7 @@ clone = load(state)            # an equivalent object graph, any process
 `dump()` emits the **plain format** — reserved keys, no tags — so a dumped
 document is ordinary YAML that `yaml.safe_load`, `yq` and an editor schema can
 all read. That holds for every value it can emit, including a function-valued
-param (`collate_fn: ${ref:recordstream.collate_records}`) and the informational
+param (`collate_fn: ${ref:mypkg.collate_records}`) and the informational
 placeholder it falls back to for an opaque object.
 
 For each `@configurable` (or registered) instance, `dump()` emits a

@@ -169,7 +169,7 @@ def test_a_bare_lookup_of_an_ambiguous_name_raises_with_both_candidates() -> Non
     # It names the axis the candidates actually DIFFER on — a hint pointing at a tag they
     # share would narrow nothing.
     assert "framework=" in message
-    assert "!class:" in message  # and the config-side spelling
+    assert "_target_:" in message  # and the config-side spelling — the CANONICAL one
 
 
 def test_ambiguous_error_is_a_configuration_error_and_a_value_error() -> None:

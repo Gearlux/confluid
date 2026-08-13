@@ -24,7 +24,7 @@ from confluid.loader import ConfluidLoader
 
 GROUPS = 10
 SUBGROUPS = 10
-MARKERS = 20  # per subgroup; every 4th carries a nested child Instance
+MARKERS = 20  # per subgroup; every 4th carries a nested child marker
 REPEATS = 3
 
 
@@ -97,7 +97,7 @@ def main() -> None:
     markers = top + nested
     print(f"tree: {GROUPS}x{SUBGROUPS} groups, {top} top markers + {nested} nested = {markers} markers")
 
-    # Each phase re-parses: flow() memoizes Instance markers, so a re-used parse
+    # Each phase re-parses: flow() memoizes Target markers, so a re-used parse
     # would measure the memo hit, not the engine.
     timed("parse", markers, lambda: yaml.load(text, Loader=ConfluidLoader))
     timed("materialize", markers, lambda: materialize(yaml.load(text, Loader=ConfluidLoader)))

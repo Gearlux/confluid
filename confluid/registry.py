@@ -166,7 +166,7 @@ def _resolve_selector_values(selectors: Dict[str, str], context: Optional[Dict[s
             raise ConfigurationError(
                 f"selector {axis}=${path} could not be resolved — no key {path!r} in the active "
                 f"configuration. Define it (e.g. `{path}: torch` at the top level, or inside the "
-                f"matching !scope: block) or write the value literally."
+                f"matching scope block) or write the value literally."
             )
         out[axis] = found
     return out
@@ -522,7 +522,7 @@ class ConfluidRegistry:
             None,
         )
         hint = (
-            f"a tag selector (!class:{name}@{axis}={getattr(matches[0], axis)}) or "
+            f"a selector (_target_: {name}@{axis}={getattr(matches[0], axis)}) or "
             f"get_class({name!r}, {axis}={getattr(matches[0], axis)!r})"
             if axis is not None
             else "an explicit name= on one of them, since no single tag tells them apart"
@@ -530,7 +530,7 @@ class ConfluidRegistry:
         raise AmbiguousClassError(
             f"'{name}' is registered by {len(matches)} classes{narrowed}, so a bare lookup cannot "
             f"choose between them:\n{shown}\n"
-            f"Disambiguate with the dotted path (!class:{matches[0].key}), {hint}."
+            f"Disambiguate with the dotted path (_target_: {matches[0].key}), {hint}."
         )
 
     def key_for(self, cls: Any) -> Optional[str]:

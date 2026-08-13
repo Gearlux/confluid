@@ -73,12 +73,12 @@ def configurable(
         name: Optional override for the registration name.
         category: Optional discovery taxonomy bucket (e.g. ``"loss"``,
             ``"model"``, ``"trainer"``). Surfaces via
-            :meth:`ConfluidRegistry.list_classes` and navigaitor's
-            ``list_configurable_classes(category=...)`` MCP tool.
+            :meth:`ConfluidRegistry.list_classes` and an MCP discovery
+            service's category filter.
         group: Optional free-form, path-like sub-grouping WITHIN a category
             (e.g. ``"numpy"``, ``"fft/numpy"``, ``"segmentation"``). Unlike
             ``category`` / ``task`` / ``role`` (which gate *what* is offered),
-            ``group`` only organises presentation: StreamStudio nests a node's
+            ``group`` only organises presentation: a visual editor nests a node's
             palette folder as ``<Package>/<Category>/<group>``. It is NOT part
             of the discovery contract — an absent group simply means the node
             sits directly under ``<Package>/<Category>``.
@@ -87,7 +87,7 @@ def configurable(
             orthogonal decomposition of ``category``: passing both also derives
             ``category=f"{task}_{role}"`` so existing category-based discovery
             keeps working, while ``list_classes(task=..., role=...)`` enables
-            navigaitor's scan-and-generate task surfaces.
+            scan-and-generate task surfaces.
         framework: Optional engine whose API this class belongs to (``"torch"`` /
             ``"keras"`` / ``"tensorflow"`` / ``"jax"`` / ``"mlx"`` / ``"sklearn"``).
             The unit is the **API**, not the tensor runtime: a ``keras.losses.Loss``
@@ -104,20 +104,20 @@ def configurable(
             runtime-injection slot (e.g. an optimizer needing ``params=`` or a
             DataLoader needing ``dataset=``). Consumers that compose configs read
             it to emit a ``PartialClass`` (deferred) rather than a live instance —
-            notably StreamStudio's object nodes, which feed a runnable's deferred
+            notably a visual editor's object nodes, which feed a runnable's deferred
             body slots. Independent of ``category``/``task``/``role``.
         random: When ``True``, stamp ``__confluid_random__`` on the class.
             Marks a class whose output is non-deterministic (e.g. stochastic
-            augmentation ops). StreamStudio uses this to inject ``IS_CHANGED``
-            on the generated ComfyUI node so downstream nodes (Preview Image,
-            etc.) always re-execute rather than serving a cached output.
+            augmentation ops). A visual editor uses this to force re-execution of
+            the generated node so downstream nodes always recompute rather
+            than serving a cached output.
         constant: When ``True``, stamp ``__confluid_constant__`` on the class.
             Marks a class whose instances (and declared ``@output`` properties)
             are a PURE function of the constructor config — no I/O, no record
-            input, no hidden state. Exporters may fold/hoist such a value
-            producer into a static config: StreamStudio's ops-export hoists a
-            constant value node as a top-level ``!class:`` entry and rewires
-            its consumers via dotted ``!ref:<name>.<output>`` instead of
+            input, no hidden state. An exporter may fold/hoist such a value
+            producer into a static config: a graph exporter hoists a constant
+            value node as a top-level ``_target_:`` entry and rewires its
+            consumers via dotted ``${ref:<name>.<output>}`` instead of
             dropping the wired values. Mutually exclusive with ``random``.
         eager: When ``True``, stamp ``__confluid_eager__`` on the class.
             Declares that the constructor does REAL WORK from its params
@@ -161,13 +161,13 @@ def configurable(
             An explicit empty sequence (``broadcast_attrs=[]``) declares "no
             post-init broadcast attrs" and silences that warning.
         strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
-            the class. StreamStudio uses this to render ``Union[int, str]``
+            the class. A visual editor uses this to render ``Union[int, str]``
             constructor params as two optional sockets — ``{name}_records``
             (INT, full range) and ``{name}_duration`` (STRING) — instead of
             the default single STRING widget. Whichever socket is
             connected/filled wins; if neither, the constructor default applies.
         display_name: Optional human-readable label for UI surfaces (e.g.
-            StreamStudio palette). Stamped as ``__confluid_display_name__``.
+            a node palette). Stamped as ``__confluid_display_name__``.
             Falls back to the class name when absent.
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
@@ -319,7 +319,7 @@ def output(func: T) -> T:
         @output
         def trained_model(self) -> nn.Module: ...
 
-    Consumers (StreamStudio runnable nodes, navigaitor's form-spec) read
+    Consumers (a visual editor's runnable nodes, a form-spec service) read
     :func:`confluid.output_specs` to expose these as node OUTPUT sockets. An
     ``@output`` property is read-only / derived, so it is already excluded from
     config introspection (``to_pydantic`` skips setter-less properties) — it never

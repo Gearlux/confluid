@@ -121,8 +121,9 @@ def format_yaml_loc(obj: Any) -> str:
 class Target(Fluid):
     """A callable to build, plus the kwargs to build it with.
 
-    The ``_target_:`` YAML key and the ``!class:`` tag both produce one of these.
-    Materialization BUILDS it — always, and regardless of what surrounds it.
+    The ``_target_:`` YAML key produces one of these (the deprecated tag spelling
+    parses to the same marker). Materialization BUILDS it — always, and
+    regardless of what surrounds it.
 
     There are exactly TWO construction modes, and :attr:`partial` is the whole
     difference: ``False`` here, ``True`` on :class:`Partial`. Nothing about the
@@ -154,7 +155,7 @@ class Reference(Fluid):
 
 
 class Clone(Fluid):
-    """Deep-copy reference. Resolves like !ref: but returns a deepcopy."""
+    """Deep-copy reference (``${clone:...}`` / ``_clone_:``) — resolves like a ``Reference`` but returns a deepcopy."""
 
     def __init__(self, path: str, **kwargs: Any) -> None:
         super().__init__(path, **kwargs)
@@ -202,8 +203,8 @@ class ScopeBlock:
 class Partial(Target, Generic[T]):
     """A :class:`Target` that materialization NEVER builds.
 
-    Written ``_partial_: true`` in YAML (or ``!lazy:`` in the tag spelling), and
-    ``PartialClass(...)`` in code. Nothing auto-flows one — not ``materialize``,
+    Written ``_partial_: true`` in YAML (the deprecated tag spelling parses to the
+    same marker), and ``PartialClass(...)`` in code. Nothing auto-flows one — not ``materialize``,
     not an external deep-flow walker. Only an explicit
     ``flow(marker, *args, **kwargs)`` builds it, which is the point: the receiving
     code supplies an argument that does not exist at config time. The textbook

@@ -1,23 +1,24 @@
-"""Stdlib-only source introspection shared across confluid.
+"""Stdlib-only introspection — the ONE slot enumeration every reader projects from.
 
-ONE AST scan of an ``__init__`` body (:func:`scan_init_body`) backs the
-projections that used to be near-identical scanners in ``loader`` and
-``pydantic_export``:
+:func:`slots` answers "which configurable slots does this target have?" ONCE,
+returning rich :class:`Slot` records (name, kind, hint-resolved annotation,
+default, source, declaring ``owner``) in signature order. Every reader states
+its rule as a projection — a KIND SET (:func:`slot_names`), an ``owner`` filter,
+a per-field mapping — never as a private re-derived walk: six readers each
+walked the signature with their own "minus self/cls" filter and gave five
+different answers for one class (``docs/architecture.md`` record 12; pinned by
+``tests/test_introspection_agreement.py``). :func:`body_slot_names` is the
+sibling projection over the same walk for the different question "what does the
+``__init__`` body assign" — ``slots()`` reports a name once and lets the
+signature claim it.
 
-* :func:`init_setattr_names` — every assigned body-slot NAME (the broadcast /
-  accept-list view; the widest — includes ``AugAssign`` and literal
-  ``setattr(self, "x", …)``).
-* :func:`init_partial_setattr_names` — names whose assigned VALUE is a
-  ``PartialClass(...)`` / ``Partial(...)`` call (deferred body slots — emitted as
-  ``!lazy:`` by serializers).
-
-(``pydantic_export`` consumes :func:`scan_init_body` directly for its typed
-body-slot fields; an ``init_setattr_annotations`` projection existed for that
-role, was orphaned by the switch, and was deleted 2026-08-09.)
-
-The projections deliberately differ in which slot KINDS they see — that
-preserves the semantics of the original scanners (``AugAssign`` and
-``setattr`` slots broadcast, but never become pydantic fields or lazy slots).
+Underneath, ONE AST scan of an ``__init__`` body (:func:`scan_init_body`) finds
+the body slots, with two narrow name-set projections kept for the broadcast
+layer: :func:`init_setattr_names` (every assigned body-slot NAME — the widest
+view, ``AugAssign`` and literal ``setattr(self, "x", …)`` included) and
+:func:`init_partial_setattr_names` (names whose assigned VALUE is a
+``PartialClass(...)`` call — deferred body slots, serialized as
+``_partial_: true``).
 
 This module imports ONLY the stdlib, so it is a dependency leaf: safe for the
 optional-pydantic consumer, and structurally incapable of import cycles.

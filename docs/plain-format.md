@@ -176,6 +176,13 @@ Each message carries the file, line and column of the offending mapping.
 
 ## Migrating an existing config — `confluid-migrate`
 
+The legacy tag spelling (`!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:`)
+still parses in 0.3 — emitting a `FutureWarning` once per document — and is
+**removed in 0.4.0**. Convert before then; the tool proves each conversion
+equivalent before writing. (A fully annotated reference config in the plain
+spelling ships at the repository root as
+[`confluid.example.yaml`](https://github.com/Gearlux/confluid/blob/main/confluid.example.yaml).)
+
 ```bash
 confluid-migrate config/                  # rewrite every YAML under config/
 confluid-migrate config/ --check          # exit 1 if anything would change; write nothing

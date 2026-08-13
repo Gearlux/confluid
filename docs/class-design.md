@@ -12,9 +12,11 @@ to construct. Four rules:
 1. **Partial constructor — no functional work.** `__init__` only *stores* values. No I/O, network,
    file reads, dataset/model materialization, or heavy compute. Real work is deferred to a property
    or method.
-2. **Zero-arg construction works.** `Cls()` must succeed — every parameter is defaulted. A value
-   genuinely required to *run* is still a defaulted parameter, validated **lazily** (where it is
-   used) with a clear error, not in `__init__`.
+2. **Zero-arg construction is RECOMMENDED, not required.** The preferred shape is `Cls()`
+   succeeding — every parameter defaulted, a value genuinely required to *run* validated
+   **lazily** (where it is used) with a clear error, not in `__init__`. A class that keeps a
+   genuinely required constructor parameter is fully supported and is NOT a defect (see
+   [Eager classes](eager-classes.md)); prefer the lazy shape for new classes.
 3. **Derived state → read-only `@property`, recomputed.** State derived from the configurable
    inputs is a read-only property (not a stored attribute), so it never goes stale when the inputs
    change. Read-only properties are invisible to Confluid's config surface — never set by
@@ -26,9 +28,10 @@ to construct. Four rules:
    take a **minimal constructor** (only the genuinely required inputs and identity scalars) and
    assign the rest as body attributes — `self.optimizer = PartialClass(Adam, lr=1e-3)` — reconfigured
    after construction by YAML, broadcasting, or a subclass. Body slots are not hidden state:
-   the schema surface (`to_pydantic`) scans the `__init__` body and surfaces every non-underscore
-   `self.<name> = …` slot as an optional field, so the schema/help surface GUIs and agents read
-   still enumerates them. Three rules for body slots:
+   the schema surface (`to_pydantic`) enumerates the `__init__` body and surfaces every
+   non-underscore `self.<name> = …` slot **declared by a `@configurable` class in the MRO** as an
+   optional field (a non-`@configurable` framework base's internals never become schema fields),
+   so the schema/help surface GUIs and agents read still enumerates them. Three rules for body slots:
    - a slot that needs a **runtime-injected** argument (`params=`, `dataset=`) must hold a
      `PartialClass(...)` value (`_partial_: true` in YAML) — a plain `Target(...)` body value is eagerly built
      during parent materialization and would crash a target missing its runtime argument;

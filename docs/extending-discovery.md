@@ -253,11 +253,11 @@ and the viewers. A missing op or visualizer is added to its home package, never 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Class missing, **no error** | stale `*.dist-info` after an entry-point change | reinstall the editable; confirm the entry-point count |
-| Op/source tagged but absent from the canvas | category not in `_NODE_CATEGORIES`, or no `@configurable` | tag `category ∈ {op, source, engine, sink, …}` upstream |
+| Op/source tagged but absent from the canvas | category outside the editor's allowlist, or no `@configurable` | tag `category ∈ {op, source, engine, sink, …}` upstream |
 | Submodule class missing (package-root entry point) | not in `__all__` | add it to `__all__` |
-| A bare library transform (albumentations, torchvision v2) has no node | it is not `@configurable` — libraries run AS-IS via the engine's op-family dispatch | drop it into an `ops:` list (`{_target_: albumentations.HorizontalFlip, p: 0.5}`); teach a new library with one `register_op_family(...)` call |
+| A bare library transform (albumentations, torchvision v2) has no node | it is not `@configurable` — libraries run AS-IS via the engine's op-family dispatch | drop it into an `ops:` list (`{_target_: albumentations.HorizontalFlip, p: 0.5}`); the engine's op-family dispatch is the consumer's extension point for a new library |
 | Model/loss not offered in a trainer slot | wrong/missing `task`/`role` | tag `@configurable(task=…, role=…)` to match the slot (§6) |
-| Canvas wire between two object nodes refused | role-qualified socket mismatch (correct) | wire compatible roles, or use the **Retag** node |
+| Canvas wire between two object nodes refused | role-qualified socket mismatch (correct) | wire compatible roles, or re-tag the value with the editor's retag facility |
 | Op raises mid-run on an incompatible record | there is no connection-time type filter, by design (§7) | fix the pipeline order / key names |
 | MCP tool rejects a config with `ValidationError` | `extra="forbid"` / type / enum mismatch (correct) | match the schema; `CONFLUID_VALIDATE_TOOL=warn` for debugging only |
 | Numeric field renders as `STRING`, ctor chokes | bad annotation | annotate `int`/`float`/`Optional[int]`/`Literal[...]` |

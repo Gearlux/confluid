@@ -44,7 +44,7 @@ clients.
 The function is pure (no mutation of its input) and depends only on the stdlib,
 so it lives in confluid — the one place that already owns AI-facing schema
 introspection (``to_pydantic`` / ``parse_param_docs``) — and is shared verbatim
-by every MCP server in the workspace (navigaitor, sairen, ...).
+by every MCP-serving consumer of this library.
 """
 
 from __future__ import annotations

@@ -142,7 +142,7 @@ def configure_from_file(
 
     is equivalent to ``configure(trainer, config=load_config("experiment.yaml"))``.
     The file is read via :func:`confluid.load_config`, so recursive ``include:``
-    / ``import:`` directives and ``!class:`` / ``!ref:`` markers are honoured;
+    / ``import:`` directives and ``_target_`` / reference markers are honoured;
     the loaded config is then walked and applied to each instance exactly as
     :func:`configure` does (same matching, resolution, and per-field
     validation). This is a wrapper only — it adds no behaviour beyond loading.
@@ -150,7 +150,7 @@ def configure_from_file(
     Args:
         *instances: The already-constructed objects to configure in place.
         path: Path to the YAML config file (``str`` or ``Path``).
-        context: Optional explicit resolution context for ``!ref:`` / ``${...}``
+        context: Optional explicit resolution context for references / ``${...}``
             (defaults to the loaded config itself, mirroring :func:`configure`).
 
     Raises:

@@ -6,8 +6,9 @@
 #
 # ---------------------------------------------------------------------------
 # This file is written in the PLAIN-YAML spelling: ordinary YAML that
-# `yaml.safe_load`, `yq` and editor schemas can all read. Confluid also reads an
-# equivalent TAG spelling, and the two may be mixed in one document — see
+# `yaml.safe_load`, `yq` and editor schemas can all read. Confluid also still
+# reads the legacy TAG spelling — DEPRECATED: it warns on every document in 0.3
+# and is removed in 0.4.0 (convert with `confluid-migrate`) — see
 # docs/plain-format.md and docs/targets.md. The equivalences:
 #
 #   _target_: Model            ==  !class:Model

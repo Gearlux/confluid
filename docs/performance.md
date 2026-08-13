@@ -40,10 +40,10 @@ Typical output (Apple M-series, Python 3.12):
 
 ```
 tree: 10x10 groups, 2000 top markers + 500 nested = 2500 markers
-parse         2500 markers   best    105.0 ms   mean    106.6 ms      23805 markers/s
-materialize   2500 markers   best    216.4 ms   mean    218.5 ms      11550 markers/s
-resolve       2500 markers   best    219.5 ms   mean    220.4 ms      11387 markers/s
-configure     2500 markers   best     37.1 ms   mean     48.9 ms      67340 markers/s
+parse         2500 markers   best    141.3 ms   mean    144.2 ms      17687 markers/s
+materialize   2500 markers   best    284.0 ms   mean    286.2 ms       8804 markers/s
+resolve       2500 markers   best    281.6 ms   mean    282.9 ms       8879 markers/s
+configure     2500 markers   best     38.0 ms   mean     54.8 ms      65710 markers/s
 ```
 
 ## Profiling mode

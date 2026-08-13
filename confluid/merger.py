@@ -7,8 +7,8 @@ from confluid.fluid import Fluid
 def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge ``overlay`` into ``base``; returns a NEW dictionary.
 
-    Live Fluid markers (Class/Instance/Reference/Clone) are preserved by
-    identity so that ``!ref:`` resolution stays consistent across contexts.
+    Live Fluid markers (Target/Partial/Reference/Clone) are preserved by
+    identity so that reference resolution stays consistent across contexts.
     Other values are deep-copied for safety.
 
     **A key the overlay re-states takes the OVERLAY's position** (2026-08-11).
@@ -21,7 +21,7 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
         # base.yaml            # main.yaml
         lr: 0.1                include: base.yaml
         Stage:                 lr: 0.3            <- written last, LOST (0.2 won)
-          lr: 0.2              s: !class:Stage()
+          lr: 0.2              s: {_target_: Stage}
 
     ``lr`` sat at the base's position 0, ahead of the ``Stage:`` block it was
     written after, so the included file's addressed value won — while the same
@@ -52,11 +52,11 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
 def _preserve_identity_copy(value: Any) -> Any:
     """Deepcopy ordinary containers but preserve identity of live Fluid objects.
 
-    Fluid markers (Class, Instance, Reference, Clone) represent *one* logical
+    Fluid markers (Target, Partial, Reference, Clone) represent *one* logical
     configuration citizen. Deep-copying them here would undo the Resolver's
-    ``!ref:`` resolution, causing two references to the same Fluid to produce
+    reference resolution, causing two references to the same Fluid to produce
     two separate live instances downstream. We keep identity intact and let
-    ``!clone:`` opt into explicit deepcopy when independence is wanted.
+    ``${clone:...}`` opt into explicit deepcopy when independence is wanted.
     (Identity is also what lets ``_prepare_kwargs``'s ``self_obj`` check
     locate the receiving marker's slot in its ambient context.)
     """

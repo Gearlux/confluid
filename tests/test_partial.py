@@ -324,7 +324,7 @@ def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any)
         )
         # Auto-deferred — not eagerly built — and a warning was emitted.
         assert isinstance(owner.optimizer, PartialClass)
-        assert any("deferred (lazy)" in msg for msg in warnings_seen)
+        assert any("deferred runtime-injection" in msg and "_partial_: true" in msg for msg in warnings_seen)
         # The owning code injects the runtime arg and builds it.
         built = flow(owner.optimizer, required=[1])
         assert isinstance(built, _Needsy) and built.lr == 0.05
