@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Prot
 
 from loggair import get_active_config, get_logger
 
+from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, Reference
 from confluid.introspect import (
     _slots_cache,
@@ -1079,6 +1080,77 @@ def _broadcast_blocked_keys(target_cls: Any) -> Optional[frozenset[str]]:
     return no_broadcast_param_names(target_cls)
 
 
+def refuse_if_undeclared(target: Any, key: str, node: Any = None) -> None:
+    """Raise when ``target`` is ``strict_attrs`` and ``key`` names nothing it declares.
+
+    The opt-in complement of the permissive default. Confluid absorbs an unknown
+    ADDRESSED key as a post-init attribute — ``engine._apply_post_init_attrs`` IS
+    the post-construction toggle mechanism — and since 2026-08-12 it warns while
+    doing so. A class marked ``@configurable(strict_attrs=True)`` closes that
+    surface: the same key raises instead.
+
+    "Declared" is the accept-list: constructor parameters (or the callable's own
+    signature for a builder function), public settable class attributes, and
+    ``__init__``-body slots. A ``**kwargs`` target has NO accept-list — nothing is
+    undeclared for it — so marking one is meaningless rather than an error, and it
+    is never refused. BARE keys never reach here: the accept-list drops them
+    first, which is what keeps a strict class usable in a document that also
+    configures something else.
+    """
+    cls = _settability_target(target)
+    if cls is None or not getattr(cls, "__confluid_strict_attrs__", False):
+        return
+    acceptable = _get_acceptable_keys(cls)
+    if acceptable is None or key in acceptable:
+        return
+    from confluid.fluid import format_yaml_loc
+
+    loc = format_yaml_loc(node)
+    name = getattr(cls, "__name__", cls)
+    known = ", ".join(sorted(acceptable)) or "(nothing)"
+    raise ConfigurationError(
+        f"{name} has no attribute {key!r}{f' at {loc}' if loc else ''} and is declared "
+        f"strict_attrs=True, so it will not be set as a post-init attribute. "
+        f"{name} declares: {known}."
+    )
+
+
+def refuse_if_variadic_name(target: Any, key: str, node: Any = None) -> None:
+    """Raise when an ADDRESSED ``key`` names a ``*args`` parameter of ``target``.
+
+    Such a key can never reach the parameter — a variadic is positional-only by
+    construction, and a confluid marker carries keyword arguments alone. Until
+    2026-08-12 it was silently accepted as a post-init ATTRIBUTE instead: the
+    constructor never saw it, and ``obj.loaders`` held a value the object ignored.
+
+    Hydra refuses the identical spelling (measured, 1.3.5: ``loaders: [...]`` on a
+    ``*loaders`` target raises ``InstantiationException``) and offers ``_args_`` as
+    the separate channel. Confluid's channel is ``flow(node, a, b)`` — runtime-only
+    by mandate — so the config-side answer is the same: refuse the name.
+
+    ADDRESSED only. A BARE key is an implicit ``**.key`` that cascades tree-wide
+    and legitimately matches nothing, so a document whose top-level key happens to
+    collide with some class's variadic parameter must keep loading. Hydra never
+    faces that case — it has no bare-key broadcast. The bare path structurally
+    cannot reach here: the accept-list drops the key before either call site.
+    """
+    cls = _settability_target(target)
+    if cls is None:
+        return
+    if key not in {slot.name for slot in slots(cls) if slot.kind == "var_positional"}:
+        return
+    from confluid.fluid import format_yaml_loc
+
+    loc = format_yaml_loc(node)
+    where = f" at {loc}" if loc else ""
+    name = getattr(cls, "__name__", cls)
+    raise ConfigurationError(
+        f"{name} cannot accept {key!r}{where}: it is a *args parameter, which can never be "
+        f"passed by keyword, so no config key can reach it. Pass the values positionally — "
+        f"flow(node, a, b) — or give the target a keyword parameter."
+    )
+
+
 def accepts_key(target: Any, key: str) -> bool:
     """True if ``key`` can set an attribute on ``target`` when ADDRESSED explicitly.
 
@@ -1421,8 +1493,6 @@ def _receiver_for_instance(obj: Any) -> _Receiver:
 
     def _settable(key: str) -> bool:
         member = getattr(cls, key, None)
-        if member is not None and getattr(member, "__confluid_ignore__", False):
-            return False
         if isinstance(member, property) and member.fset is None:
             return False
         return acceptable is None or key in acceptable or key in own_attrs
@@ -1657,10 +1727,14 @@ class _MergeSink:
     do both).
     """
 
-    __slots__ = ("cls_name", "merged", "report", "origins", "contest")
+    __slots__ = ("cls_name", "merged", "report", "origins", "contest", "target", "self_obj")
 
-    def __init__(self, cls_name: str) -> None:
+    def __init__(self, cls_name: str, target: Any = None, self_obj: Any = None) -> None:
         self.cls_name = cls_name
+        # Carried for ``unknown``'s variadic refusal only: the TARGET to introspect
+        # and the NODE whose ``_yaml_loc`` locates the error.
+        self.target = target if target is not None else cls_name
+        self.self_obj = self_obj
         self.merged = _View()
         self.report = _ENGINE_STATE.get().report
         self.origins: Dict[str, str] = {}
@@ -1705,7 +1779,23 @@ class _MergeSink:
         _merge_routing(self.merged, key, block)
 
     def unknown(self, key: str, value: Any, *, origin: str) -> None:
-        pass  # constructor validation is this path's typo enforcement
+        # A key naming a ``*args`` parameter can never land anywhere, whatever the
+        # class does — that is refused outright.
+        refuse_if_variadic_name(self.target, key, self.self_obj)
+        # Anything else undeclared is REPORTED, not refused. This used to be a
+        # no-op justified as "constructor validation is this path's typo
+        # enforcement" — measured false: the key is not a ctor param, so the ctor
+        # filter drops it and it never reaches validation at all. ``configure()``
+        # has always warned here; the load path said nothing for the same mistake.
+        from confluid.fluid import format_yaml_loc
+
+        refuse_if_undeclared(self.target, key, self.self_obj)
+        loc = format_yaml_loc(self.self_obj)
+        logger.warning(
+            f"{self.cls_name} block has no attribute {key!r}" f"{f' (receiver at {loc})' if loc else ''} — ignored"
+        )
+        if self.report is not None:
+            self.report.record_failed(key, self.cls_name, "unknown-attribute")
 
     def matched(self, name: str) -> None:
         if self.report is not None:
@@ -1764,7 +1854,7 @@ def _prepare_kwargs(
     :class:`_MergeSink` writes the outcomes into the returned view.
     """
     receiver = _receiver_for_target(cls_name, own_kwargs, target)
-    sink = _MergeSink(receiver.cls_name)
+    sink = _MergeSink(receiver.cls_name, target=target or cls_name, self_obj=self_obj)
     _scan_view(parent_context, receiver, sink, own_kwargs=own_kwargs, self_obj=self_obj)
 
     if sink.report is not None and sink.origins:

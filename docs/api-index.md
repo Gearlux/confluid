@@ -42,7 +42,6 @@ plugs into the passes, and from the eight names most configs need:
 | `get_registry` | The registry object (`list_classes`, `get_class`, tag filters) |
 | `load_configurables` | Import every module in the `confluid.configurables` entry-point group so its registrations run |
 | `marks` / `Marks` | Read-only record of a class's confluid marks (task/role/framework, lazy/random/…) |
-| `ignore_config` | Mark a class attribute as never-configurable |
 
 ## Post-construction configuration — [Post-Construction Configuration](configure.md)
 

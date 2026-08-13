@@ -30,13 +30,7 @@ at script init — which fails because ``Adam`` requires ``params``.
 from typing import Annotated, Any, Set, TypeVar, Union
 
 from confluid.fluid import Fluid
-from confluid.introspect import (
-    annotation_has_marker,
-    init_partial_setattr_names,
-    marked_param_names,
-    resolve_ast_annotation,
-    scan_init_body,
-)
+from confluid.introspect import annotation_has_marker, init_partial_setattr_names, marked_param_names, slots
 
 T = TypeVar("T")
 
@@ -88,18 +82,26 @@ def body_slot_partial_names(cls: Any) -> Set[str]:
     simply is not lazy.
     """
     names: Set[str] = set()
+    # Deferred by VALUE. Not projectable from ``slots()``: the enumeration carries a
+    # slot's declared TYPE, never its assigned expression, and this signal is exactly
+    # that expression (``self.optimizer = PartialClass(Adam)``).
     for klass in getattr(cls, "__mro__", ()):
         if klass is object or not getattr(klass, "__confluid_configurable__", False):
             continue
         init = klass.__dict__.get("__init__")
         if init is None:
             continue
-        names |= init_partial_setattr_names(init)  # lazy by VALUE
-        for slot in scan_init_body(init):  # lazy by ANNOTATION
-            if slot.kind in ("assign", "annassign") and is_partial_annotation(
-                resolve_ast_annotation(slot.annotation, init)
-            ):
-                names.add(slot.name)
+        names |= init_partial_setattr_names(init)
+    # Deferred by ANNOTATION — projected from the ONE enumeration since 2026-08-12.
+    # It used to resolve these annotations itself, independently of the copy in
+    # ``pydantic_export``, with nothing checking the two agreed.
+    #
+    # One deliberate widening: ``slots()`` walks the whole MRO, so a body slot
+    # declared on a NON-``@configurable`` base now counts, where the loop above
+    # skips such a base. That matches what the accept-list has always done
+    # (``body_slot_names`` never gated on it either), and the workspace has zero
+    # classes of that shape — measured before the change, pinned below.
+    names |= {slot.name for slot in slots(cls) if slot.kind == "body_slot" and is_partial_annotation(slot.annotation)}
     return names
 
 

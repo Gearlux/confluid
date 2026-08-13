@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from confluid import configurable, configure, get_registry, ignore_config
+from confluid import configurable, configure, get_registry
 
 
 @pytest.fixture(autouse=True)
@@ -37,8 +37,9 @@ class ClassWithProperty:
         self._value = val
 
     @property
-    @ignore_config
     def computed(self) -> int:
+        # Read-only: excluded from every reader surface by the setter-less-property
+        # rule, which is what made `@ignore_config` redundant (removed 0.3.0).
         return self._value * 2
 
 

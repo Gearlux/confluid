@@ -7,7 +7,7 @@ Coverage targets:
 * Optional / Union / Literal / List / Dict / Tuple annotations
 * Nested ``@configurable`` recursion produces nested pydantic models
 * Lists of ``@configurable`` produce ``List[NestedModel]``
-* ``@ignore_config``-marked attributes are skipped
+* Params shadowed by a read-only ``@property`` are skipped
 * Mutable defaults (list/dict) become ``default_factory``
 * ``_confluid_class`` attribute carries the correct dotted path
 * ``lru_cache`` returns the same model on repeated calls
@@ -275,24 +275,39 @@ def test_lru_cache_returns_same_model() -> None:
     assert to_pydantic(Repeated) is to_pydantic(Repeated)
 
 
-def test_ignore_config_attributes_are_skipped() -> None:
-    from confluid import ignore_config
+def test_a_readonly_property_is_not_a_field_but_a_ctor_param_always_is() -> None:
+    """The two halves of the rule that replaced ``@ignore_config`` (deleted 0.3.0).
+
+    A derived read-only ``@property`` is not a config knob, so it is not a field —
+    this is the exclusion the removed decorator was being used for, and it needs
+    no marker.
+
+    A declared constructor PARAMETER stays a field even when a read-only property
+    shadows it, because this model describes the constructor: the property shadows
+    the instance attribute after construction, not the argument. ``@ignore_config``
+    used to suppress it, which is the one capability the removal drops — no class
+    in the workspace used it (0 of 275).
+    """
 
     @configurable
-    class WithHidden:
-        def __init__(self, visible: int = 1, hidden: int = 2) -> None:
+    class WithDerived:
+        def __init__(self, visible: int = 1, shadowed: int = 2) -> None:
             self.visible = visible
-            self._hidden = hidden
+            self._shadowed = shadowed
+            self._total = visible + shadowed
 
-        # ``@ignore_config`` marks the class-level ``hidden`` lookup so the
-        # pydantic generator skips the matching ``__init__`` param.
-        @ignore_config
-        def hidden(self) -> int:  # noqa: F811
-            return self._hidden
+        @property
+        def shadowed(self) -> int:  # noqa: F811 — deliberately shadows the ctor param
+            return self._shadowed
 
-    Model = to_pydantic(WithHidden)
+        @property
+        def total(self) -> int:  # purely derived — never a ctor param
+            return self._total
+
+    Model = to_pydantic(WithDerived)
     assert "visible" in Model.model_fields
-    assert "hidden" not in Model.model_fields
+    assert "shadowed" in Model.model_fields, "a declared ctor param is always a field"
+    assert "total" not in Model.model_fields, "derived read-only state is not"
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +498,89 @@ class _SubTrainer(_TrainerLike):
         self.extra_knob: Any = None
 
 
+class _Deferred:
+    """A runtime-injection target for the ``Partial[T]`` body-slot pin below."""
+
+    def __init__(self, lr: float = 0.1) -> None:
+        self.lr = lr
+
+
+@configurable
+class _TypedBody:
+    """Module-level so ``inspect.getsource`` can read the ``__init__`` body.
+
+    Shaped like the real consumers this matters for — ``matrainer``'s runnables
+    carry ~10 annotated body slots each (``Optional[Partial[RecordSource]]``,
+    ``Partial[KerasOptimizer]``, …), which is 163 slots across the workspace.
+    """
+
+    def __init__(self, epochs: int = 10) -> None:
+        self.epochs = epochs
+        self.optimizer: Partial[_Deferred] = PartialClass(_Deferred)
+        self.run_name: Optional[str] = None
+        self.untyped = None  # no annotation — must stay Any
+
+
+def test_body_slot_ANNOTATIONS_reach_the_generated_model() -> None:
+    """The "before" snapshot for the slots() annotation consolidation.
+
+    ``to_pydantic`` resolves a body slot's declared type by running its OWN AST
+    scan (``pydantic_export._post_init_field_specs``), independently of the one
+    ``introspect.slots()`` runs and of the one ``confluid.partial`` runs. Nothing
+    checks that the three agree, and 163 production body slots ride on it.
+
+    This pins what the schema says TODAY, so folding those scans into one
+    enumeration shows up as a diff in this test rather than as a quietly
+    different schema on every MCP tool and GUI form.
+    """
+    fields = to_pydantic(_TypedBody).model_fields
+
+    assert fields["run_name"].annotation == Optional[str], "a typed body slot is NOT Any"
+    assert fields["untyped"].annotation == Optional[Any], "an unannotated one is — body slots are optional"
+    assert fields["epochs"].annotation is int, "signature params are unaffected"
+
+    # ``Partial[T]`` is stripped to a union admitting the target, the deferred
+    # marker, and its generated config model.
+    optimizer_arms = get_args(fields["optimizer"].annotation)
+    assert _Deferred in optimizer_arms, "the flow-target type survives into the schema"
+    assert type(None) in optimizer_arms
+
+
+def test_the_partial_body_slot_scan_agrees_with_the_schema_today() -> None:
+    """The second private scan, pinned beside the first.
+
+    ``confluid.partial`` resolves the SAME annotations to decide which body slots
+    are deferred. It agrees with ``to_pydantic`` today; nothing enforces that, and
+    a consolidation must keep it true.
+    """
+    from confluid.partial import partial_param_names
+
+    assert "optimizer" in partial_param_names(_TypedBody), "declared Partial[T] in the body"
+    assert "run_name" not in partial_param_names(_TypedBody)
+
+
+def test_slots_reports_a_body_slots_DECLARED_type() -> None:
+    """The gap the consolidation closed, pinned from the other side.
+
+    ``introspect.slots()`` is the ONE slot enumeration, and until 2026-08-12 it
+    carried names and kinds only — a body slot's ``annotation`` was ``Any`` even
+    where the class plainly declared ``Optional[str]``. Nothing was broken by that
+    (no reader asked), but two other scans resolved the same annotations privately
+    and nothing checked they agreed, across 163 production body slots.
+
+    An unannotated slot is still ``Any``: that is the class's own answer, not a
+    missing one.
+    """
+    from confluid.introspect import slots
+
+    by_name = {s.name: s for s in slots(_TypedBody)}
+
+    assert by_name["epochs"].annotation is int, "signature slots were always typed"
+    assert by_name["run_name"].annotation == Optional[str], "body slots are too, now"
+    assert by_name["untyped"].annotation is Any, "...unless the class did not say"
+    assert by_name["optimizer"].kind == "body_slot"
+
+
 def test_to_pydantic_surfaces_post_init_body_slots() -> None:
     """Body-attribute config slots appear as OPTIONAL fields (default None)."""
     model = to_pydantic(_TrainerLike)
@@ -492,6 +590,60 @@ def test_to_pydantic_surfaces_post_init_body_slots() -> None:
     inst = model(model=object(), train_set=[])
     assert inst.optimizer is None
     assert inst.batch_size is None
+
+
+class _FrameworkBase:
+    """NOT @configurable — stands in for ``nn.Module`` / ``LightningModule``.
+
+    Their ``__init__`` bodies assign a dozen internal attributes
+    (``self.training = True``, ``self.prepare_data_per_node = True``, …).
+    """
+
+    def __init__(self) -> None:
+        self.training = True
+        self.prepare_data_per_node = True
+
+
+@configurable
+class _OnFramework(_FrameworkBase):
+    def __init__(self, width: int = 8) -> None:
+        super().__init__()
+        self.width = width
+        self.head: Optional[str] = None
+
+
+def test_a_non_configurable_bases_body_slots_never_become_schema_fields() -> None:
+    """The OWNER filter — the reason ``Slot`` carries which class declared it.
+
+    ``slots()`` walks the WHOLE MRO because the accept-list wants those names: a
+    bare key may legitimately set ``training`` on an instance, and the engine
+    subtracts non-configurable ancestors later (``_get_parent_attr_blacklist``).
+    A generated SCHEMA must not carry them, or every model in a torch/Lightning
+    tree grows ``training`` and ``prepare_data_per_node`` fields that no config
+    should ever set.
+
+    Two readers, two scopes, one enumeration — decided by the reader, not by a
+    second walk. Projecting naively would have added exactly these (measured).
+    """
+    from confluid.introspect import slots
+
+    fields = set(to_pydantic(_OnFramework).model_fields)
+    body_slots = {s.name for s in slots(_OnFramework) if s.kind == "body_slot"}
+
+    assert fields == {"width", "head"}, "the schema sees only what @configurable classes declare"
+    assert {"training", "prepare_data_per_node"} <= body_slots, "...while the enumeration sees all of them"
+    assert not ({"training", "prepare_data_per_node"} & fields)
+
+
+def test_slot_owner_names_the_declaring_class() -> None:
+    """``owner`` is the MRO class that declared the slot, not the target."""
+    from confluid.introspect import slots
+
+    by_name = {s.name: s for s in slots(_OnFramework)}
+
+    assert by_name["head"].owner is _OnFramework
+    assert by_name["training"].owner is _FrameworkBase
+    assert by_name["width"].owner is _OnFramework, "a signature slot owns itself"
 
 
 def test_to_pydantic_body_slots_inherited_across_configurable_chain() -> None:

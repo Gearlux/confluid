@@ -179,8 +179,26 @@ for the same parameter depending on whether the class also took `**kwargs`. None
 it produced a form with a missing field, a CLI flag that does nothing, a schema that omits a knob.
 `docs/architecture.md` record 12.
 
+**Rule — a DECLARED-OPTIONS listing filters body slots by `owner`; the accept-list does not.**
+`get_hierarchy` and `to_pydantic` both report only body slots whose `owner` is `@configurable`.
+The accept-list deliberately does not — a bare key may legitimately set a framework base's
+`self.compiled`, and the engine subtracts those later (`_get_parent_attr_blacklist`). Adding a
+body-slot reader means choosing that filter EXPLICITLY: shipping one without it put twelve
+`keras.Model` internals (`predict_function`, `supports_jit`, `compiled`, …) into `--docs` as
+configuration options, measured at 522 of 859 body slots workspace-wide. The live walker never
+had the bug — it reads `get_configurable_attrs`, which applies the same subtraction.
+
+**Rule — `Slot` carries the DECLARED type and the DECLARING class.** A body slot's `annotation`
+is resolved once, in the enumeration (`resolve_ast_annotation`), never again per reader.
+`Slot.owner` is the MRO class that declared it, and it is what lets two readers take different
+MRO SCOPES from one walk: the accept-list wants a non-`@configurable` base's `self.training`
+(a bare key may set it), `to_pydantic` must NOT (it would become a field on every schema in a
+torch/Lightning tree). Express a scope as an `owner` filter — never as a second walk.
+
 **Pins.** `tests/test_introspection_agreement.py` — the three-answer table, and one test per
 difference stating whether it is deliberate.
+`tests/test_pydantic_export.py::test_a_non_configurable_bases_body_slots_never_become_schema_fields`
+/ `::test_slot_owner_names_the_declaring_class` / `::test_body_slot_ANNOTATIONS_reach_the_generated_model`.
 
 ### Every signature reader goes through `introspect.init_callable`
 
@@ -484,7 +502,26 @@ correspondingly excludes `VAR_POSITIONAL` and `POSITIONAL_ONLY` names — a name
 passed by keyword is not a keyword slot. `VAR_KEYWORD` is deliberately KEPT (see the `**kwargs`
 routing rule).
 
-**Pins.** the "positional runtime args" group in `tests/test_fluid.py`.
+**Rule — a config key naming a `*args` parameter is REFUSED, not absorbed.** An ADDRESSED key
+(on the marker, or in a class-name block) whose name matches a VAR_POSITIONAL parameter raises a
+located `ConfigurationError` naming the positional channel. It used to be silently set as a
+post-init ATTRIBUTE: the constructor never saw it, and `obj.loaders` held a value the object
+ignored. Hydra refuses the same spelling (measured, 1.3.5 — `loaders: [...]` on a `*loaders`
+target raises `InstantiationException`) and offers `_args_`; confluid's channel is
+`flow(node, a, b)`, so the config-side answer is the same.
+
+**Rule — BARE keys are EXEMPT and must stay so.** A bare key is an implicit `**.key` that
+cascades tree-wide and legitimately matches nothing, so a document whose top-level key collides
+with some class's variadic name must keep loading. Hydra never faces this — it has no bare-key
+broadcast. The exemption is structural, not a check: the accept-list drops the key before either
+call site. The ONE predicate is `broadcast.refuse_if_variadic_name`, called from the two sites a
+measurement identified — `engine._apply_post_init_attrs` (own kwargs) and `_MergeSink.unknown`
+(class block). A `**kwargs` NAME is never refused: such a class accepts everything by design.
+
+**Pins.** the "positional runtime args" group in `tests/test_fluid.py`, incl.
+`::test_a_BARE_key_colliding_with_a_variadic_name_still_loads` and
+`::test_an_ordinary_unknown_addressed_key_still_lands_as_an_attribute` (the two must-NOT-raise
+cases).
 **Docs.** `docs/targets.md` → "Runtime injection that has no keyword".
 
 ### Introspection without cost — `resolve()` and `solidify=False`
@@ -618,6 +655,40 @@ Adding a spelling means adding it there in the same change.
 **Rule.** `confluid/report.py` is a dependency LEAF (stdlib + loggair). Only `ConfigurationReport` and
 `collect_report` are top-level exports. Every instrumentation site is `if report is not None`-guarded
 so the default path stays zero-cost.
+
+**Rule — `strict_attrs=True` closes the surface, and is the ONLY way to.** The default is
+permissive and must stay so. A class opting in refuses any addressed key naming nothing it
+declares, via the ONE `broadcast.refuse_if_undeclared`, called from the three sites B1 already
+identified (`engine._warn_undeclared`, `_MergeSink.unknown`, `_LiveSink.unknown`). It binds
+`configure()` as well as the load path — a mark meaning different things per path is the exact
+asymmetry B1 removed — and `register()` carries it for the reason it carries `broadcast=False`:
+a class you do not own is the one you cannot close by editing its declaration. A `**kwargs`
+target is NEVER refused (no accept-list, so nothing is undeclared for it) and BARE keys never
+reach the gate (the accept-list drops them first), which is what keeps a strict class usable in
+a document that also configures something else. **Pins.** `tests/test_strict_attrs.py`.
+
+**Rule — an UNDECLARED addressed key is reported on BOTH paths (B1, 2026-08-12).** A key naming
+nothing the target declares (not a ctor param, not a settable class attribute, not an
+`__init__`-body slot) WARNS and records `"unknown-attribute"` — on the load path as well as under
+`configure()`. The own-kwarg form STILL APPLIES the value: `engine._apply_post_init_attrs` IS the
+post-init attribute mechanism, so refusing there would delete documented behaviour from the
+commonest spelling. Refusing is the opt-in `strict_attrs` mark instead (`TASKS.md`).
+
+**Rule — three exemptions, each pinned.** A `**kwargs` target has no accept-list (`None` =
+accept-everything) and is NEVER reported. A BARE key legitimately matches nothing and is `unused`,
+never `failed` — reporting it would fire on every sweep document. A DECLARED body slot is silent,
+which is what the class-design convention's rule 4 exists for.
+
+**Why.** One typo had three behaviours: `load()` with the key on the marker SET it silently,
+`load()` with the key in a class block IGNORED it silently, and only `configure()` reported it.
+The load-path sink justified its silence as "constructor validation is this path's typo
+enforcement" — measured FALSE: the key is not a ctor param, so `_ctor_params` filters it out and it
+reaches a post-init setattr, going AROUND the constructor. `Node(pathh=…)` raises `ValidationError`;
+the same key via `load()` did not. Measured impact before shipping: 0 real warnings across 96
+workspace configs / 412 markers.
+
+**Pins.** the "undeclared key" group in `tests/test_report.py`, incl.
+`::test_the_two_paths_now_report_the_same_failure_for_the_same_typo` and the three exemptions.
 
 **Detail.** `configure()` RETURNS a report; `collect_report()` (in `state`) installs one on the
 engine state for the load path. `materialize()`/`active_context()` MUST carry an ambient report into
@@ -754,6 +825,7 @@ INTERNAL. In-repo stamp pins may keep raw reads (they pin the mechanism).
 | `broadcast=False` | no bare or glob-delivered key ever lands; addressed blocks and `configure()` still work |
 | `capture=False` | skips ctor-kwargs capture on BOTH stamp paths, for heavy/disposable ctor args. Costs dump fidelity for transformed params. |
 | `broadcast_attrs=[...]` | declares post-init body-slot names, UNIONED with the AST scan — never a replacement. `[]` declares "none" and silences the cannot-scan warning. |
+| `strict_attrs=True` | a key the class declares NOWHERE is REFUSED, not absorbed as a post-init attribute. Opt-in; binds the load path AND `configure()`; `register()` carries it too |
 | `strict_typing=True` / `display_name=…` | presentation hints for a GUI |
 
 **Rule — packaged mode.** Body slots are found by AST-scanning `__init__` SOURCE, which is absent in

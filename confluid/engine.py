@@ -52,6 +52,7 @@ from confluid.broadcast import (  # noqa: F401
     _acceptable_keys_cache,
     _broadcast_pool,
     _cache_key,
+    _get_acceptable_keys,
     _is_glob_key,
     _KeyScope,
     _late_bare_keys_per_slot,
@@ -65,6 +66,8 @@ from confluid.broadcast import (  # noqa: F401
     _View,
     clear_pass_caches,
     merge_bare_pool_into_kwargs,
+    refuse_if_undeclared,
+    refuse_if_variadic_name,
     register_pass_cache,
     tune_marker,
 )
@@ -1085,10 +1088,19 @@ def _apply_post_init_attrs(
         if _is_glob_key(k):
             continue  # glob routing metadata — never an attribute
         if k not in ctor:
+            # A key naming a ``*args`` parameter reaches here because the ctor filter
+            # dropped it — and it must not become an attribute instead. See
+            # broadcast.refuse_if_variadic_name for why (and why BARE keys are exempt).
+            refuse_if_variadic_name(target, k, obj)
+            # B1: an undeclared key is AUDIBLE but still applied. This branch IS the
+            # post-init attribute mechanism (the docstring above), so refusing here
+            # would remove documented behaviour from the commonest spelling — that
+            # is the opt-in ``strict_attrs`` mark instead (TASKS.md). Silence was the
+            # real defect: the same typo is reported by ``configure()`` and, until
+            # 2026-08-12, set without a word here.
+            _warn_undeclared(instance, target, k, obj)
             member = getattr(target, k, None)
             if isinstance(member, property) and member.fset is None:
-                continue
-            if getattr(member, "__confluid_ignore__", False):
                 continue
             # A ``__slots__`` / immutable target has no ``__dict__`` and may refuse the
             # attribute outright. "Last path that fits wins": the constructor was the
@@ -1156,6 +1168,30 @@ def _apply_post_init_attrs(
         instance.__confluid_extra__ = extra_keys
     except (TypeError, AttributeError):
         pass
+
+
+def _warn_undeclared(instance: Any, target: Any, key: str, node: Any) -> None:
+    """Warn + record when ``key`` names nothing ``target`` declares. Applies anyway (B1).
+
+    "Declared" is the accept-list — constructor parameters, public settable class
+    attributes, and ``__init__``-body slots. A ``**kwargs`` target has no
+    accept-list (``None`` = accept-everything) and is therefore never reported: it
+    accepts every key by design.
+
+    Located, so the message is actionable: the marker carries ``_yaml_loc``.
+    """
+    refuse_if_undeclared(target, key, node)  # a strict class closes here instead
+    acceptable = _get_acceptable_keys(target)
+    if acceptable is None or key in acceptable:
+        return
+    label = getattr(target, "__name__", str(target))
+    logger.warning(
+        f"{label} has no attribute {key!r}{_at_yaml_loc(node)} — set as a post-init attribute "
+        f"anyway. Declare it as a constructor parameter or an __init__-body slot, or remove it."
+    )
+    report = _ENGINE_STATE.get().report
+    if report is not None:
+        report.record_failed(key, label, "unknown-attribute")
 
 
 def _broadcast_onto_instance(

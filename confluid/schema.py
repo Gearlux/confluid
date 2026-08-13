@@ -6,20 +6,6 @@ from typing import Annotated, Any, Dict, List, Set, Tuple, TypedDict, Union, get
 from confluid.introspect import NO_DEFAULT, init_callable, slots
 
 
-def _skipped_param_names(target: Any) -> Set[str]:
-    """Signature names that are NOT configurable paths, by parameter KIND.
-
-    The three walkers below filtered by NAME — ``self`` / ``cls`` / ``args`` /
-    ``kwargs`` — which is wrong twice over: it misses a variadic spelled anything
-    else (``*loaders``, ``**extra``) and it would wrongly drop an ordinary
-    parameter that happens to be called ``args``. A ``*args`` name published here
-    becomes a CLI flag (``--loaders``) whose value Python rejects at the call,
-    because the name can never be passed by keyword.
-    """
-    variadic = {slot.name for slot in slots(target) if slot.kind in ("var_positional", "var_keyword")}
-    return variadic | {"self", "cls"}
-
-
 def get_hierarchy(target: Any) -> Dict[str, Any]:
     """
     Introspect a class or instance to build a map of configurable paths.
@@ -50,33 +36,26 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     # CALLABLE INSTANCE (a ``__call__``-defining object) on the instance path,
     # where it belongs.
     if inspect.isroutine(obj):
-        init = init_callable(obj)  # a routine's OWN signature governs the call
-        if init is None:
+        if init_callable(obj) is None:
             return
-        try:
-            sig = inspect.signature(init)
-            type_hints = get_type_hints(obj)
-            param_docs = parse_param_docs(obj)
+        param_docs = parse_param_docs(obj)
+        for slot in slots(obj):  # a routine's OWN signature governs the call
+            if slot.kind not in ("positional_only", "keyword"):
+                continue
 
-            for param_name, param in sig.parameters.items():
-                if param_name in _skipped_param_names(obj):
-                    continue
+            path = f"{prefix}.{slot.name}" if prefix else slot.name
+            param_type = slot.annotation
+            type_str = getattr(param_type, "__name__", str(param_type))
+            default = None if slot.default is NO_DEFAULT else slot.default
+            doc = param_docs.get(slot.name, "")
 
-                path = f"{prefix}.{param_name}" if prefix else param_name
-                param_type = type_hints.get(param_name, Any)
-                type_str = getattr(param_type, "__name__", str(param_type))
-                default = param.default if param.default is not inspect.Parameter.empty else None
-                doc = param_docs.get(param_name, "")
-
-                # 3. Recurse if the parameter type is configurable
-                if hasattr(param_type, "__confluid_configurable__"):
-                    _build_hierarchy_recursive(param_type, path, hierarchy, visited)
-                else:
-                    # Only add to hierarchy if it's a "leaf" (not a configurable container)
-                    hierarchy[path] = (type_str, default, doc)
-            return
-        except (ValueError, TypeError):
-            return
+            # Recurse if the parameter type is configurable
+            if hasattr(param_type, "__confluid_configurable__"):
+                _build_hierarchy_recursive(param_type, path, hierarchy, visited)
+            else:
+                # Only add to hierarchy if it's a "leaf" (not a configurable container)
+                hierarchy[path] = (type_str, default, doc)
+        return
 
     # Handle both classes and instances
     cls = obj if isinstance(obj, type) else obj.__class__
@@ -105,42 +84,44 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     init_method = init_callable(cls)
     param_docs = parse_param_docs(cls)
 
-    # 3. Get type hints and defaults from __init__
-    try:
-        if init_method is None:
-            return
-        sig = inspect.signature(init_method)
-        type_hints = get_type_hints(init_method)
+    # 3. Name / type / default come from the ONE enumeration (introspect.slots),
+    # not a private signature read. The TRAVERSAL below stays this walker's own —
+    # it recurses on a configurable ANNOTATION, where the live walker recurses on
+    # a configurable VALUE, and the two answer different questions on purpose.
+    if init_method is None:
+        return
+    for slot in slots(cls):
+        # Signature params AND body slots: a body slot is a configurable slot by
+        # the class-design convention's rule 4, and omitting it made a CLI's
+        # ``--docs`` show fewer knobs BEFORE a config was flowed than after
+        # (measured on a real runnable: 10 paths reported, 3 missing). A
+        # configurable-typed body slot RECURSES below exactly like a ctor param —
+        # a slot is a slot, whichever half of the class declares it.
+        #
+        # ``class_attr`` stays out: those are class-level constants and settable
+        # descriptors, which the accept-list wants but a declared-options listing
+        # does not. The variadic kinds stay out for the usual reason.
+        if slot.kind not in ("positional_only", "keyword", "body_slot"):
+            continue
+        # OWNER filter, the same one ``to_pydantic`` applies: ``slots()`` walks the
+        # WHOLE MRO because the accept-list wants a framework base's ``self.compiled``
+        # (a bare key may set it), but a DECLARED-OPTIONS listing must not — a class
+        # extending ``keras.Model`` would otherwise advertise twelve of its internals
+        # (``predict_function``, ``supports_jit``, …) as configuration. Measured
+        # across the workspace: 522 of 859 body slots are owned by a foreign base.
+        if slot.kind == "body_slot" and not getattr(slot.owner, "__confluid_configurable__", False):
+            continue
 
-        for param_name, param in sig.parameters.items():
-            if param_name in _skipped_param_names(cls):
-                continue
+        path = f"{current_prefix}.{slot.name}"
+        param_type = slot.annotation
+        type_str = getattr(param_type, "__name__", str(param_type))
+        default = None if slot.default is NO_DEFAULT else slot.default
+        doc = param_docs.get(slot.name, "")
 
-            # Check visibility
-            member = getattr(cls, param_name, None)
-            if member and getattr(member, "__confluid_ignore__", False):
-                continue
-
-            path = f"{current_prefix}.{param_name}"
-
-            # Extract type string
-            param_type = type_hints.get(param_name, Any)
-            type_str = getattr(param_type, "__name__", str(param_type))
-
-            # Extract default
-            default = param.default if param.default is not inspect.Parameter.empty else None
-
-            # Extract docstring for this parameter
-            doc = param_docs.get(param_name, "")
-
-            # 3. Recurse if the parameter type is configurable
-            if hasattr(param_type, "__confluid_configurable__"):
-                _build_hierarchy_recursive(param_type, path, hierarchy, new_visited)
-            else:
-                hierarchy[path] = (type_str, default, doc)
-
-    except (ValueError, TypeError):
-        pass
+        if hasattr(param_type, "__confluid_configurable__"):
+            _build_hierarchy_recursive(param_type, path, hierarchy, new_visited)
+        else:
+            hierarchy[path] = (type_str, default, doc)
 
 
 def get_hierarchy_from_instance(root: Any) -> Dict[str, Tuple[str, Any, str]]:
@@ -242,36 +223,25 @@ def _walk_instance(
     if init_method is None:
         return
 
-    try:
-        sig = inspect.signature(init_method)
-        type_hints = get_type_hints(init_method)
-    except (ValueError, TypeError):
-        return
-
     # Prefer __init__'s own docstring; fall back to the class docstring
     # because user code commonly puts the Args: block at class level — the
     # ONE resolver both walkers and ``to_pydantic`` share.
     param_docs = parse_param_docs(cls)
 
+    # Name / type / default from the ONE enumeration; the TRAVERSAL below stays
+    # this walker's own — it descends into live VALUES, where the static walker
+    # descends into configurable annotations.
     ctor_param_names: set = set()
-    for param_name, param in sig.parameters.items():
-        if param_name in _skipped_param_names(cls):
+    for slot in slots(cls):
+        if slot.kind not in ("positional_only", "keyword"):
             continue
-        ctor_param_names.add(param_name)
+        ctor_param_names.add(slot.name)
 
-        member = getattr(cls, param_name, None)
-        if member is not None and getattr(member, "__confluid_ignore__", False):
-            continue
-
-        path = f"{node_prefix}.{param_name}"
-        param_type = type_hints.get(param_name, Any)
+        path = f"{node_prefix}.{slot.name}"
+        param_type = slot.annotation
         type_str = getattr(param_type, "__name__", str(param_type))
-        live_value = getattr(
-            obj,
-            param_name,
-            param.default if param.default is not inspect.Parameter.empty else None,
-        )
-        doc = param_docs.get(param_name, "")
+        live_value = getattr(obj, slot.name, None if slot.default is NO_DEFAULT else slot.default)
+        doc = param_docs.get(slot.name, "")
 
         # Shallow mode (host is non-@configurable): record and move on.
         if shallow:

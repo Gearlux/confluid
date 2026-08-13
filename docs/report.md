@@ -111,6 +111,19 @@ Three limits worth knowing:
   later pass. That is why the aggregate unused summary logs at **DEBUG**
   (one line per pass, visible with `LOGGAIR_CONSOLE_LEVEL=DEBUG`) — the
   report object is the actionable surface.
+* **An undeclared key is reported on BOTH paths.** A key naming nothing the target
+  declares — not a constructor parameter, not a settable class attribute, not an
+  `__init__`-body slot — warns and appears under `failed` as `"unknown-attribute"`,
+  whether it arrived through `load()` or `configure()`. Until 2026-08-12 only
+  `configure()` said anything: the same typo on a marker was silently set as an
+  attribute, and in a class block silently dropped.
+
+  On the load path the own-kwarg form (`{_target_: Node, pathh: /x}`) **still
+  applies** the value — that branch is the post-init attribute mechanism, so the
+  warning makes it audible rather than removing it. Three things are never
+  reported: a `**kwargs` class (no accept-list — it accepts everything by design),
+  a **bare** key (it legitimately matches nothing, so it is `unused`, not
+  `failed`), and a declared body slot.
 * **A named block is "used" once it matches an object** — a typo *inside* a
   matched block surfaces under `failed` (with the existing warning), not
   under `unused`.

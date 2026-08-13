@@ -32,7 +32,7 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
                         #  {'name': 'num_classes', 'required': False, 'nullable': True, ...}]
 ```
 
-* **`@output`** (mirrors `@ignore_config`) marks a read-only `@property` getter as
+* **`@output`** marks a read-only `@property` getter as
   a declared output. Apply it **under** `@property` so it stamps the getter, not
   the `property` object. Because the property is read-only/derived, it is already
   excluded from `to_pydantic` — it never becomes a config knob and round-trips

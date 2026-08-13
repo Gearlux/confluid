@@ -261,6 +261,7 @@ class ConfluidRegistry:
         display_name: Optional[str] = None,
         no_broadcast: bool = False,
         no_capture: bool = False,
+        strict_attrs: bool = False,
         broadcast_attrs: Optional[Sequence[str]] = None,
     ) -> Callable[..., Any]:
         """Register ``cls`` and stamp its ``__confluid_*__`` marks — the ONE stamping authority.
@@ -305,6 +306,7 @@ class ConfluidRegistry:
         display_name = display_name if display_name is not None else getattr(cls, "__confluid_display_name__", None)
         no_broadcast = no_broadcast or bool(getattr(cls, "__confluid_no_broadcast__", False))
         no_capture = no_capture or bool(getattr(cls, "__confluid_no_capture__", False))
+        strict_attrs = strict_attrs or bool(getattr(cls, "__confluid_strict_attrs__", False))
         # ``()`` is a DELIBERATE declaration ("no post-init broadcast attrs"),
         # distinct from ``None`` (undeclared) — so the fallback tests ``is not None``.
         effective_broadcast_attrs: Optional[Tuple[str, ...]] = (
@@ -362,6 +364,12 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_display_name__", display_name)
             if no_broadcast:
                 setattr(cls, "__confluid_no_broadcast__", True)
+            if strict_attrs:
+                # A CLOSED config surface: a key naming nothing this class declares
+                # is refused rather than absorbed as a post-init attribute. Opt-in —
+                # the default stays permissive, because ``_apply_post_init_attrs``
+                # IS the post-construction toggle mechanism.
+                setattr(cls, "__confluid_strict_attrs__", True)
             if no_capture:
                 # Opt-out of ctor-kwargs capture (``__confluid_kwargs__``): the
                 # validation wrap AND the engine's flow re-stamp both consult
@@ -771,6 +779,7 @@ class Marks:
     strict_typing: bool  #: opts into stricter annotation handling
     no_broadcast: bool  #: bare/glob cascade keys never land on instances
     no_capture: bool  #: ctor-kwargs capture (the dump round-trip aid) is skipped
+    strict_attrs: bool  #: a key the class declares nowhere is REFUSED, not absorbed
     broadcast_attrs: Optional[Tuple[str, ...]]  #: declared post-init broadcast slots, or None
 
 
@@ -804,5 +813,6 @@ def marks(target: Any) -> Marks:
         strict_typing=bool(getattr(cls, "__confluid_strict_typing__", False)),
         no_broadcast=bool(getattr(cls, "__confluid_no_broadcast__", False)),
         no_capture=bool(getattr(cls, "__confluid_no_capture__", False)),
+        strict_attrs=bool(getattr(cls, "__confluid_strict_attrs__", False)),
         broadcast_attrs=tuple(raw_attrs) if raw_attrs is not None else None,
     )

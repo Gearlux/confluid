@@ -564,3 +564,120 @@ def test_an_uncontested_key_still_explains_itself_and_stores_no_candidates() -> 
     report.record_applied("mom", "AdamW", "bare", candidates=[("block 'AdamW'", 0.8, 1), ("bare", 0.9, 4)])
     contested = next(a for a in report.applied if a.key == "mom")
     assert [c.value for c in contested.contest] == ["0.8", "0.9"]
+
+
+# --------------------------------------------------------------------------------------
+# An undeclared key is reported on BOTH paths (B1)
+# --------------------------------------------------------------------------------------
+#
+# One typo, three behaviours, until 2026-08-12: `load()` with the key on the marker
+# SET it silently; `load()` with the key in a class block IGNORED it silently; only
+# `configure()` reported it. The load path's sink justified its silence with
+# "constructor validation is this path's typo enforcement" — measured false: the key
+# is not a ctor param, so `_ctor_params` filters it out and it reaches a post-init
+# setattr, going AROUND the constructor. Validation never sees it.
+#
+# B1 (chosen 2026-08-12 over full parity): both load-path forms now WARN and record a
+# ``unknown-attribute`` failure, and the own-kwarg form still APPLIES the value. The
+# post-init attribute mechanism is documented behaviour — `_apply_post_init_attrs`
+# exists to assign kwargs the constructor did not take — so B1 makes it audible
+# without removing it. Refusing outright is the opt-in `strict_attrs` mark (TASKS.md).
+
+
+def _node_cls() -> type:
+    """A receiver with a ctor param AND a body slot, so 'declared' has both shapes."""
+
+    @configurable
+    class Node:
+        def __init__(self, path: str = "") -> None:
+            self.path = path
+            self.enabled = False  # a body slot — DECLARED, and must stay silent
+
+    return Node
+
+
+def test_an_undeclared_key_on_the_marker_warns_records_and_still_applies() -> None:
+    """B1's own-kwarg half: audible, but the value still lands.
+
+    Dropping it instead would be full `configure()` parity (option B2) and would
+    remove the post-init attribute mechanism from the commonest spelling. Measured
+    across 96 workspace configs / 412 markers: zero rely on it today — but it is
+    documented behaviour, so it changes only behind the opt-in mark.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("n:\n  _target_: Node\n  pathh: /x\n")["n"]
+
+    assert built.pathh == "/x", "B1 still applies it — that is what distinguishes B1 from B2"
+    assert [(f.key, f.reason) for f in report.failed] == [("pathh", "unknown-attribute")]
+
+
+def test_an_undeclared_key_in_a_class_block_warns_and_records_on_the_load_path() -> None:
+    """B1's class-block half: it was already dropped, and is now reported.
+
+    This is the form `configure()` has always reported; the load path reached the
+    same sink method and did nothing there.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("Node:\n  pathh: /x\nn:\n  _target_: Node\n")["n"]
+
+    assert not hasattr(built, "pathh"), "still dropped, exactly as before"
+    assert [(f.key, f.reason) for f in report.failed] == [("pathh", "unknown-attribute")]
+
+
+def test_the_two_paths_now_report_the_same_failure_for_the_same_typo() -> None:
+    """The point of the change: one document, one mistake, one answer."""
+    Node = _node_cls()
+    document = "Node:\n  pathh: /x\n"
+
+    with collect_report() as load_report:
+        load(f"n:\n  _target_: Node\n{document}")
+    live_report = configure(Node(), config=document)
+
+    assert [(f.key, f.reason) for f in load_report.failed] == [("pathh", "unknown-attribute")]
+    assert [(f.key, f.reason) for f in live_report.failed] == [("pathh", "unknown-attribute")]
+
+
+def test_a_DECLARED_body_slot_is_silent_on_the_load_path() -> None:
+    """The control that keeps this from being a nuisance.
+
+    A body slot is in the accept-list, so it is declared — the class-design
+    convention's rule 4 exists to make exactly these configurable.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("n:\n  _target_: Node\n  enabled: true\n")["n"]
+
+    assert built.enabled is True
+    assert report.failed == []
+
+
+def test_a_kwargs_class_never_reports_an_undeclared_key() -> None:
+    """A ``**kwargs`` constructor has no accept-list — it accepts everything by design."""
+
+    @configurable(validate=False)
+    class Catchall:
+        def __init__(self, **extra: Any) -> None:
+            self.extra = dict(extra)
+
+    with collect_report() as report:
+        built = load("c:\n  _target_: Catchall\n  anything: 1\n")["c"]
+
+    assert built.extra == {"anything": 1}
+    assert report.failed == []
+
+
+def test_a_BARE_key_matching_nothing_is_not_a_failure() -> None:
+    """A bare key legitimately matches nothing — it is `unused`, never `failed`.
+
+    Reporting bare misses would fire on every sweep document: a top-level `lr:`
+    aimed at one node necessarily misses every other node in the tree.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("pathh: /x\nn:\n  _target_: Node\n")["n"]
+
+    assert not hasattr(built, "pathh")
+    assert report.failed == []
+    assert "pathh" in report.unused, "it is an unused override, which is the honest bucket"

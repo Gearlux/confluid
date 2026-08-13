@@ -320,7 +320,10 @@ class Trainer:
 ```
 
 ```yaml
-loaders: !lazy:Loaders(device=cuda)   # YAML sets the knobs; the run supplies the inputs
+loaders:                    # YAML sets the knobs; the run supplies the inputs
+  _target_: Loaders
+  _partial_: true
+  device: cuda
 ```
 
 The positional half is **runtime-only**: it is never stored on a marker and never
@@ -328,6 +331,33 @@ round-trips through `dump()` — exactly like the `params=` / `dataset=` kwargs
 above. Live objects follow the same convention as runtime kwargs: passing args to
 an already-built object drops them rather than raising, so a slot flowed
 `flow(slot, train, valid)` stays safe when a config wired a live object into it.
+
+**A config key naming the variadic is refused.** Since the values can only arrive
+positionally, a key of that name can never reach the parameter — so writing one is
+an error rather than a no-op:
+
+```yaml
+loaders:
+  _target_: Loaders
+  loaders: [train.bin, valid.bin]    # ConfigurationError, naming the file and line
+```
+
+```
+Loaders cannot accept 'loaders' at exp.yaml:3:3: it is a *args parameter, which can
+never be passed by keyword, so no config key can reach it. Pass the values
+positionally — flow(node, a, b) — or give the target a keyword parameter.
+```
+
+It used to be absorbed as a post-init attribute instead: the constructor never saw
+it, and `obj.loaders` held a value the object ignored. (Hydra refuses the same
+spelling and offers `_args_` as its separate channel; confluid's channel is
+`flow()`, so the config-side answer matches.)
+
+Only **addressed** keys are refused — one written on the marker, or in a
+`ClassName:` block. A **bare** key is an implicit `**.key` that cascades tree-wide
+and legitimately matches nothing, so a document whose top-level `loaders:` happens
+to collide with some class's variadic parameter keeps loading unchanged. A
+`**kwargs` name is never refused either: such a class accepts everything by design.
 
 ### Post-flow `solidify()`
 
