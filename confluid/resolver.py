@@ -1,3 +1,29 @@
+"""Interpolation and the ONE path grammar — ``${...}``, references, value coercion.
+
+Two things live here, and both exist exactly once:
+
+* **The path grammar.** Every dotted/bracketed path in the system —
+  reference targets, ``${key.path}`` interpolation, ``configure()``'s dotted
+  candidates — is tokenized by ``_parse_path_segments`` and walked by
+  ``_walk_path_segments``. TWO policies share the walker: *structural*
+  (dict keys / list indices only — the default, which is what keeps
+  ``${train.split}`` from ever grabbing ``str.split``) and *object*
+  (``getattr_fallback=True`` — attribute access once the walk leaves
+  structured data; :func:`resolve_reference_path`). Extend the shared walker;
+  never add another grammar.
+
+* **Interpolation** (:class:`Resolver`). ``${...}`` dispatches on the NAME
+  SHAPE — a plain identifier is an environment variable, a dotted/bracketed
+  name is a config key; ``${env:...}`` / ``${ref:...}`` / ``${clone:...}`` are
+  resolver calls. A single pass whose substitution BURNS IN, per
+  ``docs/interpolation.md``. :func:`parse_value` is the shared scalar-coercion
+  policy (deliberately plain ``yaml.safe_load`` — never :class:`ConfluidLoader`).
+
+The quoted-string marker spelling (``"!class:..."``) is parsed here too — the
+third input grammar, kept only until 0.4.0; everything it cannot honour raises
+via ``_refuse_marker_string`` instead of degrading silently.
+"""
+
 import os
 import re
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, Union
@@ -321,7 +347,7 @@ def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> An
       attribute (zero-arg, re-invoked on every resolution — never memoized).
     * ``package.module.attr`` — when the base is not in ``context``, it is
       imported (``importlib``) or resolved via the class registry, e.g.
-      ``!ref:raidar.detection.detection_collate_fn``.
+      ``${ref:mypkg.detection.detection_collate_fn}``.
 
     A literal context key containing dots (``"a.b"``) still wins over the
     segment walk for its prefix, mirroring ``_lookup_path``'s
@@ -356,7 +382,7 @@ def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> An
         lookup = Resolver(context=ctx)._lookup_path
         # A PURELY structural path (dict keys / list indices only) is NOT this
         # resolver's to take: the deferred-Reference machinery deliberately
-        # keeps it late-bound so post-load overrides (e.g. liquifai's
+        # keeps it late-bound so post-load overrides (e.g. a CLI's
         # ``--drone_index 8``) still flow through at final materialize time.
         # Only when the structural walk misses do we retry with the OBJECT
         # policy — i.e. the resolution genuinely required an attribute step.
@@ -435,7 +461,7 @@ class Resolver:
             # nested Reference), substitute it eagerly so identity-based
             # aliasing works (``result["alias"] is result["thing"]``). When
             # it resolves to a scalar / list / dict, keep the Reference Fluid
-            # so later overrides of the source key (e.g. liquifai's
+            # so later overrides of the source key (e.g. a CLI's
             # ``--drone_index 8`` merged into ``config_data`` after load)
             # can flow through to the rendered value at materialize time.
             if isinstance(res, Fluid):

@@ -19,7 +19,8 @@ if you are new to this codebase — most rules below are about one pass.
 ## Current state
 
 **Feature-complete.** Confluid is the hierarchical configuration + dependency-injection engine:
-plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_scope_`) materialized by
+plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_clone_` / `_scope_` /
+`_notscope_`) materialized by
 `flow()` / `materialize()` / `resolve()`, scoped broadcasting, post-construction `configure()`,
 recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` /
 `sanitize_schema`) that every AI- and GUI-facing consumer reads for tool schemas and form specs.
@@ -78,7 +79,7 @@ afterwards. Rules 1, 3 and 4 are REQUIREMENTS; rule 2 is a RECOMMENDATION.
 and keeps `configure()` reconfiguration, cheap introspection (`resolve()` / `solidify=False`) and
 partial-arg GUI building possible. Rule 3 keeps derived state out of the config surface: confluid
 skips a setterless `property` in both accept-lists. Rule 4's body slots are surfaced by
-`to_pydantic` via `introspect.scan_init_body`, so a GUI still enumerates them.
+`to_pydantic` via the `introspect.slots` enumeration, so a GUI still enumerates them.
 
 **Pins.** `tests/test_lazy_convention.py`,
 `tests/test_pydantic_export.py::test_to_pydantic_surfaces_post_init_body_slots`,
@@ -441,6 +442,34 @@ spaces or a nested tag (YAML allows one tag per node). `1e-3` is not a YAML floa
 A kwarg literally named `target` is legal (the loader assigns kwargs post-construction).
 
 **Pins.** `tests/test_loader.py`, `tests/test_partial.py`. **Docs.** `docs/targets.md`.
+
+### Clone — ONE override semantic, decided by the referent's kind
+
+**Rule.** A Clone's overrides are applied by `engine._clone_of` — the ONE site, called by BOTH
+paths (`_flow_recursive`'s document branch and `_flow_clone`). The semantic follows the
+REFERENT's kind, never the resolving path: a MARKER referent merges overrides into the copy's
+kwargs and the clone is BUILT from them; a MAPPING merges keys (override wins); a LIVE object
+takes setattrs (the `configure()` semantic); a scalar/list with overrides raises a located
+`ConfigurationError` — never a silent drop. Deepcopy happens FIRST, so the template is never
+mutated by its clones. Never re-inline an override application in one path.
+
+**Rule.** `flow(clone, **runtime_kwargs)` configures the CLONE and runtime wins — never the
+referent's build (the pre-2026-08-13 behaviour fed runtime kwargs to the referent and let the
+clone's stored kwarg beat them). The fresh cloned marker is pinned in `memo_keepalive` (the
+memos key on `id()`).
+
+**Why.** `docs/architecture.md` record 14 — the split was invisible for convention-compliant
+classes and measured three ways (an eager class's 0.4-vs-0.1, the runtime-kwarg inversion, the
+silent drops).
+
+**Pins.** `tests/test_clone.py` — the 2026-08-13 group:
+`::test_clone_overrides_reach_the_constructor_on_BOTH_paths`,
+`::test_runtime_kwargs_on_a_flowed_clone_win`,
+`::test_a_live_referents_override_is_applied_not_dropped`,
+`::test_clone_of_a_mapping_merges_overrides`,
+`::test_clone_of_a_scalar_with_overrides_raises_located`,
+`::test_clone_overrides_never_mutate_the_template_marker`.
+**Docs.** `docs/targets.md` → "What the overrides mean".
 
 ### A target may be ANY callable
 
@@ -1180,13 +1209,20 @@ scenario `examples/deep_injection.py` stays a flat script — inline YAML, no fi
 **Rule.** An example that DEMONSTRATES A RULE should assert it, not just print it — a print-only
 script exits 0 while printing the wrong number, and these files double as the documentation's proof.
 
-**Rule — the CANONICAL spelling, at two strictnesses.** No file under `examples/` may contain
+**Rule — the CANONICAL spelling, at three strictnesses.** No file under `examples/` may contain
 `!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:` / `!notscope:` anywhere — not in a YAML
 literal, not in a docstring, not in a comment, not in a directory example's `README.md`. In
 `docs/`, prose MAY name the deprecated spelling (that is how a reader with old configs learns
 what to convert), but a fenced ```` ```yaml ```` block MUST NOT: a guide's config samples have
 to agree with the companion example that proves them. Convert a config with `confluid-migrate`;
 rewrite prose to name the reserved key.
+
+The THIRD surface is the public API itself (2026-08-13): no docstring of a
+`confluid.__all__` member may carry a tag LITERAL — `help(confluid.load)` is documentation with
+the same obligation, and sixteen public objects still taught the tag spelling after the examples
+and guides were converted. Prose naming the deprecated spelling ("the deprecated tag spelling
+parses to the same marker") stays fine; implementation modules (`loader` / `resolver` /
+`migrate`) are out of scope — they implement the tags.
 
 Exemptions live with their reason in `tests/test_canonical_spelling.py` — examples
 `plain_format.py` (proves the spellings agree) and `tags_deferred.py` (documents the tag form);

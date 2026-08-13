@@ -27,7 +27,7 @@ from confluid import resolve, materialize, load
 
 # (a) resolve(): broadcast-resolved Fluid MARKERS, nothing instantiated. ${ref:} targets are shared
 #     by identity (a fan-out is one object reached twice); an unresolved reference stays a Reference.
-markers = resolve("config.yaml")        # {key: Instance/Partial/Class marker, ...}
+markers = resolve("config.yaml")        # {key: Target / Partial / Reference marker, ...}
 
 # (b) solidify=False: live-but-inert objects — constructed (cheap, per zero-arg / lazy-init) but the
 #     expensive post-flow solidify() (e.g. building a model backbone) is suppressed for the subtree.
@@ -35,6 +35,15 @@ graph = materialize(data, solidify=False)   # also load(..., solidify=False) / f
 ```
 
 Both leave `Partial` (`_partial_: true`) slots deferred and default behaviour unchanged (`solidify=True`).
+
+**`resolve()` constructs NOTHING — dotted references included.** A *dotted* reference
+(`${ref:split.train}` — attribute access on another node) stays a `Reference` under
+`resolve()`, exactly as a plain whole-object `${ref:split}` does: reading `.train` would
+mean *building* `split`, and this API promises introspection without construction. The
+same document through `materialize()` / `load()` still resolves the attribute off ONE
+shared instance. (Before 2026-08-11 the dotted branch ran here too, so "introspection
+without cost" could walk a dataset — 3.9 s on a real config whose split scans 37
+archives; steady-state cost is now ~10 ms.)
 
 ## Dump and reconstruct
 

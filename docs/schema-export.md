@@ -51,7 +51,9 @@ What goes into the generated model:
   description.
 - **`__init__`-body slots** of the minimal-constructor pattern
   (`self.optimizer = PartialClass(...)`) surface as optional fields too, so a
-  form can offer them ([Class Design](class-design.md)).
+  form can offer them ([Class Design](class-design.md)). Only body slots a
+  `@configurable` class in the MRO declares become fields — a framework base's
+  internals (`self.training`, `self.compiled`, …) never do.
 - **Constraints ride along**: an `Annotated[..., Field(...)]` or
   `annotated_types` range mark reaches the JSON schema
   (`exclusiveMinimum` / `maximum` …) and is enforced at validation. A range

@@ -1,18 +1,19 @@
-# Tags & Deferred Initialization
+# Targets & Deferred Initialization
 
 > New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
 
-A Confluid config is built from six YAML tags. Each parses into a typed
+A Confluid config is built from six marker forms — reserved keys in ordinary
+YAML ([the plain format](plain-format.md)). Each parses into a typed
 **Fluid** — a deferred *recipe* — that `load()` / `materialize()` resolves into
 a live **Solid** object. This two-stage lifecycle is what lets Confluid
 broadcast values into a node *before* it is built and inject runtime arguments
 *as* it is built.
 
-The tags are parsed only by confluid's own loader (a private `yaml.SafeLoader`
-subclass) — a plain `yaml.safe_load` elsewhere in your process does **not**
-recognize them and will raise on the unknown tag, exactly as it would without
-confluid installed. Always go through `confluid.load` / `load_config` to parse
-tagged documents.
+Each marker also has a legacy TAG spelling (the middle column below). Tags are
+parsed only by confluid's own loader (a private `yaml.SafeLoader` subclass) — a
+plain `yaml.safe_load` raises on them, which is the reason the reserved-key
+format replaced them. The tag column is deprecated: it warns on every document
+in 0.3 and is removed in 0.4.0 (`confluid-migrate` converts a file).
 
 | Reserved key | Legacy tag | Purpose | Produces |
 |---|---|---|---|
@@ -22,8 +23,8 @@ tagged documents.
 | `_target_: Name` + `_partial_: true` | `!lazy:Name(...)` | Built by nobody until an explicit `flow()` (runtime injection) | `Partial` |
 | `_scope_: {KEY: VAL}` / `_notscope_: …` | `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
 
-The tag column is DEPRECATED and removed in 0.4.0 — this page documents it
-because it still parses and because `confluid-migrate` converts from it.
+This page keeps documenting the tag column because it still parses and
+because `confluid-migrate` converts from it.
 
 ## The lifecycle: Fluid → Solid
 
@@ -402,6 +403,18 @@ with an explicit `deepcopy`, and may carry extra kwargs to override on the copy
 (`!clone:proto` + a block). `!ref:` also resolves dotted attribute / method
 paths — `!ref:my_split.train`, `!ref:some_obj.build()` — against that single
 materialized instance.
+
+**What the overrides mean** (one rule, both engine paths, 2026-08-13): a clone
+of a *marker* merges the overrides into the copy's kwargs and is **built** from
+them — the constructor runs with the override, so an [eager class](eager-classes.md)
+computes from it and the dump round-trip holds. A clone of a plain *mapping*
+merges keys (override wins). A clone of a *live object* applies them as
+attribute writes — what `configure()` does, since a live constructor cannot
+re-run. A clone of a scalar or list cannot take overrides and raises a located
+`ConfigurationError` rather than dropping them silently. On a directly flowed
+clone, `flow(clone, lr=0.9)` runtime kwargs configure the **clone** and win
+over its stored kwargs, like every other `flow()` call. The referent is always
+deep-copied first, so a template is never mutated by its clones.
 
 ## Runnable example
 

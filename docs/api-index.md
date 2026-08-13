@@ -9,7 +9,7 @@ start from [The Lifecycle](lifecycle.md), which shows where each of these names
 plugs into the passes, and from the eight names most configs need:
 `configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Partial`, `dump`.
 
-## Loading & materialization — [Tags & Deferred Initialization](targets.md)
+## Loading & materialization — [Targets & Deferred Initialization](targets.md)
 
 | Name | One line |
 |---|---|
@@ -21,7 +21,7 @@ plugs into the passes, and from the eight names most configs need:
 | `flow` | Build one node now — with runtime args/kwargs for deferred slots |
 | `cast` | `flow` that also narrows the static type for checkers ([Introspection](introspection.md)) |
 
-## The marker family — [Tags & Deferred Initialization](targets.md)
+## The marker family — [Targets & Deferred Initialization](targets.md)
 
 | Name | One line |
 |---|---|

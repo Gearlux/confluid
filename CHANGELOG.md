@@ -4,10 +4,50 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
-## [Unreleased]
+## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
+
+### Documentation
+
+- **The docs-truth pass (2026-08-13).** The refactor's documentation debt, closed in one sweep:
+  `strict_attrs` — shipped and pinned but documented nowhere — got its topic guide
+  (`docs/strict-attrs.md`), an asserting example (`examples/strict_attrs.py`) and its README /
+  marks-table rows. Stale docstrings were brought back in line with the code: `report.py` still
+  claimed the engine path records no failures (false since B1), `introspect.py` still described
+  the pre-consolidation module and named a consumer of a function it no longer consumes,
+  `resolve()` named two deleted marker classes. The deleted `Class` / `Instance` names were
+  purged from every current-API doc sample (`io-contract.md`'s "canonical spellings" raised
+  `NameError` when copied). `docs/performance.md`'s baseline was re-measured (~30 % stale).
+  The README now lists all nine passes (`import` was missing) and states the tag spelling's
+  deprecation + 0.4.0 removal on the landing page; `docs/targets.md` leads with the reserved
+  keys instead of "built from six YAML tags". `docs/class-design.md` rule 2 now states zero-arg
+  construction as RECOMMENDED (the 2026-08-11 ruling); the body-slot `owner` filter is stated
+  in `class-design.md` / `schema-export.md`. Consumer-project names were genericized out of
+  every docstring and the two `docs/` violations (a named consumer in `serialization.md` /
+  `errors.md`). `loader` / `resolver` / `schema` gained module docstrings. The two unreleased
+  CHANGELOG sections were merged into this one. Public docstrings teaching the tag spelling
+  (16 objects, `load` / `flow` / `materialize` / `configurable` / `configure_from_file`
+  included) were rewritten to the reserved keys, and a third canonical-spelling scan pins the
+  `confluid.__all__` docstring surface so they cannot regress. User-facing hint/warning texts
+  that taught the tag spelling (the ambiguous-name hint, the auto-defer warning, the scope
+  mismatch message) now teach the reserved keys.
 
 ### Fixed
 
+- **`Clone` has ONE override semantic, whichever engine path resolves it.** The document path
+  merged a clone's overrides into the copied marker's kwargs (they reached the constructor)
+  while a directly flowed clone deep-copied the BUILT referent and pasted them on as setattrs —
+  invisible for a store-only constructor, measured three ways otherwise: an `eager=True` class
+  computed from the template's value on one path and the override's on the other (`step_size`
+  0.4 vs 0.1 for one document); `flow(clone, lr=0.9)` fed the runtime kwarg to the REFERENT's
+  build and the clone's stored kwarg then beat it, inverting `flow()`'s "runtime wins" contract
+  for every class; and overrides on non-marker referents vanished silently (live objects and
+  mappings on the document path, scalars everywhere). One helper (`engine._clone_of`) now serves
+  both paths, deciding by the REFERENT's kind: marker → kwargs-merge then BUILD; mapping → key
+  merge; live object → setattrs (the `configure()` semantic); scalar/list with overrides → a
+  located `ConfigurationError`. Runtime kwargs configure the clone (runtime wins), the fresh
+  marker is pinned in `memo_keepalive`, and the referent is deep-copied before merging so a
+  template is never mutated by its clones. Architecture record 14; pinned by the 2026-08-13
+  group in `tests/test_clone.py`.
 - **The last three private slot walks now project from `introspect.slots()`** — the 2026-08-12
   consolidation left `to_pydantic`'s signature half, `broadcast._get_param_kinds` and the dumper's
   two walks un-migrated, each with a wrong answer the shared enumeration already had right:
@@ -439,7 +479,6 @@ All notable changes to confluid are documented here. The format follows
   `ml_pipeline.py`. Two inverse pins keep the allow-lists honest — an entry naming a file that
   no longer exists, and an entry that is no longer needed.
 
-## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
 ### Deprecated
 

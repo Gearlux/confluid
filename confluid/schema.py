@@ -1,3 +1,20 @@
+"""Human-facing introspection — hierarchies, docstring parsing, the I/O contract.
+
+The plain-dict half of the introspection surface (the pydantic half lives in
+``confluid.pydantic_export``): :func:`get_hierarchy` /
+:func:`get_hierarchy_from_instance` walk a class's declared options / a live
+object's actual graph into dotted paths (a CLI's ``--docs``, a tracker's
+hyperparameter log), :func:`shortest_unique_paths` abbreviates them for
+display, :func:`parse_param_docs` is the ONE docstring resolver every
+per-parameter help surface reads, and :func:`input_specs` /
+:func:`output_specs` render the I/O contract (``Mandatory[T]`` inputs,
+``@output`` properties) a GUI builds sockets and forms from.
+
+Everything here projects from ``introspect.slots`` — the walkers state their
+rules as kind/owner filters over the ONE enumeration, never as private
+signature walks (``docs/architecture.md`` record 12).
+"""
+
 import inspect
 import re
 import types
@@ -153,7 +170,7 @@ def get_hierarchy_from_instance(root: Any) -> Dict[str, Tuple[str, Any, str]]:
       :func:`get_hierarchy`).
 
     ``root`` is typically the ``dict`` returned by
-    :meth:`liquifai.core.LiquifyApp.liquify` (top-level command kwargs).
+    a CLI framework's top-level command kwargs.
     Any dict/list/object shape is accepted — the walker routes.
     """
     hierarchy: Dict[str, Tuple[str, Any, str]] = {}
@@ -281,7 +298,7 @@ def _walk_instance(
     # setattrs (e.g. ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's
     # body) AND post-construction setattrs done by Confluid's machinery or
     # the user externally (the Enable wrapper's ``obj.visualize = True``
-    # pattern). See [confluid/confluid/loader.py:get_configurable_attrs].
+    # pattern). See ``confluid.engine.get_configurable_attrs``.
     from confluid.engine import get_configurable_attrs
 
     declared_names = get_configurable_attrs(obj)
@@ -345,8 +362,8 @@ def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
     When two paths share a leaf, the algorithm walks more of the path toward
     the root until disambiguation is reached.
 
-    Used by display/logging layers (``liquifai.report.show_configuration``,
-    the matrainer hyperparameter logger) that want to surface paths without
+    Used by display/logging layers (a CLI's configuration report, an
+    experiment tracker's hyperparameter logger) that want to surface paths without
     the noisy root-class prefix unless it is needed to tell two values apart.
     """
     display_map: Dict[str, str] = {}
@@ -401,9 +418,9 @@ def parse_param_docs(obj: Any) -> Dict[str, str]:
     Resolves the docstring the same way :func:`confluid.to_pydantic` does — for a
     class, its ``__init__`` docstring (falling back to the class docstring); for a
     function or other callable, its own ``__doc__``. This is the single source of
-    per-parameter help reused across the workspace: navigaitor turns it into
+    per-parameter help reused by every introspecting consumer: an MCP service turns it into
     pydantic ``Field(description=...)`` (via ``to_pydantic``) for the form-spec /
-    HTTP editor, and StreamStudio turns it into ComfyUI widget tooltips. Document a
+    HTTP editor, and a visual editor turns it into widget tooltips. Document a
     constructor parameter once in the class's ``Args:`` block and it surfaces in
     both GUIs.
 
@@ -463,8 +480,8 @@ def output_specs(cls: type) -> List[OutputSpec]:
     ``__confluid_output__`` marker set by :func:`confluid.output`. For each, the
     getter's return annotation and the first docstring line describe the output.
 
-    This is the I/O-contract OUTPUT surface: StreamStudio runnable nodes append these
-    as output sockets and navigaitor's form-spec surfaces them. An ``@output``
+    This is the I/O-contract OUTPUT surface: a visual editor appends these as
+    output sockets and a form-spec service surfaces them. An ``@output``
     property is read-only/derived, so it never appears as a config field.
 
     Args:
@@ -509,8 +526,8 @@ def input_specs(cls: Any) -> List[InputSpec]:
     * ``nullable`` — True when the (Annotated-stripped) type admits ``None``
       (``Optional[T]`` / ``T | None``).
 
-    This is the I/O-contract INPUT surface consumed by StreamStudio (required vs
-    optional sockets) and navigaitor's form-spec.
+    This is the I/O-contract INPUT surface a GUI renders (required vs
+    optional sockets) and a form-spec service reads.
 
     Args:
         cls: Any class (typically a ``@configurable`` Runnable).

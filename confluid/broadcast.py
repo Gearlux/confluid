@@ -1141,7 +1141,7 @@ def accepts_key(target: Any, key: str) -> bool:
     constructor takes ``**kwargs`` accepts everything.
 
     ``target`` may be a class, a live instance, or the dotted string a
-    ``!class:`` marker carries; an unresolvable target accepts nothing.
+    ``_target_:`` marker carries; an unresolvable target accepts nothing.
 
     Example::
 

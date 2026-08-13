@@ -200,6 +200,9 @@ class Resampler: ...                          # from its params (a plain Python 
 
 @configurable(capture=False)                  # __confluid_no_capture__: ctor kwargs are NOT
 class Embedder: ...                           # captured — heavy args aren't kept alive
+
+@configurable(strict_attrs=True)              # __confluid_strict_attrs__: a key the class
+class Cache: ...                              # declares NOWHERE is refused, not absorbed
 ```
 
 `constant=True` promises that instances (and their declared `@output` properties) depend only on constructor parameters — no I/O, no record input, no hidden state. Exporters use it to fold a value-producer node into a static config: a graph exporter can hoist the node as a top-level `_target_` entry and rewire consumers via a dotted `${ref:<name>.<output>}` instead of dropping the wired values. Declaring `constant=True` together with `random=True` raises a `ConfigurableDefinitionError` (a `ValueError`).
@@ -207,6 +210,8 @@ class Embedder: ...                           # captured — heavy args aren't k
 `eager=True` declares a plain-constructor class — see [Eager Classes](eager-classes.md). Its runtime effect: `configure()` warns when a constructor-param attribute is set post-construction (the `__init__` work will not re-run). Orthogonal to `random`/`constant`.
 
 `capture=False` disables the constructor-kwargs capture (`__confluid_kwargs__`) on both the direct-construction and YAML paths, so heavy, disposable constructor arguments are not held by reference for the instance lifetime — at the cost of dump fidelity for transformed params. See [Eager Classes → Opting out](eager-classes.md#opting-out-capturefalse).
+
+`strict_attrs=True` closes the class's config surface: an addressed key it declares nowhere raises a located `ConfigurationError` instead of landing as a post-init attribute. Bare keys and `**kwargs` targets are untouched; `register()` carries it too. See [Closing the Config Surface](strict-attrs.md).
 
 ## Schema & help extraction — one docstring, every GUI
 
@@ -235,7 +240,7 @@ Two introspection helpers make the same declaration serve every downstream surfa
 `marks(target)` returns a frozen record of every mark a class (or decorated
 callable, or instance) carries — the discovery axes (`task` / `role` /
 `framework` / `category` / `group`), the display name, and the behavioural
-flags (`lazy`, `random`, `constant`, `eager`, …):
+flags (`lazy`, `random`, `constant`, `eager`, `strict_attrs`, …):
 
 ```python
 from confluid import marks

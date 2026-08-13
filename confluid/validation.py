@@ -10,7 +10,7 @@ enforced at three points in a class's lifecycle:
    active mode to :attr:`ValidationPolicy.yaml` around the ``target(**ctor)``
    call so YAML-driven runs can be configured independently of direct-Python
    instantiation.
-3. **MCP tool entrypoints** — navigaitor's subprocess tool bodies call
+3. **MCP tool entrypoints** — an MCP server's subprocess tool bodies call
    :func:`validate_model` on the typed pydantic config before spawning the
    subprocess. Mode comes from :attr:`ValidationPolicy.tool`.
 
@@ -88,7 +88,7 @@ def _contains_fluid(value: Any, fluid_cls: type) -> bool:
     Only descends into the three built-in container shapes that confluid's
     YAML loader actually produces — that's enough to catch
     ``stores=[Class(...)]`` (list-of-Fluids), ``data={"train": Class(...)}``
-    (dict-of-Fluids), and the various ``tuple``-typed kwargs matrainer
+    (dict-of-Fluids), and the various ``tuple``-typed kwargs a trainer
     pipelines use. Other custom containers fall back to "concrete" — they
     don't appear in YAML-driven configurations.
     """
@@ -332,7 +332,7 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:
     """Re-validate an already-constructed pydantic model under ``mode``.
 
-    Pydantic validates at construction, but navigaitor's MCP tool entry needs
+    Pydantic validates at construction, but an MCP tool entry needs
     to surface ``warn`` outcomes as structured warnings without raising. This
     helper redundantly re-validates so the same mode logic applies uniformly.
     """

@@ -14,13 +14,15 @@ Three buckets:
   label and the origin that delivered it (bare broadcast, named block, glob,
   addressed recursion, nested-class broadcast). Last-write-wins collapses to
   ONE record per attribute per object — the final effective assignment.
-* **failed** — deliberately small, ``configure()`` path only: a typo'd
-  non-dict key inside an object's own named block (``"unknown-attribute"``)
-  and per-field validation failures (``"validation"``; strict mode records
-  then re-raises, warn mode records with the value still applied). The
-  engine path does NOT record failures: ``validate_kwargs`` fires inside the
-  wrapped ``__init__`` (validation sits below the engine in the module
-  layering) and strict mode already raises located ``ConstructionError``s.
+* **failed** — deliberately small. An ADDRESSED key naming nothing the target
+  declares records ``"unknown-attribute"`` on BOTH paths (B1, 2026-08-12 —
+  ``engine._warn_undeclared`` and ``_MergeSink.unknown`` on the load path,
+  ``_LiveSink.unknown`` under ``configure()``; the own-kwarg form still
+  APPLIES the value, warning as it does). Per-field validation failures
+  (``"validation"``) stay ``configure()``-only: on the load path
+  ``validate_kwargs`` fires inside the wrapped ``__init__`` (below the engine
+  in the layering) and strict mode already raises located
+  ``ConstructionError``s.
 * **unused** — candidate top-level document keys that matched NOTHING across
   the whole pass. Candidates are registered explicitly
   (:meth:`ConfigurationReport.add_config_keys`) and :meth:`mark_used` is a

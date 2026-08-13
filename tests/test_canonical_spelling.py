@@ -151,3 +151,35 @@ def test_the_allowed_files_really_do_carry_tags() -> None:
     unnecessary += [n for n in _ALLOWED_DOCS if not _yaml_block_lines(_DOCS / n)]
 
     assert not unnecessary, f"these files no longer need their exemption — remove them: {unnecessary}"
+
+
+def test_public_api_docstrings_use_the_reserved_key_spelling() -> None:
+    """The THIRD surface a reader learns from: ``help(confluid.load)``.
+
+    Sixteen public objects still taught the tag spelling in their docstrings on
+    2026-08-13 — including ``load``, ``flow``, ``materialize``, ``configurable``
+    and ``configure_from_file``, the five entry points every user touches first —
+    while the examples and guides had already been converted. Docstrings ship to
+    PyPI and render in ``help()`` / IDE hovers, so they are documentation with
+    the same canonical-spelling obligation. Naming the DEPRECATED spelling in
+    prose ("the deprecated tag spelling parses to the same marker") is fine —
+    what must not appear is a tag LITERAL a reader would copy.
+
+    Scope: the ``confluid.__all__`` surface only. Implementation modules
+    (``loader`` registers the constructors, ``resolver`` parses the quoted form,
+    ``migrate`` converts the tags) legitimately name tags in their internals and
+    are not public documentation.
+    """
+    import confluid
+
+    offenders = []
+    for name in sorted(confluid.__all__):
+        doc = getattr(getattr(confluid, name), "__doc__", "") or ""
+        hits = sorted({m.group(0) for m in _TAG.finditer(doc)})
+        if hits:
+            offenders.append(f"confluid.{name}: {', '.join(hits)}")
+
+    assert not offenders, (
+        "a public docstring must not carry a tag literal — rewrite it to the reserved-key "
+        "spelling (_target_ / _partial_ / ${ref:} / _scope_):\n  " + "\n  ".join(offenders)
+    )

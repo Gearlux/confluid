@@ -41,8 +41,9 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
   `typing.Required` confusion) flags an input mandatory **even when it carries a
   default** for zero-arg construction — the structural signal (no default /
   non-`Optional`) already implies mandatory, but the marker restores the contract
-  when the **Zero-Arg Construction** mandate (see [Class Design](class-design.md))
-  forces a default onto a genuinely required class/`Fluid` slot. `input_specs(cls)`
+  when the (recommended) **zero-arg construction** shape (see
+  [Class Design](class-design.md)) puts a default onto a genuinely required
+  class/`Fluid` slot. `input_specs(cls)`
   reports `{required, nullable}` per param (`required = no-default OR Mandatory`).
   The marker is stripped by `to_pydantic`, so it never leaks into the JSON Schema.
 
@@ -50,7 +51,7 @@ input_specs(Trainer)    # [{'name': 'model', 'required': True, 'nullable': False
   subscript with the **interface the slot flows into**. The canonical spellings:
 
   ```python
-  model: Mandatory[nn.Module] = Class(VisionModel)                 # required dependency slot
+  model: Mandatory[nn.Module] = Target(VisionModel)                # required dependency slot
   optimizer: Mandatory[Partial[Optimizer]] = PartialClass(Adam, lr=1e-3)  # required AND deferred
   ```
 

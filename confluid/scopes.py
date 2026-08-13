@@ -1,12 +1,12 @@
-"""Tag-driven scope resolution for confluid configs.
+"""Scope resolution for confluid configs (``_scope_:`` / ``_notscope_:`` blocks).
 
 Scopes are activated via the ``scopes=`` kwarg on :func:`confluid.load`
-(typically forwarded by liquifai from ``--scope`` and dimension-bound CLI
+(typically forwarded by a CLI framework from ``--scope`` and dimension-bound CLI
 flags). Each scope name is either:
 
-* a bare ``"name"`` — boolean scope, matches ``!scope:name`` / ``!notscope:name``
-* a ``"key=value"`` pair — keyed scope, matches ``!scope:key=value`` /
-  ``!scope:key(value)`` and their negative twins
+* a bare ``"name"`` — a boolean scope, matching ``_scope_: {name: }``
+* a ``"key=value"`` pair — a keyed scope, matching ``_scope_: {key: value}``
+  (and the ``_notscope_:`` negative twins)
 
 After alias and hierarchy expansion the active set becomes a
 ``{key: value_or_None}`` map. ``resolve_scopes`` walks the loaded dict (and
@@ -14,8 +14,8 @@ nested dicts / lists) replacing every :class:`confluid.fluid.ScopeBlock` in
 place: its ``contents`` are spliced at its slot when the block is active,
 otherwise the block is dropped.
 
-Negation uses the *unset ⇒ active* convention: ``!notscope:debug`` is active
-when ``"debug"`` is not in the set; ``!notscope:task=segmentation`` is active
+Negation uses the *unset ⇒ active* convention: ``_notscope_: {debug: }`` is active
+when ``"debug"`` is not in the set; ``_notscope_: {task: segmentation}`` is active
 when no ``task=…`` scope is supplied at all, OR when one is supplied but its
 value differs from ``segmentation``.
 
@@ -147,12 +147,12 @@ def discover_dimension_values(config: Any) -> Dict[str, Set[str]]:
     """Return every *keyed* scope dimension in ``config``, mapped to its selectable values.
 
     ``{"framework": {"torch", "keras"}, "model": {"convnet"}}`` for a document
-    carrying ``!scope:framework=torch`` / ``!scope:framework=keras`` /
-    ``!scope:model=convnet`` blocks. Boolean scopes (``value is None``) declare no
+    carrying ``_scope_: {framework: torch}`` / ``{framework: keras}`` /
+    ``{model: convnet}`` blocks. Boolean scopes (``value is None``) declare no
     value and are absent entirely.
 
     A dimension declared ONLY by negated blocks maps to an EMPTY set, not to the
-    values those blocks name: ``!notscope:task=segmentation`` is activated by every
+    values those blocks name: ``_notscope_: {task: segmentation}`` is activated by every
     value EXCEPT ``segmentation``, so its value is the one thing that does not
     select it. The key is still present — it is a real dimension a CLI must bind.
 
@@ -165,7 +165,7 @@ def discover_dimensions(config: Any) -> Set[str]:
     """Return the set of *keyed* scope dimension names appearing anywhere in ``config``.
 
     Boolean scopes (``value is None``) are not dimensions and are not returned.
-    Liquifai uses this to learn which ``--KEY VAL`` flags should bind to scope
+    A CLI framework uses this to learn which ``--KEY VAL`` flags should bind to scope
     activation rather than confluid overrides.
 
     Derived from :func:`_walk_dimensions` rather than traversing again — two
@@ -187,11 +187,11 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
     neighbouring cases stay silent, each by design:
 
     * an *undeclared* dimension (``--scope framework=keras`` against a config with
-      no ``!scope:framework=…`` block at all) is an inert no-op, which is what lets
+      no ``framework``-keyed scope block at all) is an inert no-op, which is what lets
       a CLI pass a dimension unconditionally while a config grows into it;
     * an *unset* dimension resolves to whatever the document's unscoped keys say;
     * a dimension carrying ANY negated block accepts EVERY value, because that is
-      what a negation means — ``!notscope:task=segmentation`` fires for
+      what a negation means — ``_notscope_: {task: segmentation}`` fires for
       ``task=classification`` precisely because the value differs, and it is
       deactivated by ``task=segmentation``. Both outcomes are meaningful, so there
       is no value left to reject.
@@ -207,7 +207,7 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
             raise ScopeError(
                 f"No scope block matches {key}={value!r}. "
                 f"This document declares {key} with: {known}. "
-                f"Either use one of those values, or add a `!scope:{key}={value}` block."
+                f"Either use one of those values, or add a `_scope_: {{{key}: {value}}}` block."
             )
 
 
