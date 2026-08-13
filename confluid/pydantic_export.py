@@ -44,13 +44,20 @@ from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from confluid.exceptions import IntrospectionError
-from confluid.introspect import slots
+from confluid.introspect import NO_DEFAULT, Slot, slots
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
 from confluid.partial import _PARTIAL_MARKER, body_slot_partial_names, is_partial_annotation
 from confluid.schema import parse_param_docs
 
-_SKIP_PARAMS = {"self", "cls", "args", "kwargs"}
+#: The slot kinds that become MODEL FIELDS — the signature, minus the variadics.
+#: A ``*args`` name can never be passed by keyword and a ``**kwargs`` name is the
+#: catchall, so neither is a field; a POSITIONAL_ONLY param IS one (the validation
+#: wrap binds it by name via ``sig.bind``, so the model must carry it). Kinds, not
+#: names: the old ``_SKIP_PARAMS`` name-set also dropped ordinary parameters that
+#: happened to be NAMED ``args``/``kwargs`` — and ``extra="forbid"`` then made the
+#: strict init policy refuse a legal constructor call.
+_FIELD_KINDS = frozenset({"keyword", "positional_only"})
 
 # Confluid's own annotation markers — stripped wherever ``Annotated`` metadata is
 # peeled so none of them leaks into a generated model / JSON schema. (``Partial`` is
@@ -287,10 +294,14 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
     return new_inner, remaining
 
 
-def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> Tuple[Any, Any]:
+def _field_for_slot(slot: Slot, description: str) -> Tuple[Any, Any]:
     """Build a ``(type, FieldInfo)`` tuple for ``pydantic.create_model``.
 
-    Handles required vs. defaulted fields and converts mutable defaults
+    Takes the enumeration's :class:`~confluid.introspect.Slot` record — the
+    annotation is already hint-resolved (``include_extras=True``) and the default
+    carries :data:`~confluid.introspect.NO_DEFAULT` when there is none (the same
+    ``inspect.Parameter.empty`` sentinel the signature walk used). Handles
+    required vs. defaulted fields and converts mutable defaults
     (``list``/``dict``/``set``) into ``default_factory`` to satisfy pydantic.
 
     Preserves ``Annotated[T, Field(...)]`` metadata (pydantic constraints like
@@ -304,13 +315,13 @@ def _field_for_param(param: inspect.Parameter, anno: Any, description: str) -> T
     relocation all live in :func:`_convert_annotation`, which handles nested
     ``Annotated`` layers identically.
     """
-    converted_type = _convert_annotation(anno)
+    converted_type = _convert_annotation(slot.annotation)
     desc_kw: Dict[str, Any] = {"description": description} if description else {}
 
-    if param.default is inspect.Parameter.empty:
+    if slot.default is NO_DEFAULT:
         return converted_type, Field(..., **desc_kw)
 
-    default = param.default
+    default = slot.default
     if isinstance(default, (list, dict, set)):
         # Capture by value to avoid the closing-over-loop-variable bug.
         snapshot = type(default)(default)
@@ -335,7 +346,7 @@ def _post_init_field_specs(
     though they aren't constructor parameters.
     """
     specs: Dict[str, Tuple[Any, Any]] = {}
-    seen: Set[str] = set(signature_params) | _SKIP_PARAMS
+    seen: Set[str] = set(signature_params)
     for slot in slots(cls):
         if slot.kind != "body_slot" or slot.name in seen:
             continue
@@ -380,12 +391,14 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     * The same docstring as ``cls`` (or its ``__init__``) for ergonomics in
       tooling that reads ``__doc__``.
 
-    Excluded parameters: ``self``, ``cls``, ``*args``, ``**kwargs``. A declared
-    constructor parameter is always a field — this models the CONSTRUCTOR, and a
-    read-only ``@property`` of the same name shadows the instance attribute after
-    construction, not the argument. Body slots are filtered separately: a
-    setter-less property there is derived state and never a knob
-    (:func:`_post_init_field_specs`).
+    Exclusions are by KIND, never by name: variadic parameters (``*args`` /
+    ``**kwargs``, whatever they are called) are not fields, and an ordinary
+    parameter that merely happens to be NAMED ``args`` or ``kwargs`` IS one
+    (see :data:`_FIELD_KINDS`). A declared constructor parameter is always a
+    field — this models the CONSTRUCTOR, and a read-only ``@property`` of the
+    same name shadows the instance attribute after construction, not the
+    argument. Body slots are filtered separately: a setter-less property there
+    is derived state and never a knob (:func:`_post_init_field_specs`).
 
     Args:
         cls: A class. Typically ``@configurable``-decorated, but any class
@@ -409,23 +422,25 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # callable-target support (confluid AGENTS "A Target May Be ANY Callable"). For a
     # class we introspect ``__init__``; for a function the callable's OWN signature.
     # A function has no ``__init__`` body, so the post-init body-slot scan is skipped.
+    #
+    # The probe below exists ONLY for the error contract: ``slots()`` (which the field
+    # loop projects from) is best-effort BY DESIGN — an unreadable signature or an
+    # unresolvable hint silently yields no/``Any`` slots, because losing a slot loses a
+    # GUI knob. ``to_pydantic`` documents the OPPOSITE contract — a raise naming the
+    # class — since a silently empty model would validate everything against nothing.
     is_class = isinstance(cls, type)
     if is_class:
         init = cls.__dict__.get("__init__") or cls.__init__  # type: ignore[misc]
-        if init is object.__init__:
-            # Classes that don't override __init__ have no configurable params.
-            sig = inspect.Signature(parameters=[])
-            hints: Dict[str, Any] = {}
-        else:
+        if init is not object.__init__:  # a class without its own __init__ has no params to probe
             try:
-                sig = inspect.signature(init)
-                hints = get_type_hints(init, include_extras=True)
+                inspect.signature(init)
+                get_type_hints(init, include_extras=True)
             except (TypeError, ValueError, NameError) as exc:
                 raise IntrospectionError(f"Cannot introspect {cls.__name__}.__init__: {exc}") from exc
     else:
         try:
-            sig = inspect.signature(cls)
-            hints = get_type_hints(cls, include_extras=True)
+            inspect.signature(cls)
+            get_type_hints(cls, include_extras=True)
         except (TypeError, ValueError, NameError) as exc:
             raise IntrospectionError(f"Cannot introspect callable {getattr(cls, '__name__', cls)!r}: {exc}") from exc
 
@@ -436,14 +451,13 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     param_docs = parse_param_docs(cls)
     fields: Dict[str, Tuple[Any, Any]] = {}
 
-    for param_name, param in sig.parameters.items():
-        if param_name in _SKIP_PARAMS:
+    # ONE enumeration, projected by KIND (see _FIELD_KINDS). ``slots()`` reports a
+    # name once, in signature order, with the hint already resolved — a class and a
+    # registered builder function answer alike through ``init_callable``.
+    for slot in slots(cls):
+        if slot.kind not in _FIELD_KINDS:
             continue
-        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-            continue
-
-        anno = hints.get(param_name, Any)
-        fields[param_name] = _field_for_param(param, anno, param_docs.get(param_name, ""))
+        fields[slot.name] = _field_for_slot(slot, param_docs.get(slot.name, ""))
 
     # Also surface post-init body slots (``self.optimizer = PartialClass(...)`` etc.)
     # that aren't constructor parameters — the minimal-ctor / post-construction
@@ -482,7 +496,9 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     # params, AND body slots whose default is a ``PartialClass(...)`` (the
     # minimal-ctor pattern — e.g. a trainer's ``optimizer`` / ``*_loader`` /
     # ``lightning`` body slots).
-    lazy_params = {name for name, anno in hints.items() if name not in _SKIP_PARAMS and is_partial_annotation(anno)}
+    lazy_params = {
+        slot.name for slot in slots(cls) if slot.kind in _FIELD_KINDS and is_partial_annotation(slot.annotation)
+    }
     if isinstance(cls, type):  # body-slot lazy scan walks ``cls.__mro__`` (classes only)
         lazy_params |= body_slot_partial_names(cls)
     if lazy_params:

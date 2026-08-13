@@ -976,9 +976,19 @@ the same walk five times.
 - **`slots()` reports a name ONCE**, letting the signature claim it. `body_slot_names()` is the
   sibling projection over the same walk for the different question "what does the body assign" —
   `self.model = model` is both a parameter and a body assignment, and the accept-list unions them.
-- **`to_pydantic` still runs its own body-slot scan**, because it needs the AST-resolved
-  annotation of a typed body slot and `Slot.annotation` is `Any` for those. It was not drifting,
-  so this is a feature gap, not a half-finished rewire — tracked in `TASKS.md`.
+- **The last three private walks were retired on 2026-08-13** — the consolidation had left
+  `to_pydantic`'s *signature* half, `broadcast._get_param_kinds` and the dumper's two walks
+  un-migrated, and each carried a wrong answer the shared enumeration already had right:
+  `to_pydantic` filtered by NAME (`_SKIP_PARAMS`), so an ordinary parameter literally named
+  `args` vanished from the model and `extra="forbid"` refused the legal call; `_get_param_kinds`
+  was blind to body slots, so `self.transforms: list[Any]` took an addressed list under
+  `configure()` and refused it under `load()`; the dumper kept variadic names every other reader
+  drops. All three now project by kind set (`_FIELD_KINDS` / `_DUMP_KINDS`), and the agreement
+  table pins `to_pydantic`'s field set so a private walk cannot reappear unnoticed
+  (`tests/test_introspection_agreement.py::test_a_param_literally_named_args_or_kwargs_is_a_slot_for_EVERY_reader`).
+  One consequent rule: `_classify_annotation` peels `Annotated` first, because `slots()` resolves
+  hints WITH extras — without the peel every range-marked container param would have flipped
+  from its container kind to `None`.
 - **The cache is declared in `introspect` and registered from `broadcast`**, the reverse of the
   `engine._parent_blacklist_cache` arrangement, for the same reason: `introspect` imports only the
   stdlib and must keep doing so, while `broadcast` owns the one per-pass clear.

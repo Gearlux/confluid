@@ -1,10 +1,18 @@
-import inspect
 import types
-from typing import Any, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 import yaml
 
+from confluid.introspect import NO_DEFAULT, slots
 from confluid.registry import get_registry
+
+#: The slot kinds the dumper walks — the signature, minus the variadics. A ``*args``
+#: name can never be passed by keyword and a ``**kwargs`` name is never a declared
+#: slot, so neither belongs in a dumped config: a ``kwargs: {...}`` line never
+#: round-tripped anyway (on reload the ctor filter passes it INSIDE the catchall as
+#: a literal ``"kwargs"`` key, doubly nested). Body slots stay out too — ``dump()``
+#: models the CONSTRUCTOR; post-init attributes ride ``__confluid_extra__``.
+_DUMP_KINDS = frozenset({"keyword", "positional_only"})
 
 
 class CompactDumper(yaml.SafeDumper):
@@ -106,13 +114,12 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # registry (rather than reading a stamped attribute) is what keeps that correct: a name
     # becomes ambiguous at the second registration, when this class is already stamped.
     cls_name = get_registry().key_for(data.__class__) or getattr(data, "__confluid_name__", data.__class__.__name__)
-    sig: Optional[inspect.Signature]
-    try:
-        sig = inspect.signature(data.__class__)
-        params = [p for p in sig.parameters if p not in ("self", "cls")]
-    except (ValueError, TypeError):
-        sig = None
-        params = []
+    # The ONE enumeration, projected to _DUMP_KINDS. ``slots()`` returns signature
+    # order by construction, which is what the dump-key round-trip is pinned on;
+    # an unreadable signature yields no signature slots (the old except branch).
+    dump_slots = [s for s in slots(data.__class__) if s.kind in _DUMP_KINDS]
+    params = [s.name for s in dump_slots]
+    defaults: Dict[str, Any] = {s.name: s.default for s in dump_slots}
 
     # Ctor kwargs captured at construction (engine stamp on the YAML path,
     # validation-wrap stamp on direct Python construction) — the fallback for
@@ -124,10 +131,11 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         # value on a param whose default is also ``None`` reloads identically.
         # A ``None`` on any other default MUST dump as ``param: null`` —
         # Serialization Symmetry (the old unconditional None-skip reloaded the
-        # non-None default instead).
-        if val is not None or sig is None:
+        # non-None default instead). ``NO_DEFAULT is None`` is False, so a
+        # required param's ``None`` still dumps, as before.
+        if val is not None:
             return False
-        return sig.parameters[param].default is None
+        return defaults.get(param, NO_DEFAULT) is None
 
     kwargs = {}
     for p in params:
@@ -206,16 +214,15 @@ def dump(obj: Any) -> str:
 
         if hasattr(target.__class__, "__confluid_configurable__"):
             _LocalDumper.add_representer(target.__class__, _represent_object)
-            # Traverse constructor params
+            # Traverse constructor params — the same _DUMP_KINDS projection the
+            # representer walks, so discovery and emission cannot disagree.
             param_set: set[str] = set()
-            try:
-                sig = inspect.signature(target.__class__)
-                for p in sig.parameters:
-                    param_set.add(p)
-                    if hasattr(target, p):
-                        _discover_and_register(getattr(target, p), visited)
-            except (ValueError, TypeError):
-                pass
+            for s in slots(target.__class__):
+                if s.kind not in _DUMP_KINDS:
+                    continue
+                param_set.add(s.name)
+                if hasattr(target, s.name):
+                    _discover_and_register(getattr(target, s.name), visited)
             # Traverse captured ctor kwargs too — a nested configurable an
             # EAGER class stored under a private attr is reachable ONLY here,
             # and _represent_object will emit it via the captured fallback.

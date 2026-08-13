@@ -70,6 +70,25 @@ class Forwards:
         self.lr = lr
 
 
+@configurable
+class OrdinaryNames:
+    """Params LITERALLY NAMED ``args`` / ``kwargs`` — ordinary keywords, nothing variadic.
+
+    ``to_pydantic`` used to filter parameters by NAME (a ``_SKIP_PARAMS`` set carrying
+    ``"args"``/``"kwargs"``), so these two were dropped from the generated model while
+    every other reader kept them — and ``extra="forbid"`` then made the strict init
+    policy REFUSE a legal constructor call. Only KINDS may exclude a parameter; a name
+    never does.
+    """
+
+    def __init__(
+        self, args: Optional[List[int]] = None, kwargs: Optional[Dict[str, int]] = None, lr: float = 1.0
+    ) -> None:
+        self.args = args
+        self.kwargs = kwargs
+        self.lr = lr
+
+
 def _leaves(paths: Dict[str, Any]) -> List[str]:
     """``get_hierarchy`` returns dotted paths; compare the leaf names."""
     return sorted(path.rsplit(".", 1)[-1] for path in paths)
@@ -123,6 +142,23 @@ def test_the_readers_give_one_answer_per_question_they_ask() -> None:
     # ``get_hierarchy`` MOVED between answers on 2026-08-12: it now reports body
     # slots (option B), so a CLI's ``--docs`` lists the same knobs a form editor
     # offers. It used to sit with ``input_specs`` on the signature-only answer.
+
+
+def test_a_param_literally_named_args_or_kwargs_is_a_slot_for_EVERY_reader() -> None:
+    """Only a parameter's KIND may exclude it — its name never does.
+
+    ``to_pydantic`` was the one reader still filtering by name: an ordinary keyword
+    parameter named ``args`` or ``kwargs`` vanished from the generated model alone,
+    and the strict init policy then refused ``OrdinaryNames(args=[1])`` with
+    ``extra_forbidden`` — a fatal disagreement the other five readers never had.
+    """
+    assert _readers(OrdinaryNames) == {
+        "accept-list": ["args", "kwargs", "lr"],
+        "_ctor_params": ["args", "kwargs", "lr"],
+        "input_specs": ["args", "kwargs", "lr"],
+        "get_hierarchy": ["args", "kwargs", "lr"],
+        "to_pydantic": ["args", "kwargs", "lr"],
+    }
 
 
 def test_no_reader_reports_a_var_positional_name() -> None:

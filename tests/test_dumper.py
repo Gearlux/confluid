@@ -117,6 +117,41 @@ def test_dump_none() -> None:
     assert "null" in dump(None)
 
 
+def test_dump_emits_params_in_signature_order() -> None:
+    """Dump-key order is round-trip-pinned to SIGNATURE order — the property the
+    dumper's ``slots()`` projection must preserve (``slots()`` returns signature
+    order by construction)."""
+
+    @configurable
+    class Ordered:
+        def __init__(self, beta: int = 2, alpha: int = 1, gamma: int = 3) -> None:
+            self.beta = beta
+            self.alpha = alpha
+            self.gamma = gamma
+
+    text = dump(Ordered(beta=5, alpha=6, gamma=7))
+    assert text.index("beta") < text.index("alpha") < text.index("gamma")
+
+
+def test_a_stored_variadic_bundle_is_not_dumped() -> None:
+    """A ``*args`` name can never be passed by keyword and a ``**kwargs`` name is
+    never a declared slot, so neither belongs in a dumped config — a ``kwargs: {...}``
+    line never round-tripped anyway (on reload it lands INSIDE the catchall as a
+    literal ``"kwargs"`` key, doubly nested)."""
+
+    @configurable
+    class StoresVariadics:
+        def __init__(self, *args: int, lr: float = 0.5, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.lr = lr
+
+    text = dump(StoresVariadics(lr=0.9))
+    assert "lr" in text
+    assert "args" not in text
+    assert "kwargs" not in text
+
+
 def test_dump_non_configurable_with_confluid_origin() -> None:
     """Objects created via Target/flow() retain origin metadata for dump."""
     from confluid.fluid import Target, flow
