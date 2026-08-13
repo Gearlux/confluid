@@ -9,7 +9,7 @@ same-name guard) or under-broadcasting (dict/list rejection, AST missing
 setattr).
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Annotated, Any, Dict, List, Mapping, Optional, Sequence
 
 from confluid import Target, configurable, flow, materialize, register
 from confluid.broadcast import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
@@ -156,6 +156,49 @@ def test_optional_list_annotation_classifies_as_list() -> None:
     register(WithOptionalList)
     kinds = _get_param_kinds(WithOptionalList)
     assert kinds.get("items") == "list"
+
+
+def test_param_kinds_reports_an_annotated_body_slot() -> None:
+    """A dict/list-ANNOTATED body slot classifies like the equivalent ctor param.
+
+    ``_get_param_kinds`` walked the signature alone, so a class declaring
+    ``self.transforms: list[Any] = [...]`` answered ``{}`` — an addressed
+    ``transforms: [...]`` block was then refused as a value on the load path
+    while ``configure()`` applied it (the accept-list and ``slots()`` both
+    carried the slot the whole time).
+    """
+
+    @configurable
+    class TrainAnnotated:
+        def __init__(self) -> None:
+            self.transforms: List[Any] = []
+
+    assert _get_param_kinds(TrainAnnotated).get("transforms") == "list"
+
+
+def test_param_kinds_ignores_an_unannotated_body_slot() -> None:
+    """No annotation ⇒ no classification — the routing/block reading stays."""
+
+    @configurable
+    class TrainBare:
+        def __init__(self) -> None:
+            self.transforms = [1]  # non-empty so mypy infers; still NO AST annotation
+
+    assert _get_param_kinds(TrainBare).get("transforms") is None
+
+
+def test_param_kinds_peels_annotated_metadata() -> None:
+    """``slots()`` resolves hints WITH extras, so the classifier must peel
+    ``Annotated`` — or every range-marked container param (the workspace's
+    ``Annotated[Tuple[float, float], Interval(...)]`` convention) would flip
+    from its container kind to ``None``."""
+
+    @configurable
+    class Marked:
+        def __init__(self, table: Optional[Annotated[Dict[str, int], "unit:count"]] = None) -> None:
+            self.table = table
+
+    assert _get_param_kinds(Marked).get("table") == "dict"
 
 
 # ---------------------------------------------------------------------------

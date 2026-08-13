@@ -6,6 +6,42 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The last three private slot walks now project from `introspect.slots()`** — the 2026-08-12
+  consolidation left `to_pydantic`'s signature half, `broadcast._get_param_kinds` and the dumper's
+  two walks un-migrated, each with a wrong answer the shared enumeration already had right:
+
+  - `to_pydantic` filtered parameters by NAME (`_SKIP_PARAMS = {"self", "cls", "args", "kwargs"}`),
+    so an ordinary keyword parameter literally named `args` or `kwargs` was dropped from the
+    generated model alone among the six readers — and, the model being `extra="forbid"`, the
+    default strict init policy then REFUSED the legal call (`Odd(args=[1])` →
+    `ValidationError: args Extra inputs are not permitted`). Exclusion is now by KIND
+    (`_FIELD_KINDS`): variadics are never fields whatever they are named, and a name never
+    excludes anything. The same name-set also silently excluded a *body slot* named `args` from
+    every generated schema (`_post_init_field_specs`' seen-set); it no longer does. The
+    introspection-agreement table now carries `to_pydantic`'s field set, so a seventh private
+    walk cannot drift unnoticed.
+  - `broadcast._get_param_kinds` walked the signature alone and was blind to body slots: a class
+    declaring `self.transforms: list[Any] = [...]` answered `{}`, so an addressed
+    `Cls: {transforms: [...]}` block was refused as a value on the LOAD path ("block has no
+    attribute") while `configure()` applied the identical block. An ANNOTATED body slot now
+    classifies exactly like the equivalent ctor param — the two declaration halves of the
+    class-design convention behave alike, and the two paths agree. An unannotated body slot
+    stays unclassified (routing/block reading unchanged). Consequent rule:
+    `_classify_annotation` peels `Annotated` first, because `slots()` resolves hints WITH
+    extras — without the peel every range-marked container param
+    (`Annotated[Tuple[float, float], Interval(...)]`) would have flipped to `None`.
+
+### Changed
+
+- **`dump()` no longer emits a stored variadic bundle.** The dumper's own signature walks kept
+  `*args`/`**kwargs` NAMES, so a class storing `self.kwargs = kwargs` dumped a `kwargs: {...}`
+  line — which never round-tripped (on reload the ctor filter passes it INSIDE the catchall as a
+  literal `"kwargs"` key, doubly nested). Both walks now project `slots()` to `_DUMP_KINDS`
+  (`keyword` + `positional_only`, signature order preserved); the None-skip rule and body-slot
+  exclusion are unchanged.
+
 ### Breaking
 
 - **`@ignore_config` is REMOVED** — `from confluid import ignore_config` now raises `ImportError`.

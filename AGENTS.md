@@ -173,6 +173,14 @@ asymmetry is deliberate — it falls through to a post-init `setattr`, which is 
 has always done for it, so both paths agree. `var_keyword` makes the accept-list `None`
 (accept-everything) and is kept by `_ctor_params`; it is never a DECLARED name.
 
+**Rule.** Only a KIND may exclude a slot — a NAME never does (2026-08-13). `to_pydantic`'s
+`_SKIP_PARAMS` name-set dropped an ordinary parameter literally named `args`/`kwargs` from the
+model alone among the readers, and `extra="forbid"` then refused the legal constructor call.
+The projections are the module constants `pydantic_export._FIELD_KINDS` and `dumper._DUMP_KINDS`;
+`broadcast._get_param_kinds` classifies `slots()` annotations (so an ANNOTATED body slot takes a
+dict/list value like the equivalent ctor param, on BOTH paths), and `_classify_annotation` peels
+`Annotated` first because `slots()` resolves hints WITH extras.
+
 **Why.** Six readers each walked the signature with a different kind filter and gave FIVE
 different answers for one class — including the public `declares_key`, which answered OPPOSITELY
 for the same parameter depending on whether the class also took `**kwargs`. None of it raised:
@@ -195,10 +203,18 @@ MRO SCOPES from one walk: the accept-list wants a non-`@configurable` base's `se
 (a bare key may set it), `to_pydantic` must NOT (it would become a field on every schema in a
 torch/Lightning tree). Express a scope as an `owner` filter — never as a second walk.
 
-**Pins.** `tests/test_introspection_agreement.py` — the three-answer table, and one test per
-difference stating whether it is deliberate.
+**Pins.** `tests/test_introspection_agreement.py` — the three-answer table, one test per
+difference stating whether it is deliberate, and
+`::test_a_param_literally_named_args_or_kwargs_is_a_slot_for_EVERY_reader` (the name-vs-kind rule,
+`to_pydantic`'s field set included so a private walk cannot drift unnoticed).
 `tests/test_pydantic_export.py::test_a_non_configurable_bases_body_slots_never_become_schema_fields`
-/ `::test_slot_owner_names_the_declaring_class` / `::test_body_slot_ANNOTATIONS_reach_the_generated_model`.
+/ `::test_slot_owner_names_the_declaring_class` / `::test_body_slot_ANNOTATIONS_reach_the_generated_model`
+/ `::test_an_unresolvable_annotation_still_raises_introspection_error` (the probe: `slots()` is
+best-effort by design, `to_pydantic` raises by contract).
+`tests/test_broadcast_robustness.py::test_param_kinds_reports_an_annotated_body_slot` /
+`::test_param_kinds_peels_annotated_metadata`;
+`tests/test_parity.py::test_an_addressed_list_at_an_annotated_body_slot_lands_on_the_LOAD_path`;
+`tests/test_dumper.py::test_a_stored_variadic_bundle_is_not_dumped`.
 
 ### Every signature reader goes through `introspect.init_callable`
 

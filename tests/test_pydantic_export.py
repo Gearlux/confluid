@@ -409,6 +409,60 @@ def test_no_lazy_params_means_empty_set() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_a_param_literally_named_args_validates_end_to_end() -> None:
+    """The S1 defect: ``_SKIP_PARAMS`` filtered by NAME, so an ordinary keyword
+    parameter named ``args`` was dropped from the model and — the model being
+    ``extra="forbid"`` — the strict init policy then REFUSED a legal call."""
+
+    @configurable
+    class OddlyNamed:
+        def __init__(self, args: Optional[List[int]] = None, normal: int = 1) -> None:
+            self.args = args
+            self.normal = normal
+
+    assert set(to_pydantic(OddlyNamed).model_fields) == {"args", "normal"}
+    inst = OddlyNamed(args=[1, 2])  # the wrapped __init__ validates against the model
+    assert inst.args == [1, 2]
+
+
+def test_variadics_are_never_fields_whatever_they_are_named() -> None:
+    """The KIND excludes ``*args`` / ``**kwargs`` — renaming them changes nothing."""
+
+    @configurable
+    class Variadic:
+        def __init__(self, *loaders: int, lr: float = 0.1, **extra: Any) -> None:
+            self.lr = lr
+
+    assert set(to_pydantic(Variadic).model_fields) == {"lr"}
+
+
+def test_a_body_slot_literally_named_args_is_an_optional_field() -> None:
+    """The body-slot half of the same name-filter defect: ``_post_init_field_specs``
+    ORed ``_SKIP_PARAMS`` into its seen-set, silently excluding a body slot that
+    happens to be named ``args`` from every generated schema."""
+
+    @configurable
+    class BodyNames:
+        def __init__(self) -> None:
+            self.args: Optional[int] = None
+
+    assert "args" in to_pydantic(BodyNames).model_fields
+
+
+def test_an_unresolvable_annotation_still_raises_introspection_error() -> None:
+    """The error contract survives the ``slots()`` migration: ``slots()`` degrades
+    silently on an unreadable signature (best-effort by design), but ``to_pydantic``
+    documents a raise — the probe exists solely to keep that promise."""
+    from confluid.exceptions import IntrospectionError
+
+    class Broken:
+        def __init__(self, x: "NoSuchType" = None) -> None:  # type: ignore[name-defined]  # noqa: F821 - the point
+            self.x = x
+
+    with pytest.raises(IntrospectionError):
+        to_pydantic(Broken)
+
+
 def test_class_without_init_produces_empty_model() -> None:
     @configurable
     class Marker:

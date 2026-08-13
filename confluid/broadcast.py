@@ -26,7 +26,7 @@ import inspect
 import typing
 from copy import copy
 from enum import Enum
-from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, Tuple, TypeVar
+from typing import Annotated, Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, Tuple, TypeVar
 
 from loggair import get_active_config, get_logger
 
@@ -441,17 +441,22 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
 
 
 def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
-    """Return ``{param_name: "dict" | "list" | None}`` for a target's ctor.
+    """Return ``{slot_name: "dict" | "list" | None}`` for a target's slots.
 
     Used by :func:`_accepts` to decide whether a dict/list value at a
     matching key in the parent context should be broadcast IN (when the
-    target's annotation says it expects a dict/list) or left to recurse as
-    a config sub-block (the default for un-annotated/scalar-shaped params).
+    slot's annotation says it expects a dict/list) or left to recurse as
+    a config sub-block (the default for un-annotated/scalar-shaped slots).
 
-    Resolution is annotation-only (no runtime values); if a class doesn't
-    annotate, the value stays None and the legacy "skip dict/list" rule
-    applies. ``typing.get_type_hints`` is wrapped in a try/except because
-    forward references that can't be resolved would otherwise raise.
+    A projection over the ONE :func:`introspect.slots` enumeration — it was the
+    surviving hand-rolled signature walk after the 2026-08-12 consolidation, and
+    the walk was BLIND to body slots: a class declaring ``self.transforms:
+    list[Any] = [...]`` answered ``{}``, so an addressed ``transforms: [...]``
+    block was refused as a value on the load path while ``configure()`` applied
+    it. An ANNOTATED body slot now classifies exactly like the equivalent ctor
+    param (the two declaration halves of the class-design convention behave
+    alike); an unannotated one stays ``None`` (``Slot.annotation`` is ``Any``),
+    so the routing/block reading is unchanged for it.
     """
     target: Any
     if isinstance(cls_or_name, type) or callable(cls_or_name):
@@ -465,41 +470,7 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
     if cache_key in _param_kind_cache:
         return _param_kind_cache[cache_key]
 
-    kinds: Dict[str, Optional[str]] = {}
-    try:
-        # Same class-vs-callable dispatch as _get_acceptable_keys — a builder
-        # function's own signature, never object.__init__ (see init_callable).
-        init_method = init_callable(target)
-        if init_method is None:
-            _param_kind_cache[cache_key] = kinds
-            return kinds
-        sig = inspect.signature(init_method)
-    except (ValueError, TypeError):
-        _param_kind_cache[cache_key] = kinds
-        return kinds
-
-    # Try to resolve forward refs via typing.get_type_hints; fall back to
-    # the raw .annotation when that fails (common for self-referential or
-    # third-party-imported annotations).
-    try:
-        hints = typing.get_type_hints(init_method)
-    except Exception as exc:
-        # Raw ``param.annotation`` objects still classify below, but a
-        # string annotation (``from __future__ import annotations``) or a
-        # broken forward ref degrades to None — flipping a dict-annotated
-        # param from VALUE to routing with no other trace. Once per class
-        # per pass (this function is cached).
-        logger.debug(
-            f"param-kind scan for {_dotted_name(target)}: get_type_hints failed ({exc}) — raw annotations used"
-        )
-        hints = {}
-
-    for name, param in sig.parameters.items():
-        if name in ("self", "cls"):
-            continue
-        ann = hints.get(name, param.annotation)
-        kinds[name] = _classify_annotation(ann)
-
+    kinds: Dict[str, Optional[str]] = {slot.name: _classify_annotation(slot.annotation) for slot in slots(target)}
     _param_kind_cache[cache_key] = kinds
     return kinds
 
@@ -517,6 +488,14 @@ def _classify_annotation(ann: Any) -> Optional[str]:
     """
     if ann is inspect.Parameter.empty:
         return None
+
+    # Peel ``Annotated`` FIRST: ``slots()`` resolves hints WITH extras
+    # (``include_extras=True``), so a range-marked container param — the
+    # workspace's ``Annotated[Tuple[float, float], Interval(...)]`` convention —
+    # arrives wrapped, and ``get_origin`` would report ``Annotated`` instead of
+    # the container. Classify the payload; the metadata is not shape.
+    if typing.get_origin(ann) is Annotated:
+        return _classify_annotation(typing.get_args(ann)[0])
 
     # Direct built-ins.
     if ann in (dict, list, tuple, set, frozenset):

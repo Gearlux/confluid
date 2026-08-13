@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from confluid import configurable, configure, get_registry
+from confluid import configurable, configure, get_registry, load, register
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +32,34 @@ class TrainClass:
             TransformClass(),
             Delegate(delegate=TransformClass(), enabled=True),
         ]
+
+
+def test_an_addressed_list_at_an_annotated_body_slot_lands_on_the_LOAD_path() -> None:
+    """The load path applies a class-block LIST to an annotated body slot — like configure().
+
+    ``TrainClass`` declares ``self.transforms: list[Any] = [...]``, so ``slots()`` and the
+    accept-list both carry the slot with its ``list`` type. ``configure()`` has always
+    applied ``TrainClass: {transforms: [...]}``; the load path refused the same block as
+    a value ("block has no attribute") because its ``_get_param_kinds`` walked the
+    signature alone and never saw the body slot's annotation. One class, one block, two
+    answers — the cross-path drift class this suite exists to pin.
+    """
+    register(TrainClass)  # the autouse fixture cleared the registry
+
+    result = load(
+        """
+train:
+  _target_: TrainClass
+TrainClass:
+  transforms: [7]
+"""
+    )
+    assert result["train"].transforms == [7]
+
+    # And configure() gives the same answer for the same block — the parity claim.
+    live = TrainClass()
+    configure(live, config="TrainClass:\n  transforms: [7]\n")
+    assert live.transforms == [7]
 
 
 def test_config_transforms_broadcast() -> None:
