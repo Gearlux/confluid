@@ -44,7 +44,7 @@ from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from confluid.exceptions import IntrospectionError
-from confluid.introspect import resolve_ast_annotation, scan_init_body
+from confluid.introspect import slots
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
 from confluid.partial import _PARTIAL_MARKER, body_slot_partial_names, is_partial_annotation
@@ -336,35 +336,25 @@ def _post_init_field_specs(
     """
     specs: Dict[str, Tuple[Any, Any]] = {}
     seen: Set[str] = set(signature_params) | _SKIP_PARAMS
-    for klass in cls.__mro__:
-        if klass is object or not getattr(klass, "__confluid_configurable__", False):
+    for slot in slots(cls):
+        if slot.kind != "body_slot" or slot.name in seen:
             continue
-        init = klass.__dict__.get("__init__")
-        if init is None:
+        # OWNER filter — the one thing this projection needs that a name set cannot
+        # express. ``slots()`` walks the WHOLE MRO because the accept-list wants a
+        # framework base's ``self.training = True`` (broadcasting may legitimately
+        # set it); a generated SCHEMA must not carry it, or every model grows
+        # ``training`` / ``prepare_data_per_node`` fields from ``nn.Module``.
+        if not getattr(slot.owner, "__confluid_configurable__", False):
             continue
-        # ONE shared scan per __init__ (confluid.introspect), projected twice:
-        # every slot NAME (all kinds), and the assign/annassign annotation map.
-        body_slots = scan_init_body(init)
-        names = {slot.name for slot in body_slots}
-        annotations: Dict[str, Any] = {}
-        for slot in body_slots:
-            if slot.kind in ("assign", "annassign"):
-                annotations.setdefault(slot.name, slot.annotation)
-        for name in names:
-            if name in seen:
-                continue
-            seen.add(name)
-            member = getattr(cls, name, None)
-            if isinstance(member, property) and member.fset is None:
-                continue  # read-only derived property — not a config knob
-            if getattr(member, "__confluid_ignore__", False):
-                continue
-            resolved = resolve_ast_annotation(annotations.get(name), init)
-            converted = _convert_annotation(resolved)
-            desc_kw: Dict[str, Any] = {"description": param_docs[name]} if param_docs.get(name) else {}
-            # Optional (default None): the class supplies its own default and the
-            # slot is reconfigured post-construction, so a config may omit it.
-            specs[name] = (Union[converted, None], Field(default=None, **desc_kw))
+        seen.add(slot.name)
+        member = getattr(cls, slot.name, None)
+        if isinstance(member, property) and member.fset is None:
+            continue  # read-only derived property — not a config knob
+        converted = _convert_annotation(slot.annotation)
+        desc_kw: Dict[str, Any] = {"description": param_docs[slot.name]} if param_docs.get(slot.name) else {}
+        # Optional (default None): the class supplies its own default and the
+        # slot is reconfigured post-construction, so a config may omit it.
+        specs[slot.name] = (Union[converted, None], Field(default=None, **desc_kw))
     return specs
 
 
@@ -390,8 +380,12 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     * The same docstring as ``cls`` (or its ``__init__``) for ergonomics in
       tooling that reads ``__doc__``.
 
-    Excluded parameters: ``self``, ``cls``, ``*args``, ``**kwargs``, and any
-    parameter whose class attribute is decorated with ``@ignore_config``.
+    Excluded parameters: ``self``, ``cls``, ``*args``, ``**kwargs``. A declared
+    constructor parameter is always a field — this models the CONSTRUCTOR, and a
+    read-only ``@property`` of the same name shadows the instance attribute after
+    construction, not the argument. Body slots are filtered separately: a
+    setter-less property there is derived state and never a knob
+    (:func:`_post_init_field_specs`).
 
     Args:
         cls: A class. Typically ``@configurable``-decorated, but any class
@@ -446,10 +440,6 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
         if param_name in _SKIP_PARAMS:
             continue
         if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-            continue
-
-        member = getattr(cls, param_name, None)
-        if member is not None and getattr(member, "__confluid_ignore__", False):
             continue
 
         anno = hints.get(param_name, Any)

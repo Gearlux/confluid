@@ -6,6 +6,207 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Breaking
+
+- **`@ignore_config` is REMOVED** — `from confluid import ignore_config` now raises `ImportError`.
+  There is no deprecation shim: the decorator was a no-op on every class that existed.
+
+  Measured before removing it: of **275 registered classes across the workspace, 0 used it**. Its
+  only occurrence anywhere was a documentation example marking a read-only `@property` — and on
+  that shape it changed no reader's answer, because a setter-less property is already excluded by
+  `introspect._non_signature_slots`. The same class with and without the decorator answered
+  identically on all four surfaces (`accepts_key`, `get_hierarchy`, `to_pydantic`, the accept-list).
+
+  Where the marker *did* bite — a class attribute shadowing an `__init__`-body slot — it made the
+  accept-list disagree with the engine: `accepts_key` returned `True` while the engine discarded
+  the value, with no warning and no `report.failed` entry, so a config line was silently thrown
+  away. Removing the marker makes that key behave as written:
+
+  ```yaml
+  cache:
+    _target_: Cache
+    scratch: /tmp/mine     # before: silently discarded (obj.scratch is None)
+                           # after:  obj.scratch == "/tmp/mine"
+  ```
+
+  **Migration:** delete the decorator. To keep an attribute out of configuration, make it a
+  read-only `@property` (the mechanism `@output` already documents) or prefix it with `_`.
+
+  Pins: `tests/test_introspection_agreement.py::test_a_readonly_property_is_excluded_without_any_marker`,
+  `::test_a_yaml_key_aimed_at_a_readonly_property_does_not_change_it`, `::test_ignore_config_is_gone`.
+
+### Changed
+
+- **`get_hierarchy` now reports `__init__`-body slots, so `--docs` stops lying by omission.**
+  It walked the signature only, which meant a CLI listed fewer knobs BEFORE a config was flowed
+  than after — the two hierarchy walkers disagreeing about the same class. Measured on
+  `matrainer.TrainerRunnable`: **10 paths where 13 exist**, with `metrics_sidecar_path`,
+  `predictions_sink` and `val_set` invisible to anyone reading `--docs` cold.
+
+  Body slots are configurable by the class-design convention's rule 4, so omitting them
+  contradicted the walker's own contract. It could not be fixed until `slots()` carried body-slot
+  TYPES (the walker recurses on a type), which landed the same day.
+
+  A configurable-typed body slot RECURSES, exactly as a ctor param of that type does — verified
+  side by side that both declaration halves produce the same path shape (`Host.child.lr`). The
+  alternative (report as leaves, never recurse) was rejected: measured across 314 registered
+  classes and 859 body slots, **zero** carry a directly-configurable type, so the two options
+  produce identical output on every real class and only this one is a rule you can state.
+  `class_attr` slots stay out — the accept-list wants them, a declared-options listing does not.
+
+  Only body slots the class OWNS are reported — the same `Slot.owner` filter `to_pydantic`
+  applies. Without it a class extending `keras.Model` advertised twelve of its internals
+  (`predict_function`, `compiled`, `supports_jit`, …) as configuration: measured at 522 of 859
+  body slots workspace-wide, so the honest growth in `--docs` is **+337 paths (+15 %)**, not +859.
+  The live walker never had the bug — it reads `get_configurable_attrs`, which subtracts
+  non-`@configurable` ancestors already.
+
+  Consequence for the reader table: `get_hierarchy` moved from the "what the signature declares"
+  answer to the "what is configurable at all" answer, leaving `input_specs` alone on the first —
+  which is correct, since that one reports the CONSTRUCTOR contract, and a body slot is by
+  definition not part of it.
+
+### Changed
+
+- **`schema.py`'s three private signature reads now project from `introspect.slots()`.** The
+  backlog entry called the two hierarchy walkers "~150 near-parallel lines … merge into one walker
+  with a static/live policy". Measured first, that premise did not hold — they are 266 lines and
+  answer different questions:
+
+  ```
+  get_hierarchy(Root)               -> {Root.leaf, Root.name}                     rooted at the CLASS
+  get_hierarchy_from_instance(root) -> {run.leaf._Leaf.lr, run.name, run.toggle}  rooted at the INSTANCE
+  ```
+
+  The static walker recurses on a configurable ANNOTATION, the live one on a live VALUE. Merging
+  them would unify two things that deliberately differ, and both feed user-visible surfaces (a
+  CLI's `--help` / `--docs`, hyperparameter logging). So the ENUMERATION is shared and the
+  traversals are not; `_skipped_param_names` is deleted, and `schema.py` no longer reads a
+  signature at all except for an `@output` property's return type.
+
+  Output pinned before and after — byte-identical. The backlog entry is corrected, since it would
+  have sent the next reader at a merge that should not happen.
+
+### Added
+
+- **`@configurable(strict_attrs=True)` / `register(..., strict_attrs=True)` — a closed config
+  surface.** Confluid is permissive by default and stays that way: an addressed key naming nothing
+  a class declares lands as a post-init attribute, because `_apply_post_init_attrs` IS the
+  post-construction toggle mechanism. A class that wants its surface closed can now say so.
+
+  ```
+  Trainer has no attribute 'epochz' at exp.yaml:2:3 and is declared strict_attrs=True, so it
+  will not be set as a post-init attribute. Trainer declares: epochs, head.
+  ```
+
+  "Declared" is the accept-list — constructor parameters (or the callable's own signature for a
+  builder function), settable class attributes, and `__init__`-body slots.
+
+  Two decisions, both taken deliberately: `register()` carries the mark for the reason it carries
+  `broadcast=False` (a class you do not own is the one you cannot close by editing its
+  declaration), and the mark binds `configure()` as well as the load path — one meaning different
+  things per path would be the exact asymmetry the previous change removed.
+
+  Never refused: a `**kwargs` target (no accept-list, so nothing is undeclared for it — marking one
+  is meaningless rather than an error) and BARE keys (the accept-list drops them first, which keeps
+  a strict class usable in a document that also configures something else). All three exemptions
+  pinned, along with inheritance and the `marks()` read surface.
+
+  The detection is not new — it is the warning added in the same round, now gated by the mark.
+
+### Changed
+
+- **`slots()` now carries a body slot's DECLARED type, and the two private scans are gone.** The
+  first consolidation unified the NAME enumeration and left the TYPE one duplicated:
+  `Slot.annotation` was `Any` for every body slot, while `pydantic_export` and `confluid.partial`
+  each ran their own AST scan to resolve `self.run_name: Optional[str]`. Nothing checked the two
+  agreed, and **163 annotated body slots** in production code ride on it (`matrainer/runnable.py`
+  alone: `Optional[Partial[RecordSource]]`, `RunnableTask`, `Partial[KerasOptimizer]`, …).
+
+  ```
+  the class says            slots() before      slots() now
+  optimizer: Partial[Dep]   Any                 Union[Dep, Fluid, …]
+  run_name: Optional[str]   Any                 Optional[str]
+  untyped   (no annotation) Any                 Any        <- the class's own answer
+  ```
+
+  **`Slot` gained `owner`** — the MRO class that declared the slot — because the two readers need
+  different MRO SCOPES, not different filters. The accept-list wants a non-`@configurable` base's
+  `self.training = True` (a bare key may legitimately set it, and the engine subtracts those later);
+  `to_pydantic` must not, or every model in a torch/Lightning tree grows fields no config should
+  set. Measured before the change: a naive projection would have added exactly
+  `['allow_zero_length_dataloader', 'prepare_data_per_node', 'training']` to every generated
+  schema. So the walk is shared and the scope is the reader's, as an `owner` filter.
+
+  Eager vs lazy resolution was decided by measurement, not preference: 74 µs for a class with ten
+  annotated slots, cached once per distinct class per pass, against a 278 ms materialize. Lazy was
+  rejected — it would have made `Slot` something other than a plain NamedTuple for under 1 %.
+  `materialize` after: 278.1 ms, unchanged.
+
+  One scan deliberately stays: `confluid.partial`'s deferred-by-VALUE half
+  (`self.x = PartialClass(...)`). `slots()` carries a slot's declared TYPE, never its assigned
+  expression, so that signal is not projectable. Its deferred-by-ANNOTATION half now is.
+
+  Sequenced so every step was reviewable: `to_pydantic`'s current output was pinned FIRST, the
+  annotation fill-in changed exactly one test (the pin whose job was to show it), and the schema
+  is byte-identical afterwards.
+
+### Fixed
+
+- **An undeclared config key is now reported on the load path, not silently absorbed.** One typo
+  had three behaviours: `load()` with the key on the marker SET it silently, `load()` with the key
+  in a class block IGNORED it silently, and only `configure()` reported it.
+
+  ```
+  Node has no attribute 'pathh' at exp.yaml:2:3 — set as a post-init attribute anyway.
+  Declare it as a constructor parameter or an __init__-body slot, or remove it.
+  ```
+
+  The load-path sink justified its silence as *"constructor validation is this path's typo
+  enforcement"*. Measured false: `pathh` is not a constructor parameter, so `_ctor_params` filters
+  it out and it reaches a post-init `setattr` — around the constructor. `Node(pathh="/x")` raises
+  `ValidationError`; the same key through `load()` did not.
+
+  **The own-kwarg form still APPLIES the value** (option B1, chosen over full `configure()`
+  parity). That branch IS the post-init attribute mechanism — `_apply_post_init_attrs` exists to
+  assign kwargs the constructor did not take — so refusing there would delete documented behaviour
+  from the commonest spelling. Refusing is the opt-in `strict_attrs` mark instead, now filed.
+
+  Three exemptions, each pinned: a `**kwargs` class is never reported (no accept-list — it accepts
+  everything by design), a BARE key is `unused` rather than `failed` (it legitimately matches
+  nothing, so reporting it would fire on every sweep document), and a declared body slot is silent.
+
+  Impact measured BEFORE shipping: **0 real warnings across 96 workspace configs and 412 markers**
+  (five apparent hits were artifacts of the measurement resolving bare names against a merged
+  registry — verified individually). All 24 examples stay silent.
+
+### Fixed
+
+- **A config key naming a `*args` parameter is refused instead of absorbed.** A variadic is
+  positional-only by construction and a marker carries keyword arguments alone, so such a key can
+  never reach the parameter. It was silently set as a post-init ATTRIBUTE: the constructor never
+  saw it, and `obj.loaders` held a value the object ignored.
+
+  ```
+  DataLoaders cannot accept 'loaders' at exp.yaml:3:3: it is a *args parameter, which can
+  never be passed by keyword, so no config key can reach it. Pass the values positionally —
+  flow(node, a, b) — or give the target a keyword parameter.
+  ```
+
+  Hydra refuses the identical spelling (measured, 1.3.5: `loaders: [...]` on a `*loaders` target
+  raises `InstantiationException`) and offers `_args_` as its separate channel; confluid's channel
+  is `flow(node, a, b)`, runtime-only by mandate, so the config-side answer matches.
+
+  **ADDRESSED keys only** — one written on the marker or in a `ClassName:` block. A BARE key is an
+  implicit `**.key` that cascades tree-wide and legitimately matches nothing, so a document whose
+  top-level key collides with some class's variadic parameter keeps loading. Hydra never faces
+  that case: it has no bare-key broadcast. A `**kwargs` name is never refused either — such a
+  class accepts everything by design. All three exemptions are pinned.
+
+  Scope came from measurement, not assumption: the two spellings reach different code paths
+  (`engine._apply_post_init_attrs` for own kwargs, `_MergeSink.unknown` for a class block) and the
+  bare form reaches neither, so its exemption is structural rather than a check.
+
 ### Changed
 
 - **One slot enumeration, six projections.** Six readers answer "which slots does this target

@@ -35,6 +35,7 @@ def configurable(
     capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
+    strict_attrs: bool = False,
     display_name: Optional[str] = None,
 ) -> Callable[[C], C]: ...
 
@@ -57,6 +58,7 @@ def configurable(
     capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
+    strict_attrs: bool = False,
     display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
     """Mark a class OR callable as confluid-configurable and register it.
@@ -209,6 +211,7 @@ def configurable(
             constant=constant,
             eager=eager,
             strict_typing=strict_typing,
+            strict_attrs=strict_attrs,
             display_name=display_name,
             no_broadcast=not broadcast,
             no_capture=not capture,
@@ -238,6 +241,7 @@ def register(
     capture: bool = True,
     broadcast: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
+    strict_attrs: bool = False,
 ) -> C:
     """Register a class OR callable (e.g. a third-party class or builder function) as configurable.
 
@@ -300,14 +304,9 @@ def register(
         no_capture=not capture,
         no_broadcast=not broadcast,
         broadcast_attrs=broadcast_attrs,
+        strict_attrs=strict_attrs,
     )
     return cls
-
-
-def ignore_config(func: T) -> T:
-    """Decorator to mark a property or attribute to be ignored by configuration/overview."""
-    setattr(func, "__confluid_ignore__", True)
-    return func
 
 
 def output(func: T) -> T:

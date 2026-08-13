@@ -998,7 +998,111 @@ for slot in slots(Trainer):
 slot_names(Trainer, frozenset({"keyword", "var_keyword"}))   # what the ctor can take
 ```
 
-**What you may change.** Which kinds a given reader projects — that is the knob, and each choice
-is pinned with its reason in `tests/test_introspection_agreement.py`. Not the invariant that they
-all read ONE enumeration: five private walks is what produced five answers, and the pins exist so
-the next change to a projection is a visible diff rather than a sixth answer.
+**The annotation half** *(2026-08-12, same day)*. The first cut unified the NAME enumeration and
+left the TYPE one duplicated: `Slot.annotation` was `Any` for every body slot, while
+`pydantic_export` and `confluid.partial` each ran their own AST scan to resolve
+`self.run_name: Optional[str]`. Nothing checked the two agreed, across **163 annotated body slots**
+in production code. `slots()` now resolves them once — measured at 74 µs for a class with ten
+annotated slots, cached once per distinct class per pass, against a 278 ms materialize; lazy
+resolution was considered and rejected for that ratio, since it would have made `Slot` something
+other than a plain NamedTuple.
+
+That exposed the one thing a name set genuinely cannot express, and it is why `Slot` carries
+`owner`: the two readers want **different MRO scopes**, not different filters.
+
+| reader | scope | why |
+|---|---|---|
+| accept-list | whole MRO | a bare key may legitimately set a framework base's `self.training`; the engine subtracts those later (`_get_parent_attr_blacklist`) |
+| `to_pydantic` | `@configurable` owners only | otherwise every model in a torch/Lightning tree grows `training` / `prepare_data_per_node` fields no config should set |
+| `get_hierarchy` | `@configurable` owners only | same reason, measured the hard way: shipped without the filter, it put twelve `keras.Model` internals into a CLI's `--docs` as options (522 of 859 body slots workspace-wide are owned by a foreign base) |
+
+Measured before the change: projecting naively would have added exactly
+`['allow_zero_length_dataloader', 'prepare_data_per_node', 'training']` to every generated schema.
+So the walk is shared and the SCOPE is the reader's, expressed as a filter on `owner` rather than
+as a second walk.
+
+**What you may change.** Which kinds a given reader projects, and which owners — those are the
+knobs, and each choice is pinned with its reason in `tests/test_introspection_agreement.py` and
+`tests/test_pydantic_export.py`. Not the invariant that they all read ONE enumeration: five private
+walks is what produced five answers, and the pins exist so the next change to a projection is a
+visible diff rather than a sixth answer.
+
+## 13. The opt-out is structural, not a marker
+
+*2026-08-13*
+
+**Context.** confluid had two ways for a class to say "this is not a config knob". One was
+structural — a setter-less `@property` is derived state, so every reader skipped it. The other was
+a marker: `@ignore_config` stamped `__confluid_ignore__`, and seven separate call sites checked it
+(the accept-list, `engine._apply_post_init_attrs`, both `schema` hierarchy walkers, both
+`pydantic_export` field builders, `introspect._non_signature_slots`).
+
+Two mechanisms answering one question is the shape record 12 exists to prevent, and it had already
+drifted the same way. `introspect._non_signature_slots` skipped a marked class attribute *without
+claiming its name*, so the body-slot loop immediately behind it re-admitted the same name as a
+`body_slot`. The result was the accept-list disagreeing with the engine:
+
+| | answer |
+|---|---|
+| `accepts_key(cls, "scratch")` | `True` — the predicate consumers are told to trust |
+| the engine | discards the value (it checks the marker; the accept-list does not) |
+| warning | none |
+| `report.failed` | empty |
+
+A config line was thrown away in silence, and the public settability predicate said it would land —
+the same failure record 12 fixed for `declares_key` and `*args`, one layer over.
+
+Measured before deciding: of **275 registered classes across the workspace, 0 used the marker.** Its
+only occurrence anywhere was a documentation example applying it to a read-only `@property` — where
+it was a **no-op**, because the structural rule already excluded that property. The same class with
+and without the decorator answered identically on all four surfaces (`accepts_key`, `get_hierarchy`,
+`to_pydantic`, the accept-list).
+
+**Decision.** The marker is deleted, with no deprecation shim. The structural rules are the opt-out:
+a read-only `@property` for derived state, a leading underscore for private state.
+
+A shim was rejected because it would have to keep working, and "working" here means preserving a
+predicate that lies. Pre-1.0, a `**Breaking**` changelog entry and a loud `ImportError` cost a
+consumer one line; a silent shim costs them a discarded config value.
+
+**Consequences.**
+
+- **A public name is gone** (`from confluid import ignore_config` raises). Nothing in the workspace
+  imported it, so the break is entirely external.
+- **Seven marker checks disappear**, and every reader in record 12 loses a rule. The remaining
+  exclusions are *properties of the declaration itself*, which is why they cannot drift apart:
+  there is no stamp for one reader to honour and another to miss.
+- **A class attribute shadowing a body slot now behaves as written** — the key that was silently
+  discarded lands. This is the behaviour change; no class in the workspace has that shape.
+- **`to_pydantic` loses its only way to suppress a declared constructor parameter.** A declared
+  parameter is now always a field, which is what a model *of the constructor* should say: a
+  read-only property of the same name shadows the instance attribute after construction, not the
+  argument. Body slots are still filtered by the property rule.
+
+**Example.**
+
+```python
+@configurable
+class Cache:
+    def __init__(self) -> None:
+        self.scratch = None          # a body slot — an ordinary knob
+
+    @property
+    def size(self) -> int:           # read-only: derived, never a knob, no marker needed
+        return len(self._entries)
+```
+
+```yaml
+cache:
+  _target_: Cache
+  scratch: /tmp/mine   # before: silently discarded when `scratch` carried the marker
+                       # after:  obj.scratch == "/tmp/mine"
+  size: 99             # warned about, and the property keeps computing its own value
+```
+
+**What you may change.** Which structural properties exclude a slot — that a setter-less property is
+derived state, that a leading underscore is private — are rules a reader projects, and each is pinned
+in `tests/test_introspection_agreement.py`. What must not come back is an exclusion **marker whose
+answer the accept-list and the engine can disagree about**. If a "settable via config but hidden from
+display" need ever arrives, it has to be honoured by the display enumerators *and* the accept-list in
+the same change, or it rebuilds exactly the divergence removed here.

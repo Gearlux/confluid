@@ -49,6 +49,7 @@ from confluid.broadcast import (
     _spliced_subtree_view,
     clear_pass_caches,
     merge_bare_pool_into_kwargs,
+    refuse_if_undeclared,
     trace_enabled,
     tune_marker,
 )
@@ -352,6 +353,8 @@ class _LiveSink:
         pass
 
     def unknown(self, key: str, value: Any, *, origin: str) -> None:
+        # The mark binds BOTH paths, or it means two different things.
+        refuse_if_undeclared(self.obj, key)
         logger.warning(f"configure(): {self.cls_name} block has no attribute {key!r} — ignored")
         self.report.record_failed(key, self.target_label, "unknown-attribute")
 

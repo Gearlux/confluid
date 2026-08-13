@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 # shim gave the shim internal consumers, defeating any future zero-user audit.
 from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key, declares_key
 from confluid.configurator import configure, configure_from_file
-from confluid.decorators import configurable, ignore_config, output, register
+from confluid.decorators import configurable, output, register
 from confluid.dumper import dump
 from confluid.engine import cast, flow, get_configurable_attrs, materialize, resolve
 from confluid.exceptions import (
@@ -83,7 +83,6 @@ __all__ = [
     "IntrospectionError",
     "configurable",
     "register",
-    "ignore_config",
     "output",
     "get_registry",
     "load_configurables",

@@ -482,3 +482,125 @@ def test_a_class_with_no_callable_init_is_left_unbuilt() -> None:
 
     assert isinstance(result, Target)  # handed back as a marker, not constructed
     assert result.kwargs["k"] == 1  # ...with its configuration intact
+
+
+# ---- the config side of the positional channel ------------------------------ #
+# A ``*args`` parameter's NAME addresses nothing: it can never be passed by
+# keyword, so a config key of that name can never reach it. Until 2026-08-12 a key
+# written ON the marker was silently set as a post-init ATTRIBUTE instead — the
+# constructor never saw it, and `obj.loaders` held a value the object ignored.
+#
+# Hydra refuses the same spelling (measured, 1.3.5: `loaders: [...]` on a
+# `*loaders` target raises InstantiationException) and offers `_args_` as the
+# separate channel. Confluid's channel is `flow(node, a, b)` — runtime-only by
+# mandate — so the config-side answer is the same as Hydra's: refuse the name.
+#
+# Scoped to ADDRESSED keys. A BARE key cascades tree-wide and legitimately matches
+# nothing, so a document whose top-level key happens to collide with some class's
+# variadic name must keep loading. Hydra never faces that case — it has no
+# bare-key broadcast.
+
+
+class _Variadic:
+    """A variadic signature whose inputs have no keyword.
+
+    Args:
+        loaders: Positional-only inputs, supplied via ``flow(node, a, b)``.
+        path: An ordinary configurable knob beside them.
+    """
+
+    def __init__(self, *loaders: Any, path: str = "") -> None:
+        self.loaders, self.path = list(loaders), path
+
+
+class _Catchall:
+    """A ``**kwargs`` class — it accepts everything by design.
+
+    Args:
+        extra: Arbitrary options, stored verbatim.
+    """
+
+    def __init__(self, **extra: Any) -> None:
+        self.extra = dict(extra)
+
+
+@pytest.fixture
+def _variadic_registered() -> None:
+    """Register the pair per test — this file clears the registry in an autouse fixture."""
+    configurable(_Variadic)
+    configurable(_Catchall)
+
+
+def test_a_key_naming_a_var_positional_param_is_refused_on_the_marker(_variadic_registered: None) -> None:
+    """Written on the marker, it is unambiguously aimed at this node — and impossible."""
+    with pytest.raises(confluid.ConfigurationError) as excinfo:
+        load("dl:\n  _target_: _Variadic\n  loaders: [a, b]\n")
+
+    message = str(excinfo.value)
+    assert "loaders" in message
+    assert "*args" in message or "positionally" in message, "say WHY it cannot land"
+    assert "flow(" in message, "name the channel that does work"
+
+
+def test_a_key_naming_a_var_positional_param_is_refused_via_a_class_block(_variadic_registered: None) -> None:
+    """A class-name block aims at the node just as explicitly as the marker does.
+
+    It reaches a different code path (the scanner's ``unknown`` emission rather
+    than the post-init setattr), which is why both are pinned.
+    """
+    with pytest.raises(confluid.ConfigurationError, match="loaders"):
+        load("_Variadic:\n  loaders: [a, b]\ndl:\n  _target_: _Variadic\n")
+
+
+def test_the_refusal_names_the_yaml_position(tmp_path: Any, _variadic_registered: None) -> None:
+    """A config error without a location is not a usable error (the workspace rule)."""
+    config = tmp_path / "exp.yaml"
+    config.write_text("dl:\n  _target_: _Variadic\n  loaders: [a, b]\n")
+
+    with pytest.raises(confluid.ConfigurationError) as excinfo:
+        load(str(config))
+
+    assert "exp.yaml" in str(excinfo.value)
+
+
+def test_a_BARE_key_colliding_with_a_variadic_name_still_loads(_variadic_registered: None) -> None:
+    """The load-breaking case, and the reason this is scoped to ADDRESSED keys.
+
+    A bare key is an implicit ``**.key`` that cascades tree-wide and legitimately
+    matches nothing on most nodes. Refusing it would break every document whose
+    top-level key happens to share a name with some class's variadic parameter —
+    a collision the author never aimed at anything.
+    """
+    built = load("loaders: [a, b]\ndl:\n  _target_: _Variadic\n")["dl"]
+
+    assert built.loaders == [], "the bare key reached nothing, and said nothing"
+    assert isinstance(built, _Variadic)
+
+
+def test_a_kwargs_class_still_takes_a_key_named_like_its_catchall(_variadic_registered: None) -> None:
+    """``**extra`` accepts everything by design — ``extra:`` is a legitimate call."""
+    built = load("dl:\n  _target_: _Catchall\n  extra: {a: 1}\n")["dl"]
+
+    assert built.extra == {"extra": {"a": 1}}
+
+
+def test_an_ordinary_unknown_addressed_key_still_lands_as_an_attribute(_variadic_registered: None) -> None:
+    """The post-construction toggle pattern depends on these landing.
+
+    Only a VARIADIC name is refused — it is the case that can never work. An
+    unknown key may be a deliberate post-init attribute (the ``Enable.visualize``
+    idiom), so refusing it here would be a different, much larger change.
+    """
+    built = load("dl:\n  _target_: _Variadic\n  pathh: /x\n")["dl"]
+
+    assert built.pathh == "/x"
+
+
+def test_the_positional_channel_still_works_for_the_same_class(_variadic_registered: None) -> None:
+    """Refusing the NAME must not touch the mechanism that actually supplies it."""
+    node = load("dl:\n  _target_: _Variadic\n  _partial_: true\n  path: /data\n")["dl"]
+
+    built = flow(node, "train.bin", "valid.bin")
+
+    assert built.loaders == ["train.bin", "valid.bin"]
+    assert built.path == "/data"
