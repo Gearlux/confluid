@@ -118,6 +118,21 @@ def format_yaml_loc(obj: Any) -> str:
     return f"{head}:{line}:{col}"
 
 
+def _at_yaml_loc(node: Any) -> str:
+    """`` at <file>:<line>:<col>`` for an error message — ``""`` when the node has no location.
+
+    Every error raised while processing a document names its ``file:line:col``
+    (workspace rule 2026-08-11). This renders that suffix so the spelling cannot
+    drift between raise sites — it had already drifted into three spellings across
+    seven re-inlined copies before it moved HERE (2026-08-13), beside
+    :func:`format_yaml_loc` on the dependency leaf, where ``engine``, ``broadcast``
+    and ``scopes`` can all import it. The two sites that add a context word
+    (``(set at …)``, ``(receiver at …)``) keep their own spelling deliberately.
+    """
+    loc = format_yaml_loc(node)
+    return f" at {loc}" if loc else ""
+
+
 class Target(Fluid):
     """A callable to build, plus the kwargs to build it with.
 

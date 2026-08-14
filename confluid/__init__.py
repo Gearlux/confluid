@@ -46,8 +46,11 @@ from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
 
-# became `Bad number of arguments for type alias, expected 0, given 1` (measured
-# in three real slots). An import alias stays the same generic alias.
+# ``Partial`` is re-exported as an IMPORT, never ``Partial = partial.Partial``: a
+# plain assignment loses the alias's genericity for a type checker, so every
+# downstream ``Partial[DataLoader]`` became `Bad number of arguments for type
+# alias, expected 0, given 1` (measured in three real slots). An import alias
+# stays the same generic alias.
 from confluid.partial import Partial, partial_param_names
 from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
@@ -114,8 +117,6 @@ __all__ = [
     "format_yaml_loc",
     "Partial",
     "PartialClass",
-    "partial_param_names",
-    # deprecated (see the alias block above)
     "partial_param_names",
     "Mandatory",
     "mandatory_param_names",

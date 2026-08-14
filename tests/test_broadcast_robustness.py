@@ -12,7 +12,8 @@ setattr).
 from typing import Annotated, Any, Dict, List, Mapping, Optional, Sequence
 
 from confluid import Target, configurable, flow, materialize, register
-from confluid.broadcast import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
+from confluid.broadcast import _get_acceptable_keys, _get_param_kinds
+from confluid.introspect import body_slot_names
 
 
 def _inst(target: str, /, **kwargs: Any) -> Target:
@@ -219,7 +220,7 @@ def test_post_init_ast_scan_detects_literal_setattr() -> None:
             setattr(self, "extra_attr", 42)
 
     register(WithLiteralSetattr)
-    attrs = _get_post_init_attrs(WithLiteralSetattr)
+    attrs = body_slot_names(WithLiteralSetattr)
     assert "extra_attr" in attrs
     assert "base" in attrs  # plain assignment still detected
 
@@ -246,7 +247,7 @@ def test_ast_scan_ignores_non_literal_setattr() -> None:
             setattr(self, attr_name, "value")  # not a string-literal arg
 
     register(WithDynamicSetattr)
-    attrs = _get_post_init_attrs(WithDynamicSetattr)
+    attrs = body_slot_names(WithDynamicSetattr)
     assert "placeholder" in attrs
     assert "dynamic" not in attrs
 
@@ -258,7 +259,7 @@ def test_ast_scan_skips_private_literal_setattr() -> None:
             setattr(self, "_hidden", 1)
 
     register(WithPrivateSetattr)
-    attrs = _get_post_init_attrs(WithPrivateSetattr)
+    attrs = body_slot_names(WithPrivateSetattr)
     assert "_hidden" not in attrs
 
 

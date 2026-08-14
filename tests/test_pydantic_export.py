@@ -11,8 +11,8 @@ Coverage targets:
 * Mutable defaults (list/dict) become ``default_factory``
 * ``_confluid_class`` attribute carries the correct dotted path
 * ``lru_cache`` returns the same model on repeated calls
-* ``Partial[T]`` annotations are unwrapped to ``T`` and recorded
-* ``confluid_class_of`` and ``partial_param_names_of`` helpers
+* ``Partial[T]`` annotations are unwrapped to ``T``
+* the ``confluid_class_of`` helper
 """
 
 from typing import (
@@ -37,7 +37,7 @@ from pydantic import BaseModel, ValidationError
 from confluid import PartialClass, configurable, confluid_class_of, get_registry, to_pydantic
 from confluid.fluid import Fluid
 from confluid.partial import Partial
-from confluid.pydantic_export import _convert_annotation, _qualname, partial_param_names_of
+from confluid.pydantic_export import _convert_annotation, _qualname
 
 
 @pytest.fixture(autouse=True)
@@ -328,9 +328,11 @@ def test_lazy_annotation_is_unwrapped_and_recorded() -> None:
     field = Model.model_fields["optimizer"]
     assert getattr(field.annotation, "__metadata__", ()) == ()  # no Annotated wrapper
     assert Fluid in get_args(field.annotation)
-    # The lazy marker is recorded on the generated model.
-    assert "optimizer" in partial_param_names_of(Model)
-    assert "optimizer" in partial_param_names_of(Model())
+    # The deferred-slot answer stays the CLASS-side authority (the model-side
+    # stamp was a parallel mechanism nobody consumed — removed 2026-08-13).
+    from confluid.partial import partial_param_names
+
+    assert "optimizer" in partial_param_names(HasOptim)
 
 
 def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
@@ -353,7 +355,6 @@ def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
     # The marker never leaks into the JSON schema, which stays generable.
     schema = Model.model_json_schema()
     assert "__confluid_partial__" not in str(schema)
-    assert "dep" in partial_param_names_of(Model)
 
 
 def test_range_marks_survive_inside_marker_union_arms() -> None:
@@ -400,8 +401,10 @@ def test_no_lazy_params_means_empty_set() -> None:
         def __init__(self, x: int = 0) -> None:
             self.x = x
 
-    Model = to_pydantic(Plain)
-    assert partial_param_names_of(Model) == frozenset()
+    to_pydantic(Plain)  # builds cleanly
+    from confluid.partial import partial_param_names
+
+    assert partial_param_names(Plain) == set()
 
 
 # ---------------------------------------------------------------------------

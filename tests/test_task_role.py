@@ -95,9 +95,12 @@ def test_lazy_param_does_not_leak_marker_and_is_recorded() -> None:
             self.opt = opt
 
     model = to_pydantic(C)
-    # The lazy marker is recorded separately, not left as schema metadata.
+    # The lazy marker never becomes schema metadata; the class-side scan is the
+    # ONE deferred-slot answer (the model-side stamp was removed 2026-08-13).
+    from confluid.partial import partial_param_names
+
     assert "opt" in model.model_fields
-    assert "opt" in getattr(model, "_confluid_lazy_params", frozenset())
+    assert "opt" in partial_param_names(C)
 
 
 # --------------------------------------------------------------------------- #

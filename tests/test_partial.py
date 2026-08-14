@@ -419,18 +419,22 @@ def test_an_unresolvable_body_annotation_degrades_rather_than_raising() -> None:
     assert partial_param_names(_T) == set()
 
 
-def test_to_pydantic_and_partial_param_names_agree_on_body_slots() -> None:
-    """The asymmetry this closed: one scanned the body, the other did not."""
+def test_partial_param_names_is_the_one_deferred_slot_authority() -> None:
+    """The class-side scan is THE answer — the generated-model stamp that used to
+    mirror it (``partial_param_names_of`` / ``_confluid_lazy_params``) was a parallel
+    mechanism nobody consumed and was removed 2026-08-13; a generated model carries
+    no lazy metadata to drift from this."""
     from confluid import PartialClass, configurable
-    from confluid.pydantic_export import partial_param_names_of, to_pydantic
+    from confluid.pydantic_export import to_pydantic
 
     @configurable
     class _T:
         def __init__(self) -> None:
             self.optimizer: Partial[Any] = PartialClass(dict)
 
-    # `partial_param_names_of` reads the marker off the GENERATED model, so build it first.
-    assert partial_param_names(_T) == set(partial_param_names_of(to_pydantic(_T))) == {"optimizer"}
+    model = to_pydantic(_T)
+    assert partial_param_names(_T) == {"optimizer"}
+    assert not hasattr(model, "_confluid_lazy_params")
 
 
 def test_lazy_param_cache_is_per_class_never_inherited() -> None:

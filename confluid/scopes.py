@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loggair import get_logger
 
 from confluid.exceptions import ScopeError
-from confluid.fluid import Fluid, ScopeBlock, format_yaml_loc
+from confluid.fluid import Fluid, ScopeBlock, _at_yaml_loc
 
 logger = get_logger("confluid.scopes")
 
@@ -276,10 +276,8 @@ def _resolve_dict(d: Dict[str, Any], active: Dict[str, Optional[str]]) -> Dict[s
                     # coherent result here (in a LIST the same body is meaningful; see
                     # `_resolve_list`). Raised only when ACTIVE, matching the rule that an
                     # inactive block is dropped without its contents being examined.
-                    loc = format_yaml_loc(v)
-                    where = f" at {loc}" if loc else ""
                     raise ScopeError(
-                        f"Scope block {v!r} under key {k!r}{where} has a "
+                        f"Scope block {v!r} under key {k!r}{_at_yaml_loc(v)} has a "
                         f"{type(v.contents).__name__} body, but a block spliced into a mapping "
                         f"must carry a mapping body (its keys are what get spliced). "
                         f"Write the block's contents as `key: value` pairs, or move the block "
