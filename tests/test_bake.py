@@ -262,3 +262,45 @@ def test_baked_lookup_returns_none_without_bake_module() -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_a_frozen_packages_baked_body_slots_reach_the_generated_schema(pkg_factory: Any) -> None:
+    """`to_pydantic` surfaces BAKED body slots in packaged mode — no separate fallback needed.
+
+    A TASKS entry claimed `_post_init_field_specs` "still reads scan_init_body only", so a
+    frozen deployment would lose body-slot schema fields even with a bake table. That premise
+    went stale when the walk consolidated onto ``introspect.slots()`` (2026-08-12): the
+    enumeration's own per-MRO-class fallback (scan empty → baked names, source ``"baked"``,
+    annotation ``Any``) feeds every projection, the schema included. Baked names become
+    untyped OPTIONAL fields — exactly what the entry asked for.
+    """
+    pytest.importorskip("pydantic")
+    from confluid.pydantic_export import to_pydantic
+
+    pkg_dir = pkg_factory("bakepkg_schema")
+    bake_broadcast_attrs(["bakepkg_schema"])
+    importlib.invalidate_caches()
+    mod = importlib.import_module("bakepkg_schema.mod")
+    _freeze_package(pkg_dir)
+
+    Model = to_pydantic(mod.BakedTrainer)
+    assert "model" in Model.model_fields  # the ctor param — signature, source-independent
+    assert "loss_fn" in Model.model_fields  # the BAKED body slot — the packaged-mode fix
+    assert Model().model_dump()["loss_fn"] is None  # optional, untyped — no annotation baked
+
+
+def test_a_frozen_package_WITHOUT_a_bake_table_loses_body_slot_schema_fields(pkg_factory: Any) -> None:
+    """The negative control: with no bake table, a frozen class's body slots are
+    invisible to the scan and therefore absent from the schema — which is the
+    documented packaged-mode divergence the bake step exists to close."""
+    pytest.importorskip("pydantic")
+    from confluid.pydantic_export import to_pydantic
+
+    pkg_dir = pkg_factory("bakepkg_schemaless")
+    importlib.invalidate_caches()
+    mod = importlib.import_module("bakepkg_schemaless.mod")
+    _freeze_package(pkg_dir)  # NO bake step ran
+
+    Model = to_pydantic(mod.BakedTrainer)
+    assert "model" in Model.model_fields
+    assert "loss_fn" not in Model.model_fields
