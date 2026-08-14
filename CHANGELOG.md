@@ -64,6 +64,23 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A mapping addressed at a slot means ONE thing, on both paths — decided by what the slot
+  holds** (BUGS-2026-08-13 C1/C1b; architecture record 15). Two silent destructions are gone:
+  a live `@configurable` child (`self.engine = Engine(-1)`) overridden by `engine: {power: 50}`
+  was REPLACED BY THE DICT on the load path (configure() handled it correctly all along) — the
+  load path now walks into the child and sets its fields; and a nested `_target_:` recipe at a
+  constructor-param slot was clobbered by a class-block override — `_MergeSink.dict_at_slot`
+  now tunes the recipe (`tune_marker`), so `Trainer: {enc: {width: 3}}` merges into the nested
+  Encoder instead of deleting it. The ONE classifier is `broadcast.dict_at_slot_kind`; both
+  paths dispatch through it.
+- **BEHAVIOUR CHANGE (user decision 2026-08-13): a mapping at a slot holding a live object that
+  is NOT `@configurable` now raises a located `ConfigurationError`** on both paths, naming the
+  class and the ways out (register it, wire the slot from config, or replace the whole value in
+  code). It used to silently replace the object with the dictionary — the failure mode this
+  release exists to end. Dict-typed slots, absent slots and routing sub-blocks are untouched.
+
+### Fixed
+
 - **`Clone` has ONE override semantic, whichever engine path resolves it.** The document path
   merged a clone's overrides into the copied marker's kwargs (they reached the constructor)
   while a directly flowed clone deep-copied the BUILT referent and pasted them on as setattrs —

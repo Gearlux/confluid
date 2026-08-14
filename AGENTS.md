@@ -503,6 +503,18 @@ walkers. **Deferral withholds CONSTRUCTION only: a `Partial` IS broadcast into, 
 slot already holding a deferred marker TUNES it, never replaces it. A marker kwarg set in CODE is a
 DEFAULT and does not block a bare key.
 
+**Rule — dict-at-slot has ONE dispatch, `broadcast.dict_at_slot_kind`, on BOTH paths (2026-08-13).**
+A mapping addressed at a slot means, by what the slot HOLDS: a MARKER → tune (`tune_marker`); a
+live `@configurable` object → walk into it (`engine._apply_mapping_onto_live` on the load path,
+the block recursion under `configure()`); plain data / nothing → assign; any OTHER live object →
+a located `ConfigurationError` (user ruling: refuse, never silently replace an object with a
+dict). `_MergeSink.dict_at_slot` applies the marker arm pre-construction, so a class-block
+override tunes a nested ctor-param recipe instead of deleting it. The classifier reads
+`__dict__`-sourced values and the CLASS mark only — no property getter runs. Never add a
+per-path arm: two arms on one path and three on the other is exactly how C1/C1b shipped
+(`docs/architecture.md` record 15). **Pins.** `tests/test_dict_at_slot.py` (all nine).
+**Docs.** `docs/broadcasting.md` → "What a mapping at a slot means".
+
 **Rule.** Subscript the alias with the INTERFACE the slot flows into (`Partial[Optimizer]`, never
 `Partial[Any]` when the type is known). `partial_param_names(cls)` is the single authority and reports a
 body slot deferred by EITHER signal — a `PartialClass(...)` value or a `Partial[T]` annotation.

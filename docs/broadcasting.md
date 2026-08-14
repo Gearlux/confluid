@@ -323,6 +323,33 @@ Two points worth knowing:
   optimizer class, say — write one:
   `optimizer: {_target_: torch.optim.SGD, _partial_: true, lr: 0.5}`.
   That form starts from scratch, so restate what you need.
+
+## What a mapping at a slot means — decided by what the slot holds
+
+One rule, identical on the load path and under `configure()` (2026-08-13):
+
+| The slot currently holds | `engine: {power: 50}` does |
+|---|---|
+| a marker (`_target_` recipe, deferred or not) | **tunes** it — merges into its kwargs; the child builds with them |
+| a live `@configurable` object | **walks into it** — sets its fields in place; the object survives |
+| plain data (a dict/list/scalar) or nothing | **assigns** the mapping — a dict-typed slot receives its value |
+| any other live object (not `@configurable`) | **refuses** — a located `ConfigurationError`; confluid will not silently replace an object with a dictionary |
+
+So the simplest class shape works as read:
+
+```python
+@configurable
+class Host:
+    def __init__(self):
+        self.engine = Engine(power=-1)     # a real Engine, built right here
+```
+```yaml
+h: {_target_: Host, engine: {power: 50}}   # -> host.engine is that same Engine, power == 50
+```
+
+The refusal names the class to register when the child is not `@configurable` —
+register it, wire the slot from config with a `_target_:` marker, or replace the
+whole value in code.
 - **Position decides, not the spelling.** There is no "addressed beats bare" tier:
   whichever of the two you write *later* in the document wins, exactly as two bare
   keys of the same name would. All four ways of aiming a value at the slot behave
