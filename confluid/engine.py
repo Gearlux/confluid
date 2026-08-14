@@ -58,7 +58,6 @@ from confluid.broadcast import (  # noqa: F401
     _late_bare_keys_per_slot,
     _param_kind_cache,
     _pop_glob_routing,
-    _post_init_attrs_cache,
     _prepare_kwargs,
     _receiver_cache,
     _settability_target,
@@ -85,6 +84,7 @@ from confluid.fluid import (
     Reference,
     T,
     Target,
+    _at_yaml_loc,
     addressed_keys_of,
     format_yaml_loc,
     is_order_resolved,
@@ -107,8 +107,8 @@ from confluid.state import _ENGINE_STATE, _active_report, _EngineState, get_acti
 logger = get_logger("confluid.engine")
 
 # Engine-owned introspection cache: non-@configurable ancestor attributes per
-# class (see _get_parent_attr_blacklist). Its OWN dict — it used to squat in
-# broadcast._post_init_attrs_cache under suffixed '#parent_blacklist' keys,
+# class (see _get_parent_attr_blacklist). Its OWN dict — it used to squat in a
+# broadcast-owned cache under suffixed '#parent_blacklist' keys,
 # violating that module's stated cache ownership. Registered with the ONE
 # per-pass clear (broadcast.clear_pass_caches — fired by materialize / resolve
 # / configure), so it never needs a second clear site.
@@ -127,16 +127,22 @@ def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any])
     for k, v in config.items():
         if k in ("*", "**") and isinstance(v, dict):
             report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
-        elif not _contains_fluid(v):
+        elif not _is_definition_shaped(v):
             report.add_config_keys((k,))
 
 
-def _contains_fluid(value: Any) -> bool:
-    """True when ``value`` is / transitively holds a Fluid marker, or is a list."""
+def _is_definition_shaped(value: Any) -> bool:
+    """True when ``value`` is / transitively holds a Fluid marker, or is a list.
+
+    Named for its one JOB — excluding node DEFINITIONS from unused-key tracking —
+    because ``validation._contains_fluid`` shares neither its semantics (it treats
+    ANY list as fluid-shaped and never recurses tuples) nor its purpose, and the
+    shared name was a de-duplication trap.
+    """
     if isinstance(value, Fluid) or isinstance(value, list):
         return True
     if isinstance(value, dict):
-        return any(_contains_fluid(v) for v in value.values())
+        return any(_is_definition_shaped(v) for v in value.values())
     return False
 
 
@@ -448,10 +454,8 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             # so the only ``foo`` it can resolve against is itself —
             # recursing here would stack-overflow. Fail loudly instead.
             if resolved is data:
-                loc = format_yaml_loc(data)
-                loc_str = f" at {loc}" if loc else ""
                 raise ReferenceResolutionError(
-                    f"Self-referential !ref:{data.target}{loc_str}: the only "
+                    f"Self-referential !ref:{data.target}{_at_yaml_loc(data)}: the only "
                     f"{data.target!r} in scope is this reference itself. "
                     f"Define a top-level {data.target!r} key (e.g. "
                     f"`{data.target}: null`), or remove the kwarg."
@@ -693,16 +697,6 @@ def _flow_target(
     _broadcast_onto_instance(instance, params, ctor, context, broadcast_ctx)
     _maybe_solidify(instance)
     return instance
-
-
-def _at_yaml_loc(node: Any) -> str:
-    """`` at <file>:<line>:<col>`` for an error message — ``""`` when the node has no location.
-
-    Every error raised while processing a document names its ``file:line:col`` (workspace rule
-    2026-08-11). This renders that suffix so the spelling cannot drift between raise sites.
-    """
-    loc = format_yaml_loc(node)
-    return f" at {loc}" if loc else ""
 
 
 def _resolve_target_callable(node: Any) -> Any:
@@ -1030,9 +1024,7 @@ def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: An
             return target(*args, **ctor)
     except Exception as exc:
         target_name = getattr(target, "__name__", str(target))
-        loc = format_yaml_loc(obj)
-        location = f" at {loc}" if loc else ""
-        msg = f"Failed to construct {target_name}{location}: {exc}"
+        msg = f"Failed to construct {target_name}{_at_yaml_loc(obj)}: {exc}"
         try:
             raise type(exc)(msg) from exc
         except TypeError:

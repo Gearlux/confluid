@@ -31,6 +31,37 @@ All notable changes to confluid are documented here. The format follows
   that taught the tag spelling (the ambiguous-name hint, the auto-defer warning, the scope
   mismatch message) now teach the reserved keys.
 
+### Removed
+
+- **`pydantic_export.partial_param_names_of` and the `_confluid_lazy_params` model stamp** — a
+  parallel answer to "which slots are deferred", computed onto every generated model and read by
+  nobody outside confluid's own tests (workspace census 2026-08-13: zero consumers; the surface
+  was never in `__all__`). The ONE authority is the class-side
+  `confluid.partial.partial_param_names(cls)`, which is what serializers already consult.
+- **`broadcast._get_post_init_attrs` and `_post_init_attrs_cache`** — the wrapper was a one-line
+  alias for `introspect.body_slot_names` kept alive only by tests, and the cache had zero reads
+  and zero writes (it was registered for a per-pass clear of an always-empty dict). Tests now
+  call `body_slot_names` directly.
+
+### Fixed
+
+- **A nested class-valued kwarg dumps its `__qualname__`.** `dump()` rendered a class VALUE with
+  `__name__`, so `Holder.Inner` dumped as `pkg.Inner` — a path that resolves to nothing, or
+  silently to an UNRELATED top-level class sharing the short name. Now `pkg.Holder.Inner`,
+  matching the two sibling sites in the same file that already used `__qualname__`.
+
+### Internal
+
+- The ` at file:line:col` error-suffix helper (`_at_yaml_loc`) moved to `confluid.fluid` beside
+  `format_yaml_loc` — it had drifted into three spellings across seven re-inlined copies because
+  the layering kept `broadcast`/`scopes` from importing it out of `engine`. The five
+  identical-spelling sites now share it; the two contextual spellings (`(set at …)`,
+  `(receiver at …)`) are deliberate and unchanged. `engine._contains_fluid` was renamed
+  `_is_definition_shaped` — it shared a name with `validation._contains_fluid` while treating ANY
+  list as fluid-shaped and never recursing tuples, a de-duplication trap. The duplicate
+  `partial_param_names` entry in `__all__` and its orphaned comment (left by the alias-block
+  deletion) are gone.
+
 ### Fixed
 
 - **`Clone` has ONE override semantic, whichever engine path resolves it.** The document path

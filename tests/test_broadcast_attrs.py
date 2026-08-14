@@ -27,8 +27,8 @@ import pytest
 
 import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 from confluid import configurable, flow, load, materialize
-from confluid.broadcast import _get_acceptable_keys, _get_post_init_attrs
-from confluid.introspect import init_source_available
+from confluid.broadcast import _get_acceptable_keys
+from confluid.introspect import body_slot_names, init_source_available
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -111,7 +111,7 @@ def test_init_source_available_false_for_builtins() -> None:
 
 
 def test_declared_attrs_union_with_scanned_names() -> None:
-    attrs = _get_post_init_attrs(_DeclaredPlusScanned)
+    attrs = body_slot_names(_DeclaredPlusScanned)
     # Scanned body slots survive...
     assert {"model", "scanned_slot"}.issubset(attrs)
     # ...AND the declared-only name joins them (union, not replacement).
@@ -153,7 +153,7 @@ def test_sourceless_undeclared_scan_is_empty() -> None:
     # The premise of the whole feature: without a declaration the sourceless
     # class's body slots are invisible (scan returns nothing for loss_fn).
     cls = configurable(_compile_sourceless("_SourcelessScanPremise"))
-    attrs = _get_post_init_attrs(cls)
+    attrs = body_slot_names(cls)
     assert "loss_fn" not in attrs
 
 
@@ -162,7 +162,7 @@ def test_sourceless_empty_declaration_silences_warning(monkeypatch: pytest.Monke
     # declaration — distinct from undeclared (None); it must not warn.
     warnings_seen = _capture_engine_warnings(monkeypatch)
     cls = configurable(broadcast_attrs=[])(_compile_sourceless("_SourcelessEmptyDecl"))
-    attrs = _get_post_init_attrs(cls)
+    attrs = body_slot_names(cls)
     assert "loss_fn" not in attrs
     assert warnings_seen == []
 
@@ -178,7 +178,7 @@ def test_sourceless_undeclared_warns_exactly_once_across_two_passes(monkeypatch:
 
     config = {"loss_fn": "custom_loss", "trainer": load("trainer: !class:_SourcelessUndeclaredWarns")["trainer"]}
     # Two materialize passes: each clears the per-pass attr caches, so
-    # _get_post_init_attrs recomputes — but the warned-set is NOT cleared,
+    # the body-slot scan recomputes — but the warned-set is NOT cleared,
     # so the diagnostic fires exactly once.
     materialize(dict(config), context=dict(config))
     materialize(dict(config), context=dict(config))
@@ -209,7 +209,7 @@ def test_scannable_class_never_warns(monkeypatch: pytest.MonkeyPatch) -> None:
             self.x = x
             self.slot = "s"
 
-    attrs = _get_post_init_attrs(_ScannableQuiet)
+    attrs = body_slot_names(_ScannableQuiet)
     assert "slot" in attrs
     assert warnings_seen == []
 

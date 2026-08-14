@@ -47,7 +47,7 @@ from confluid.exceptions import IntrospectionError
 from confluid.introspect import NO_DEFAULT, Slot, slots
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
-from confluid.partial import _PARTIAL_MARKER, body_slot_partial_names, is_partial_annotation
+from confluid.partial import _PARTIAL_MARKER
 from confluid.schema import parse_param_docs
 
 #: The slot kinds that become MODEL FIELDS — the signature, minus the variadics.
@@ -61,8 +61,8 @@ _FIELD_KINDS = frozenset({"keyword", "positional_only"})
 
 # Confluid's own annotation markers — stripped wherever ``Annotated`` metadata is
 # peeled so none of them leaks into a generated model / JSON schema. (``Partial`` is
-# recorded separately via ``_confluid_lazy_params``; ``Mandatory`` via
-# ``confluid.input_specs``; ``NoBroadcast`` is a broadcast-routing concern.)
+# answered by the class-side ``confluid.partial.partial_param_names``; ``Mandatory``
+# via ``confluid.input_specs``; ``NoBroadcast`` is a broadcast-routing concern.)
 _INTERNAL_MARKERS = {_PARTIAL_MARKER, _MANDATORY_MARKER, _NO_BROADCAST_MARKER}
 
 # Numeric range marks (PEP-593 ``annotated_types``) the workspace convention puts
@@ -309,8 +309,8 @@ def _field_for_slot(slot: Slot, description: str) -> Tuple[Any, Any]:
     ``__init__`` params) so code-side tightening survives into the generated
     schema — while still converting the INNER type so nested ``@configurable``
     detection works. Confluid's own ``Partial`` / ``Mandatory`` / ``NoBroadcast``
-    markers are dropped (``Partial`` is recorded separately via
-    ``_confluid_lazy_params``; ``Mandatory`` via :func:`confluid.input_specs`)
+    markers are dropped (``Partial`` is answered by the class-side
+    :func:`confluid.partial.partial_param_names`; ``Mandatory`` via :func:`confluid.input_specs`)
     so none leaks into the JSON Schema. The peel / marker-strip / range-mark
     relocation all live in :func:`_convert_annotation`, which handles nested
     ``Annotated`` layers identically.
@@ -485,25 +485,6 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     if cls.__doc__:
         model.__doc__ = cls.__doc__
 
-    # Preserve the lazy-param marker set as MODEL METADATA, queryable via
-    # ``partial_param_names_of`` — which fields of this generated model stand for
-    # deferred (runtime-injected) slots. A schema consumer emitting YAML from a
-    # filled model can use it to spell those slots ``_partial_: true`` rather
-    # than as an eager marker (which would be flowed on assignment and crash a
-    # runtime-injection target); no in-tree consumer does so today — the
-    # class-side scan ``confluid.partial.partial_param_names`` is what serializers
-    # actually consult. Two sources, unioned: ``Partial[T]``-annotated constructor
-    # params, AND body slots whose default is a ``PartialClass(...)`` (the
-    # minimal-ctor pattern — e.g. a trainer's ``optimizer`` / ``*_loader`` /
-    # ``lightning`` body slots).
-    lazy_params = {
-        slot.name for slot in slots(cls) if slot.kind in _FIELD_KINDS and is_partial_annotation(slot.annotation)
-    }
-    if isinstance(cls, type):  # body-slot lazy scan walks ``cls.__mro__`` (classes only)
-        lazy_params |= body_slot_partial_names(cls)
-    if lazy_params:
-        model._confluid_lazy_params = frozenset(lazy_params)  # type: ignore[attr-defined]
-
     return model
 
 
@@ -517,15 +498,3 @@ def confluid_class_of(model_or_instance: Any) -> str | None:
         return None
     val = getattr(cls, "_confluid_class", None)
     return val if isinstance(val, str) else None
-
-
-def partial_param_names_of(model_or_instance: Any) -> FrozenSet[str]:
-    """Return the set of lazy-marked param names on a generated model, or empty."""
-    if isinstance(model_or_instance, BaseModel):
-        cls: type = type(model_or_instance)
-    elif isinstance(model_or_instance, type):
-        cls = model_or_instance
-    else:
-        return frozenset()
-    val = getattr(cls, "_confluid_lazy_params", None)
-    return val if isinstance(val, frozenset) else frozenset()

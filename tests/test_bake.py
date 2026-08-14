@@ -106,7 +106,6 @@ def _freeze_package(pkg_dir: Path) -> None:
     """Simulate a frozen deployment: source gone, linecache cold, caches cleared."""
     (pkg_dir / "mod.py").unlink()
     linecache.clearcache()
-    engine_module._post_init_attrs_cache.clear()
     engine_module._acceptable_keys_cache.clear()
     introspect_module._slots_cache.clear()  # the ONE enumeration caches the scan too
 
@@ -196,7 +195,7 @@ def test_baked_lookup_covers_class_and_engine_unions_it_without_source(
     assert baked_init_attrs(mod.BakedTrainer) == ("loss_fn", "model")
     assert baked_init_attrs(mod.EmptyInit) == ()
 
-    attrs = engine_module._get_post_init_attrs(mod.BakedTrainer)
+    attrs = introspect_module.body_slot_names(mod.BakedTrainer)
     assert {"loss_fn", "model"}.issubset(attrs)
     assert warnings_seen == []  # covered -> the cannot-scan warning stays quiet
 
@@ -226,7 +225,7 @@ def test_unbaked_sourceless_class_still_warns_and_mentions_bake(
     _freeze_package(pkg_dir)  # NO bake step ran
 
     # The scan finds nothing (the divergence the warning is about) ...
-    assert "loss_fn" not in engine_module._get_post_init_attrs(mod.BakedTrainer)
+    assert "loss_fn" not in introspect_module.body_slot_names(mod.BakedTrainer)
 
     # ... and the warning fires from the ACCEPT-LIST, which is where the
     # consequence lands: an unscannable ``__init__`` means the post-init slots are
@@ -252,8 +251,7 @@ def test_stale_baked_names_do_not_override_a_readable_scan(pkg_factory: Callable
     baked_module_path("bakepkg_stale").write_text(f"BROADCAST_ATTRS = {doctored!r}\n")
     introspect_module._baked_tables.pop("bakepkg_stale", None)
 
-    engine_module._post_init_attrs_cache.clear()
-    attrs = engine_module._get_post_init_attrs(mod.BakedTrainer)
+    attrs = introspect_module.body_slot_names(mod.BakedTrainer)
     assert "loss_fn" in attrs  # live scan
     assert "ghost_slot" not in attrs  # stale bake ignored while source exists
 

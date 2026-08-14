@@ -31,11 +31,10 @@ from typing import Annotated, Any, Callable, Dict, FrozenSet, List, Literal, Opt
 from loggair import get_active_config, get_logger
 
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Fluid, Reference
+from confluid.fluid import Fluid, Reference, _at_yaml_loc
 from confluid.introspect import (
     _slots_cache,
     baked_init_attrs,
-    body_slot_names,
     init_callable,
     init_source_available,
     slot_names,
@@ -48,12 +47,11 @@ from confluid.state import _ENGINE_STATE
 logger = get_logger("confluid.broadcast")
 
 # Introspection caches, keyed by TARGET IDENTITY (see :func:`_cache_key`). Every
-# reader is in this module; all four are registered in ``_PASS_CACHES`` below and
+# reader is in this module; all are registered in ``_PASS_CACHES`` below and
 # cleared together by ``clear_pass_caches()`` at every entry point (materialize /
 # resolve / configure). ``engine._parent_blacklist_cache`` registers itself
 # alongside — cache ownership follows module ownership, the clear has ONE site.
 _acceptable_keys_cache: Dict[Any, Optional[FrozenSet[str]]] = {}
-_post_init_attrs_cache: Dict[Any, FrozenSet[str]] = {}
 # Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
 # as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
 _param_kind_cache: Dict[Any, Dict[str, Optional[str]]] = {}
@@ -89,7 +87,6 @@ _ClearableT = TypeVar("_ClearableT", bound=_Clearable)
 #: accept-list with no diagnostic.
 _PASS_CACHES: List[_Clearable] = [
     _acceptable_keys_cache,
-    _post_init_attrs_cache,
     _param_kind_cache,
     _receiver_cache,
     # ``introspect`` owns the slot enumeration but cannot import this module
@@ -295,27 +292,6 @@ def _resolves_to_same_class(fluid_target: Any, cls: Callable[..., Any]) -> bool:
         if fluid_target == qualified:
             return True
     return False
-
-
-def _get_post_init_attrs(target: type) -> frozenset[str]:
-    """Attribute names assigned in ``__init__`` bodies — a projection, not a second walk.
-
-    This is what lets broadcasting see post-init attributes (a trainer's
-    ``self.loss_fn = nn.CrossEntropyLoss()``) in addition to the constructor
-    signature, so a top-level ``loss_fn:`` reaches the trainer without being
-    duplicated under its block.
-
-    The enumeration (AST scan ∪ ``broadcast_attrs=`` declaration ∪ build-time bake
-    table, MRO-wide) lives in ``introspect``; this is its ``body_slot_names``
-    projection. Note that is NOT the same as ``slots(...)``'s ``body_slot`` kind:
-    ``slots`` reports a name once and lets the signature claim it, while this
-    reports what the BODY assigns — ``self.model = model`` is both, and the
-    accept-list unions them. Same walk, two honest answers.
-
-    It kept its own copy of that walk until 2026-08-12, which is half of what let
-    five readers disagree about one class.
-    """
-    return frozenset(body_slot_names(target))
 
 
 def _warn_if_init_unscannable(target: type) -> None:
@@ -1082,13 +1058,10 @@ def refuse_if_undeclared(target: Any, key: str, node: Any = None) -> None:
     acceptable = _get_acceptable_keys(cls)
     if acceptable is None or key in acceptable:
         return
-    from confluid.fluid import format_yaml_loc
-
-    loc = format_yaml_loc(node)
     name = getattr(cls, "__name__", cls)
     known = ", ".join(sorted(acceptable)) or "(nothing)"
     raise ConfigurationError(
-        f"{name} has no attribute {key!r}{f' at {loc}' if loc else ''} and is declared "
+        f"{name} has no attribute {key!r}{_at_yaml_loc(node)} and is declared "
         f"strict_attrs=True, so it will not be set as a post-init attribute. "
         f"{name} declares: {known}."
     )
@@ -1118,13 +1091,9 @@ def refuse_if_variadic_name(target: Any, key: str, node: Any = None) -> None:
         return
     if key not in {slot.name for slot in slots(cls) if slot.kind == "var_positional"}:
         return
-    from confluid.fluid import format_yaml_loc
-
-    loc = format_yaml_loc(node)
-    where = f" at {loc}" if loc else ""
     name = getattr(cls, "__name__", cls)
     raise ConfigurationError(
-        f"{name} cannot accept {key!r}{where}: it is a *args parameter, which can never be "
+        f"{name} cannot accept {key!r}{_at_yaml_loc(node)}: it is a *args parameter, which can never be "
         f"passed by keyword, so no config key can reach it. Pass the values positionally — "
         f"flow(node, a, b) — or give the target a keyword parameter."
     )

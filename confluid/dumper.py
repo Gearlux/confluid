@@ -149,7 +149,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
                         key = get_registry().key_for(val) or getattr(val, "__confluid_name__", None)
                         val = {TARGET_KEY: key or val.__name__}
                     else:
-                        val = f"{val.__module__}.{val.__name__}"
+                        val = f"{val.__module__}.{val.__qualname__}"
                 kwargs[p] = val
         elif p in captured:
             val = captured[p]

@@ -257,3 +257,21 @@ def test_dump_builtin_function_reference() -> None:
     obj = Holder(fn=len)
     output = dump(obj)
     assert "${ref:builtins.len}" in output
+
+
+def test_a_nested_non_configurable_class_value_dumps_its_qualname() -> None:
+    """A class-valued kwarg dumps ``module.QualName``. The ``__name__`` spelling dumped
+    ``pkg.Inner`` for a NESTED class — a path that resolves to nothing, or silently to
+    an UNRELATED top-level class that happens to share the short name."""
+
+    class Holder:
+        class Inner:
+            pass
+
+    @configurable
+    class HoldsClass:
+        def __init__(self, activation: type = Holder.Inner) -> None:
+            self.activation = activation
+
+    text = dump(HoldsClass())
+    assert "Holder.Inner" in text
