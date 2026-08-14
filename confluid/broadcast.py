@@ -32,14 +32,7 @@ from loggair import get_active_config, get_logger
 
 from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, Reference, _at_yaml_loc
-from confluid.introspect import (
-    _slots_cache,
-    baked_init_attrs,
-    init_callable,
-    init_source_available,
-    slot_names,
-    slots,
-)
+from confluid.introspect import _slots_cache, baked_init_attrs, init_callable, init_source_available, slot_names, slots
 from confluid.merger import expand_dotted_mapping
 from confluid.registry import resolve_class
 from confluid.state import _ENGINE_STATE
