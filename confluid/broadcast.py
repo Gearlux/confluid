@@ -31,7 +31,7 @@ from typing import Annotated, Any, Callable, Dict, FrozenSet, List, Literal, Opt
 from loggair import get_active_config, get_logger
 
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Fluid, Reference, _at_yaml_loc
+from confluid.fluid import Fluid, Reference, Target, _at_yaml_loc
 from confluid.introspect import _slots_cache, baked_init_attrs, init_callable, init_source_available, slot_names, slots
 from confluid.merger import expand_dotted_mapping
 from confluid.registry import resolve_class
@@ -650,6 +650,38 @@ def _spent_at_boundary(key: str, value: Any, scope: "_KeyScope") -> bool:
     built for the next level down. (A ``'**'`` rider floats and never spends.)
     """
     return scope is _KeyScope.STRICT or (key == "*" and isinstance(value, dict))
+
+
+#: Slot values a mapping may simply REPLACE: plain data and "empty". Everything
+#: else in a slot is an OBJECT the author almost certainly meant to reach INTO.
+_ASSIGNABLE_SLOT_TYPES = (dict, list, tuple, set, frozenset, str, bytes, int, float, bool, complex)
+
+
+def dict_at_slot_kind(existing: Any) -> Literal["marker", "configurable", "assign", "opaque"]:
+    """What a mapping addressed at a slot MEANS, decided by what the slot HOLDS — the ONE classifier.
+
+    Both paths dispatch on this (BUGS-2026-08-13, C1/C1b — the load path used to have
+    only two of the four arms and assigned the raw dict over live children):
+
+    * ``"marker"``       — a ``Target`` (``Partial`` included): TUNE it (``tune_marker``);
+    * ``"configurable"`` — a live ``@configurable`` instance: walk INTO it and set fields;
+    * ``"assign"``       — plain data (dict/list/scalar) or nothing: the mapping IS the value;
+    * ``"opaque"``       — any other live object (a non-configurable instance, an
+      unresolved ``Reference``/``Clone``): a located ``ConfigurationError`` — the user
+      decision of 2026-08-13 is to REFUSE, never to silently replace an object with a dict.
+
+    Reads the CLASS mark, never a property — and callers hand it ``vars(obj).get(key)``,
+    so no getter ever runs.
+    """
+    if isinstance(existing, Target):
+        return "marker"
+    if isinstance(existing, Fluid):
+        return "opaque"  # a Reference/Clone cannot be tuned by a mapping — refuse loudly
+    if existing is None or isinstance(existing, _ASSIGNABLE_SLOT_TYPES):
+        return "assign"
+    if getattr(type(existing), "__confluid_configurable__", False):
+        return "configurable"
+    return "opaque"
 
 
 def tune_marker(existing: Fluid, mapping: Dict[str, Any]) -> Fluid:
@@ -1712,7 +1744,16 @@ class _MergeSink:
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
         if _trace_on:  # per-KEY site — see the log-gate block
             logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin}, slot value)")
-        self.merged.set(key, block, _KeyScope.EXACT)
+        # C1 (BUGS-2026-08-13): a mapping delivered at a slot whose merged value is
+        # already a MARKER (the receiver's own kwarg — a nested ``_target_:``) TUNES
+        # that marker instead of replacing it; the nested child then BUILDS with the
+        # merged kwargs. Value-state dispatch, same as the live sink's — not a new
+        # key/scope gate (those stay in the scanner).
+        prev = self.merged.get(key)
+        if isinstance(prev, Target):
+            self.merged.set(key, tune_marker(prev, block), _KeyScope.EXACT)
+        else:
+            self.merged.set(key, block, _KeyScope.EXACT)
         if self.report is not None:
             self.origins[key] = origin
 

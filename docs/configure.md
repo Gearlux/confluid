@@ -75,6 +75,13 @@ Trainer.lr: 0.5      # dotted spelling of the same addressed form
 Two things the walk never does: it never executes property getters (instance
 attributes only), and it never touches private (`_`-prefixed) state.
 
+## What a mapping at a slot means
+
+The dict-at-slot dispatch is ONE rule shared with the load path — decided by what
+the slot holds (marker → tune; live `@configurable` child → recurse; plain data →
+assign; any other live object → a located refusal). See
+[Broadcasting → What a mapping at a slot means](broadcasting.md#what-a-mapping-at-a-slot-means--decided-by-what-the-slot-holds).
+
 ## Deferred slots are tuned, not built
 
 A `_partial_` marker — or a `PartialClass(...)` body slot — stands for an object

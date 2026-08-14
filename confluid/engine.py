@@ -64,6 +64,7 @@ from confluid.broadcast import (  # noqa: F401
     _splice_kwargs_at_slot,
     _View,
     clear_pass_caches,
+    dict_at_slot_kind,
     merge_bare_pool_into_kwargs,
     refuse_if_undeclared,
     refuse_if_variadic_name,
@@ -1109,6 +1110,22 @@ def _apply_post_init_attrs(
                     v = Partial(v.target, **v.kwargs)
                 else:
                     v = flow(v)
+            elif isinstance(v, dict) and dict_at_slot_kind(existing) == "configurable":
+                # C1b (BUGS-2026-08-13): the slot holds a LIVE @configurable child —
+                # walk INTO it and set its fields, exactly as configure() always has.
+                # The child OBJECT survives; nothing is reassigned on the host.
+                _apply_mapping_onto_live(existing, v, obj)
+                logger.trace(f"slot-apply: {k!r} -> live {type(existing).__name__} updated in place")
+                continue
+            elif isinstance(v, dict) and dict_at_slot_kind(existing) == "opaque":
+                # User decision 2026-08-13: a mapping must never silently replace a
+                # live object it cannot reach into. Refuse, located.
+                raise ConfigurationError(
+                    f"{getattr(target, '__name__', target)} slot {k!r}{_at_yaml_loc(obj)} holds a live "
+                    f"{type(existing).__name__}, which is not @configurable — a mapping cannot be "
+                    f"applied into it. Register the class (or mark it @configurable), wire the slot "
+                    f"from config with a _target_: marker, or replace the whole value in code."
+                )
             elif isinstance(v, dict) and isinstance(existing, Target):
                 # A mapping addressed at a slot that already holds a deferred marker
                 # TUNES that marker — it does not replace it. Assigning the raw dict
@@ -1156,6 +1173,59 @@ def _apply_post_init_attrs(
         instance.__confluid_extra__ = extra_keys
     except (TypeError, AttributeError):
         pass
+
+
+def _apply_mapping_onto_live(child: Any, mapping: Dict[str, Any], node: Any) -> None:
+    """Walk a config mapping INTO a live ``@configurable`` object — the load path's recurse arm.
+
+    The load-path twin of ``configure()``'s addressed-block recursion (C1b,
+    BUGS-2026-08-13): each entry dispatches on what the CHILD's slot holds, via the
+    ONE ``dict_at_slot_kind`` classifier — a marker is tuned, a nested live
+    configurable child recurses, plain data is assigned, and an opaque live object
+    refuses with a located error. Values are treated as the sibling paths treat
+    them: a non-partial ``Target`` value is built, a ``Partial`` stays deferred,
+    and unknown names warn (or are refused under ``strict_attrs``) exactly as the
+    host's own-kwarg path warns.
+
+    Reads the child's slots from ``vars()`` only — no property getter ever runs.
+    """
+    cls = type(child)
+    for mk, mv in mapping.items():
+        if _is_glob_key(mk):
+            continue
+        refuse_if_variadic_name(cls, mk, node)
+        _warn_undeclared(child, cls, mk, node)
+        member = getattr(cls, mk, None)
+        if isinstance(member, property) and member.fset is None:
+            continue  # derived state — never a config knob
+        sub_existing = getattr(child, "__dict__", {}).get(mk)
+        if isinstance(mv, dict):
+            kind = dict_at_slot_kind(sub_existing)
+            if kind == "marker":
+                assert isinstance(sub_existing, Target)  # the classifier's "marker" arm guarantees it
+                setattr(child, mk, tune_marker(sub_existing, mv))
+                continue
+            if kind == "configurable":
+                _apply_mapping_onto_live(sub_existing, mv, node)
+                continue
+            if kind == "opaque":
+                raise ConfigurationError(
+                    f"{cls.__name__} slot {mk!r}{_at_yaml_loc(node)} holds a live "
+                    f"{type(sub_existing).__name__}, which is not @configurable — a mapping cannot "
+                    f"be applied into it. Register the class (or mark it @configurable), wire the "
+                    f"slot from config with a _target_: marker, or replace the whole value in code."
+                )
+            # kind == "assign" — the mapping IS the value
+        val = mv
+        if isinstance(val, Target) and not val.partial:
+            val = flow(val)
+        try:
+            setattr(child, mk, val)
+        except AttributeError as exc:
+            raise ConstructionError(
+                f"{cls.__name__} cannot accept {mk!r}{_at_yaml_loc(node)}: the object does not "
+                f"allow the attribute to be set ({exc})."
+            ) from exc
 
 
 def _warn_undeclared(instance: Any, target: Any, key: str, node: Any) -> None:

@@ -1175,3 +1175,51 @@ flow(clone_marker, lr=0.9).lr            # 0.9 — runtime wins; was 0.8 (runtim
 instead of merge) — but only in `_clone_of`, for both paths at once, with the parity pin
 updated in the same change. What must not come back is a second application site: an override
 semantic living in one path is precisely how this drift arrived, twice.
+
+---
+
+## 15. A mapping at a slot means ONE thing, decided by what the slot holds
+
+*2026-08-13*
+
+**Context.** `engine: {power: 50}` addressed at a slot had FOUR different outcomes depending on
+which path resolved it and what sat in the slot — and two of them silently destroyed the child.
+The configure path carried a three-way dispatch (marker → tune, live configurable → recurse, else
+→ assign); the load path carried only two arms (marker → tune, else → assign the raw dict), so a
+live child — the simplest class shape, `self.engine = Engine(-1)` — was replaced by the override
+dictionary itself, and a nested `_target_:` recipe at a constructor-param slot was clobbered by a
+class-block override the same way (BUGS-2026-08-13, C1/C1b — both measured; the same document
+answered `dict {'power': 50}` through `load()` and `Engine 50` through `configure()`).
+
+**Decision.** One classifier, `broadcast.dict_at_slot_kind(existing)`, answers for every site:
+``"marker"`` → tune (`tune_marker`); ``"configurable"`` → walk into the live child
+(`engine._apply_mapping_onto_live` on the load path, the recursion `configure()` always had on
+the live path); ``"assign"`` (plain data or nothing) → the mapping IS the value; ``"opaque"``
+(any other live object, unresolved `Reference`/`Clone` included) → a located
+`ConfigurationError` — the user ruling of 2026-08-13 is REFUSE, never silently replace an object
+with a dictionary. `_MergeSink.dict_at_slot` applies the marker arm pre-construction, so a
+class-block override tunes a nested recipe instead of deleting it. The classifier reads
+`vars()`-sourced values and the CLASS mark only — no property getter runs.
+
+**Consequences.** The simplest class shape (`self.engine = Engine(-1)` + a YAML override) now
+works as read, on both paths identically. The one new refusal fires only where the mapping could
+never have meant anything (an object confluid cannot reach into); everything the assign arm
+covered before — dict-typed slots, absent slots, routing sub-blocks — is byte-identical. The
+load path gained a small dedicated walk for the recurse arm; folding it and `configure()`'s
+`_assign` into one application engine is recorded follow-up work, not this change.
+
+**Example.**
+
+```python
+@configurable
+class Host:
+    def __init__(self):
+        self.engine = Engine(power=-1)          # a live child — no marker
+
+load("h: {_target_: Host, engine: {power: 50}}")["h"].engine.power   # 50 (was: the slot became {'power': 50})
+```
+
+**What you may change.** The per-kind effects may be tuned — but only through the ONE classifier
+and with both paths' pins updated together (`tests/test_dict_at_slot.py`). What must not come
+back is a per-path dispatch: two arms on one path and three on the other is exactly how the
+silent destruction shipped.

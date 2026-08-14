@@ -48,12 +48,14 @@ from confluid.broadcast import (
     _spliced_at_slot,
     _spliced_subtree_view,
     clear_pass_caches,
+    dict_at_slot_kind,
     merge_bare_pool_into_kwargs,
     refuse_if_undeclared,
     trace_enabled,
     tune_marker,
 )
 from confluid.engine import _ctor_params, _maybe_solidify, flow
+from confluid.exceptions import ConfigurationError
 from confluid.fluid import Partial, Target
 from confluid.loader import ConfluidLoader, load_config
 from confluid.merger import expand_dotted_keys
@@ -326,8 +328,12 @@ class _LiveSink:
         self._mark_used(key, origin)
 
     def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
+        # The ONE dict-at-slot dispatch (broadcast.dict_at_slot_kind) — value-state,
+        # decided by what the slot HOLDS, identical on both paths (C1/C1b,
+        # BUGS-2026-08-13). Reads ``__dict__`` only: no property getter ever runs.
         existing = self.obj.__dict__.get(key)
-        if isinstance(existing, Target):
+        kind = dict_at_slot_kind(existing)
+        if kind == "marker":
             # A deferred marker slot (``self.optimizer = PartialClass(...)``) —
             # TUNE the marker (the engine's rule for the identical spelling),
             # never recurse into it or replace it with the raw dict. The bare
@@ -336,8 +342,16 @@ class _LiveSink:
             self.beaten_per_slot[key] = bare_before
             self.assignments[key] = tuned
             self.origins[key] = origin
-        elif getattr(getattr(getattr(self.obj, key, None), "__class__", None), "__confluid_configurable__", False):
+        elif kind == "configurable":
             self.recursions[key] = block  # a live configurable child — recurse after the scan
+        elif kind == "opaque":
+            # User decision 2026-08-13: never silently replace a live object with a dict.
+            raise ConfigurationError(
+                f"configure(): {self.cls_name} slot {key!r} holds a live "
+                f"{type(existing).__name__}, which is not @configurable — a mapping cannot be "
+                f"applied into it. Register the class (or mark it @configurable), or replace "
+                f"the whole value in code."
+            )
         else:
             self.assignments[key] = block  # a plain dict-typed attribute value
             self.origins[key] = origin
