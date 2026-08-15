@@ -430,11 +430,25 @@ parent-context guessing: static, local to the class, and readable. The ONE promo
 is pass 7 and construction is pass 8, so a BUILT node already receives every cascading key before
 its constructor runs.
 
-**Rule — the memos key on `id()`, which is only unique while the object is ALIVE.** Every marker a
-memo keys on MUST be pinned in `_EngineState.memo_keepalive` for the pass. The engine builds
-short-lived broadcast COPIES, and CPython reuses a freed address, so an unpinned copy reads as a
-memo HIT for an unrelated node — measured: every stage of a three-stage pipeline came back as stage
-one. **Pins.** `tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
+**Rule — EVERY id()-keyed store pins the object whose address keys it.** An `id()` is unique
+only while the object is ALIVE; CPython reuses freed addresses, so an unpinned entry answers for
+the OLD object when a NEW one lands on the address. The rule binds every such store, each with
+its own pin mechanism (2026-08-13 — four unpinned stores were measured serving wrong answers,
+BUGS-2026-08-13 X1/X3/E1/E2/I7):
+
+- engine memos (`flow_memo` / `instance_memo`) — pin in `_EngineState.memo_keepalive`; the THREE
+  write sites all pin (the public-`flow()` write and the nested-build write included — an
+  unpinned ctor-local marker handed one maker ANOTHER maker's widget);
+- `configure()`'s visited store — a `Dict[int, Any]` whose VALUE is the object (recording an id
+  IS the pin); a plain `Set[int]` silently skipped 450 of 512 objects under DEFAULT gc;
+- `introspect._slots_cache` — the value is `(target, slots)`; the first element pins an
+  id-keyed unhashable callable;
+- the ordering stamp `_order_resolved` is written to MARKERS only (`isinstance(..., Fluid)`) —
+  the tune path used to stamp the BUILT instance, crashing `__slots__` targets.
+
+A NEW id-keyed dict/set gets its pin in the same change, or it does not merge.
+**Pins.** `tests/test_memo_pinning.py` (all five) and
+`tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
 
 **Detail.** Inline `(k=v)` scalars are coerced via `parse_value` in both the unquoted and quoted
 forms, and MERGE with a mapping body (the block wins on conflict). The unquoted form cannot contain

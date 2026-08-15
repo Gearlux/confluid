@@ -124,7 +124,12 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
     # module.qualname, which a redefinition reuses).
     clear_pass_caches()
 
-    visited: Set[int] = set()
+    # id -> the OBJECT itself: recording an id PINS the object for the call.
+    # A plain Set[int] recorded ids of flow() temporaries the walk then dropped;
+    # gc recycled their addresses and later objects read as "already visited" —
+    # whole subtrees silently unconfigured (BUGS-2026-08-13 X1: 450 of 512
+    # objects missed under DEFAULT gc, measured).
+    visited: Dict[int, Any] = {}
     for instance in instances:
         _walk(instance, config, resolved_context, visited, report)
 
@@ -165,7 +170,7 @@ def _walk(
     obj: Any,
     view: Dict[str, Any],
     context: Dict[str, Any],
-    visited: Set[int],
+    visited: Dict[int, Any],
     report: ConfigurationReport,
 ) -> None:
     """Traverse the object graph, configuring each configurable object from its view.
@@ -201,7 +206,7 @@ def _walk(
     obj_id = id(obj)
     if obj_id in visited:
         return
-    visited.add(obj_id)
+    visited[obj_id] = obj  # the value IS the pin — see the note at the call site
 
     if isinstance(obj, (list, tuple)):
         for item in obj:
@@ -377,7 +382,7 @@ class _LiveSink:
 
 
 def _apply(
-    obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Set[int], report: ConfigurationReport
+    obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Dict[int, Any], report: ConfigurationReport
 ) -> Dict[str, Any]:
     """Configure one object from its view; return the spliced view for its subtree.
 

@@ -675,6 +675,13 @@ def _flow_target(
         and not runtime_args
     ):
         instance_memo[id(obj)] = instance
+        # The memo keys on id(); a marker handed to PUBLIC flow() (a ctor-local
+        # recipe, per the documented idiom) dies right after this call, and its
+        # recycled address then reads as a memo HIT for an unrelated node —
+        # measured: one maker's widget served to the next (BUGS-2026-08-13 X3).
+        keepalive = _ENGINE_STATE.get().memo_keepalive
+        if keepalive is not None:
+            keepalive.append(obj)
 
     # Preserve Confluid origin for serialization round-trip. The dumper reads
     # __confluid_kwargs__ two ways: as the whole-object representation for
@@ -849,6 +856,12 @@ def _resolve_kwarg_value(
         built = flow(v_copy)
         if instance_memo is not None:
             instance_memo[id(v)] = built
+            # ``v`` may be a SHORT-LIVED marker (the slot-tune path's tune_marker
+            # copy) — pin what the memo keys on, or a recycled address hands one
+            # slot another slot's instance (BUGS-2026-08-13 E1: 5 distinct
+            # objects for 12 tuned slots, measured).
+            if keepalive is not None:
+                keepalive.append(v)
         return built
     if isinstance(v, Reference) and context:
         try:
@@ -1150,7 +1163,11 @@ def _apply_post_init_attrs(
                 # Settled either way now — a later bare key has been applied, an earlier
                 # one has lost. Mark it so the broadcast pass below does not re-run the
                 # contest and hand the win to whichever key it happens to visit.
-                tuned._order_resolved = True
+                # MARKERS only: _resolve_kwarg_value BUILDS a non-partial marker, so
+                # ``tuned`` may be the LIVE result — stamping that crashed __slots__
+                # targets and grew a stray attribute on everything else (E2).
+                if isinstance(tuned, Fluid):
+                    tuned._order_resolved = True
                 logger.trace(f"slot-tune: {k!r} -> {existing.target} merged {sorted(v)} into the deferred marker")
                 v = tuned
             try:

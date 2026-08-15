@@ -1223,3 +1223,42 @@ load("h: {_target_: Host, engine: {power: 50}}")["h"].engine.power   # 50 (was: 
 and with both paths' pins updated together (`tests/test_dict_at_slot.py`). What must not come
 back is a per-path dispatch: two arms on one path and three on the other is exactly how the
 silent destruction shipped.
+
+---
+
+## 16. An id()-keyed store pins what it keys on — by construction
+
+*2026-08-13*
+
+**Context.** The memo mandate ("every marker a memo keys on MUST be pinned") existed and was
+enforced at the sites the original incident touched — and nowhere else. Four other id()-keyed
+stores had no pin, and each was measured serving a wrong answer to a recycled address:
+`configure()`'s visited `Set[int]` skipped 450 of 512 reachable objects under DEFAULT gc (the
+walk's flow temporaries died mid-call); the public-`flow()` instance-memo write handed one
+object another's dependency; the slot-tune memo write collapsed 12 tuned slots onto 5 shared
+instances; the slots cache served a freed unhashable callable's slots to the next object at its
+address. A fifth defect rode the same path: the ordering stamp written to whatever the tune
+returned — sometimes the BUILT instance, an `AttributeError` on `__slots__` targets.
+
+**Decision.** The rule generalizes from "the engine memos" to EVERY id()-keyed store, and where
+possible the pin is structural rather than a discipline: `configure()`'s visited store is a
+`Dict[int, Any]` whose value is the object (recording an id IS pinning); the slots cache's value
+is `(target, slots)` (the entry pins its own key); the two remaining memo writes append to
+`_EngineState.memo_keepalive` like their siblings. The ordering stamp is guarded to markers.
+
+**Consequences.** Pinned objects live until their pass/call ends — bounded by pass size, and
+correctness requires exactly that lifetime. No behavioural change beyond the bugs disappearing;
+every pin's test was proven red against the pre-fix code in the same change.
+
+**Example.**
+
+```python
+# configurator.py — the structural form of the rule:
+visited: Dict[int, Any] = {}
+visited[id(obj)] = obj        # the value IS the pin; a Set[int] was the bug
+```
+
+**What you may change.** A new id()-keyed store may choose either form (structural value-pin or
+keepalive append) — but it ships WITH its pin and a test in `tests/test_memo_pinning.py`, or it
+does not merge. Never "optimize" a pin away because the object "should" be alive: the four bugs
+above were each that assumption.
