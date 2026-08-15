@@ -64,6 +64,23 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`configure()` no longer writes to objects nobody keeps** (BUGS-2026-08-13 C3, C4). Two
+  independent ways the walk configured a throwaway and reported success. **C3:** the recursion
+  filter was `callable()`, so every child defining `__call__` — every op, every framework module —
+  was skipped; the load path broadcast into the same class fine. It usually still worked by
+  accident, via the ctor-kwargs capture dict in `__dict__`, so the visible failure was narrow: a
+  `capture=False` parent silently skipped the child, and a constructor storing something other
+  than what it captured had the DISCARDED object configured while the report said applied. The
+  filter is now routines-and-classes; classes stay skipped because a class `__dict__` is a truthy
+  mappingproxy of its own attributes. **C4:** a plain `Target(...)` body slot was flowed into a
+  temporary, configured, and discarded — the marker kept its defaults while the report recorded
+  the key as applied, so a later `flow(obj.opt)` built with the defaults. Marker slots are now
+  tuned by their owner like `PartialClass` ones; the check widened from `Partial` to `Target`,
+  which leaves `Reference`/`Clone` on the flow path (they still raise rather than becoming silent
+  no-ops), and the early return walks the marker's kwargs so live objects held inside one
+  (`Target(Stage, dep=widget)`) are still configured. Pinned by the C3/C4 groups in
+  `tests/test_configurator.py`.
+
 - **A reserved key inside a dotted key is refused instead of producing inert data** (BUGS-2026-08-13
   P16). `model._target_: Box` loaded as `{'model': {'_target_': 'Box'}}` — a plain dict carrying a
   literal `_target_`, which `flow()` did not rescue either, so it reached the consumer as data.

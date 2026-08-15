@@ -620,6 +620,32 @@ IDEMPOTENCY return, so an object that arrived already built is finalized too. `s
 idempotent (build-once-and-cache) and take no arguments. `flow(obj, solidify=False)` /
 `materialize(..., solidify=False)` suppress it for the whole subtree.
 
+**Rule — `configure()`'s walk skips ROUTINES and CLASSES, not everything CALLABLE.** An op and a
+framework module define `__call__`, so a `callable()` filter skipped every one of them while the
+load path broadcast into the same class fine (C3). Such a child was usually still reached BY
+ACCIDENT — through the ctor-kwargs capture dict sitting in `__dict__` — which is why the defect
+surfaced only for `capture=False`, or for a constructor storing something OTHER than what it
+captured (there the DISCARDED object was configured and the key reported applied). `isclass` is
+load-bearing, not decoration: a class object's `__dict__` is a TRUTHY mappingproxy of its own
+attributes, so recursing into one would walk class internals.
+**Pins.** the C3 group in `tests/test_configurator.py`, incl.
+`::test_a_CLASS_attribute_is_still_skipped`.
+
+**Rule — a MARKER-valued attribute is tuned by its owner, never flowed into a throwaway; the
+check is `Target`, not `Partial`.** `_walk` returns early for any `Target` and `_apply` tunes
+every `Target` slot. The hazard the `Partial` early-return comment describes was never about
+deferral — it is about the marker being what the attribute HOLDS: for `self.opt = Target(Opt)`
+the next line flowed a temporary, configured it, discarded it and recorded the key as applied, so
+a later `flow(obj.opt)` built with the DEFAULTS (C4). `Partial` IS a `Target`, so deferred slots
+are unaffected; `Reference` and `Clone` are NOT, so they stay on the flow path and keep RAISING
+rather than degrading to a silent no-op. The early return MUST still walk the marker's kwargs —
+they can hold live objects (`Target(Stage, dep=widget)`) that flowing used to reach as a side
+effect; omitting that trades one silent skip for another (measured: 0 → 64 missed widgets against
+`tests/test_memo_pinning.py`).
+**Pins.** the C4 group in `tests/test_configurator.py`, incl.
+`::test_a_Reference_body_slot_still_raises` (the scope guard) and
+`tests/test_memo_pinning.py::test_configure_reaches_every_object_even_when_gc_recycles_walk_temporaries`.
+
 **Rule.** `configure()` finalizes AFTER applying: `_walk` flows with `solidify=False` and re-fires
 the hook POST-ORDER, matching the load path's ordering.
 

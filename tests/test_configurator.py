@@ -382,3 +382,255 @@ def test_configure_warns_when_config_is_not_a_mapping(monkeypatch: pytest.Monkey
     seen.clear()
     configure(m, config={"lr": 0.5})
     assert not seen and m.lr == 0.5
+
+
+# ---------------------------------------------------------------------------
+# configure() must not write to objects nobody keeps (BUGS-2026-08-13 C3, C4)
+# ---------------------------------------------------------------------------
+
+
+def test_configure_recurses_into_a_callable_child() -> None:
+    """C3: the walk skipped every child defining ``__call__`` — which is every op
+    and every framework module in a real tree.
+
+    ``capture=False`` on the parent is load-bearing HERE: with the default, the
+    ctor-kwargs capture sitting in ``__dict__`` is a plain dict the walk recurses
+    into, which reaches the child by accident and hides the defect.
+    """
+
+    @configurable
+    class CallableOp:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+        def __call__(self, x: Any) -> Any:
+            return x
+
+    @configurable(capture=False)
+    class Trainer:
+        def __init__(self, op: Any = None) -> None:
+            self.op = op
+
+    trainer = Trainer(op=CallableOp())
+    report = configure(trainer, config="lr: 0.5")
+
+    assert trainer.op.lr == 0.5
+    assert ("lr", "CallableOp") in [(a.key, a.target) for a in report.applied]
+    assert "lr" not in report.unused
+
+
+def test_a_transforming_constructor_configures_the_LIVE_child_not_the_capture() -> None:
+    """C3's silent-wrong half: when the constructor stores something OTHER than
+    what it captured, the walk configured the discarded object and reported success."""
+
+    @configurable
+    class CallableOp:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+        def __call__(self, x: Any) -> Any:
+            return x
+
+    @configurable
+    class Wrapper:
+        def __init__(self, op: Any = None) -> None:
+            self.op = CallableOp(lr=op.lr)  # a DIFFERENT object from the captured kwarg
+
+    handed = CallableOp()
+    wrapper = Wrapper(op=handed)
+    assert getattr(wrapper, "__confluid_kwargs__")["op"] is not wrapper.op
+
+    configure(wrapper, config="lr: 0.5")
+
+    assert wrapper.op.lr == 0.5, "the LIVE child must be configured"
+
+
+def test_the_ctor_kwargs_capture_is_also_walked() -> None:
+    """Pinned as CURRENT behaviour, not as a desirable one.
+
+    ``__confluid_kwargs__`` is engine bookkeeping that lives in ``__dict__``, so the
+    walk recurses into it like any other dict and configures whatever the constructor
+    was HANDED — including an argument it discarded, which the caller may still hold.
+    Reported alongside C3 rather than changed with it: narrowing the walk to skip the
+    capture dict is a separate decision.
+    """
+
+    @configurable
+    class Op:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class Wrapper:
+        def __init__(self, op: Any = None) -> None:
+            self.op = Op(lr=op.lr)  # the handed object is NOT kept
+
+    handed = Op()
+    configure(Wrapper(op=handed), config="lr: 0.5")
+
+    assert handed.lr == 0.5, "today the discarded ctor argument is configured too"
+
+
+def test_a_function_attribute_is_still_skipped() -> None:
+    """The filter narrows from ``callable()`` to routines-and-classes: a stored
+    function has no configuration surface and must stay untouched."""
+    import math
+
+    @configurable(capture=False)
+    class Holder:
+        def __init__(self) -> None:
+            self.fn = math.sqrt
+            self.lr = 0.0
+
+    holder = Holder()
+    configure(holder, config="lr: 0.5")
+
+    assert holder.lr == 0.5
+    assert holder.fn is math.sqrt
+
+
+def test_a_CLASS_attribute_is_still_skipped() -> None:
+    """The reason ``isclass`` is in the predicate: a class object's ``__dict__``
+    is a TRUTHY mappingproxy of its own attributes, so recursing into one would
+    walk class internals."""
+
+    @configurable
+    class Op:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable(capture=False)
+    class Holder:
+        def __init__(self) -> None:
+            self.op_cls = Op
+            self.lr = 0.0
+
+    holder = Holder()
+    configure(holder, config="lr: 0.5")
+
+    assert holder.lr == 0.5
+    assert holder.op_cls is Op
+    assert "lr" not in vars(Op), "no key may be written onto the CLASS"
+
+
+def test_a_functools_partial_attribute_does_not_break_the_walk() -> None:
+    """It stops being skipped (it is neither a routine nor a class), so pin that
+    walking it is harmless — it carries no configuration surface."""
+    import functools
+
+    @configurable(capture=False)
+    class Holder:
+        def __init__(self) -> None:
+            self.fn = functools.partial(max, 0)
+            self.lr = 0.0
+
+    holder = Holder()
+    configure(holder, config="lr: 0.5")
+
+    assert holder.lr == 0.5
+    assert holder.fn(5) == 5
+
+
+def test_a_plain_Target_body_slot_is_TUNED_not_flowed_into_a_throwaway() -> None:
+    """C4: the walk flowed the marker into a temporary, applied the config to the
+    temporary, discarded it, and recorded the key as applied — so a later
+    ``flow(obj.opt)`` built with the DEFAULTS.
+
+    The ``Partial`` early return names this exact hazard in its own comment; the
+    next line committed it for every non-partial marker.
+    """
+    from confluid import Target, flow
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.opt = Target(Opt)
+
+    host = Host()
+    configure(host, config="lr: 0.75")
+
+    assert host.opt.kwargs == {"lr": 0.75}, "the marker itself must carry the value"
+    assert flow(host.opt).lr == 0.75
+
+
+def test_a_PartialClass_body_slot_is_unchanged() -> None:
+    """The shape C4 aligns with — it already worked and must keep working."""
+    from confluid import PartialClass, flow
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.opt = PartialClass(Opt)
+
+    host = Host()
+    configure(host, config="lr: 0.75")
+
+    assert host.opt.kwargs == {"lr": 0.75}
+    assert flow(host.opt).lr == 0.75
+
+
+def test_a_Reference_body_slot_still_raises() -> None:
+    """The scope guard: ``Partial`` IS a ``Target`` but ``Reference``/``Clone`` are
+    NOT, so widening the check to ``Target`` must leave them on the flow path.
+
+    Swallowing them into the tune path would turn this loud failure into a silent
+    no-op — the exact degradation this whole family is about.
+    """
+    from confluid.exceptions import ReferenceResolutionError
+    from confluid.fluid import Clone, Reference
+
+    @configurable
+    class HostRef:
+        def __init__(self) -> None:
+            self.opt = Reference("nowhere")
+
+    @configurable
+    class HostClone:
+        def __init__(self) -> None:
+            self.opt = Clone("nowhere")
+
+    for cls in (HostRef, HostClone):
+        with pytest.raises(ReferenceResolutionError):
+            configure(cls(), config="lr: 0.75")
+
+
+def test_a_marker_body_slot_is_not_emitted_by_dump() -> None:
+    """Pinned as CURRENT behaviour, and identical for both marker kinds.
+
+    ``dump()`` reconstructs a node from its CONSTRUCTOR params, so a body slot —
+    marker-valued or not — is not emitted at all. The tuning C4 restores therefore
+    lives on the object, not in a dumped document. Reported alongside C4; changing
+    it is a dumper decision, not a configure() one.
+    """
+    from confluid import PartialClass, Target, dump
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class HostTarget:
+        def __init__(self) -> None:
+            self.opt = Target(Opt)
+
+    @configurable
+    class HostPartial:
+        def __init__(self) -> None:
+            self.opt = PartialClass(Opt)
+
+    for cls in (HostTarget, HostPartial):
+        host = cls()
+        configure(host, config="lr: 0.75")
+        assert host.opt.kwargs == {"lr": 0.75}, "the marker itself carries the value"
+        assert dump(host).strip() == f"_target_: {cls.__name__}", "but dump() emits no body slot"
