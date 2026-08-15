@@ -64,6 +64,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A duplicate mapping key is refused instead of silently discarding a value** (BUGS-2026-08-13
+  P11). Two `include:` directives in one document lost a whole FILE before the loader ever ran —
+  PyYAML collapses a duplicate key at parse, keeping the last value with no warning — and the
+  survivor spliced at the FIRST occurrence's position, so a key written above it beat a value from
+  the file included below it (measured: `x` came out `1` where the list spelling gives `999`). The
+  YAML spec restricts a mapping's keys to be unique and lists non-unique keys among its loading
+  failure points, leaving the response to the processor; confluid now raises a located
+  `ConfigurationError` naming both lines, and points `include:` at the valid multi-file spelling
+  (`include: [a.yaml, b.yaml]`, which also honours position correctly). This covers every repeated
+  key, not just `include:` — `lr: 0.1` … `lr: 0.5` in one mapping is a differently-trained run.
+  Identity is `(tag, value)` so `1:` and `"1":` stay distinct keys, `<<:` merge keys are excluded
+  (a merged key overridden locally is override semantics, not duplication), and the check binds the
+  TAG spelling too — the four tag constructors now share `_str_keyed_mapping` instead of each
+  building their mapping inline. Verified against every YAML in the workspace: 3985 files composed,
+  zero duplicate keys. Pinned by the duplicate-key group in `tests/test_loader.py`.
+
 - **`_partial_` beside a non-`_target_` discriminator is refused instead of swallowed**
   (BUGS-2026-08-13 P10). `{_ref_: proto, _partial_: true}` stripped the modifier and flowed
   EAGERLY — no error, no warning, and the key gone from the marker's kwargs so nothing downstream

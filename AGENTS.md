@@ -336,6 +336,26 @@ reserved key on the node was enough to make the anchor's `_target_` work.
 silently — that failure mode is precisely what this format replaces (`!class:Model(a=1, b=2)`,
 with one space, produced a target named `Model(a=1,` and dropped both kwargs, with no error).
 
+**Rule — a DUPLICATE mapping key is refused, in BOTH spellings.** The YAML spec restricts a
+mapping's keys to be unique and lists non-unique keys among its loading failure points, leaving
+the processor's response open; PyYAML keeps the LAST value silently. Confluid raises a located
+`ConfigurationError` naming BOTH lines (`duplicate key 'include' at f.yaml:3:1 (first written at
+line 1)`), because the discarded value is otherwise invisible — two `include:` directives lost a
+whole FILE before the loader ran, and the survivor spliced at the FIRST occurrence's position (a
+collapsed duplicate keeps first-insertion order), inverting the documented later-line-wins rule
+(P11). Three properties, each pinned: identity is `(tag, value)`, never text — `1:` and `"1":`
+are an int key and a str key and PyYAML keeps both; MERGE keys are skipped, because a `<<:`-merged
+key the node also writes literally is override semantics, not duplication; and the check binds the
+TAG spelling too, via `loader._str_keyed_mapping`, the ONE mapping-construction site the four tag
+constructors share (`map_constructor` deliberately refuses EARLIER — an ordinary mapping takes the
+fast path to PyYAML and never constructs through that helper). Adding a fifth constructor that
+builds a mapping means routing it through `_str_keyed_mapping`, not re-inlining the dict
+comprehension.
+**Pins.** the duplicate-key group in `tests/test_loader.py`, incl.
+`::test_same_text_different_TAG_keys_are_not_duplicates`,
+`::test_a_merge_key_overridden_by_a_local_key_is_NOT_a_duplicate` and
+`::test_the_refusal_binds_the_TAG_spelling_too`.
+
 **Rule — `_partial_` pairs with `_target_` and NOTHING else, refused at ONE site.** It modifies
 CONSTRUCTION and `_target_` is the only key that constructs, so beside `_ref_` / `_clone_` /
 `_scope_` / `_notscope_` it raises a located `ConfigurationError` naming the working spelling

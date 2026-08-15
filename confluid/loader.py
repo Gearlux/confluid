@@ -363,6 +363,65 @@ def _node_key_names(node: yaml.nodes.MappingNode, seen: Optional[Dict[int, Any]]
     return names
 
 
+def _refuse_duplicate_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader) -> None:
+    """Refuse a mapping that writes the same key twice.
+
+    The YAML spec restricts a mapping's keys to be unique and lists "mapping keys
+    may not be unique" among its loading failure points — but leaves the
+    processor's response unspecified, and PyYAML's is to keep the LAST value
+    silently. For a config engine that is the worst available answer: two
+    ``include:`` directives lost a whole FILE before this loader ever ran, and
+    the survivor spliced at the FIRST occurrence's position (a collapsed
+    duplicate keeps first-insertion order), inverting the documented "a later
+    line overrides an earlier one" rule. An ordinary key loses its first value
+    the same way — ``lr: 0.1`` … ``lr: 0.5`` is a differently-trained run
+    (BUGS-2026-08-13 P11).
+
+    Identity is ``(tag, value)``, not text: ``1:`` and ``"1":`` are an int key
+    and a str key, and PyYAML keeps both (measured: ``{1: 'one', '1': 'two'}``).
+    Merge keys are skipped — a ``<<:``-merged key that the node also writes
+    literally is ordinary override semantics, which is the whole point of the
+    idiom, not a duplicate.
+    """
+    seen: Dict[Tuple[str, str], int] = {}
+    for key, _ in node.value:
+        if not isinstance(key, yaml.nodes.ScalarNode) or key.tag == _MERGE_TAG:
+            continue
+        identity = (key.tag, key.value)
+        first_line = seen.get(identity)
+        if first_line is not None:
+            mark = key.start_mark
+            where = f"{getattr(loader, 'name', None) or '<config>'}:{mark.line + 1}:{mark.column + 1}"
+            hint = (
+                " To pull in several files, write ONE key with a list: include: [a.yaml, b.yaml]."
+                if key.value == "include"
+                else ""
+            )
+            raise ConfigurationError(
+                f"duplicate key {key.value!r} at {where} (first written at line {first_line}) — YAML "
+                f"requires a mapping's keys to be unique. Keeping the last value silently discards "
+                f"the first, which is what PyYAML would do.{hint}"
+            )
+        seen[identity] = key.start_mark.line + 1
+
+
+def _str_keyed_mapping(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) -> Dict[str, Any]:
+    """Construct a mapping node into a str-keyed dict, refusing duplicate keys.
+
+    The ONE site for the TAG constructors, which have no shared entry point of
+    their own — four of them repeated this expression, so a check added to the
+    plain path alone would have left the deprecated spelling silently losing a
+    duplicated key. A behaviour reachable from only one spelling is a bug in that
+    spelling, deprecated or not.
+
+    ``map_constructor`` does NOT come through here: it must refuse BEFORE its
+    reserved-key gate, because an ordinary mapping takes the fast path straight
+    to PyYAML and never constructs through this function at all.
+    """
+    _refuse_duplicate_keys(node, loader)
+    return {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+
+
 def _register_constructors() -> None:
     """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
 
@@ -408,7 +467,7 @@ def _register_constructors() -> None:
         inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
 
         if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
             # Merge inline ``(k=v)`` kwargs with the mapping body instead of
             # discarding the inline ones. Block-body keys win on conflict —
             # they sit later in document order, matching the flat-view
@@ -422,7 +481,7 @@ def _register_constructors() -> None:
 
     def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
             return _stamp(_make_fluid(Clone, tag_suffix, mapping), loader, node)
         return _stamp(Clone(tag_suffix), loader, node)
 
@@ -436,7 +495,7 @@ def _register_constructors() -> None:
         inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
 
         if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
             return _stamp(_make_fluid(Partial, name, {**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
@@ -466,7 +525,7 @@ def _register_constructors() -> None:
         key, value = _parse_scope_suffix(tag_suffix)
         contents: Any
         if isinstance(node, yaml.nodes.MappingNode):
-            contents = {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
+            contents = _str_keyed_mapping(loader, node)
         elif isinstance(node, yaml.nodes.SequenceNode):
             contents = loader.construct_sequence(node, deep=True)
         elif isinstance(node, yaml.nodes.ScalarNode):
@@ -584,6 +643,9 @@ def _register_constructors() -> None:
     default_map_constructor = ConfluidLoader.yaml_constructors[yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG]
 
     def map_constructor(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) -> Any:
+        # Before anything else, and for EVERY mapping — ordinary or marker. A
+        # duplicate key is a silent data loss whatever the mapping turns out to be.
+        _refuse_duplicate_keys(node, loader)
         node_keys = _node_key_names(node)
         if not (node_keys & RESERVED_KEYS):
             yield from default_map_constructor(loader, node)

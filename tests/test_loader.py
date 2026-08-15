@@ -566,3 +566,129 @@ def test_a_dotted_STRING_key_still_expands_beside_non_string_keys(tmp_path: Path
 
     assert doc["inner"] == {"value": 7}
     assert doc["table"] == {1: "an int key"}
+
+
+# ---------------------------------------------------------------------------
+# Duplicate mapping keys are REFUSED (BUGS-2026-08-13 P11)
+#
+# The YAML spec restricts a mapping's keys to be unique and lists "mapping keys
+# may not be unique" among its loading failure points, but leaves the processor's
+# response unspecified — PyYAML keeps the LAST value, silently. For confluid that
+# meant `include: a.yaml` … `include: b.yaml` lost a whole FILE before the loader
+# ever ran, and the survivor spliced at the FIRST occurrence's position (a
+# collapsed duplicate keeps first-insertion order), inverting the documented
+# "later line wins" rule. An ordinary duplicated key loses its first value the
+# same way.
+# ---------------------------------------------------------------------------
+
+
+def test_two_include_directives_are_refused(tmp_path: Path) -> None:
+    """The P11 case. Before this, a.yaml was silently never read."""
+    (tmp_path / "a.yaml").write_text("from_a: 1\n")
+    (tmp_path / "b.yaml").write_text("from_b: 2\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: a.yaml\nx: 1\ninclude: b.yaml\n")
+
+    with pytest.raises(ConfigurationError, match="duplicate key 'include'"):
+        load(str(main))
+
+
+def test_a_duplicated_ordinary_key_is_refused() -> None:
+    """`include:` is only the case where the discarded value is a whole file."""
+    with pytest.raises(ConfigurationError, match="duplicate key 'lr'"):
+        load("lr: 0.1\nmodel: {_target_: collections.Counter}\nlr: 0.5")
+
+
+def test_the_refusal_names_both_lines_and_the_file(tmp_path: Path) -> None:
+    """A duplicate is a two-location problem: the reader needs both to fix it."""
+    cfg = tmp_path / "dup.yaml"
+    cfg.write_text("include: a.yaml\nx: 1\ninclude: b.yaml\n")
+
+    with pytest.raises(ConfigurationError) as exc:
+        load(str(cfg))
+
+    message = str(exc.value)
+    assert "dup.yaml:3:1" in message, message  # the second occurrence
+    assert "line 1" in message, message  # the first one it collides with
+
+
+def test_a_duplicate_inside_a_nested_mapping_is_refused() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("outer:\n  size: 1\n  other: 2\n  size: 3\n")
+
+
+def test_a_duplicate_inside_a_markers_own_kwargs_is_refused() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("m:\n  _target_: collections.Counter\n  size: 1\n  size: 2\n")
+
+
+def test_a_duplicate_inside_a_scope_block_is_refused() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("wrap:\n  _scope_: {mode: fast}\n  size: 1\n  size: 2\n")
+
+
+def test_the_valid_multi_file_spelling_still_works(tmp_path: Path) -> None:
+    """One key, a sequence value — the spelling the refusal leaves you with.
+
+    It also honours position, which the duplicate-key form got wrong: `x` is
+    written ABOVE the include, so b.yaml's `x` wins.
+    """
+    (tmp_path / "a.yaml").write_text("from_a: 1\n")
+    (tmp_path / "b.yaml").write_text("from_b: 2\nx: 999\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("x: 1\ninclude: [a.yaml, b.yaml]\n")
+
+    assert load(str(main)) == {"from_a": 1, "from_b": 2, "x": 999}
+
+
+def test_a_merge_key_overridden_by_a_local_key_is_NOT_a_duplicate() -> None:
+    """The false-positive guard that matters most.
+
+    `<<:` merging a key the node also writes literally is ordinary override
+    semantics — the whole point of the idiom — not a duplicate key.
+    """
+    doc = "base: &b\n  size: 1\n  label: base\nderived:\n  <<: *b\n  size: 2\n"
+    assert load(doc)["derived"] == {"size": 2, "label": "base"}
+
+
+def test_the_same_key_in_DIFFERENT_mappings_is_fine() -> None:
+    """Uniqueness is per-mapping, not per-document."""
+    assert load("a: {size: 1}\nb: {size: 2}\n") == {"a": {"size": 1}, "b": {"size": 2}}
+
+
+def test_the_same_key_across_LIST_ITEMS_is_fine() -> None:
+    assert load("items:\n  - size: 1\n  - size: 2\n")["items"] == [{"size": 1}, {"size": 2}]
+
+
+def test_an_include_and_a_local_key_of_the_same_name_across_files_is_fine(tmp_path: Path) -> None:
+    """An included file re-stating a key is a MERGE, not a duplicate — that is
+    the entire point of overlays."""
+    (tmp_path / "base.yaml").write_text("lr: 0.1\nseed: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: base.yaml\nlr: 0.5\n")
+
+    assert load(str(main)) == {"lr": 0.5, "seed": 7}
+
+
+def test_same_text_different_TAG_keys_are_not_duplicates() -> None:
+    """Identity is (tag, value), not text.
+
+    `1:` is an int key and `"1":` a str key; PyYAML keeps both, so refusing them
+    would reject a legal document. Same for `yes:` (a YAML boolean) beside `"yes":`.
+    """
+    assert load('table:\n  1: one\n  "1": two\n')["table"] == {1: "one", "1": "two"}
+    assert load('flags:\n  yes: a\n  "yes": b\n')["flags"] == {True: "a", "yes": "b"}
+
+
+def test_the_refusal_binds_the_TAG_spelling_too() -> None:
+    """A behaviour reachable from only one spelling is a bug in that spelling.
+
+    The four tag constructors each built their mapping inline, so a check added
+    to the plain path alone would have left the deprecated spelling silently
+    losing a duplicated key. They now share `_str_keyed_mapping`.
+    """
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("m: !class:Box\n  size: 1\n  size: 2\n")
+
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("w: !scope:mode=fast\n  size: 1\n  size: 2\n")
