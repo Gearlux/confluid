@@ -236,12 +236,32 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
         # silently carried into the config as an ordinary key.
         extra = sorted(RESERVED_KEYS & set(mapping))
         raise ConfigurationError(
-            f"{', '.join(extra)} needs a discriminator key "
-            f"({TARGET_KEY} / {REF_KEY} / {CLONE_KEY} / {SCOPE_KEY} / {NOTSCOPE_KEY}) in the same mapping"
+            f"{', '.join(extra)} needs {TARGET_KEY} in the same mapping — it modifies CONSTRUCTION, "
+            f"and {TARGET_KEY} is the only key that constructs"
         )
 
     key = present[0]
     body = {k: v for k, v in mapping.items() if k not in RESERVED_KEYS}
+
+    # ``_partial_`` is a MODIFIER and only the ``_target_`` branch below reads it.
+    # Every other discriminator returns before that read, so the key used to be
+    # stripped into oblivion: `{_ref_: proto, _partial_: true}` flowed EAGERLY with
+    # no error (BUGS-2026-08-13 P10). Refusing here — one site, before the branches
+    # — is what the "malformed marker raises, never degrades" rule requires, and it
+    # is why the lone-modifier message above no longer advertises the other four.
+    if PARTIAL_KEY in mapping and key != TARGET_KEY:
+        where = (
+            f"put it on the node {key} points at"
+            if key in (REF_KEY, CLONE_KEY)
+            # A scope block is a conditional splice, not a construction site, so
+            # there is nothing here for the modifier to defer.
+            else f"put it on the marker inside the {key} block"
+        )
+        raise ConfigurationError(
+            f"{PARTIAL_KEY} only modifies {TARGET_KEY}, but this mapping carries {key} — {where}. "
+            f"Deferral is a property of the node being CONSTRUCTED "
+            f"(e.g. proto: {{{TARGET_KEY}: X, {PARTIAL_KEY}: true}} then opt: {{{REF_KEY}: proto}})"
+        )
 
     if key in (SCOPE_KEY, NOTSCOPE_KEY):
         # A MAPPING of dimension -> required value (``None`` for a boolean

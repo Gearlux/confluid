@@ -195,12 +195,24 @@ never a silently degraded value:
 
 ```yaml
 x: {_target_: Box, _ref_: y}       # Conflicting reserved keys
-x: {_partial_: true, lr: 1}        # needs a discriminator key
+x: {_partial_: true, lr: 1}        # _partial_ needs _target_ in the same mapping
+x: {_ref_: proto, _partial_: true} # _partial_ only modifies _target_
 x: {_target_: 42}                  # _target_ must be a non-empty string
 x: {_target_: Box, _partial_: yes_please}   # _partial_ must be true or false
 ```
 
 Each message carries the file, line and column of the offending mapping.
+
+**`_partial_` pairs with `_target_` and nothing else.** It is a modifier on
+*construction*, and `_target_` is the only key that constructs — so it has no
+meaning beside `_ref_`, `_clone_` or a `_scope_` block, and those are refused
+rather than ignored. To defer what a reference points at, put the modifier on
+the node being constructed:
+
+```yaml
+proto: {_target_: SGD, _partial_: true, lr: 0.5}
+opt: {_ref_: proto}                # `opt` is the deferred marker
+```
 
 ## Migrating an existing config — `confluid-migrate`
 
