@@ -73,7 +73,27 @@ Trainer.lr: 0.5      # dotted spelling of the same addressed form
   gets a warning naming the receiver.
 
 Two things the walk never does: it never executes property getters (instance
-attributes only), and it never touches private (`_`-prefixed) state.
+attributes only), and it never *assigns* to private (`_`-prefixed) state.
+
+It does **descend** through one piece of private state: the constructor-kwargs
+capture confluid stamps for `dump()`. So an object passed to a constructor is
+configured even if that constructor consumed it rather than storing it:
+
+```python
+@configurable
+class Wrapper:
+    def __init__(self, op=None):
+        self.op = Op(lr=op.lr)     # `op` itself is not kept
+
+handed = Op()
+configure(Wrapper(op=handed), config={"lr": 0.5})
+handed.lr        # 0.5 — reached through the capture
+```
+
+This is deliberate: a key aimed at an object still reaches it when a constructor
+consumed it. Opt a class out of the capture entirely with
+`@configurable(capture=False)`, which also costs `dump()` fidelity for
+parameters the constructor transforms.
 
 ## What a mapping at a slot means
 

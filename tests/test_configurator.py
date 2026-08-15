@@ -446,13 +446,17 @@ def test_a_transforming_constructor_configures_the_LIVE_child_not_the_capture() 
 
 
 def test_the_ctor_kwargs_capture_is_also_walked() -> None:
-    """Pinned as CURRENT behaviour, not as a desirable one.
+    """RULED DELIBERATE (user, 2026-08-15) — see BUGS-2026-08-13.md F1.
 
     ``__confluid_kwargs__`` is engine bookkeeping that lives in ``__dict__``, so the
     walk recurses into it like any other dict and configures whatever the constructor
-    was HANDED — including an argument it discarded, which the caller may still hold.
-    Reported alongside C3 rather than changed with it: narrowing the walk to skip the
-    capture dict is a separate decision.
+    was HANDED — including an argument it discarded. That reach is KEPT: an object the
+    config is meant to configure still gets configured when a constructor consumed it
+    rather than storing it.
+
+    This test is the pin that makes removing it a DELIBERATE change. Skipping the
+    capture dict is one line and breaks nothing else (prototyped: 1 failed — this
+    test — 1499 passed), so without the pin it would be an easy silent "cleanup".
     """
 
     @configurable
