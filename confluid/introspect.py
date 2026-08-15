@@ -323,11 +323,21 @@ def marked_param_names(target: Any, marker: str, cache_attr: Optional[str] = Non
     init = init_callable(target)
     names: Set[str] = set()
     if init is not None:
-        try:
-            hints = get_type_hints(init, include_extras=True)
-        except Exception:
-            hints = {}
-        names = {name for name, ann in hints.items() if name != "return" and annotation_has_marker(ann, marker)}
+        # PROJECTS from the ONE slot enumeration rather than re-reading
+        # ``get_type_hints`` here. That private read was a third copy of the
+        # all-or-nothing failure: one ``TYPE_CHECKING``-only import in the module
+        # emptied the map and every ``Partial[T]`` / ``Mandatory[T]`` mark in the
+        # signature vanished with it (I5). ``slots()`` resolves each annotation
+        # per name, degrading only the one that cannot resolve.
+        #
+        # ``source == "signature"`` keeps this a PARAMETER scan: body slots are the
+        # caller's business (``partial_param_names`` unions them in itself, and the
+        # other two marks are signature-only by contract).
+        names = {
+            slot.name
+            for slot in slots(target)
+            if slot.source == "signature" and annotation_has_marker(slot.annotation, marker)
+        }
     if cache_attr is not None:
         try:
             setattr(target, cache_attr, names)
@@ -450,6 +460,13 @@ def slots(target: Any) -> Tuple["Slot", ...]:
                 continue
             seen.add(name)
             annotation = hints.get(name, param.annotation)
+            if isinstance(annotation, str):
+                # PER-NAME fallback. ``get_type_hints`` above is all-or-nothing, so a
+                # single ``TYPE_CHECKING``-only import emptied ``hints`` and this line
+                # fell back to ``param.annotation`` — which under PEP 563 is the raw
+                # STRING, for every parameter in the signature. One bad name cost the
+                # whole class its deferral marks and its container routing (I5).
+                annotation = resolve_string_annotation(annotation, init)
             found.append(
                 Slot(
                     name=name,
@@ -635,6 +652,45 @@ def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
         resolved = eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
     except Exception:
         return Any
+    if isinstance(resolved, str):
+        # A QUOTED annotation (``self.optimizer: "Partial[Optim]"``) unparses to a
+        # string LITERAL, so ``eval`` hands back the TEXT rather than the type — and
+        # a plain ``str`` is not a ForwardRef, so the check below waved it through and
+        # the raw string became ``Slot.annotation`` (I4). Quoting is how you defer an
+        # import, not a different meaning, so resolve it once more in the same scope.
+        # The same-named CONSTRUCTOR PARAM never had the bug: ``get_type_hints``
+        # resolves the string for it, which is exactly the asymmetry class-design
+        # rule 4 says must not exist between the two declaration halves.
+        return resolve_string_annotation(resolved, init_func)
     # A string forward ref evals to a ForwardRef instead of raising; pydantic
     # would build a model it can't finish (see _contains_forwardref). Degrade.
+    return Any if contains_forwardref(resolved) else resolved
+
+
+def resolve_string_annotation(text: str, init_func: Any) -> Any:
+    """Best-effort resolve a STRING annotation to a runtime type, else ``Any``.
+
+    The sibling of :func:`resolve_ast_annotation` for the two places a string
+    turns up where a type belongs, both of which used to leak it verbatim:
+
+    * a QUOTED annotation, whose AST node is a string constant (I4);
+    * PEP 563 (``from __future__ import annotations``), which stringifies every
+      annotation in a module — and where ``get_type_hints`` is ALL-OR-NOTHING, so
+      one unresolvable name (a ``TYPE_CHECKING``-only import) emptied the map and
+      sent every parameter of the signature back to its raw string (I5).
+
+    Same scope and same degradation as the AST resolver: the defining module's
+    globals plus ``typing``, unwrapped past the validation wrapper, and ``Any``
+    on any failure. A leaked ``str`` is the one outcome that must not happen —
+    every reader asks a question OF the annotation (is this slot deferred? does
+    it take a list?) and a string silently answers no to all of them.
+    """
+    import typing as _typing
+
+    target = inspect.unwrap(init_func)
+    scope: Dict[str, Any] = {**vars(_typing), **getattr(target, "__globals__", {})}
+    try:
+        resolved = eval(text, scope)  # noqa: S307 - trusted: the text is our own annotation
+    except Exception:  # noqa: BLE001 - an unresolvable hint degrades, never raises
+        return Any
     return Any if contains_forwardref(resolved) else resolved

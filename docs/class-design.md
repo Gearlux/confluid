@@ -36,7 +36,10 @@ to construct. Four rules:
      `PartialClass(...)` value (`_partial_: true` in YAML) — a plain `Target(...)` body value is eagerly built
      during parent materialization and would crash a target missing its runtime argument;
    - give the slot a **type annotation** in the body (`self.optimizer: Partial[Optimizer] = …`) so
-     the generated schema can type it (un-annotated slots degrade to `Any`);
+     the generated schema can type it (un-annotated slots degrade to `Any`). A **quoted**
+     annotation (`self.optimizer: "Partial[Optimizer]"`) means the same thing, as does one in a
+     module using `from __future__ import annotations`; a name that cannot be resolved at runtime
+     degrades that one slot to `Any` and leaves its siblings alone;
    - assign a **fresh `PartialClass(...)` per instance** in the body — never a shared mutable default.
 
    The body scan reads `__init__` *source*, so a compiled/frozen/zip deployment needs the
