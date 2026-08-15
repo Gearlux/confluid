@@ -64,6 +64,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A reserved key inside a dotted key is refused instead of producing inert data** (BUGS-2026-08-13
+  P16). `model._target_: Box` loaded as `{'model': {'_target_': 'Box'}}` — a plain dict carrying a
+  literal `_target_`, which `flow()` did not rescue either, so it reached the consumer as data.
+  Conversion is parse-time and `expand_dotted_keys` runs afterwards, so the dotted spelling breaks
+  for exactly the one key that decides a node is a marker; every other key works dotted, including
+  one merging into a marker written above it (`model: {_target_: Box}` plus `model.size: 3` builds
+  `Box(size=3)` — unchanged). The refusal is located and names the nested spelling to write, and it
+  covers a reserved segment in any position: a NESTED dotted key was never expanded at all
+  (expansion is top-level only) and stayed a literal `inner._target_`, and inside a marker's kwargs
+  it became a constructor kwarg named `sub._target_`. Both parse-time key-shape refusals now go
+  through one `_refuse_malformed_keys`, called from the untagged and the tagged mapping paths.
+  Zero workspace configs use the spelling. Pinned by the P16 group in `tests/test_plain_format.py`.
+
 - **`include:` is honoured in every position, and conditional includes work** (BUGS-2026-08-13
   P15). The directive was spliced only where the recursive walk reached its dict branch; a
   marker's kwargs and a scope block's contents were walked value-wise, so their own `include:`

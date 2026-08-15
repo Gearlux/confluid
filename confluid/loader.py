@@ -363,6 +363,60 @@ def _node_key_names(node: yaml.nodes.MappingNode, seen: Optional[Dict[int, Any]]
     return names
 
 
+def _node_where(node: yaml.nodes.Node, loader: yaml.SafeLoader) -> str:
+    """``file:line:col`` for a YAML node — every parse-time refusal names one."""
+    mark = node.start_mark
+    return f"{getattr(loader, 'name', None) or '<config>'}:{mark.line + 1}:{mark.column + 1}"
+
+
+def _refuse_malformed_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader) -> None:
+    """Every parse-time key-shape refusal, in ONE call.
+
+    Both callers (``map_constructor`` for untagged mappings, ``_str_keyed_mapping``
+    for the four tag constructors) go through here, so a new key-shape rule cannot
+    be added to one spelling and forgotten in the other.
+    """
+    _refuse_duplicate_keys(node, loader)
+    _refuse_dotted_reserved_keys(node, loader)
+
+
+def _refuse_dotted_reserved_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader) -> None:
+    """Refuse a reserved key written as a segment of a DOTTED key.
+
+    ``model._target_: Widget`` cannot become a marker: the reserved-key conversion
+    happens while the document is PARSED, and ``merger.expand_dotted_keys`` runs
+    afterwards, so by the time ``_target_`` is a key of its own mapping there is
+    nobody left to convert it. The document kept a literal ``_target_`` as ordinary
+    data, and ``flow()`` did not rescue it either — it reached the consumer as
+    ``{'_target_': 'Widget'}`` (BUGS-2026-08-13 P16).
+
+    Every other key works dotted, INCLUDING a kwarg merging into an already-nested
+    marker (``model: {_target_: Widget}`` plus ``model.size: 3`` builds a
+    ``Widget(size=3)``), which is what made the failure so easy to miss: the dotted
+    spelling breaks for exactly the one key that decides the node is a marker.
+
+    The check covers a reserved segment in ANY position, because every shape
+    degrades the same silent way — a nested dotted key is never expanded at all
+    (expansion is top-level only) and stays a literal ``inner._target_`` key, and
+    inside a marker's kwargs it becomes a constructor kwarg named ``sub._target_``.
+    """
+    for key, _ in node.value:
+        if not isinstance(key, yaml.nodes.ScalarNode) or key.tag == _MERGE_TAG:
+            continue
+        name = key.value
+        if not isinstance(name, str) or "." not in name:
+            continue
+        offending = next((seg for seg in name.split(".") if seg in RESERVED_KEYS), None)
+        if offending is None:
+            continue
+        raise ConfigurationError(
+            f"{name!r} at {_node_where(key, loader)} puts the reserved key {offending!r} inside a "
+            f"DOTTED key. Reserved keys are read when the document is parsed and dotted keys are "
+            f"expanded afterwards, so this can never become a marker — write it as a nested block "
+            f"instead ({name.split('.')[0]}: with {offending}: under it)"
+        )
+
+
 def _refuse_duplicate_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader) -> None:
     """Refuse a mapping that writes the same key twice.
 
@@ -390,8 +444,7 @@ def _refuse_duplicate_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader
         identity = (key.tag, key.value)
         first_line = seen.get(identity)
         if first_line is not None:
-            mark = key.start_mark
-            where = f"{getattr(loader, 'name', None) or '<config>'}:{mark.line + 1}:{mark.column + 1}"
+            where = _node_where(key, loader)
             hint = (
                 " To pull in several files, write ONE key with a list: include: [a.yaml, b.yaml]."
                 if key.value == "include"
@@ -418,7 +471,7 @@ def _str_keyed_mapping(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) ->
     reserved-key gate, because an ordinary mapping takes the fast path straight
     to PyYAML and never constructs through this function at all.
     """
-    _refuse_duplicate_keys(node, loader)
+    _refuse_malformed_keys(node, loader)
     return {str(k): v for k, v in loader.construct_mapping(node, deep=True).items()}
 
 
@@ -644,8 +697,9 @@ def _register_constructors() -> None:
 
     def map_constructor(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) -> Any:
         # Before anything else, and for EVERY mapping — ordinary or marker. A
-        # duplicate key is a silent data loss whatever the mapping turns out to be.
-        _refuse_duplicate_keys(node, loader)
+        # malformed key shape is a silent data loss whatever the mapping turns
+        # out to be, so this runs before the reserved-key gate's fast path.
+        _refuse_malformed_keys(node, loader)
         node_keys = _node_key_names(node)
         if not (node_keys & RESERVED_KEYS):
             yield from default_map_constructor(loader, node)

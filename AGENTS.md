@@ -336,6 +336,28 @@ reserved key on the node was enough to make the anchor's `_target_` work.
 silently — that failure mode is precisely what this format replaces (`!class:Model(a=1, b=2)`,
 with one space, produced a target named `Model(a=1,` and dropped both kwargs, with no error).
 
+**Rule — a RESERVED key inside a DOTTED key is refused (P16).** `model._target_: Box` cannot
+become a marker: conversion happens at PARSE time and `merger.expand_dotted_keys` runs afterwards,
+so by the time `_target_` is a key of its own mapping there is nobody left to convert it — the
+document kept a literal `_target_` as data and `flow()` did not rescue it. The refusal covers a
+reserved segment in ANY position, because every shape degraded the same silent way: a NESTED
+dotted key is never expanded at all (expansion is top-level only) and stayed a literal
+`inner._target_`, and inside a marker's kwargs it became a constructor kwarg named `sub._target_`.
+Do NOT "fix" this by re-converting after expansion — that would be a SECOND conversion site, and a
+marker built there has no YAML node, so every later error about it loses its `file:line:col`. The
+false-positive guard that matters: only the six reserved names are special, so `model._custom_: 3`
+and `model.size: 3` are untouched — and a dotted kwarg merging into an already-nested marker
+(`model: {_target_: Box}` plus `model.size: 3`) still builds `Box(size=3)`, which is exactly what
+made the defect invisible.
+**Pins.** the P16 group in `tests/test_plain_format.py`, incl.
+`::test_a_dotted_kwarg_still_merges_into_an_existing_marker` and
+`::test_a_non_reserved_underscore_wrapped_key_is_untouched`.
+
+**Rule — both parse-time key-shape refusals go through `loader._refuse_malformed_keys`**, called
+from `map_constructor` (untagged mappings, before the reserved-key gate's fast path) and from
+`_str_keyed_mapping` (the four tag constructors). A new key-shape rule is added THERE, never to
+one caller — that is what keeps the two spellings from diverging.
+
 **Rule — a DUPLICATE mapping key is refused, in BOTH spellings.** The YAML spec restricts a
 mapping's keys to be unique and lists non-unique keys among its loading failure points, leaving
 the processor's response open; PyYAML keeps the LAST value silently. Confluid raises a located
