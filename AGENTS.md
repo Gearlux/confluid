@@ -990,6 +990,28 @@ removes (a scalar body is a one-item list, and `_resolve_list` already extends).
 `{extra: yes}` becomes `True` and then never matches the `extra=yes` string an activation carries —
 silently never firing. `{debug: }` is the boolean DIMENSION spelling.
 
+**Rule — `include:` is honoured in EVERY position, and scopes+includes SETTLE by alternating.**
+A marker's kwargs and a scope block's contents used to be walked VALUE-wise by
+`_process_includes_recursive`, so their own `include:` key never reached `_splice_includes`:
+inside a marker it became a constructor kwarg literally named `include`, inside a scope block it
+leaked into the config as literal data (P15). `Fluid.kwargs` now goes through the DICT branch (a
+marker is unconditional — always part of the document — so its include is spliced in the normal
+pass). A `ScopeBlock`'s own include deliberately is NOT: processing it before activation would
+open a file the block may be about to discard, and a framework overlay must not be mandatory in a
+checkout that never activates that framework. `load()` therefore calls
+`_settle_scopes_and_includes`, which alternates `resolve_scopes` → `_process_includes_recursive`
+until a pass splices nothing. It must REPEAT — an activated block can splice a file carrying its
+own scope block carrying its own include — and it is capped at `_MAX_SETTLE_PASSES` because two
+files including each other from inside scope blocks expose one another's directive on every pass
+(the per-splice `_included` set cannot see across passes). Cost is ONE extra document walk per
+load: measured 0.11 ms against a 9–23 ms load of a 27 KB config. The two malformed spellings
+raise instead of degrading — `include: {path: …}` consumed the key and spliced NOTHING, and a
+non-string list entry was skipped among its siblings.
+**Pins.** the P15 group in `tests/test_includes.py`, incl.
+`::test_include_inside_an_INACTIVE_scope_block_is_never_opened` (the property the alternation
+exists for), `::test_an_included_file_may_itself_carry_a_scoped_include` (why once is not enough)
+and `::test_a_scoped_include_cycle_is_bounded`.
+
 **Rule.** There are THREE walkers that must agree on which nodes can carry a block —
 `scopes._walk_dimensions`, `scopes._resolve_value`, and `loader._process_includes_recursive` — over
 dict, list, `ScopeBlock.contents`, and **`Fluid.kwargs`**. Adding a node kind to one means adding it

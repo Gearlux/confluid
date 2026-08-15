@@ -121,6 +121,57 @@ keys above it are overridden by the paste, keys below it override the paste.
 > opposite answer). If you have a config that relied on the including file
 > winning from a bottom-placed `include:`, move the directive to the top.
 
+### `include:` works anywhere a mapping does
+
+The directive is honoured in every position, not only at the top level — inside a
+nested block, inside a list item, inside a marker's own kwargs, and inside a scope
+block:
+
+```yaml
+# frag.yaml
+size: 7
+label: from-frag
+```
+```yaml
+m:
+  _target_: Widget
+  include: frag.yaml     # -> Widget(size=7, label='from-frag')
+```
+
+Two spellings are refused rather than quietly dropped: `include: {path: a.yaml}`
+(the value must be a path or a list of paths) and a non-string entry in the list
+(`include: [a.yaml, 42]`). Both used to consume the directive and splice nothing.
+
+### Conditional includes
+
+Because a scope block splices its contents at its own slot, wrapping an include in
+one gives you a conditional overlay. The wrapper key is inert, so name it whatever
+reads best:
+
+```yaml
+lr: 0.1
+
+post_include:
+  _notscope_: { default: }     # active unless `default` is activated
+  include: tuning.yaml         # its keys land here, overriding lr above
+```
+
+**An unactivated block never opens its file.** Scope resolution and include
+splicing alternate until they settle, so a block that is dropped takes its
+directive with it — a framework-specific overlay need not exist in a checkout that
+never activates that framework:
+
+```yaml
+torch_only:
+  _scope_: { framework: torch }
+  include: torch_overrides.yaml    # not opened unless --scope framework=torch
+```
+
+The alternation repeats, so an included file may itself contain a scope block
+carrying a further include. Two files that include *each other* from inside scope
+blocks expose one another's directive on every pass; that is capped and reported
+rather than hung on.
+
 ## Capturing the YAML include tree
 
 `load_config_with_paths(path)` returns both the loaded dict AND the ordered

@@ -788,15 +788,22 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Path]) -> Any:
+def _process_includes_recursive(
+    data: Any, current_path: Path, _included: Set[Path], spliced: Optional[List[Path]] = None
+) -> Any:
     from confluid.fluid import Fluid, ScopeBlock
 
     if isinstance(data, list):
-        return [_process_includes_recursive(item, current_path, _included) for item in data]
+        return [_process_includes_recursive(item, current_path, _included, spliced) for item in data]
 
-    # Traverse into Class/Fluid kwargs
+    # Traverse into Class/Fluid kwargs. The kwargs mapping goes through the DICT
+    # branch below rather than being comprehended over value-wise, so a marker's
+    # OWN ``include:`` key reaches the splice. Walking only the values left it as
+    # a constructor kwarg literally named ``include`` (P15). A marker is not
+    # conditional — it is always part of the document — so its include is spliced
+    # in this pass, unlike a scope block's (see below).
     if isinstance(data, Fluid):
-        data.kwargs = {k: _process_includes_recursive(v, current_path, _included) for k, v in data.kwargs.items()}
+        data.kwargs = cast(Dict[str, Any], _process_includes_recursive(data.kwargs, current_path, _included, spliced))
         return data
 
     # Scope blocks: walk their contents so nested includes still process. The body may
@@ -806,10 +813,10 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
     if isinstance(data, ScopeBlock):
         if isinstance(data.contents, dict):
             data.contents = {
-                k: _process_includes_recursive(v, current_path, _included) for k, v in data.contents.items()
+                k: _process_includes_recursive(v, current_path, _included, spliced) for k, v in data.contents.items()
             }
         else:
-            data.contents = _process_includes_recursive(data.contents, current_path, _included)
+            data.contents = _process_includes_recursive(data.contents, current_path, _included, spliced)
         return data
 
     if not isinstance(data, dict):
@@ -822,16 +829,55 @@ def _process_includes_recursive(data: Any, current_path: Path, _included: Set[Pa
     # empty. The raw parse had the key right the whole time; this walk broke it, and it had
     # done so since 2026-03-13. The dotted-key expansion downstream tolerates non-str keys.
     processed_dict: Dict[Any, Any] = {
-        k: _process_includes_recursive(v, current_path, _included) for k, v in data.items()
+        k: _process_includes_recursive(v, current_path, _included, spliced) for k, v in data.items()
     }
 
     if "include" in processed_dict:
-        processed_dict = _splice_includes(processed_dict, current_path, _included)
+        processed_dict = _splice_includes(processed_dict, current_path, _included, spliced)
 
     return processed_dict
 
 
-def _splice_includes(block: Dict[str, Any], current_path: Path, _included: Set[Path]) -> Dict[str, Any]:
+#: Backstop for :func:`_settle_scopes_and_includes`. Two files that each include
+#: the other from INSIDE a scope block expose one another's directive on every
+#: pass, so the alternation has no natural fixpoint — the per-splice
+#: ``_included`` set cannot see across passes. Ten is far above any real nesting
+#: depth; the point is to fail with a sentence instead of hanging.
+_MAX_SETTLE_PASSES = 10
+
+
+def _settle_scopes_and_includes(data: Any, base_path: Path, active: Dict[str, Optional[str]]) -> Any:
+    """Alternate scope resolution and include splicing until neither changes anything.
+
+    Includes are processed BEFORE scopes (see :func:`load`), which is what keeps a
+    conditional overlay optional: an unactivated block is dropped without its
+    ``include:`` ever being opened, so a framework-specific file need not exist in
+    a checkout that never activates that framework. The cost of that ordering is
+    that a block's OWN include is still unspliced when the block is activated —
+    its contents land in the parent as an ordinary ``include:`` key with nobody
+    left to process it, which is how it used to leak into the config as literal
+    data (P15).
+
+    Resolving again after splicing is what closes the loop, and it has to REPEAT:
+    an activated block can splice a file that itself carries a scope block whose
+    activation exposes a further include.
+    """
+    for _ in range(_MAX_SETTLE_PASSES):
+        data = resolve_scopes(data, active)
+        spliced: List[Path] = []
+        data = _process_includes_recursive(data, base_path, set(), spliced)
+        if not spliced:
+            return data
+    raise ConfigurationError(
+        f"include: directives inside scope blocks did not settle after {_MAX_SETTLE_PASSES} passes "
+        f"(starting from {base_path}) — two files including each other from inside a scope block "
+        f"expose one another's directive on every pass"
+    )
+
+
+def _splice_includes(
+    block: Dict[str, Any], current_path: Path, _included: Set[Path], spliced: Optional[List[Path]] = None
+) -> Dict[str, Any]:
     """Splice each included document AT THE POSITION its ``include:`` key was written.
 
     An ``include:`` behaves as if the included document were **pasted into the
@@ -867,14 +913,21 @@ def _splice_includes(block: Dict[str, Any], current_path: Path, _included: Set[P
     if isinstance(includes, str):
         includes = [includes]
     if not isinstance(includes, list):
-        return {k: v for k, v in block.items() if k != "include"}
+        # Used to consume the key and splice NOTHING, so `include: {path: a.yaml}`
+        # lost a whole file in silence (P15).
+        raise ConfigurationError(f"include: takes a path or a list of paths, got {includes!r} (in {current_path})")
 
     included: List[Dict[str, Any]] = []
     for inc_path in includes:
         if not isinstance(inc_path, str):
-            continue
+            # Used to be skipped, so the loss was invisible among its siblings (P15).
+            raise ConfigurationError(
+                f"include: entries must be paths, got {inc_path!r} in {includes!r} (in {current_path})"
+            )
         target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
         included.append(load_config(target_path, _included=set(_included)))
+        if spliced is not None:
+            spliced.append(target_path)
 
     segments: List[Dict[str, Any]] = []
     current: Dict[str, Any] = {}
@@ -911,6 +964,8 @@ def load(
     blocks (``_scope_:`` / ``_notscope_:``) in the YAML are resolved against
     this set before flow runs. See :mod:`confluid.scopes`.
     """
+    # The base path for a RELATIVE include, and for the post-scope settle below.
+    base_path = Path.cwd() / "string.yaml"
     if isinstance(data, (str, Path)):
         str_data = str(data)
         if (
@@ -919,22 +974,25 @@ def load(
             and len(str_data) < 255
             and resolve_config_path(str_data).exists()
         ):
+            base_path = resolve_config_path(str_data)
             data = load_config(data)
         else:
             data = cast(Dict[str, Any], yaml.load(str_data, Loader=ConfluidLoader) or {})
-            data = _process_includes_recursive(data, Path.cwd() / "string.yaml", set())
+            data = _process_includes_recursive(data, base_path, set())
 
     # Resolve scope blocks before anything else — they only carry until this
     # point. Aliases live at the top level of the loaded dict; pull them out
-    # before normalizing the activation map.
+    # before normalizing the activation map. Scope resolution and include
+    # splicing then alternate until they settle: an activated block's own
+    # `include:` is still unspliced at this point, because processing it earlier
+    # would open a file the block may be about to discard.
     if isinstance(data, dict):
         aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
-        active = normalize_active(scopes or [], aliases)
-        data = resolve_scopes(data, active)
+        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases))
     elif scopes:
-        # Non-dict roots (e.g. YAML starting with !class:) carry no metadata,
-        # but a ScopeBlock could still sit at the top level. Resolve directly.
-        data = resolve_scopes(data, normalize_active(scopes, None))
+        # Non-dict roots (e.g. a document whose root is a marker) carry no
+        # metadata, but a ScopeBlock could still sit at the top level.
+        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes, None))
 
     # Handle root-level Fluid objects (e.g., YAML starting with !class:)
     from confluid.fluid import Fluid

@@ -1278,3 +1278,64 @@ visited[id(obj)] = obj        # the value IS the pin; a Set[int] was the bug
 keepalive append) — but it ships WITH its pin and a test in `tests/test_memo_pinning.py`, or it
 does not merge. Never "optimize" a pin away because the object "should" be alive: the four bugs
 above were each that assumption.
+
+---
+
+## 17. Includes and scopes settle by alternating, not by one ordering
+
+*2026-08-15*
+
+**Context.** `include:` splicing and scope resolution are separate passes, and the order between
+them is a genuine dilemma rather than an arbitrary choice.
+
+Splicing **first** — the original order — means a scope block's own `include:` is still unspliced
+when the block is activated. The block's contents land in the parent as an ordinary `include:`
+key with nobody left to process it, so the directive leaked into the loaded config as literal
+data. The same value-wise walk left a marker's include as a constructor kwarg named `include`.
+
+Splicing **second**, or simply adding the missing splice call to the ScopeBlock branch, fixes
+those but breaks something else: the file of an *inactive* block gets opened. A framework-specific
+overlay would become mandatory in every checkout, including ones that never activate that
+framework — a config that loads today would start raising `ConfigFileNotFoundError` on a colleague's
+machine.
+
+Neither single ordering is correct, because the two passes each produce input for the other.
+
+**Decision.** Alternate them until they settle. `loader._settle_scopes_and_includes` runs
+`resolve_scopes` then `_process_includes_recursive`, repeating while a pass splices anything, and
+raising after `_MAX_SETTLE_PASSES`. A marker's kwargs are exempt from the deferral and splice in
+the normal pass: a marker is unconditional — always part of the document — so there is no file to
+avoid opening.
+
+The alternation must repeat rather than run twice: an activated block can splice a file that
+carries its own scope block whose activation exposes a further include. The cap exists because
+that recursion has no natural fixpoint in one pathological shape — two files including each other
+from inside scope blocks expose one another's directive forever, and the per-splice `_included`
+set is copied per branch, so it cannot see across passes.
+
+**Consequences.** Every load pays one extra document walk (the settling pass that finds nothing):
+measured at 0.11 ms against a 9–23 ms load of a 27 KB config. A conditional include is genuinely
+conditional — the file is not read, not merely discarded. A pathological include cycle across
+scope blocks reports a sentence naming the entry file instead of hanging.
+
+**Example.**
+
+```yaml
+lr: 0.1
+
+torch_only:
+  _scope_: { framework: torch }
+  include: torch_overrides.yaml   # spliced when activated; NOT OPENED otherwise
+```
+
+```python
+load("main.yaml")                                  # {'lr': 0.1} — the file need not exist
+load("main.yaml", scopes=["framework=torch"])      # torch_overrides.yaml spliced at the block's slot
+```
+
+**What you may change.** The cap, and which node kinds defer their include. What must not come
+back is a single fixed ordering: whichever one you pick, it is wrong for the other half of the
+problem. If a future preprocessor resolves interpolation into include paths, it joins this
+alternation rather than preceding it — an include path that depends on a config key is circular,
+and only values from outside the document (environment, CLI, scope activation) can resolve before
+the document exists.

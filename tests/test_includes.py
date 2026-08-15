@@ -232,3 +232,161 @@ def test_two_includes_paste_in_the_order_they_are_listed(tmp_path: Path) -> None
     data = load_config(main)
     assert data["shared"] == 2  # both pastes sit after my line; the later paste wins
     assert list(data) == ["only_first", "shared", "only_second"]
+
+
+# ---------------------------------------------------------------------------
+# `include:` works in EVERY position (BUGS-2026-08-13 P15)
+#
+# The directive was honoured only where the recursive walk reached the dict
+# branch. A marker's kwargs and a scope block's contents were walked VALUE-wise,
+# so their own `include:` key never reached the splice: inside a marker it became
+# a constructor kwarg named `include`, and inside a scope block it leaked into the
+# config as literal data.
+#
+# Scope blocks additionally settle ITERATIVELY — scopes resolve, then includes
+# splice, repeating — so an unactivated block's file is never opened. A
+# framework-specific overlay must not have to exist in a checkout that never
+# activates that framework.
+# ---------------------------------------------------------------------------
+
+from confluid import ConfigurationError, configurable, load  # noqa: E402
+from confluid.fluid import Target  # noqa: E402
+
+
+@configurable
+class Widget:
+    def __init__(self, size: int = 1, label: str = "w") -> None:
+        self.size, self.label = size, label
+
+
+def test_include_inside_a_markers_kwargs_splices(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text("size: 7\nlabel: from-frag\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("m:\n  _target_: Widget\n  include: frag.yaml\n")
+
+    marker = load(str(main), flow=False)["m"]
+
+    assert isinstance(marker, Target)
+    assert marker.kwargs == {"size": 7, "label": "from-frag"}
+    assert "include" not in marker.kwargs
+
+
+def test_include_inside_an_ACTIVE_scope_block_splices(tmp_path: Path) -> None:
+    """The `post_include` pattern: a conditional overlay applied at the block's slot."""
+    (tmp_path / "b.yaml").write_text("from_b: 2\nlr: 0.9\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("lr: 0.1\npost_include:\n  _notscope_: { default: }\n  include: b.yaml\n")
+
+    assert load(str(main), flow=False) == {"lr": 0.9, "from_b": 2}
+
+
+def test_include_inside_an_INACTIVE_scope_block_is_never_opened(tmp_path: Path) -> None:
+    """The property the iterative settle exists to protect.
+
+    The file does not exist at all. A framework overlay must not be mandatory in
+    a checkout that never activates that framework.
+    """
+    main = tmp_path / "main.yaml"
+    main.write_text("lr: 0.1\npost_include:\n  _scope_: { framework: torch }\n  include: does_not_exist.yaml\n")
+
+    assert load(str(main), flow=False) == {"lr": 0.1}
+
+
+def test_an_included_file_may_itself_carry_a_scoped_include(tmp_path: Path) -> None:
+    """The iteration has to REPEAT: splicing can expose a new scope block, whose
+    activation can expose a further include."""
+    (tmp_path / "inner.yaml").write_text("depth: 2\n")
+    (tmp_path / "outer.yaml").write_text(
+        "depth: 1\nnested:\n  _notscope_: { default: }\n  include: inner.yaml\n",
+    )
+    main = tmp_path / "main.yaml"
+    main.write_text("top:\n  _notscope_: { default: }\n  include: outer.yaml\n")
+
+    assert load(str(main), flow=False) == {"depth": 2}
+
+
+def test_keys_after_a_scoped_include_still_override_it(tmp_path: Path) -> None:
+    """Position semantics survive the extra pass: the block's own later key wins."""
+    (tmp_path / "b.yaml").write_text("lr: 0.9\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("w:\n  _notscope_: { default: }\n  include: b.yaml\n  lr: 0.5\n")
+
+    assert load(str(main), flow=False) == {"lr": 0.5}
+
+
+def test_a_scoped_include_cycle_is_bounded(tmp_path: Path) -> None:
+    """Two files each including the other from inside a scope block.
+
+    Each pass exposes the other's directive, so a naive loop never terminates.
+    The settle is capped and says so rather than hanging.
+    """
+    (tmp_path / "a.yaml").write_text("a_seen: 1\nnest:\n  _notscope_: { default: }\n  include: b.yaml\n")
+    (tmp_path / "b.yaml").write_text("b_seen: 1\nnest:\n  _notscope_: { default: }\n  include: a.yaml\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("start:\n  _notscope_: { default: }\n  include: a.yaml\n")
+
+    with pytest.raises(ConfigurationError, match="include|circular|passes"):
+        load(str(main), flow=False)
+
+
+def test_include_with_a_mapping_value_is_refused(tmp_path: Path) -> None:
+    """Today it consumed the key and spliced NOTHING — a whole file lost in silence."""
+    (tmp_path / "frag.yaml").write_text("size: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("a: 1\ninclude: {path: frag.yaml}\n")
+
+    with pytest.raises(ConfigurationError, match="include"):
+        load(str(main), flow=False)
+
+
+def test_a_non_string_include_entry_is_refused(tmp_path: Path) -> None:
+    """Today the entry was skipped and the rest spliced, so the loss was invisible."""
+    (tmp_path / "frag.yaml").write_text("size: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("a: 1\ninclude: [frag.yaml, 42]\n")
+
+    with pytest.raises(ConfigurationError, match="include"):
+        load(str(main), flow=False)
+
+
+# --- the con cases: every position that already worked must be untouched -----
+
+
+def test_a_plain_dict_include_is_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text("size: 7\nlabel: from-frag\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("a: 1\ninclude: frag.yaml\n")
+
+    assert load(str(main), flow=False) == {"a": 1, "size": 7, "label": "from-frag"}
+
+
+def test_a_nested_dict_include_is_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text("size: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("outer:\n  inner:\n    include: frag.yaml\n    keep: me\n")
+
+    assert load(str(main), flow=False) == {"outer": {"inner": {"size": 7, "keep": "me"}}}
+
+
+def test_a_list_item_include_is_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text("size: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("items:\n  - include: frag.yaml\n    x: 1\n")
+
+    assert load(str(main), flow=False) == {"items": [{"size": 7, "x": 1}]}
+
+
+def test_a_list_of_include_paths_is_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "a.yaml").write_text("from_a: 1\n")
+    (tmp_path / "b.yaml").write_text("from_b: 2\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("x: 1\ninclude: [a.yaml, b.yaml]\n")
+
+    assert load(str(main), flow=False) == {"x": 1, "from_a": 1, "from_b": 2}
+
+
+def test_a_scope_block_without_an_include_is_unchanged(tmp_path: Path) -> None:
+    main = tmp_path / "main.yaml"
+    main.write_text("lr: 0.1\npost_block:\n  _notscope_: { default: }\n  lr: 0.9\n  from_b: 2\n")
+
+    assert load(str(main), flow=False) == {"lr": 0.9, "from_b": 2}

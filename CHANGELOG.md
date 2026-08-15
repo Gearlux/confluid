@@ -64,6 +64,30 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`include:` is honoured in every position, and conditional includes work** (BUGS-2026-08-13
+  P15). The directive was spliced only where the recursive walk reached its dict branch; a
+  marker's kwargs and a scope block's contents were walked value-wise, so their own `include:`
+  key never got there. Inside a marker it became a constructor kwarg literally named `include`
+  (`Target(Widget, {'include': 'frag.yaml'})`); inside a scope block it leaked into the loaded
+  config as literal data. Both now splice. A scope block's include is deliberately NOT processed
+  before activation — that would open a file the block may be about to discard — so `load()`
+  alternates scope resolution and include splicing until a pass splices nothing. The alternation
+  repeats, because an activated block can splice a file carrying its own scope block carrying its
+  own include, and it is capped so that two files including each other from inside scope blocks
+  report a sentence instead of hanging. This makes the conditional-overlay spelling work:
+
+  ```yaml
+  lr: 0.1
+  post_include:
+    _notscope_: { default: }
+    include: tuning.yaml        # spliced here; not opened when the block is inactive
+  ```
+
+  Two malformed spellings now raise instead of degrading: `include: {path: a.yaml}` consumed the
+  key and spliced NOTHING (a whole file lost in silence), and a non-string entry in the list was
+  skipped among its siblings. Cost is one extra document walk per load — measured 0.11 ms against
+  a 9–23 ms load of a 27 KB config. Pinned by the P15 group in `tests/test_includes.py`.
+
 - **A duplicate mapping key is refused instead of silently discarding a value** (BUGS-2026-08-13
   P11). Two `include:` directives in one document lost a whole FILE before the loader ever ran —
   PyYAML collapses a duplicate key at parse, keeping the last value with no warning — and the

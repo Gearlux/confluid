@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from confluid import (
+    ConfigurationError,
     Fluid,
     Reference,
     Target,
@@ -180,8 +181,12 @@ def test_loader_coverage(tmp_path: Path) -> None:
     inc = tmp_path / "inc.yaml"
     inc.write_text("v: 1")
     main = tmp_path / "main.yaml"
-    main.write_text("include: [ 123 ]")  # non-string inc_path
-    load_config(main)
+    # A non-string entry is REFUSED, not skipped (BUGS-2026-08-13 P15): skipping it
+    # dropped a file silently among its siblings. Pinned in full by
+    # tests/test_includes.py::test_a_non_string_include_entry_is_refused.
+    main.write_text("include: [ 123 ]")
+    with pytest.raises(ConfigurationError, match="include"):
+        load_config(main)
     main.write_text(f"include: [ {inc.name} ]")
     assert load_config(main)["v"] == 1
 
