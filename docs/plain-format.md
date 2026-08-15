@@ -203,6 +203,32 @@ x: {_target_: Box, _partial_: yes_please}   # _partial_ must be true or false
 
 Each message carries the file, line and column of the offending mapping.
 
+**A duplicate key is refused.** The YAML spec restricts a mapping's keys to be
+unique and lists non-unique keys among its loading failure points, but leaves the
+processor's response open — PyYAML keeps the last value silently. Confluid raises
+instead, because the discarded value is invisible:
+
+```yaml
+include: a.yaml
+x: 1
+include: b.yaml      # duplicate key 'include' at main.yaml:3:1 (first written at line 1)
+```
+
+`a.yaml` would never have been read, and the survivor would splice at line 1's
+position (a collapsed duplicate keeps first-insertion order), so `x: 1` would
+beat a value from `b.yaml` the author wrote *below* it. To pull in several files,
+write one key with a list:
+
+```yaml
+x: 1
+include: [a.yaml, b.yaml]      # both read, both override x
+```
+
+The same refusal applies to any repeated key — `lr: 0.1` … `lr: 0.5` in one
+mapping is a differently-trained run, not a preference. A `<<:` merge key
+overridden by a local key of the same name is *not* a duplicate; that is ordinary
+override semantics.
+
 **`_partial_` pairs with `_target_` and nothing else.** It is a modifier on
 *construction*, and `_target_` is the only key that constructs — so it has no
 meaning beside `_ref_`, `_clone_` or a `_scope_` block, and those are refused
