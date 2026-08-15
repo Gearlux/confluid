@@ -64,6 +64,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A marker delivered by a YAML merge key (`<<:`) is now converted** (BUGS-2026-08-13 P2).
+  `derived: {<<: *base}` where the anchor carries `_target_` loaded as an inert `dict` holding a
+  literal `_target_` key — and `flow()` did not rescue it, so it reached the consumer as data.
+  Merge keys are core YAML 1.1 and the standard many-variants-of-one-node idiom, which the
+  plain-format promise ("ordinary YAML that `yaml.safe_load` reads") has to cover. Only the
+  opt-in GATE was blind: it read the node's literal scalar keys, and a merge key's literal key is
+  `<<`. The conversion itself always worked — one unrelated literal reserved key on the node was
+  enough to make the anchor's `_target_` resolve — so the fix is confined to the key-name read
+  (`loader._node_key_names`), which now sees through `<<: *a` and `<<: [*a, *b]`, recurses for a
+  chained merge, and carries a pinned cycle guard for a self-referential merge. Still no values
+  are constructed to answer the gate, so the ordinary-mapping fast path is unchanged. Pinned by
+  the merge-key group in `tests/test_plain_format.py`, including the two must-not-change cases
+  (a quoted `"<<"` stays ordinary data; an ordinary merge key still matches stock `safe_load`).
+
 - **Every id()-keyed store now pins the object whose address keys it** (BUGS-2026-08-13
   X1/X3/E1/E2/I7 — one root cause, five faces, each measured): `configure()` silently skipped
   whole subtrees when gc recycled a walk temporary's address (450 of 512 objects unconfigured

@@ -878,6 +878,14 @@ reserved keys delegates straight to PyYAML's own constructor, so the ordinary pa
 performance and its alias/recursion behaviour exactly. Markers built this way are stamped with
 their node's source location, so the new spelling loses none of the tag form's diagnostics.
 
+"Key names" means the names the node *carries*, not the ones it spells literally: the read sees
+through merge keys (`<<:`). Reading literal keys was the original implementation and it made
+`derived: {<<: *base}` — the standard many-variants-of-one-node idiom, and core YAML 1.1 — load as
+an inert dict holding a literal `_target_`. The conversion below the gate was never at fault: it
+resolves the merge already, which is why one unrelated literal reserved key on the same node made
+the anchor's `_target_` work. Widening the read keeps the "construct no values" property that the
+fast path depends on, because a merge key can be followed through the *node* graph.
+
 **Consequences.**
 
 - A confluid config can be plain YAML. That is the whole point, and it is testable in one line:
@@ -887,6 +895,10 @@ their node's source location, so the new spelling loses none of the tag form's d
   rather than a surprise in a run. The tag path is retired once the configs are migrated.
 - A malformed marker now raises a located `ConfigurationError` — the opposite of the silent
   kwarg-dropping the tag grammar allowed.
+- YAML's own reuse machinery applies to markers, so anchors and `<<:` compose with `_target_`
+  without a confluid-specific spelling. Anything that widens the opt-in test has to preserve two
+  properties: it constructs no values, and it identifies a merge key by PyYAML's merge *tag* — a
+  quoted `"<<"` is an ordinary string key and must stay data.
 - `${ref:…}` / `${clone:…}` / `${env:…}` join `${...}` as resolver-style placeholders. They are
   checked before the dotted-name test, because `oc.env` contains a dot and would otherwise route
   to config-key lookup.
@@ -897,13 +909,17 @@ their node's source location, so the new spelling loses none of the tag form's d
 
 ```yaml
 seed: 7                              # broadcasts into both nodes below
-trainer:
+trainer: &base
   _target_: Trainer
   model: {_target_: MLP, hidden: 32} # built during load()
   optimizer:
     _target_: SGD
     _partial_: true                  # never auto-built; flow(slot, params=…) later
     lr: 0.5
+
+sweep:                               # YAML's own reuse, no confluid spelling
+  <<: *base                          # a Trainer marker, like the literal keys
+  seed: 9                            # the node's own key beats the merged one
 ```
 
 ```python

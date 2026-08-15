@@ -318,6 +318,20 @@ PyYAML's own constructor — that fast path is what preserves ordinary-mapping p
 / recursion behaviour. Markers built this way are stamped via the shared `_stamp_loc`, so the new
 spelling keeps the tag form's located diagnostics.
 
+**Rule — the key-name read SEES THROUGH merge keys, and that is `loader._node_key_names`.** A
+`<<:` node's own literal key is `<<`, so reading the literal scalar keys made an anchored marker
+(`<<: *base`, the standard many-variants-of-one-node idiom, core YAML 1.1) read as "carries no
+reserved key" and load as an inert dict carrying a literal `_target_` — which `flow()` did not
+rescue either (P2). Never simplify the helper back to a comprehension over `node.value`. Three
+properties are load-bearing and each is pinned: it matches the MERGE TAG, never the text `<<`
+(a quoted `"<<"` is an ordinary string key); it handles both `<<: *a` and `<<: [*a, *b]`, and
+recurses for a chained merge; and its `seen` store is `Dict[int, Any]` whose value is the node,
+because a self-referential merge composes fine in PyYAML (`a: &x {<<: *x, k: 1}` → `{'k': 1}`)
+and would otherwise recurse forever. Note the conversion itself never needed fixing —
+`construct_mapping(deep=True)` always resolved the merge, which is why ONE unrelated literal
+reserved key on the node was enough to make the anchor's `_target_` work.
+**Pins.** the merge-key group in `tests/test_plain_format.py`.
+
 **Rule.** A malformed marker raises a located `ConfigurationError` at load. Never degrade one
 silently — that failure mode is precisely what this format replaces (`!class:Model(a=1, b=2)`,
 with one space, produced a target named `Model(a=1,` and dropped both kwargs, with no error).

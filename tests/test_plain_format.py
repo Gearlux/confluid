@@ -8,6 +8,7 @@ someone's training run.
 """
 
 import warnings
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
@@ -307,6 +308,103 @@ def test_a_key_named_target_without_underscores_is_ordinary() -> None:
     """``target`` is a real parameter name in the wild; only ``_target_`` is reserved."""
     graph = load("plain: {target: something}")
     assert graph["plain"] == {"target": "something"}
+
+
+# --------------------------------------------------------------------------- #
+# A reserved key delivered by a MERGE KEY (BUGS-2026-08-13 P2)
+#
+# ``<<:`` is core YAML 1.1 and the standard "many variants of one node" idiom,
+# so the plain-format promise ("ordinary YAML that yaml.safe_load reads") has to
+# cover it. The conversion itself always did: ``construct_mapping(deep=True)``
+# resolves the merge, which is why a node carrying ONE literal reserved key
+# picked up the anchor's ``_target_`` fine. Only the node-key GATE was blind —
+# it read the literal scalar keys, and a merge key's literal key is ``<<``.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_merge_key_delivering_target_converts_like_the_literal_spelling() -> None:
+    """The P2 case: `<<: *b` where the anchor carries `_target_`.
+
+    Before the fix this produced an inert ``dict`` carrying a literal
+    ``_target_`` key, which ``flow()`` did not rescue either — it came out of
+    the pipeline as ``{'_target_': 'collections.Counter'}``.
+    """
+    merged = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n", flow=False)
+    literal = load("base:\n  _target_: collections.Counter\nderived:\n  _target_: collections.Counter\n", flow=False)
+
+    assert isinstance(merged["derived"], Target)
+    assert type(merged["derived"]) is type(literal["derived"])
+    assert merged["derived"].target == literal["derived"].target
+    assert flow(merged["derived"]) == flow(literal["derived"])
+
+
+def test_a_merged_marker_takes_the_nodes_own_kwarg_override() -> None:
+    """Merge-key precedence is unchanged: the node's own key beats the anchor's."""
+    graph = load("base: &b\n  _target_: Box\n  size: 1\nderived:\n  <<: *b\n  size: 2\n")
+    assert graph["derived"].size == 2
+
+
+def test_a_merge_of_several_anchors_converts() -> None:
+    """``<<: [*a, *b]`` — YAML allows a LIST of anchors; the gate must see through each."""
+    graph = load(
+        "one: &a\n  _target_: Box\ntwo: &c\n  size: 9\nderived:\n  <<: [*a, *c]\n",
+    )
+    assert graph["derived"].size == 9
+
+
+def test_a_chained_merge_key_converts() -> None:
+    """The anchor is itself built from a merge key — the walk has to recurse."""
+    graph = load(
+        "root: &r\n  _target_: collections.Counter\nmid: &m\n  <<: *r\nderived:\n  <<: *m\n",
+        flow=False,
+    )
+    assert isinstance(graph["derived"], Target)
+
+
+def test_a_merge_key_delivering_a_reserved_key_other_than_target_converts() -> None:
+    """The gate tests the whole RESERVED_KEYS set, not ``_target_`` alone."""
+    graph = load("proto: {_target_: collections.Counter}\nanchor: &a\n  _ref_: proto\nderived:\n  <<: *a\n")
+    assert isinstance(graph["derived"], Counter)
+
+
+def test_a_merge_key_plus_a_literal_reserved_key_still_converts() -> None:
+    """The half that already worked, pinned so the gate change cannot regress it.
+
+    One literal reserved key on the node was enough to get past the old gate,
+    and the anchor's ``_target_`` was then picked up correctly — the measurement
+    that proved the conversion machinery itself was never the problem.
+    """
+    graph = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n  _partial_: true\n", flow=False)
+    assert isinstance(graph["derived"], Partial)
+    assert graph["derived"].target == "collections.Counter"
+
+
+def test_a_quoted_merge_key_is_ordinary_data() -> None:
+    """False-positive guard: only PyYAML's MERGE tag is a merge key.
+
+    A quoted ``"<<"`` is an ordinary string key — stock ``safe_load`` keeps it as
+    data, so the gate must not treat its value as a node to look inside.
+    """
+    doc = 'base: &b\n  _target_: collections.Counter\nderived:\n  "<<": plain\n'
+    assert load(doc, flow=False)["derived"] == {"<<": "plain"}
+    assert yaml.safe_load(doc)["derived"] == {"<<": "plain"}
+
+
+def test_an_ordinary_merge_key_is_untouched() -> None:
+    """The con case: a merge key carrying no reserved key stays plain data.
+
+    This is the fast path the gate exists to protect — the result must still
+    match stock ``safe_load`` exactly.
+    """
+    doc = "defaults: &d\n  batch_size: 32\n  workers: 4\ntrain:\n  <<: *d\n  workers: 8\n"
+    assert load(doc, flow=False)["train"] == {"batch_size": 32, "workers": 8}
+    assert load(doc, flow=False)["train"] == yaml.safe_load(doc)["train"]
+
+
+def test_a_self_referential_merge_key_terminates() -> None:
+    """A node whose merge key aliases ITSELF composes fine in PyYAML, so the
+    gate's walk needs a cycle guard or it recurses forever."""
+    assert load("a: &x\n  <<: *x\n  k: 1\n", flow=False)["a"] == {"k": 1}
 
 
 # --------------------------------------------------------------------------- #
