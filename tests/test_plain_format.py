@@ -259,7 +259,13 @@ def test_asking_for_an_undeclared_scope_value_still_raises() -> None:
     "doc, match",
     [
         ("x: {_target_: Box, _ref_: y}", "Conflicting reserved keys"),
-        ("x: {_partial_: true, lr: 1}", "needs a discriminator key"),
+        ("x: {_partial_: true, lr: 1}", "_partial_ needs _target_ in the same mapping"),
+        # BUGS-2026-08-13 P10 — the modifier is read by the _target_ branch alone,
+        # so every other discriminator used to strip and discard it silently.
+        ("p: {_target_: Box}\nx: {_ref_: p, _partial_: true}", "_partial_ only modifies _target_"),
+        ("p: {_target_: Box}\nx: {_clone_: p, _partial_: true}", "_partial_ only modifies _target_"),
+        ("x:\n  _scope_: {mode: fast}\n  _partial_: true\n  a: 1", "_partial_ only modifies _target_"),
+        ("x:\n  _notscope_: {mode: }\n  _partial_: true\n  a: 1", "_partial_ only modifies _target_"),
         ("x: {_target_: 42}", "_target_ must be a non-empty string"),
         ("x: {_target_: ''}", "_target_ must be a non-empty string"),
         ("x: {_target_: Box, _partial_: sometimes}", "_partial_ must be true or false"),
@@ -272,6 +278,86 @@ def test_asking_for_an_undeclared_scope_value_still_raises() -> None:
 def test_malformed_markers_raise(doc: str, match: str) -> None:
     with pytest.raises(ConfigurationError, match=match):
         load(doc)
+
+
+# --------------------------------------------------------------------------- #
+# `_partial_` beside a non-`_target_` discriminator (BUGS-2026-08-13 P10)
+#
+# `_partial_` is a MODIFIER, read by the `_target_` branch alone. Every other
+# discriminator returns from `_reserved_to_marker` before that read, so the key
+# was stripped from the body and thrown away — no error, no warning, and the
+# marker flowed EAGERLY. What made it indefensible is that the lone-modifier
+# error advertised the four spellings that do not work.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_lone_modifier_error_names_only_the_key_that_works() -> None:
+    """The message used to list `_ref_` / `_clone_` / `_scope_` / `_notscope_` as
+    valid partners for `_partial_` — the exact four the code then ignored."""
+    with pytest.raises(ConfigurationError) as exc:
+        load("x: {_partial_: true, lr: 1}")
+
+    message = str(exc.value)
+    assert "_partial_ needs _target_ in the same mapping" in message
+    for advertised in ("_ref_", "_clone_", "_scope_", "_notscope_"):
+        assert advertised not in message, f"the message still advertises {advertised}"
+
+
+@pytest.mark.parametrize(
+    "doc, hint",
+    [
+        ("p: {_target_: Box}\nx: {_ref_: p, _partial_: true}", "put it on the node _ref_ points at"),
+        ("p: {_target_: Box}\nx: {_clone_: p, _partial_: true}", "put it on the node _clone_ points at"),
+        ("x:\n  _scope_: {mode: fast}\n  _partial_: true\n  a: 1", "put it on the marker inside the _scope_ block"),
+    ],
+)
+def test_the_refusal_names_the_spelling_that_works(doc: str, hint: str) -> None:
+    """A refusal that does not say what to write instead just relocates the problem."""
+    with pytest.raises(ConfigurationError) as exc:
+        load(doc)
+    assert hint in str(exc.value)
+
+
+def test_the_refusal_carries_the_yaml_location() -> None:
+    """Every error raised while processing a document names its file:line:col."""
+    with pytest.raises(ConfigurationError, match=r"<unicode string>:2:4"):
+        load("p: {_target_: Box}\nx: {_ref_: p, _partial_: true}")
+
+
+def test_a_block_that_never_activates_still_raises() -> None:
+    """The refusal is a PARSE-time check, so it does not depend on activation.
+
+    An unactivated block is dropped without its contents being examined, but the
+    block node itself is still constructed — otherwise the same document would be
+    valid or invalid depending on the run's `--scope` flags, which is the worst
+    possible place to hide a malformed marker.
+    """
+    with pytest.raises(ConfigurationError, match="_partial_ only modifies _target_"):
+        load("x:\n  _scope_: {mode: fast}\n  _partial_: true\n  a: 1")
+
+
+def test_partial_beside_target_is_untouched() -> None:
+    """The control: the one pairing that always worked, and must keep working."""
+    marker = load("opt: {_target_: Opt, _partial_: true, lr: 0.5}", flow=False)["opt"]
+    assert isinstance(marker, Partial)
+    assert marker.kwargs["lr"] == 0.5
+
+
+def test_the_working_spelling_for_a_deferred_referent() -> None:
+    """What the refusal points at: deferral belongs on the node being CONSTRUCTED.
+
+    Nothing is unexpressible — this is the spelling the error message names.
+    """
+    graph = load("proto: {_target_: Opt, _partial_: true, lr: 0.5}\nopt: {_ref_: proto}", flow=False)
+    assert isinstance(graph["opt"], Partial)
+    assert graph["opt"].kwargs["lr"] == 0.5
+
+
+def test_a_scope_block_without_the_modifier_is_untouched() -> None:
+    """The con case: the refusal must not fire on an ordinary scope block."""
+    doc = "x:\n  _scope_: {mode: fast}\n  a: 1\n"
+    assert load(doc, scopes=["mode=fast"], flow=False) == {"a": 1}
+    assert load(doc, flow=False) == {}
 
 
 def test_the_error_names_the_yaml_location() -> None:

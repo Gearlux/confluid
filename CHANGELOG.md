@@ -64,6 +64,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`_partial_` beside a non-`_target_` discriminator is refused instead of swallowed**
+  (BUGS-2026-08-13 P10). `{_ref_: proto, _partial_: true}` stripped the modifier and flowed
+  EAGERLY — no error, no warning, and the key gone from the marker's kwargs so nothing downstream
+  could notice. Same for `_clone_` and for a `_scope_` / `_notscope_` block. `_partial_` modifies
+  CONSTRUCTION and `_target_` is the only key that constructs, so the pairing now raises a located
+  `ConfigurationError` naming the spelling that works (put the modifier on the node being
+  constructed, then reference it). The lone-modifier error is corrected in the same change: it
+  listed all five discriminators as valid partners while the code honoured exactly one — a
+  program emitting false documentation about itself. Pinned by the P10 group in
+  `tests/test_plain_format.py`, including the parse-time property (an unactivated scope block
+  still raises, so a document cannot be valid or invalid depending on `--scope`) and the
+  false-positive guard (an ordinary scope block is untouched).
+
 - **A marker delivered by a YAML merge key (`<<:`) is now converted** (BUGS-2026-08-13 P2).
   `derived: {<<: *base}` where the anchor carries `_target_` loaded as an inert `dict` holding a
   literal `_target_` key — and `flow()` did not rescue it, so it reached the consumer as data.

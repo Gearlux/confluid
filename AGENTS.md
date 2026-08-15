@@ -336,6 +336,22 @@ reserved key on the node was enough to make the anchor's `_target_` work.
 silently — that failure mode is precisely what this format replaces (`!class:Model(a=1, b=2)`,
 with one space, produced a target named `Model(a=1,` and dropped both kwargs, with no error).
 
+**Rule — `_partial_` pairs with `_target_` and NOTHING else, refused at ONE site.** It modifies
+CONSTRUCTION and `_target_` is the only key that constructs, so beside `_ref_` / `_clone_` /
+`_scope_` / `_notscope_` it raises a located `ConfigurationError` naming the working spelling
+(put the modifier on the node being constructed, then reference it). The check sits in
+`_reserved_to_marker` immediately after `key = present[0]` — BEFORE the per-discriminator
+branches, because each of those returns before the `_target_` branch's `PARTIAL_KEY` read, which
+is exactly how the key used to be stripped into oblivion and flowed EAGERLY with no error (P10).
+Never move the check into a branch. Two related properties: the refusal is PARSE-time, so an
+unactivated `_scope_` block carrying the modifier still raises (a document must not be valid or
+invalid depending on the run's `--scope` flags), and the lone-modifier message must name
+`_target_` ALONE — it advertised all five discriminators while honouring one, which is a program
+emitting false documentation about itself.
+**Pins.** the P10 group in `tests/test_plain_format.py`, incl.
+`::test_the_lone_modifier_error_names_only_the_key_that_works` and
+`::test_a_scope_block_without_the_modifier_is_untouched` (the false-positive guard).
+
 **Rule — scope grammar.** `loader._parse_scope_suffix` is the ONE splitter for every activation
 spelling (the tag suffix, the `_scope_:` value, a CLI `--scope` argument). Never add a second.
 
