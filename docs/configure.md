@@ -82,13 +82,13 @@ the slot holds (marker → tune; live `@configurable` child → recurse; plain d
 assign; any other live object → a located refusal). See
 [Broadcasting → What a mapping at a slot means](broadcasting.md#what-a-mapping-at-a-slot-means--decided-by-what-the-slot-holds).
 
-## Deferred slots are tuned, not built
+## Marker slots are tuned, not built
 
-A `_partial_` marker — or a `PartialClass(...)` body slot — stands for an object
-built *later*, usually because a constructor argument only exists at runtime
-(`params=model.parameters()`). `configure()` treats such a slot exactly as
-loading does: keys aimed at it are merged **into the marker's kwargs**, and
-nothing is constructed.
+An attribute holding a marker — `PartialClass(...)` for a slot built *later*
+(usually because a constructor argument only exists at runtime,
+`params=model.parameters()`), or a plain `Target(...)` recipe — is treated
+exactly as loading treats it: keys aimed at it are merged **into the marker's
+kwargs**, and nothing is constructed here.
 
 ```python
 from confluid import PartialClass, configurable, configure, flow
@@ -107,6 +107,27 @@ configure(trainer, config={"lr": 0.5})
 trainer.optimizer.kwargs["lr"]      # 0.5 — configured ...
 opt = flow(trainer.optimizer, params=[...])   # ... and built later, by its owner
 ```
+
+A plain `Target(...)` slot behaves the same way. It used to be flowed into a
+throwaway object which was configured and then discarded — so the marker kept
+its defaults while the report said the key had been applied:
+
+```python
+@configurable
+class Host:
+    def __init__(self) -> None:
+        self.opt = Target(Opt)          # a recipe, not a deferred slot
+
+host = Host()
+configure(host, config={"lr": 0.75})
+host.opt.kwargs            # {'lr': 0.75}
+flow(host.opt).lr          # 0.75   (was 0.0, built from the defaults)
+```
+
+Live objects held **inside** a marker's kwargs (`Target(Stage, dep=widget)`) are
+still walked and configured — the marker is not a wall, only a value that is not
+built yet. `_ref_` and `_clone_` slots are not markers of this kind and keep
+resolving as before.
 
 The rationale — why deferral withholds construction but never configuration —
 is recorded in [Architecture Decisions](architecture.md) §5.

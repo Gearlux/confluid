@@ -33,6 +33,7 @@ inside a :func:`confluid.collect_report` block the ambient report is adopted,
 so a load-then-configure pass aggregates into one report.
 """
 
+import inspect
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
@@ -56,7 +57,7 @@ from confluid.broadcast import (
 )
 from confluid.engine import _ctor_params, _maybe_solidify, flow
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Partial, Target
+from confluid.fluid import Target
 from confluid.loader import ConfluidLoader, load_config
 from confluid.merger import expand_dotted_keys
 from confluid.report import ConfigurationReport
@@ -185,12 +186,33 @@ def _walk(
     if obj is None:
         return
 
-    if isinstance(obj, Partial):
-        # A deferred slot is NOT walked into, and is NOT tuned here either — its OWNER
+    if isinstance(obj, Target):
+        # A marker slot is NOT walked into, and is NOT tuned here either — its OWNER
         # tunes it (see ``_apply``), because only the owner's scan knows where each of
         # its blocks sat relative to the bare keys. Flowing it would build the target
         # early (an optimizer with no ``params``) and configure an object that is never
         # written back to the attribute, discarding every key applied to it.
+        #
+        # ``Target``, not ``Partial``: the hazard the paragraph above describes is not
+        # about deferral, it is about the marker being the thing the attribute HOLDS.
+        # For a plain ``self.opt = Target(Opt)`` the next line used to commit exactly
+        # that — flow a temporary, configure it, discard it, and record the key as
+        # applied, so a later ``flow(obj.opt)`` built with the defaults (C4).
+        # ``Partial`` IS a ``Target``, so deferred slots are unaffected; ``Reference``
+        # and ``Clone`` are NOT, so they stay on the flow path and keep raising rather
+        # than degrading to a silent no-op.
+        obj_id = id(obj)
+        if obj_id in visited:
+            return
+        visited[obj_id] = obj  # the value IS the pin — see the note at the call site
+        # A marker's kwargs can hold LIVE objects (``Target(Stage, dep=widget)``), and
+        # those are part of the graph: a bare key must still reach them. Flowing the
+        # marker used to reach them as a side effect, so NOT walking here would trade
+        # one silent skip for another — measured against
+        # ``test_memo_pinning.py::test_configure_reaches_every_object_…``, which went
+        # from 0 to 64 missed widgets.
+        for kwarg_value in list(obj.kwargs.values()):
+            _walk(kwarg_value, view, context, visited, report)
         return
 
     # Materialize marker-valued attrs, but with solidify SUPPRESSED: since
@@ -224,10 +246,23 @@ def _walk(
 
     # Recurse into instance attributes only (vars, not dir) — no getters fire.
     # Scalars / __slots__ objects carry no __dict__ and simply end the walk.
+    #
+    # ROUTINES and CLASSES are skipped, not everything CALLABLE: an op and a
+    # framework module define ``__call__``, so the old ``callable()`` filter
+    # skipped every one of them — the load path broadcasts into the same class
+    # fine (C3). Such a child was usually still reached BY ACCIDENT, through the
+    # ctor-kwargs capture dict sitting in ``__dict__``, which is why the defect
+    # surfaced only for ``capture=False`` or for a constructor that stores
+    # something other than what it captured (there the discarded object was
+    # configured and the key reported applied).
+    #
+    # ``isclass`` is not decoration: a class object's ``__dict__`` is a TRUTHY
+    # mappingproxy of its own attributes, so recursing into one would walk class
+    # internals and could write a config key onto the CLASS.
     obj_dict = getattr(obj, "__dict__", None)
     if obj_dict:
         for attr_val in list(obj_dict.values()):
-            if not callable(attr_val):
+            if not (inspect.isroutine(attr_val) or inspect.isclass(attr_val)):
                 _walk(attr_val, child_view, context, visited, report)
 
     # Post-order finalize: the suppressed solidify from the flow() above is
@@ -409,7 +444,7 @@ def _apply(
     # Partial. Every deferred slot is visited — not only those a block addressed — since a
     # bare key with nothing competing must still reach one.
     for attr_name, slot in list(vars(obj).items()):
-        if isinstance(slot, Partial):
+        if isinstance(slot, Target):
             _tune_deferred(slot, view, report, beaten=sink.beaten_per_slot.get(attr_name, frozenset()))
 
     # Splice this object's addressed blocks into the subtree view at their
