@@ -64,6 +64,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Every id()-keyed store now pins the object whose address keys it** (BUGS-2026-08-13
+  X1/X3/E1/E2/I7 — one root cause, five faces, each measured): `configure()` silently skipped
+  whole subtrees when gc recycled a walk temporary's address (450 of 512 objects unconfigured
+  under DEFAULT thresholds — the visited store is now id→object, so recording IS pinning); a
+  ctor-local `flow(Target(...))` — the documented dependency idiom — could hand an object ANOTHER
+  object's dependency via a recycled memo address (the public-`flow()` memo write now pins, like
+  the two engine-internal writes); the slot-tune path's memo write shared instances across tuned
+  slots (5 distinct objects for 12 slots) and stamped `_order_resolved` onto the BUILT instance
+  (an `AttributeError` for `__slots__` targets — the stamp is now markers-only); and the slots
+  cache could serve a freed unhashable callable's slots to its address's next tenant (entries now
+  store `(target, slots)`). Pinned by `tests/test_memo_pinning.py`, each test proven red on the
+  pre-fix code.
+
 - **A mapping addressed at a slot means ONE thing, on both paths — decided by what the slot
   holds** (BUGS-2026-08-13 C1/C1b; architecture record 15). Two silent destructions are gone:
   a live `@configurable` child (`self.engine = Engine(-1)`) overridden by `engine: {power: 50}`

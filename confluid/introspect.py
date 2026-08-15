@@ -403,7 +403,10 @@ class Slot(NamedTuple):
 #: the ONE clear site and already imports this module — the reverse of the
 #: ``engine._parent_blacklist_cache`` arrangement, for the same reason: this
 #: module imports only the stdlib and must keep doing so.
-_slots_cache: Dict[Any, Tuple["Slot", ...]] = {}
+#: The VALUE is ``(target, slots)``: an id-keyed entry (an UNHASHABLE callable)
+#: must pin the object whose address keys it — a freed callable's recycled id
+#: served the previous callable's slots (BUGS-2026-08-13 I7; the memo mandate).
+_slots_cache: Dict[Any, Tuple[Any, Tuple["Slot", ...]]] = {}
 
 
 def slots(target: Any) -> Tuple["Slot", ...]:
@@ -427,7 +430,7 @@ def slots(target: Any) -> Tuple["Slot", ...]:
     cache_key = target if _hashable(target) else id(target)
     cached = _slots_cache.get(cache_key)
     if cached is not None:
-        return cached
+        return cached[1]
 
     found: List[Slot] = []
     seen: Set[str] = set()
@@ -460,7 +463,7 @@ def slots(target: Any) -> Tuple["Slot", ...]:
 
     found.extend(_non_signature_slots(target, seen))
     result = tuple(found)
-    _slots_cache[cache_key] = result
+    _slots_cache[cache_key] = (target, result)  # the first element is the PIN
     return result
 
 
