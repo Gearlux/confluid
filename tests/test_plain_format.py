@@ -653,3 +653,71 @@ def test_the_reserved_key_format_is_silent(tmp_path: Path) -> None:
     caught = _load_capturing("model:\n  _target_: Model\n  layers: 3\n", tmp_path, name="plain.yaml")
 
     assert caught == []
+
+
+# --------------------------------------------------------------------------- #
+# A reserved key inside a DOTTED key is refused (BUGS-2026-08-13 P16)
+#
+# Conversion is parse-time; `expand_dotted_keys` runs post-parse. So `_target_`
+# arriving by the dotted route is too late to make its node a marker, and the
+# document keeps a literal `_target_` key as ordinary data that `flow()` does not
+# rescue either. Every other key works dotted — including a kwarg merging INTO an
+# already-nested marker — which is what makes the failure so easy to miss.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "doc, shape",
+    [
+        ("model._target_: Box", "top-level, reserved segment last"),
+        ("outer:\n  inner._target_: Box", "nested — expansion is top-level only, so it stayed literal"),
+        ("_target_.foo: Box", "reserved segment first"),
+        ("a._target_.b: Box", "reserved segment in the middle"),
+        ("m:\n  _target_: Box\n  sub._target_: Box", "inside a marker's kwargs"),
+        ("items:\n  - model._target_: Box", "inside a list item"),
+        ("proto:\n  _target_: Box\nalias._ref_: proto", "a dotted _ref_"),
+    ],
+)
+def test_a_dotted_reserved_key_is_refused(doc: str, shape: str) -> None:
+    """Each of these produced an inert value with a literal reserved key in it."""
+    with pytest.raises(ConfigurationError, match="reserved key"):
+        load(doc, flow=False)
+
+
+def test_the_refusal_names_the_nested_spelling_and_the_location() -> None:
+    with pytest.raises(ConfigurationError) as exc:
+        load("model._target_: Box")
+
+    message = str(exc.value)
+    assert "model._target_" in message
+    assert "_target_" in message and "nested" in message
+    assert "<unicode string>:1:1" in message, message
+
+
+def test_the_dotted_refusal_binds_the_TAG_spelling_too() -> None:
+    with pytest.raises(ConfigurationError, match="reserved key"):
+        load("m: !class:Box\n  sub._target_: Box\n")
+
+
+# --- con cases: every dotted spelling that already worked stays working ------
+
+
+def test_an_ordinary_dotted_key_still_expands() -> None:
+    assert load("model.size: 3\nmodel.label: dotted", flow=False)["model"] == {"size": 3, "label": "dotted"}
+
+
+def test_a_dotted_kwarg_still_merges_into_an_existing_marker() -> None:
+    """The measurement that located the defect: the dotted spelling works for
+    every key EXCEPT the one that decides the node is a marker."""
+    graph = load("model:\n  _target_: Box\nmodel.size: 3")
+    assert isinstance(graph["model"], Box)
+    assert graph["model"].size == 3
+
+
+def test_a_non_reserved_underscore_wrapped_key_is_untouched() -> None:
+    """The false-positive guard: only the six reserved names are special."""
+    assert load("model._custom_: 3", flow=False)["model"] == {"_custom_": 3}
+
+
+def test_a_plain_reserved_key_is_untouched() -> None:
+    assert isinstance(load("model:\n  _target_: Box", flow=False)["model"], Target)

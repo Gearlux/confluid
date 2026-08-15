@@ -197,6 +197,7 @@ never a silently degraded value:
 x: {_target_: Box, _ref_: y}       # Conflicting reserved keys
 x: {_partial_: true, lr: 1}        # _partial_ needs _target_ in the same mapping
 x: {_ref_: proto, _partial_: true} # _partial_ only modifies _target_
+model._target_: Box                # a reserved key inside a DOTTED key
 x: {_target_: 42}                  # _target_ must be a non-empty string
 x: {_target_: Box, _partial_: yes_please}   # _partial_ must be true or false
 ```
@@ -228,6 +229,26 @@ The same refusal applies to any repeated key — `lr: 0.1` … `lr: 0.5` in one
 mapping is a differently-trained run, not a preference. A `<<:` merge key
 overridden by a local key of the same name is *not* a duplicate; that is ordinary
 override semantics.
+
+**A reserved key cannot be written as part of a dotted key.** Reserved keys are
+read while the document is parsed; dotted keys are expanded afterwards. So
+`model._target_: Box` could never become a marker — it used to leave a literal
+`_target_` key in the loaded config as ordinary data. Write it nested:
+
+```yaml
+model._target_: Box       # refused
+model:                    # write this
+  _target_: Box
+```
+
+Every *other* key works dotted, including one that merges into a marker written
+above it — which is what made the old failure easy to miss:
+
+```yaml
+model:
+  _target_: Box
+model.size: 3             # fine — builds Box(size=3)
+```
 
 **`_partial_` pairs with `_target_` and nothing else.** It is a modifier on
 *construction*, and `_target_` is the only key that constructs — so it has no
