@@ -7,7 +7,8 @@ Companion to `docs/plain-format.md`. Demonstrates — and ASSERTS — that:
 2. the two spellings produce the same object graph;
 3. `_partial_: true` withholds construction while still being configured;
 4. `${ref:}` shares one instance and `${clone:}` makes an independent copy;
-5. `_scope_` blocks select between variants per run.
+5. YAML anchors and merge keys (`<<:`) compose with markers;
+6. `_scope_` blocks select between variants per run.
 
 Run it:  python examples/plain_format.py
 """
@@ -137,7 +138,29 @@ def main() -> None:
 
     print()
     print("=" * 70)
-    print("6. `_scope_` blocks select a variant per run")
+    print("6. YAML's own anchors and `<<:` compose with markers")
+    print("=" * 70)
+    # Because the format is ordinary YAML, the standard many-variants-of-one-node
+    # idiom needs no confluid-specific spelling. The node's own key beats the
+    # merged one, exactly as YAML defines.
+    variants = load(
+        "base: &base\n"
+        "  _target_: Model\n"
+        "  hidden: 16\n"
+        "small:\n"
+        "  <<: *base\n"
+        "large:\n"
+        "  <<: *base\n"
+        "  hidden: 512\n"
+    )
+    assert isinstance(variants["small"], Model), "a merged marker must convert like a literal one"
+    assert variants["small"].hidden == 16
+    assert variants["large"].hidden == 512
+    print(f"   small.hidden={variants['small'].hidden}   large.hidden={variants['large'].hidden} (own key wins)")
+
+    print()
+    print("=" * 70)
+    print("7. `_scope_` blocks select a variant per run")
     print("=" * 70)
     scoped = """
     default_model:

@@ -297,6 +297,52 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
 _TAG_SPELLING_WARNED: set[str] = set()
 
 
+#: PyYAML's tag for a merge key (``<<:``). The TAG is what identifies one — a
+#: QUOTED ``"<<"`` is an ordinary string key and resolves to the str tag, so
+#: matching on the tag is also the false-positive guard.
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def _node_key_names(node: yaml.nodes.MappingNode, seen: Optional[Dict[int, Any]] = None) -> Set[str]:
+    """The key names a mapping node carries, SEEING THROUGH merge keys (``<<:``).
+
+    The reserved-key gate answers "does this mapping opt in?" from key NAMES so
+    that an ordinary mapping never has its values constructed (the fast path).
+    A merge key's own literal key is ``<<``, so a node inheriting ``_target_``
+    from an anchor read as "carries no reserved key" and was handed to PyYAML as
+    plain data — while ``construct_mapping(deep=True)`` one branch later resolves
+    the merge perfectly well. That is why ONE unrelated literal reserved key on
+    the node was enough to make the anchor's ``_target_`` work: the conversion
+    was never the problem, only this gate (BUGS-2026-08-13 P2).
+
+    ``seen`` is id-keyed and its VALUE is the node — recording IS pinning, per the
+    id-keyed-store mandate. The guard is not theoretical: a node whose merge key
+    aliases ITSELF composes fine (``a: &x {<<: *x, k: 1}`` loads as ``{'k': 1}``),
+    and the walk would otherwise recurse until the stack ran out.
+    """
+    if seen is None:
+        seen = {}
+    if id(node) in seen:
+        return set()
+    seen[id(node)] = node  # the value IS the pin
+
+    names: Set[str] = set()
+    for key, value in node.value:
+        if not isinstance(key, yaml.nodes.ScalarNode):
+            continue
+        if key.tag != _MERGE_TAG:
+            names.add(key.value)
+            continue
+        # ``<<: *a`` merges one mapping; ``<<: [*a, *b]`` merges several. A merge
+        # of anything else is PyYAML's error to raise, at construction — skipping
+        # it here leaves that behaviour exactly as it was.
+        merged = value.value if isinstance(value, yaml.nodes.SequenceNode) else [value]
+        for item in merged:
+            if isinstance(item, yaml.nodes.MappingNode):
+                names |= _node_key_names(item, seen)
+    return names
+
+
 def _register_constructors() -> None:
     """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
 
@@ -512,11 +558,13 @@ def _register_constructors() -> None:
     # are constructed to answer it — and a mapping carrying none of them delegates
     # straight to PyYAML's own constructor. That keeps the ordinary path exactly as
     # fast (and as alias/recursion-correct) as it was, and confines the new
-    # behaviour to mappings that actually opted in.
+    # behaviour to mappings that actually opted in. ``_node_key_names`` sees
+    # through merge keys, so an anchored marker (``<<: *base``) opts in like the
+    # literal spelling — still without constructing a value.
     default_map_constructor = ConfluidLoader.yaml_constructors[yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG]
 
     def map_constructor(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) -> Any:
-        node_keys = {k.value for k, _ in node.value if isinstance(k, yaml.nodes.ScalarNode)}
+        node_keys = _node_key_names(node)
         if not (node_keys & RESERVED_KEYS):
             yield from default_map_constructor(loader, node)
             return

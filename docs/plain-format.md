@@ -78,6 +78,34 @@ trainer:
     _target_: MLP
 ```
 
+## Anchors and merge keys work on markers
+
+Because the format is ordinary YAML, YAML's own reuse machinery applies to
+markers too. `<<:` merges an anchored base into a node, and the result is a
+marker just as if you had written the keys out:
+
+```yaml
+base: &base
+  _target_: Trainer
+  epochs: 10
+
+fast:
+  <<: *base
+  epochs: 1          # the node's own key wins over the merged one
+
+slow:
+  <<: *base
+  epochs: 100
+```
+
+`fast` and `slow` are independent `Trainer` markers. A merge of several anchors
+(`<<: [*a, *b]`) and an anchor that is itself built from a merge key both work.
+
+Note the difference from `_clone_`: a merge key is resolved by the YAML parser
+*before* confluid sees the document, so it copies **keys**. `_clone_` is resolved
+by confluid and copies a **node**, which is what you want when the template is
+built elsewhere or you need the copy to track a reference.
+
 ## References: two spellings
 
 `_ref_` points at another node in the same document and yields the **same**
