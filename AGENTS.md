@@ -649,6 +649,16 @@ attributes, so recursing into one would walk class internals.
 **Pins.** the C3 group in `tests/test_configurator.py`, incl.
 `::test_a_CLASS_attribute_is_still_skipped`.
 
+**Rule — `configure()`'s walk reaches `__confluid_kwargs__`, and that is DELIBERATE** (user
+ruling 2026-08-15; `BUGS-2026-08-13.md` F1). The ctor-kwargs capture lives in `__dict__`, so the
+walk recurses into it and configures whatever the constructor was HANDED — including an argument
+it consumed rather than stored. Do NOT "clean this up": skipping it is one line and breaks
+nothing else (prototyped — the whole suite passes bar the pin), which is exactly why it needs a
+rule and a pin rather than a comment. Revisit only with NEW evidence of a defect the reach
+causes, never a re-run of the reasoning (the case against it — a discarded object being mutated,
+a kept one configured twice, and this route having masked C3 — was measured and weighed).
+**Pins.** `tests/test_configurator.py::test_the_ctor_kwargs_capture_is_also_walked`.
+
 **Rule — a MARKER-valued attribute is tuned by its owner, never flowed into a throwaway; the
 check is `Target`, not `Partial`.** `_walk` returns early for any `Target` and `_apply` tunes
 every `Target` slot. The hazard the `Partial` early-return comment describes was never about
