@@ -605,6 +605,24 @@ per-path arm: two arms on one path and three on the other is exactly how C1/C1b 
 `Partial[Any]` when the type is known). `partial_param_names(cls)` is the single authority and reports a
 body slot deferred by EITHER signal — a `PartialClass(...)` value or a `Partial[T]` annotation.
 
+**Rule — a STRING annotation resolves or degrades to `Any`; it NEVER reaches a reader as a
+`str`.** Two spellings put a string where a type belongs, and both used to leak it: a QUOTED
+annotation, whose AST node is a string constant so `eval` returns the TEXT and the ForwardRef
+check waves a plain `str` through (I4); and PEP 563, which stringifies every annotation in a
+module — where `get_type_hints` is ALL-OR-NOTHING, so one `TYPE_CHECKING`-only import emptied the
+map and sent EVERY parameter back to its raw string (I5). `introspect.resolve_string_annotation`
+is the ONE resolver for both, with the same scope and degradation as `resolve_ast_annotation`.
+A leaked `str` is the outcome that must not happen: every reader asks a question OF the annotation
+(is this slot deferred? does it take a list?) and a string silently answers no to all of them —
+so one unrelated bad name cost a class its deferral marks AND its container routing.
+**Consequence:** `marked_param_names` PROJECTS from `slots()` instead of re-reading
+`get_type_hints` — that private read was a third copy of the same all-or-nothing failure, and the
+"every slot reader projects from `introspect.slots`" rule already said it should not exist. It
+filters `source == "signature"` to stay a parameter scan.
+**Pins.** the string-annotation group in `tests/test_introspect.py` (fixtures in
+`tests/pep563_helpers.py`), incl. `::test_a_quoted_CONSTRUCTOR_PARAM_annotation_is_unchanged`
+(the half that always worked) and `::test_an_UNRESOLVABLE_quoted_annotation_degrades_to_Any`.
+
 **Rule.** `resolve_ast_annotation` MUST `inspect.unwrap` before reading `__globals__` — the
 validation wrapper's globals are confluid's own, which silently typed every body slot `Any`.
 

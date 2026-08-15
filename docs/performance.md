@@ -40,11 +40,18 @@ Typical output (Apple M-series, Python 3.12):
 
 ```
 tree: 10x10 groups, 2000 top markers + 500 nested = 2500 markers
-parse         2500 markers   best    141.3 ms   mean    144.2 ms      17687 markers/s
-materialize   2500 markers   best    284.0 ms   mean    286.2 ms       8804 markers/s
-resolve       2500 markers   best    281.6 ms   mean    282.9 ms       8879 markers/s
-configure     2500 markers   best     38.0 ms   mean     54.8 ms      65710 markers/s
+parse         2500 markers   best    142.5 ms   mean    144.8 ms      17545 markers/s
+materialize   2500 markers   best    288.0 ms   mean    288.6 ms       8681 markers/s
+resolve       2500 markers   best    287.2 ms   mean    288.5 ms       8703 markers/s
+configure     2500 markers   best     12.7 ms   mean     12.7 ms     197413 markers/s
 ```
+
+`configure` was `38.0 ms / 65710 markers/s` until 2026-08-15. It is 3x faster
+because the walk no longer flows every marker-valued attribute into a temporary
+object that it configures and then discards — the marker is tuned in place
+instead. The construction that disappeared was never useful work: its result was
+thrown away (see [Post-construction configuration](configure.md)).
+
 
 ## Profiling mode
 

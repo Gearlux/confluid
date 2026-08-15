@@ -64,6 +64,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A string annotation resolves instead of leaking as a `str`** (BUGS-2026-08-13 I4, I5). A
+  QUOTED body-slot annotation (`self.optimizer: "Partial[Optim]"`, the ordinary way to defer an
+  import) lost its deferral entirely — the AST node is a string constant, so `eval` returned the
+  TEXT and a plain `str` is not a ForwardRef, so it became `Slot.annotation`. The identical
+  spelling on a constructor param always worked, which is exactly the asymmetry between the two
+  declaration halves that class-design rule 4 forbids. Separately, in a module using
+  `from __future__ import annotations`, ONE unresolvable hint (a `TYPE_CHECKING`-only import)
+  emptied `get_type_hints` and sent EVERY parameter back to its raw PEP-563 string — measured on a
+  three-parameter class, an unrelated `precision: Decimal` cost `stages` its `list` routing and
+  `optimizer` its deferral. Both now go through one `introspect.resolve_string_annotation`, with
+  per-name degradation: only the annotation that cannot resolve becomes `Any`. `marked_param_names`
+  projects from `slots()` rather than re-reading `get_type_hints`, which was a third copy of the
+  same failure. Pinned by the string-annotation group in `tests/test_introspect.py`.
+
 - **`configure()` no longer writes to objects nobody keeps** (BUGS-2026-08-13 C3, C4). Two
   independent ways the walk configured a throwaway and reported success. **C3:** the recursion
   filter was `callable()`, so every child defining `__call__` — every op, every framework module —
