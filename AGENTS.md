@@ -1226,6 +1226,18 @@ pydantic property the split rests on), and
 **Rule.** `dump()` followed by `load()` MUST reconstruct an identical object graph. Round-trip
 fidelity is non-negotiable.
 
+**Rule — a target's dumpable name comes from the REGISTRY, for a marker as well as a live
+instance.** `dumper._target_name` asked neither, emitting a raw `module.qualname`, and both
+targets whose qualname is not importable broke (F3): a FACTORY-built class kept the `<locals>`
+the registry strips, and a registered FUNCTION is not a `type` so it fell through to `str()` and
+emitted `<function build at 0x108420fe0>` — a memory address, which makes two dumps of the SAME
+object differ as well as failing to reload. Ask `registry.key_for()` first; fall back to the
+dotted path for an unregistered target (still importable), and pass a STRING target through
+verbatim (it is already the document's spelling).
+**Pins.** the F3 group in `tests/test_dumper.py`, incl.
+`::test_a_marker_targeting_a_registered_FUNCTION_reloads` (which asserts no `0x` in the document)
+and `::test_a_marker_and_a_live_instance_name_the_same_class_alike`.
+
 **Rule — BODY SLOTS are dumped, and every value is dumped ALWAYS.** `dump()` modelled the
 constructor alone, so an `__init__`-body attribute vanished from the document — `self.epochs = 1`
 configured to 50 dumped as bare `_target_: BodyHost` and reloaded as 1 (F2). Every OTHER surface

@@ -11,6 +11,13 @@ def setup_registry() -> None:
     get_registry().clear()
 
 
+class _UnregisteredWidget:
+    """Deliberately NOT @configurable — the registry has no key for it."""
+
+    def __init__(self, size: int = 1) -> None:
+        self.size = size
+
+
 def test_basic_dump() -> None:
     @configurable
     class Model:
@@ -396,3 +403,114 @@ def test_a_setterless_property_is_still_not_dumped() -> None:
 
     emitted = _yaml.safe_load(dump(Derived(frac=0.6)))
     assert emitted == {"_target_": "Derived", "frac": 0.6}
+
+
+# ---------------------------------------------------------------------------
+# A MARKER's target is named by the REGISTRY, like a live instance's
+# (BUGS-2026-08-13 F3)
+#
+# The live-instance branch asks `registry.key_for()` so the emitted name
+# re-resolves to THIS class rather than to whichever namesake wins a bare
+# lookup. `_target_name` bypassed it and emitted a raw dotted qualname, which
+# fails outright for the two targets whose qualname is not importable.
+# ---------------------------------------------------------------------------
+
+
+def test_a_marker_targeting_a_factory_built_class_reloads() -> None:
+    """A class built by a factory carries `<locals>` in its qualname, which the
+    registry strips for its key and a raw dotted path keeps."""
+    from confluid import Target, load
+
+    def _make() -> type:
+        @configurable
+        class Widget:
+            def __init__(self, size: int = 2) -> None:
+                self.size = size
+
+        return Widget
+
+    Widget = _make()
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target(Widget, size=9)
+
+    reloaded = load(dump(Host()))
+    assert reloaded.child.size == 9
+
+
+def test_a_marker_targeting_a_registered_FUNCTION_reloads() -> None:
+    """It used to emit `<function build at 0x…>` — a memory address, so the
+    document neither reloaded nor compared equal between two dumps."""
+    from confluid import Target, load
+
+    @configurable
+    def build(size: int = 1) -> dict:
+        return {"size": size}
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target(build, size=7)
+
+    text = dump(Host())
+    assert "0x" not in text, "a dumped document must not contain a memory address"
+    assert load(text).child == {"size": 7}
+
+
+def test_a_marker_and_a_live_instance_name_the_same_class_alike() -> None:
+    """The two dumper branches must agree; the live one was already correct."""
+    import yaml as _yaml
+
+    from confluid import Target
+
+    @configurable(name="CustomName")
+    class Renamed:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    @configurable
+    class LiveHost:
+        def __init__(self) -> None:
+            self.child = Renamed(lr=0.5)
+
+    @configurable
+    class MarkerHost:
+        def __init__(self) -> None:
+            self.child = Target(Renamed, lr=0.5)
+
+    live = _yaml.safe_load(dump(LiveHost()))["child"]["_target_"]
+    marker = _yaml.safe_load(dump(MarkerHost()))["child"]["_target_"]
+    assert live == marker == "CustomName"
+
+
+def test_a_marker_targeting_an_UNREGISTERED_class_keeps_its_dotted_path() -> None:
+    """The fallback: no registry key, so the importable dotted path is still the
+    best available spelling."""
+    import yaml as _yaml
+
+    from confluid import Target
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target(_UnregisteredWidget, size=3)
+
+    emitted = _yaml.safe_load(dump(Host()))["child"]["_target_"]
+    assert emitted.endswith("_UnregisteredWidget")
+    assert "0x" not in emitted
+
+
+def test_a_STRING_marker_target_passes_through_verbatim() -> None:
+    """A target written as a name in YAML is already the spelling to emit."""
+    import yaml as _yaml
+
+    from confluid import Target
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target("SomeName", size=3)
+
+    assert _yaml.safe_load(dump(Host()))["child"]["_target_"] == "SomeName"
