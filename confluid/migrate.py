@@ -1,8 +1,8 @@
 """``confluid-migrate`` — rewrite tagged YAML configs into the plain-YAML format.
 
-Converts the tag spelling (``!class:`` / ``!lazy:`` / ``!ref:`` / ``!clone:`` /
+Converts the tag spelling (``!class:`` / ``!lazy:`` / ``!ref:`` /
 ``!scope:``) into the reserved-key spelling (``_target_`` / ``_partial_`` /
-``_ref_`` / ``_clone_`` / ``_scope_``), so the file becomes ordinary YAML that
+``_ref_`` / ``_scope_``), so the file becomes ordinary YAML that
 ``yaml.safe_load``, ``yq``, editor schemas and linters can read. See
 ``docs/plain-format.md``.
 
@@ -269,6 +269,15 @@ def _convert_tag_line(
     if tag is None:
         return None
     kind, suffix = tag.group("kind"), tag.group("suffix")
+    if kind == "clone":
+        # ``!clone:`` was REMOVED (2026-08-15, zero users). Converting it to
+        # ``_clone_`` would hand the author a key the loader now refuses, so it is
+        # reported for a hand rewrite instead: write the marker again for an
+        # independent instance, or ``${ref:}`` to share one.
+        findings.append(
+            Finding(path, index + 1, line.strip(), "!clone: was removed — write the marker again (or ${ref:} to share)")
+        )
+        return None
     indent = match.group("indent")
     flow, trailing = _split_flow(match.group("rest") or "")
     scalar_body = ""
@@ -307,7 +316,7 @@ def _convert_tag_line(
         first = keys[0][len(body) :]
         return [f"{indent}- {first}{trailing}"] + keys[1:]
 
-    if kind in ("ref", "clone"):
+    if kind == "ref":
         path_arg, extra = _target_and_kwargs(suffix)
         if extra or _body_indent(lines, index) is not None:
             # Carries kwargs — only the mapping form can hold them.
@@ -419,7 +428,7 @@ def migrate_text(text: str, *, path: str = "<config>") -> Tuple[str, List[Tuple[
 
 def _marker_shape(value: Any) -> Any:
     """An identity-free structural view of a resolved node, for comparison."""
-    from confluid.fluid import Clone, Fluid, Reference, Target
+    from confluid.fluid import Fluid, Reference, Target
 
     if isinstance(value, Target):
         return {
@@ -427,7 +436,7 @@ def _marker_shape(value: Any) -> Any:
             "target": str(value.target),
             "kwargs": {k: _marker_shape(v) for k, v in sorted(value.kwargs.items())},
         }
-    if isinstance(value, (Reference, Clone)):
+    if isinstance(value, Reference):
         return {"kind": type(value).__name__, "target": str(value.target)}
     if isinstance(value, Fluid):
         return {"kind": type(value).__name__, "target": str(value.target)}

@@ -128,27 +128,6 @@ widget: !class:Widget()
     assert result["widget"].checkpoint_path == "/tmp/model.ckpt"
 
 
-def test_ref_vs_clone_distinction() -> None:
-    """!ref: shares identity; !clone: creates a deep copy. Both must coexist."""
-
-    @configurable
-    class Widget:
-        def __init__(self, label: str = "w") -> None:
-            self.label = label
-
-    yaml_str = """
-base: !class:Widget()
-  label: base
-aliased: !ref:base
-cloned: !clone:base
-"""
-    result: Any = load(yaml_str)
-
-    assert result["aliased"] is result["base"]
-    assert result["cloned"] is not result["base"]
-    assert result["cloned"].label == result["base"].label
-
-
 def test_ref_does_not_re_instantiate_even_with_many_aliases() -> None:
     """Heavy-handed case: 10 references, 1 instantiation."""
 

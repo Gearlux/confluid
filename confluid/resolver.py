@@ -14,7 +14,7 @@ Two things live here, and both exist exactly once:
 
 * **Interpolation** (:class:`Resolver`). ``${...}`` dispatches on the NAME
   SHAPE — a plain identifier is an environment variable, a dotted/bracketed
-  name is a config key; ``${env:...}`` / ``${ref:...}`` / ``${clone:...}`` are
+  name is a config key; ``${env:...}`` / ``${ref:...}`` are
   resolver calls. A single pass whose substitution BURNS IN, per
   ``docs/interpolation.md``. :func:`parse_value` is the shared scalar-coercion
   policy (deliberately plain ``yaml.safe_load`` — never :class:`ConfluidLoader`).
@@ -62,14 +62,17 @@ _BARE_ENV_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 
 # ``${name:arg}`` placeholders whose NAME is one of these are RESOLVER CALLS, not
 # a config key with a ``:default`` — the OmegaConf-idiomatic spelling, and the
-# plain-YAML counterpart of the ``!ref:`` / ``!clone:`` tags:
+# plain-YAML counterpart of the ``!ref:`` tag:
 #
 #   ${env:DATA_ROOT}    ${env:PORT,8080}    ${oc.env:HOME}   -> environment
-#   ${ref:proto}        ${clone:proto}                       -> a marker
+#   ${ref:proto}                                             -> a marker
 #
 # Checked BEFORE the config-path test, because ``oc.env`` contains a dot and would
 # otherwise route to config-key lookup.
 _ENV_RESOLVERS: FrozenSet[str] = frozenset({"env", "oc.env"})
+#: ``clone`` stays in the set ONLY so ``${clone:x}`` still routes to the marker resolver,
+#: where it is REFUSED with a message — otherwise it would fall through to ordinary
+#: placeholder resolution and survive as a literal string (removed 2026-08-15).
 _MARKER_RESOLVERS: FrozenSet[str] = frozenset({"ref", "clone"})
 
 # The ONE ``Target(...)`` call grammar — a target name (dotted paths and the
@@ -87,7 +90,7 @@ _TARGET_CALL_RE = re.compile(r"^([\w.@=/,~$-]+)\((.*)\)$")
 #: every one of them in the wrong position, used to reach the config as the literal
 #: TEXT with no error, no warning and no diagnostic. See :func:`_refuse_marker_string`.
 _STRING_MARKERS_PARSED: FrozenSet[str] = frozenset({"!class:", "!ref:"})
-_STRING_MARKERS_ALL: Tuple[str, ...] = ("!class:", "!lazy:", "!ref:", "!clone:", "!notscope:", "!scope:")
+_STRING_MARKERS_ALL: Tuple[str, ...] = ("!class:", "!lazy:", "!ref:", "!notscope:", "!scope:")
 
 
 def _plain_yaml_for(value: str) -> str:
@@ -96,13 +99,12 @@ def _plain_yaml_for(value: str) -> str:
     Best effort by design: the point is to hand the author the line to write, not
     to be a second parser. An unparseable suffix falls back to naming the keys.
     """
-    from confluid.loader import CLONE_KEY, PARTIAL_KEY, REF_KEY, SCOPE_KEY, TARGET_KEY
+    from confluid.loader import PARTIAL_KEY, REF_KEY, SCOPE_KEY, TARGET_KEY
 
     prefix = next((m for m in _STRING_MARKERS_ALL if value.startswith(m)), "")
     body = value[len(prefix) :].strip()
-    if prefix in ("!ref:", "!clone:"):
-        key = REF_KEY if prefix == "!ref:" else CLONE_KEY
-        return f"{{{key}: {body}}}" if body else f"{{{key}: <path>}}"
+    if prefix == "!ref:":
+        return f"{{{REF_KEY}: {body}}}" if body else f"{{{REF_KEY}: <path>}}"
     if prefix in ("!scope:", "!notscope:"):
         key = SCOPE_KEY if prefix == "!scope:" else "_notscope_"
         dim, _, val = body.partition("=")
@@ -126,7 +128,7 @@ def _refuse_marker_string(value: str, *, where: str) -> None:
     such limitation, and this spelling is deleted with the tags in 0.4.0.
 
     Until then it must not fail SILENTLY, which is what it did in two whole
-    classes of position — ``!lazy:`` / ``!clone:`` / ``!scope:`` anywhere, and
+    classes of position — ``!lazy:`` / ``!scope:`` anywhere, and
     even ``!class:`` / ``!ref:`` inside a marker's own kwargs, the very position
     ``docs/targets.md`` recommended it for. The value reached the constructor as
     the literal text ``!lazy:Adam(lr=0.01)`` and nothing said so. That is exactly
@@ -426,7 +428,7 @@ class Resolver:
         if isinstance(value, str):
             value = self._interpolate(value, local_context)
             if not isinstance(value, str):
-                # A ``${ref:...}`` / ``${clone:...}`` interpolates to a MARKER, which
+                # A ``${ref:...}`` interpolates to a MARKER, which
                 # must take the same resolution path as the tag spelling below rather
                 # than being returned raw. Any other non-string (an int from
                 # ``${a.b}``, say) is already final and falls straight through.
@@ -717,25 +719,31 @@ class Resolver:
         return _BARE_ENV_RE.sub(replacer, value)
 
     def _marker_resolver(self, name: str, arg: Optional[str]) -> Any:
-        """Build the marker for a ``${ref:path}`` / ``${clone:path}`` placeholder.
+        """Build the marker for a ``${ref:path}`` placeholder.
 
         Returns ``None`` when ``name`` is not a marker resolver, so the caller
         falls through to ordinary placeholder resolution.
 
-        This is the scalar shorthand for the ``_ref_`` / ``_clone_`` reserved keys
-        — the same markers the ``!ref:`` / ``!clone:`` tags produce, so identity
-        semantics are identical (``${ref:x}`` twice yields ONE shared instance;
-        ``${clone:x}`` yields an independent deep copy). The mapping form remains
-        the way to override kwargs on a clone, which a scalar cannot express.
+        This is the scalar shorthand for the ``_ref_`` reserved key — the same
+        marker the ``!ref:`` tag produces, so identity semantics are identical
+        (``${ref:x}`` twice yields ONE shared instance).
+
+        ``${clone:x}`` is REFUSED here (removed 2026-08-15, zero users): it must
+        not fall through and survive as a literal string in the config.
         """
         if name not in _MARKER_RESOLVERS:
             return None
-        from confluid.fluid import Clone, Reference
+        if name == "clone":
+            raise ConfigurationError(
+                "${clone:...} was removed (2026-08-15) — it had no users, and independence has one "
+                "spelling: write the marker again. To SHARE one instance use ${ref:...}"
+            )
+        from confluid.fluid import Reference
 
         path = (arg or "").strip()
         if not path:
             raise ConfigurationError(f"${{{name}:...}} needs a target path")
-        return Reference(path) if name == "ref" else Clone(path)
+        return Reference(path)
 
     def _resolve_placeholder(
         self, name: str, default_val: Optional[str], local_context: Optional[Dict[str, Any]]

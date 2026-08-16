@@ -31,7 +31,6 @@ plugs into the passes, and from the eight names most configs need:
 | `partial_param_names` | Every slot of a class declared `Partial[...]` — ctor params and body slots |
 | ~~`Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names`~~ | **Removed 2026-08-11.** Use `Target` / `Partial` / `PartialClass` / `partial_param_names` |
 | `Reference` | A `${ref:}` / `_ref_` — the same object reached twice |
-| `Clone` | A `${clone:}` / `_clone_` — an independent deep copy |
 
 ## Registration & discovery — [Discovery](discovery.md)
 

@@ -199,7 +199,7 @@ def _walk(
         # that — flow a temporary, configure it, discard it, and record the key as
         # applied, so a later ``flow(obj.opt)`` built with the defaults (C4).
         # ``Partial`` IS a ``Target``, so deferred slots are unaffected; ``Reference``
-        # and ``Clone`` are NOT, so they stay on the flow path and keep raising rather
+        # is NOT, so it stays on the flow path and keeps raising rather
         # than degrading to a silent no-op.
         obj_id = id(obj)
         if obj_id in visited:

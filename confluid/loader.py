@@ -4,7 +4,7 @@ Owns everything between a file on disk and the marker tree the engine
 materializes: :class:`ConfluidLoader` (the ONLY loader carrying confluid's
 constructors — the global ``yaml.SafeLoader`` is never touched),
 ``_reserved_to_marker`` (the ONE site converting the reserved-key spelling
-``_target_`` / ``_partial_`` / ``_ref_`` / ``_clone_`` / ``_scope_`` /
+``_target_`` / ``_partial_`` / ``_ref_`` / ``_scope_`` /
 ``_notscope_`` into Fluid markers, at parse time and nowhere downstream),
 :func:`resolve_config_path` (the ONE path-probe site — CWD → ``./config/`` →
 XDG tiers), ``include:`` splicing AT the directive's line (document order IS
@@ -157,7 +157,7 @@ class ConfluidLoader(yaml.SafeLoader):
 # --------------------------------------------------------------------------- #
 # The reserved-key format — plain YAML, no tags
 #
-# ``_target_`` / ``_partial_`` mirror Hydra's vocabulary; ``_ref_`` / ``_clone_`` /
+# ``_target_`` / ``_partial_`` mirror Hydra's vocabulary; ``_ref_`` /
 # ``_scope_`` / ``_notscope_`` are confluid's additions for the constructs Hydra
 # has no equivalent for. A document written this way is ORDINARY
 # YAML — ``yaml.safe_load`` and external tooling (yq, editor schemas) read it,
@@ -169,17 +169,23 @@ class ConfluidLoader(yaml.SafeLoader):
 TARGET_KEY = "_target_"
 PARTIAL_KEY = "_partial_"
 REF_KEY = "_ref_"
-CLONE_KEY = "_clone_"
+#: REMOVED 2026-08-15 (zero users; architecture records 9/10 superseded). Kept in
+#: RESERVED_KEYS on purpose: a mapping carrying it must still reach the marker gate
+#: so it can be REFUSED with a location, instead of loading silently as plain data
+#: with a literal ``_clone_`` key — the degradation this format exists to end.
+_REMOVED_CLONE_KEY = "_clone_"
 SCOPE_KEY = "_scope_"
 NOTSCOPE_KEY = "_notscope_"
 
 #: Every key that turns a plain mapping into a marker. A mapping carrying NONE of
 #: these is an ordinary dict and takes PyYAML's untouched construction path.
-RESERVED_KEYS: FrozenSet[str] = frozenset({TARGET_KEY, PARTIAL_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY})
+RESERVED_KEYS: FrozenSet[str] = frozenset(
+    {TARGET_KEY, PARTIAL_KEY, REF_KEY, _REMOVED_CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY}
+)
 
 #: The keys that DECIDE which marker is built. ``_partial_`` is a modifier — it
 #: qualifies a discriminator rather than standing on its own.
-_DISCRIMINATORS: Tuple[str, ...] = (TARGET_KEY, REF_KEY, CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY)
+_DISCRIMINATORS: Tuple[str, ...] = (TARGET_KEY, REF_KEY, SCOPE_KEY, NOTSCOPE_KEY)
 
 
 def _stamp_loc(obj: Any, loader: yaml.SafeLoader, node: yaml.nodes.Node) -> Any:
@@ -226,7 +232,13 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     space in ``!class:Model(a=1, b=2)`` produced a mangled target with both kwargs
     dropped and no error at all).
     """
-    from confluid.fluid import Clone, Partial, Reference, ScopeBlock, Target
+    from confluid.fluid import Partial, Reference, ScopeBlock, Target
+
+    if _REMOVED_CLONE_KEY in mapping:
+        raise ConfigurationError(
+            f"{_REMOVED_CLONE_KEY} was removed (2026-08-15) — it had no users, and independence "
+            f"has one spelling: write the marker again. To SHARE one instance use {REF_KEY} / ${{ref:...}}"
+        )
 
     present = [k for k in _DISCRIMINATORS if k in mapping]
     if len(present) > 1:
@@ -252,7 +264,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     if PARTIAL_KEY in mapping and key != TARGET_KEY:
         where = (
             f"put it on the node {key} points at"
-            if key in (REF_KEY, CLONE_KEY)
+            if key == REF_KEY
             # A scope block is a conditional splice, not a construction site, so
             # there is nothing here for the modifier to defer.
             else f"put it on the marker inside the {key} block"
@@ -293,10 +305,10 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
         return ScopeBlock(dims=dims, negate=key == NOTSCOPE_KEY, contents=body)
 
     path = mapping[key]
-    if key in (REF_KEY, CLONE_KEY):
+    if key == REF_KEY:
         if not isinstance(path, str) or not path.strip():
             raise ConfigurationError(f"{key} must be a non-empty string path (got {path!r})")
-        marker = Reference(path.strip()) if key == REF_KEY else Clone(path.strip())
+        marker = Reference(path.strip())
         marker.kwargs.update(body)
         return marker
 
@@ -476,11 +488,11 @@ def _str_keyed_mapping(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) ->
 
 
 def _register_constructors() -> None:
-    """Register the !ref: / !class: / !clone: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
+    """Register the !ref: / !class: / !lazy: / !scope: / !notscope: constructors on ConfluidLoader.
 
     Invoked exactly once at module import (see the call below the definition).
     """
-    from confluid.fluid import Clone, Partial, Reference, ScopeBlock, Target
+    from confluid.fluid import Partial, Reference, ScopeBlock, Target
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         """Parse inline ``key=value`` pairs from a ``Name(...)`` tag suffix.
@@ -531,12 +543,6 @@ def _register_constructors() -> None:
             return _stamp(_make_fluid(factory, name, inline), loader, node)
 
         return _stamp(Target(tag_suffix), loader, node)
-
-    def clone_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
-        if isinstance(node, yaml.nodes.MappingNode):
-            mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
-            return _stamp(_make_fluid(Clone, tag_suffix, mapping), loader, node)
-        return _stamp(Clone(tag_suffix), loader, node)
 
     def lazy_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         # Mirror class_constructor's grammar so users can write either
@@ -654,7 +660,7 @@ def _register_constructors() -> None:
             )
         )
         warnings.warn(
-            f"{where}{line}: the YAML tag syntax (!class: / !lazy: / !ref: / !clone: / "
+            f"{where}{line}: the YAML tag syntax (!class: / !lazy: / !ref: / "
             f"!scope:) is DEPRECATED and is removed in confluid 0.4.0. {remedy} The new "
             f"format is also plain YAML, so yq, editor schemas and linters can read it.",
             FutureWarning,
@@ -673,7 +679,6 @@ def _register_constructors() -> None:
     for _tag, _ctor in (
         ("!ref:", ref_constructor),
         ("!class:", class_constructor),
-        ("!clone:", clone_constructor),
         ("!lazy:", lazy_constructor),
         ("!scope:", scope_constructor),
         ("!notscope:", notscope_constructor),

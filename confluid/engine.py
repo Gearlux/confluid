@@ -36,7 +36,7 @@ imports engine names from ``confluid.engine`` or, better, the real home
 modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
-from copy import copy, deepcopy
+from copy import copy
 from dataclasses import replace
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Type
 
@@ -80,7 +80,6 @@ from confluid.exceptions import (
     UnknownClassError,
 )
 from confluid.fluid import (
-    Clone,
     Fluid,
     Partial,
     Reference,
@@ -153,8 +152,8 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
 
     Within a single materialize pass, identical raw markers (reached directly
     or via ``${ref:...}``) flow to a single marker object, which is
-    materialized into a single live instance. ``${clone:...}`` opts out of
-    this sharing with an explicit deepcopy.
+    materialized into a single live instance. A marker written TWICE is two
+    instances — that is the one spelling for independence.
 
     ``solidify=False`` suppresses the post-flow ``solidify()`` hook for every
     object built in this pass (see :func:`flow`) — for static
@@ -492,14 +491,6 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 return resolved
         return data
 
-    # 3b. Clone — resolve the referent, then apply the ONE clone semantic
-    if isinstance(data, Clone):
-        if parent_context and data.target in parent_context:
-            resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
-            resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
-            return _clone_of(resolved, resolved_kwargs, data)
-        return data
-
     # 4. Generic Fluid — pass through
     if isinstance(data, Fluid):
         return data
@@ -602,8 +593,6 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
         return _flow_bare_type(obj, context, runtime_args, runtime_kwargs)
     if isinstance(obj, Reference):
         return _flow_reference(obj, context, runtime_args, runtime_kwargs)
-    if isinstance(obj, Clone):
-        return _flow_clone(obj, runtime_args, runtime_kwargs)
     if isinstance(obj, Fluid):
         return _flow_generic_fluid(obj, runtime_args, runtime_kwargs)
     if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
@@ -1425,92 +1414,6 @@ def _flow_reference(
     if resolved is not None and resolved != f"!ref:{obj.target}":
         return flow(resolved, *runtime_args, **runtime_kwargs)
     raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
-
-
-def _clone_of(referent: Any, overrides: Dict[str, Any], node: Any) -> Any:
-    """The ONE Clone semantic — deepcopy the referent, then apply overrides by its KIND.
-
-    Both engine paths call this (the document branch in ``_flow_recursive`` and the
-    direct-flow ``_flow_clone``), which is what makes one document give one answer
-    (adjudicated 2026-08-13; the paths used to differ on every row):
-
-    * a MARKER referent — overrides merge into the copy's ``kwargs``, override wins,
-      and the clone is then BUILT like any other marker (so an eager class's
-      constructor runs WITH the override, and the dump round-trip holds);
-    * a MAPPING referent — keys merge, override wins (they were silently dropped);
-    * a LIVE object — overrides land as post-construction setattrs, exactly what
-      ``configure()`` does for the identical situation (a live constructor cannot
-      re-run; the document path silently dropped these). A non-partial marker
-      VALUE is flowed first, matching ``_apply_post_init_attrs``;
-    * anything else (a scalar, a list) has no keys or attributes to set — a located
-      ``ConfigurationError``, never a silent drop.
-
-    Deepcopy FIRST, so the referent — a template, by intent — is never mutated by
-    its clones' overrides.
-    """
-    cloned = deepcopy(referent)
-    if isinstance(cloned, Target):
-        cloned.kwargs.update(overrides)
-        return cloned
-    if not overrides:
-        return cloned
-    if isinstance(cloned, dict):
-        cloned.update(overrides)
-        return cloned
-    if hasattr(cloned, "__dict__"):
-        for k, v in overrides.items():
-            if isinstance(v, Target) and not v.partial:
-                v = flow(v)
-            setattr(cloned, k, v)
-        return cloned
-    raise ConfigurationError(
-        f"clone of {node.target!r}{_at_yaml_loc(node)} cannot take overrides "
-        f"({', '.join(sorted(overrides))}): the referent is a {type(referent).__name__}, which has "
-        f"no keys or attributes to set. Clone a marker or a mapping, or drop the overrides."
-    )
-
-
-def _flow_clone(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
-    """Resolve a ``Clone`` on the direct-flow path — the same ONE semantic as the document path.
-
-    The referent is taken from the active context AS IT IS: a marker referent stays a
-    marker, so the clone is BUILT from its merged kwargs exactly as ``load()`` builds
-    it. It used to flow the REFERENT first and deep-copy the built object — which
-    handed an eager class the original's constructor run with the overrides pasted on
-    afterwards, and fed the runtime kwargs to the referent's build instead of the
-    clone's. Runtime kwargs now configure the CLONE, runtime wins (``flow()``'s
-    documented contract); on a live-referent copy they land as setattrs, and the
-    positional channel has nothing to attach to and is dropped, as ``flow()`` drops
-    it for any already-live object.
-
-    The fresh cloned marker is pinned in ``memo_keepalive``: the memos key on
-    ``id()``, and an unpinned short-lived marker's recycled address reads as a memo
-    HIT for an unrelated node (see the memo mandate).
-    """
-    context = get_active_context()
-    referent: Any = None
-    if context and obj.target in context:
-        referent = context[obj.target]
-    elif context:
-        referent = resolve_reference_path(obj.target, context)
-    if referent is None:
-        resolver = Resolver(context=context or {})
-        resolved = resolver._resolve_ref(obj.target)
-        if resolved is not None and resolved != f"!ref:{obj.target}":
-            referent = resolved
-    if referent is None:
-        raise ReferenceResolutionError(f"Cannot resolve Clone: {obj.target}{_at_yaml_loc(obj)}")
-
-    cloned = _clone_of(referent, dict(obj.kwargs), obj)
-    if isinstance(cloned, Target):
-        keepalive = _ENGINE_STATE.get().memo_keepalive
-        if keepalive is not None:
-            keepalive.append(cloned)
-        return flow(cloned, *runtime_args, **runtime_kwargs)
-    if runtime_kwargs and hasattr(cloned, "__dict__"):
-        for k, v in runtime_kwargs.items():
-            setattr(cloned, k, v)  # runtime wins on a live copy too
-    return cloned
 
 
 def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:

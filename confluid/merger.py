@@ -7,7 +7,7 @@ from confluid.fluid import Fluid, Target
 def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge ``overlay`` into ``base``; returns a NEW dictionary.
 
-    Live Fluid markers (Target/Partial/Reference/Clone) are preserved by
+    Live Fluid markers (Target/Partial/Reference) are preserved by
     identity so that reference resolution stays consistent across contexts.
     Other values are deep-copied for safety.
 
@@ -62,7 +62,7 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
             # depth.
             #
             # ``Target`` and not ``Fluid``: this mirrors the classifier's "marker" arm.
-            # A ``Reference`` / ``Clone`` base keeps the previous replace behaviour —
+            # A ``Reference`` base keeps the previous replace behaviour —
             # the classifier calls those opaque, and widening here would invent a
             # semantic for them that no other path has.
             tuned = copy(existing)
@@ -84,11 +84,12 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
 def _preserve_identity_copy(value: Any) -> Any:
     """Deepcopy ordinary containers but preserve identity of live Fluid objects.
 
-    Fluid markers (Target, Partial, Reference, Clone) represent *one* logical
+    Fluid markers (Target, Partial, Reference) represent *one* logical
     configuration citizen. Deep-copying them here would undo the Resolver's
     reference resolution, causing two references to the same Fluid to produce
     two separate live instances downstream. We keep identity intact and let
-    ``${clone:...}`` opt into explicit deepcopy when independence is wanted.
+    a marker written TWICE be two independent instances when that is wanted
+    (the ``${clone:}`` escape hatch was removed 2026-08-15 — zero users).
     (Identity is also what lets ``_prepare_kwargs``'s ``self_obj`` check
     locate the receiving marker's slot in its ambient context.)
     """

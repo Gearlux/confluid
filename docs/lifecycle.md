@@ -32,7 +32,7 @@ run in, what each one consumes, and what it decides **permanently**. Most
 
 | # | Pass | Consumes | Decides — permanently | Leaves alone |
 |---|---|---|---|---|
-| 1 | **Parse** | the YAML text | `_target_` / `_partial_` / `_ref_` / `_clone_` / `_scope_` mappings become typed markers, each stamped with its source location | everything else stays raw |
+| 1 | **Parse** | the YAML text | `_target_` / `_partial_` / `_ref_` / `_scope_` mappings become typed markers, each stamped with its source location | everything else stays raw |
 | 2 | **Import** | `import: pkg.mod` | the module is imported, so its `@configurable` classes are registered | a failed import warns, it does not raise |
 | 3 | **Include** | `include: other.yaml` | files merge into ONE document; the included document is **pasted at the `include:` line** | nothing is resolved yet |
 | 4 | **Scope** | `scopes=[...]` from the caller | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |

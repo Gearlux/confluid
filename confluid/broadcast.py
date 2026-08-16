@@ -671,7 +671,7 @@ def dict_at_slot_kind(existing: Any) -> Literal["marker", "configurable", "assig
     * ``"configurable"`` — a live ``@configurable`` instance: walk INTO it and set fields;
     * ``"assign"``       — plain data (dict/list/scalar) or nothing: the mapping IS the value;
     * ``"opaque"``       — any other live object (a non-configurable instance, an
-      unresolved ``Reference``/``Clone``): a located ``ConfigurationError`` — the user
+      unresolved ``Reference``): a located ``ConfigurationError`` — the user
       decision of 2026-08-13 is to REFUSE, never to silently replace an object with a dict.
 
     Reads the CLASS mark, never a property — and callers hand it ``vars(obj).get(key)``,
@@ -680,7 +680,7 @@ def dict_at_slot_kind(existing: Any) -> Literal["marker", "configurable", "assig
     if isinstance(existing, Target):
         return "marker"
     if isinstance(existing, Fluid):
-        return "opaque"  # a Reference/Clone cannot be tuned by a mapping — refuse loudly
+        return "opaque"  # a Reference cannot be tuned by a mapping — refuse loudly
     if existing is None or isinstance(existing, _ASSIGNABLE_SLOT_TYPES):
         return "assign"
     if getattr(type(existing), "__confluid_configurable__", False):

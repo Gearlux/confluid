@@ -111,16 +111,13 @@ def _target_name(target: Any) -> str:
 
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
-    from confluid.fluid import Clone, Reference, Target
-    from confluid.loader import CLONE_KEY, PARTIAL_KEY, REF_KEY, TARGET_KEY
+    from confluid.fluid import Reference, Target
+    from confluid.loader import PARTIAL_KEY, REF_KEY, TARGET_KEY
 
     # A dump emits the PLAIN-YAML spelling, so the artifact a run archives is
     # readable by anything — `yaml.safe_load`, `yq`, a diff viewer — and not only
     # by confluid. Reload fidelity is unchanged: both spellings parse to the same
     # markers (docs/plain-format.md, architecture record 11).
-
-    if isinstance(data, Clone):
-        return dumper.represent_mapping("tag:yaml.org,2002:map", {CLONE_KEY: data.target, **data.kwargs})
 
     if isinstance(data, Reference):
         return dumper.represent_mapping("tag:yaml.org,2002:map", {REF_KEY: data.target, **data.kwargs})
@@ -222,9 +219,9 @@ def dump(obj: Any) -> str:
     # another marker's kwargs would miss out and fall through to
     # `represent_undefined`. PyYAML dispatches on EXACT type, so `Partial` needs
     # its own entry even though it is a `Target` subclass.
-    from confluid.fluid import Clone, Partial, Reference, Target
+    from confluid.fluid import Partial, Reference, Target
 
-    for _fluid_cls in (Target, Partial, Reference, Clone):
+    for _fluid_cls in (Target, Partial, Reference):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
 
     # Catch-all fallback for opaque non-@configurable objects. PyYAML

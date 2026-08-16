@@ -359,27 +359,6 @@ def test_a_ref_shares_one_configured_object() -> None:
     assert graph["dst"].k == 42
 
 
-def test_a_clone_is_configured_independently() -> None:
-    """`!clone:` opts OUT of the sharing, and must still carry the configuration.
-
-    A clone that arrived unconfigured would be the more dangerous failure: it looks
-    like the original everywhere except in the values that matter.
-    """
-    graph = load("src: !class:InheritBase()\n  k: 42\ndst: !clone:src\n")
-
-    assert graph["dst"] is not graph["src"]
-    assert graph["dst"].k == 42 and graph["src"].k == 42
-
-
-def test_a_bare_key_reaches_both_a_ref_and_a_clone() -> None:
-    """Broadcasting does not stop at an aliased node."""
-    shared = load("src: !class:InheritBase()\ndst: !ref:src\nk: 42\n")
-    cloned = load("src: !class:InheritBase()\ndst: !clone:src\nk: 42\n")
-
-    assert shared["dst"].k == 42
-    assert cloned["dst"].k == 42 and cloned["src"].k == 42
-
-
 @pytest.mark.parametrize(
     ("label", "document"),
     [
@@ -441,21 +420,6 @@ def test_configure_reaches_a_shared_ref_once_and_both_names_see_it() -> None:
     get_registry().register_class(AliasHolder, name="AliasHolder")
     graph = load("a: !class:InheritBase()\nb: !ref:a\n")
     assert graph["a"] is graph["b"]
-
-    configure(AliasHolder(a=graph["a"], b=graph["b"]), config="k: 42\n")
-
-    assert graph["a"].k == 42 and graph["b"].k == 42
-
-
-def test_configure_reaches_both_halves_of_a_clone() -> None:
-    """`!clone:` makes two distinct objects — BOTH must be configured.
-
-    The complement of the test above: there the visited set must not lose the value,
-    here it must not mistake two objects for one.
-    """
-    get_registry().register_class(AliasHolder, name="AliasHolder")
-    graph = load("a: !class:InheritBase()\nb: !clone:a\n")
-    assert graph["a"] is not graph["b"]
 
     configure(AliasHolder(a=graph["a"], b=graph["b"]), config="k: 42\n")
 

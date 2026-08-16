@@ -14,7 +14,6 @@
 #   _target_: Model            ==  !class:Model
 #   _partial_: true            ==  !lazy:Name   (deferred; the receiver flow()s it)
 #   ${ref:model}               ==  !ref:model
-#   {_clone_: model}           ==  !clone:model
 #   _scope_: {task: cls}       ==  !scope:task=cls
 #   ${env:DATA_ROOT}           ==  an explicit environment-variable read
 # ---------------------------------------------------------------------------
@@ -38,7 +37,7 @@ base_lr: 0.001
 # String interpolation (${...}):
 #   ${env:NAME} / ${env:NAME,default} -> an ENVIRONMENT variable
 #   ${train.dataset} / ${items[0]}    -> another CONFIG KEY
-#   ${ref:name} / ${clone:name}       -> a live OBJECT (shared / deep copy)
+#   ${ref:name}                        -> a live OBJECT (shared)
 # A whole-string match keeps the value's native type; embedded matches
 # substitute str(value). On a miss the default applies, else the literal
 # ${...} is left in place.
@@ -63,7 +62,7 @@ Model.dropout: 0.1
 # _target_ names the callable to build; every sibling key is a constructor kwarg.
 # _partial_: true withholds construction for a slot the receiver flows itself
 # (an optimizer needing params=, a model needing num_classes). ${ref:key} wires
-# the SAME object into another slot; {_clone_: key} wires an independent copy.
+# the SAME object into another slot; write the marker again for an independent one.
 Trainer:
   lr: ${ref:base_lr}
   model:

@@ -769,7 +769,10 @@ rules (``_parent_wins``, the glob shield) have no live analogue.
 
 ## 9. `!clone:` stays — the identity model's independence escape hatch
 
-*2026-08-09*
+*2026-08-09 — SUPERSEDED 2026-08-15: Clone is REMOVED (record 18)*
+
+> The decision below was reversed. The census it rests on was unchanged (still zero users);
+> the ruling changed. Kept as history so the reasoning is not rediscovered.
 
 **Context.** A dead-surface audit found `!clone:` used by no config anywhere in sight —
 a marker type, a tag constructor, a flow branch, a merge branch and two dump branches
@@ -828,7 +831,7 @@ compatibility commitment either way.
 
 | Tier | Members | Why kept |
 |---|---|---|
-| **Escape hatches** — value is existence, not usage | `!notscope:`, `NoBroadcast[T]`, `broadcast=False`, `capture=False` | the design's default posture (cascade-on, capture-on, positive scopes) is safe only while the opt-out exists; `!notscope:` additionally defines the declared-value check's third exemption (record 1) |
+| **Escape hatches** — value is existence, not usage | `!notscope:`, `NoBroadcast[T]`, `broadcast=False`, `capture=False` (`!clone:` was here until its removal, record 18) | the design's default posture (cascade-on, capture-on, positive scopes) is safe only while the opt-out exists; `!notscope:` additionally defines the declared-value check's third exemption (record 1) |
 | **Awaiting their consumer** | `@axis=value` / `$key` selectors, `eager=`, `constant=` | built for recurring situations (a real registry collision in a config; the next plain-constructor class; the next pure value producer); the first real user activates them, and the consuming machinery for `constant=` already ships in a visual editor |
 | **Review at 1.0** | `${dotted.key}` config-path interpolation, `strict_typing=` | no escape-hatch or consumer-in-waiting argument on file; if still unused when 1.0 approaches, these are the prune candidates |
 
@@ -1137,7 +1140,9 @@ the same change, or it rebuilds exactly the divergence removed here.
 
 ## 14. A Clone means one thing, whichever path resolves it
 
-*2026-08-13*
+*2026-08-13 — SUPERSEDED 2026-08-15: Clone is REMOVED (record 18)*
+
+> The mechanism below no longer exists. Kept as history.
 
 **Context.** `Clone` (`_clone_:` / `${clone:...}`) is the deep-copy reference — where a
 reference shares the single materialized instance, a clone gets an independent copy, optionally
@@ -1339,3 +1344,44 @@ problem. If a future preprocessor resolves interpolation into include paths, it 
 alternation rather than preceding it — an include path that depends on a config key is circular,
 and only values from outside the document (environment, CLI, scope activation) can resolve before
 the document exists.
+
+
+---
+
+## 18. Clone is removed — independence is a second marker
+
+*2026-08-15*
+
+**Context.** `Clone` (`_clone_:` / `${clone:}` / `!clone:`) was the deep-copy reference: a marker
+that resolves like a `Reference` but yields an independent instance, with overrides applied by the
+referent's kind (record 14). Records 9 and 10 kept it on a zero-user census as an "escape hatch"
+from identity-preserving merges. A 2026-08-15 re-census found the same zero: one comment in
+`confluid.example.yaml`, a `RESERVED_KEYS` list in two downstream test files, nothing else.
+
+**Decision.** Remove it, in every spelling, and make the removal LOUD. Independence has one
+spelling — write the marker again — and sharing has one — `_ref_` / `${ref:}`. This is a new
+ruling on unchanged facts, not new evidence, and it is recorded as such so records 9/10 read as
+history rather than as a live rule that contradicts this one.
+
+The loudness is the part that costs code: `_clone_` stays in `RESERVED_KEYS` so the loader refuses
+it with a location instead of loading it as data; `clone` stays in the marker-resolver set so
+`${clone:x}` raises instead of surviving as a string; the codemod reports `!clone:` as a Finding
+instead of converting it to a refused key.
+
+**Consequences.** ~150 lines gone (a marker class, a tag constructor, a resolver arm, two engine
+helpers with their four-arm override semantic, a dumper branch, a codemod rule, 21 tests). One
+fewer marker kind for every walker, the dumper, the classifier and any preprocessor to model. A
+0.2.0 user of `!clone:` gets a located error naming the replacement. YAML anchors + a second
+marker cover the copy case in plain YAML, which is also what a preprocessor would emit.
+
+**Example.**
+
+```yaml
+proto: {_target_: Box, size: 3}
+a: ${ref:proto}                  # SHARED — a is proto
+c: {_target_: Box, size: 3}      # INDEPENDENT — a second marker, a second instance
+d: {_clone_: proto}              # -> ConfigurationError, located, naming both spellings above
+```
+
+**What you may change.** The wording of the refusal. Not the loudness — a removed spelling that
+degrades to data is the failure mode the reserved-key format exists to end.

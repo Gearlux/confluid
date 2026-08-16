@@ -169,13 +169,6 @@ class Reference(Fluid):
         super().__init__(path, **kwargs)
 
 
-class Clone(Fluid):
-    """Deep-copy reference (``${clone:...}`` / ``_clone_:``) — resolves like a ``Reference`` but returns a deepcopy."""
-
-    def __init__(self, path: str, **kwargs: Any) -> None:
-        super().__init__(path, **kwargs)
-
-
 class ScopeBlock:
     """A conditional block carried in the IR until ``resolve_scopes`` rewrites it.
 
