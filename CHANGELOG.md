@@ -64,6 +64,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A dotted key competes on position, like every other spelling** (BUGS-2026-08-13 P7). The
+  dotted expansion ran in two passes — every plain key first, then every dotted key sorted by depth
+  and then alphabetically — so a dotted leaf was always applied last and could not lose to anything
+  written after it. `a.b: 1` followed by `a: {b: 0}` gave `{'b': 1}`, and so did the opposite
+  order: the two orderings did not disagree, against the one precedence rule. The same conflict
+  across an include behaved the same way, so a dotted key written ABOVE an `include:` still beat
+  the file pasted below it, while two plain keys in that position arbitrate correctly. Expansion is
+  now a single pass in document order; the fresh-head anchoring (fixed in August) is unchanged, and
+  both branches merge a dict onto a dict symmetrically. Verified by snapshotting the resolved value
+  of all 1759 workspace configs before and after: zero changed. Pinned by the position group in
+  `tests/test_merger.py`.
+
 - **An include-file override of one kwarg no longer deletes the whole marker** (BUGS-2026-08-13
   P1). The commonest composition in the system — a base file defining the model, an experiment file
   overriding one knob — produced a plain `dict` with no target and no error:

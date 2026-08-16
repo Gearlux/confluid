@@ -135,16 +135,28 @@ def expand_dotted_mapping(
     # so it passes through untouched. The guard is what lets the loader preserve YAML's own
     # key types instead of str()-ing the whole document to keep this walk safe.
     result: Dict[Any, Any] = {}
-    for k, v in mapping.items():
-        if not isinstance(k, str) or "." not in k:
-            result[k] = copy_value(v)
-        else:
-            head = k.split(".", 1)[0]
-            if head not in result and head not in mapping:
-                result[head] = {}
-    dotted = sorted((k for k in mapping if isinstance(k, str) and "." in k), key=lambda k: (k.count("."), k))
-    for key in dotted:
-        value = mapping[key]
+    # ONE pass, in DOCUMENT ORDER. It used to be two — every plain key first, then
+    # every dotted key sorted by depth and then ALPHABETICALLY — so a dotted leaf
+    # was always applied last and could not lose to anything written after it:
+    # `a.b: 1` beat a later `a: {b: 0}`, and the two orderings of one leaf gave the
+    # SAME answer, against the one precedence rule (BUGS-2026-08-13 P7). The head
+    # was already anchored where written (the fresh-head pins in
+    # tests/test_document_order.py); this is the same bug one level down, at the leaf.
+    for key, value in mapping.items():
+        if not isinstance(key, str) or "." not in key:
+            # Symmetric with the LEAF assignment at the bottom of the loop: a dict
+            # landing on a dict MERGES (last spec wins per key), anything else
+            # replaces. In the old two-pass form the plain keys were all placed
+            # before any dotted key, so this branch never met one; in document order
+            # it does, and an unconditional assign would drop `a.**.x` when a later
+            # `a: {'**': {y}}` block arrived — merging keeps both, which is what
+            # `deep_merge` does for the same shape.
+            prev = result.get(key)
+            if isinstance(prev, dict) and isinstance(value, dict):
+                result[key] = merge_leaf(prev, value)
+            else:
+                result[key] = copy_value(value)
+            continue
         parts = key.split(".")
         cur: Dict[str, Any] = result
         for part in parts[:-1]:
