@@ -25,13 +25,12 @@ plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_clone_` 
 recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` /
 `sanitize_schema`) that every AI- and GUI-facing consumer reads for tool schemas and form specs.
 
-The equivalent TAG spelling (`!class:` / `!lazy:` / `!ref:` / `!scope:`) still parses in 0.3.0
-and today warns on every document it loads. **Direction (user ruling 2026-08-15, architecture
-record 19 — `hydraide`):** BOTH spellings are supported INPUT and neither is deprecated; the plain
-form is what the `hydraide` preprocessor EMITS. The deprecation rules below (the `FutureWarning`,
-the 0.4.0 deletion, `confluid-migrate`) describe the code as it stands and are scheduled for
-reversal in hydraide phase 1 (`TASKS.md`) — do not extend them, and do not act on them as
-direction. Clone is already removed (record 18).
+The TAG spelling (`!class:` / `!partial:` (alias `!lazy:`) / `!ref:` / `!scope:`) is the
+PREFERRED AUTHORING form; the reserved-key spelling is the MACHINE form that the `hydraide`
+preprocessor EMITS (`hydraide cfg.yaml --scope k=v -o out.yaml`). Both are first-class input,
+neither warns (user ruling 2026-08-15, architecture record 19 — phase 1 landed). Clone is removed
+(record 18). Phases 2–4 of record 19 (attribute refs out, the runtime consuming hydraide output,
+`configure()` via the document) are in `TASKS.md`.
 
 **Published on PyPI — v0.1.0 and v0.2.0. v0.3.0 is prepared and DELIBERATELY HELD** (user
 instruction 2026-08-04): do not tag it until confluid's functionality is verified complete against
@@ -411,82 +410,50 @@ prefixes, NEVER a bare leading `!` — an ordinary value may start with one. It 
 `file:line` because a scalar has none to carry (only markers are `_stamp_loc`-ed); that is
 tracked in `TASKS.md`, not worked around.
 
-**Rule — the whole path is DELETED in 0.4.0 with the tags.** It exists only to work around a
-tag limitation (YAML forbids two tags on one node, so a nested `!ref:` had to be quoted), and
-the reserved keys have no such limitation. Do NOT extend it — no new marker support, no
-codemod rule. Census 2026-08-12: zero configs use it workspace-wide.
+**Rule — the whole path is DELETED in 0.4.0 (the tags themselves STAY — record 19).** It exists
+only to work around a tag limitation (YAML forbids two tags on one node, so a nested `!ref:` had
+to be quoted), and the reserved keys have no such limitation. Do NOT extend it — no new marker
+support. Census 2026-08-12: zero configs use it workspace-wide.
 
 **Pins.** `tests/test_loader.py` — the quoted-marker refusal group (incl.
 `::test_an_ordinary_value_starting_with_a_bang_is_untouched`, the false-positive guard).
 
-**Rule — the TAG spelling is DEPRECATED and goes in 0.4.0.** Parsing a tag emits a
-`FutureWarning` naming the file, the line and `confluid-migrate`, ONCE PER DOCUMENT (per-tag
-buries the message; per-process names one config and hides the rest). `FutureWarning`, not
-`DeprecationWarning`: Python shows it by default, and the audience is whoever wrote the YAML.
-Never downgrade or silence it — the alias round in this same release found consumers still on
-names "deprecated" for months because nothing ever said so at runtime.
+**Rule — tags are the PREFERRED AUTHORING form; the reserved keys are the MACHINE form; NEITHER
+warns** (user ruling 2026-08-15, architecture record 19 — this REVERSED the deprecation that stood
+here). Both spellings are first-class input and may be mixed in one file. `!partial:` is the tag
+for a deferred marker (the same name as the key it emits); `!lazy:` is an alias — whether it is
+ever removed is a later ruling, not a standing plan. Do not reintroduce a tag warning, a
+migration tool, or a "no tags in examples" scan: `tests/test_canonical_spelling.py` enforced the
+opposite of this ruling and was deleted with it. The two-spellings-one-IR invariant is unchanged
+and has a THIRD witness now — `hydraide` emits byte-identical output whichever spelling produced
+the document.
 
-**Rule — 0.3.0 ships BOTH the tags and `confluid-migrate`, and that pairing is deliberate.**
-`migrate.verify_equivalence` parses the ORIGINAL tagged text to prove a conversion equivalent, so
-a release that deleted the constructors while shipping the tool would make it refuse every file it
-exists to convert. Deleting the constructors is 0.4.0 work, together with the `${PLAIN}`
-env→config-key flip (both are the breaking half; see `TASKS.md`).
+**Rule — `hydraide` is the ONE emitter of the plain form, and it is a WRAPPER over passes 1–7.**
+`hydraide.emit(source, scopes=…)` is `dump(resolve(source))` plus named anchors; it adds NO pass and
+re-derives NO rule — if the emitted document is wrong, the defect is in `resolve()` or `dump()`,
+never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`;
+CLI exit 2, no traceback). Named anchors ride `dump(anchor_names=…)` — a `generate_anchor` hook
+keyed on the shared value's SHORTEST path (`&preprocess_0`); the map is computed on the resolved
+tree, where identity already means what the document meant. Two engine facts are pinned in the
+tool's suite because the tool exposes them: identity is per MARKER, not per container
+(`resolve()` copies a list reached via `${ref:}` and shares its elements); and an anchor does NOT
+follow an include-overlay tune (P1's COPY at the key; alias sites keep the original — the earlier
+"measured correct" probe was seeing bare-key broadcast through a same-named parameter). Neither is
+phase-1's to change (`TASKS.md`, phase 1b).
+**Pins.** `tests/test_hydraide.py` — byte-identical output for both spellings, idempotence
+(`emit(emit(x)) == emit(x)`, what `--check` rests on), the CLI's three exit codes, no-warning for
+either spelling, `!partial:` == `!lazy:`, and the two identity pins.
+**Docs.** `docs/hydraide.md`. **Example.** `examples/hydraide.py`.
 
-**Why.** `docs/architecture.md` record 11. The tag format is not YAML anything else can read, which
-locks out `yq`, editor schemas and linters.
+**Why.** `docs/architecture.md` records 11 and 19. The tag format is not YAML anything else can
+read, which locks out `yq`, editor schemas and linters — so the plain form has to exist; and a
+human writing YAML by hand prefers one line per node — so the tag form has to exist. One
+preprocessor turns the one into the other, once, into a file.
 
 **Pins.** `tests/test_plain_format.py` — the `test_both_spellings_agree` matrix, the malformed-marker
-group, `::test_a_full_document_is_readable_by_plain_yaml`, the deprecation trio
-(`::test_a_tagged_document_announces_the_deprecation` / `::test_the_notice_is_ONCE_PER_DOCUMENT_not_once_per_tag` /
-`::test_the_reserved_key_format_is_silent`),
+group, `::test_a_full_document_is_readable_by_plain_yaml`, `::test_neither_spelling_warns`,
 `::test_yaml_anchors_and_aliases_still_work`, `::test_the_two_spellings_can_be_mixed_in_one_document`.
 **Docs.** `docs/plain-format.md`. **Example.** `examples/plain_format.py`.
-
-### The migration codemod edits LINES
-
-**Rule.** `confluid/migrate.py` MUST NOT parse-and-rewrite a document. It converts the lines
-carrying a tag and leaves every other byte alone. Never reach for a round-trip YAML library: it
-would be a new dependency the DEPENDENCIES rule forbids, and it reformats regardless — measured on
-a 458-line config, a comment-preserving round-tripper changed 34 lines on a NO-OP load+dump. These
-configs are ~86% comments and the comments are the documentation.
-
-**Rule.** Verification MUST run with the migrated file's directory as CWD (`_working_dir`). It
-loads the document from TEXT, which carries no location, so a relative `include:` otherwise
-resolves against the caller's working directory — every such config then reports
-`ConfigFileNotFoundError` under every activation and is refused as unverifiable, which reads
-exactly like the safety check working. **Pins.**
-`tests/test_migrate.py::test_verification_resolves_a_relative_include_against_the_FILE`.
-
-**Rule.** Safety is the VERIFICATION, never the parser. `verify_equivalence` compares resolved
-marker trees **once per scope activation the document declares** (`discover_dimension_values` over
-the RAW parse — `yaml.safe_load` cannot see a scope block, so asking IT for the dimensions silently
-degrades the check to the default alone). A file whose conversion is not provably equivalent is
-NOT written.
-
-**Rule.** Anything the grammar cannot convert is REPORTED with its line, never guessed at, and a
-post-pass sweep re-scans for surviving tags so nothing is dropped silently. A `Finding` makes the
-run exit non-zero.
-
-**Detail — the `@axis=` selector rides along.** It is part of the target STRING, not tag syntax,
-so `_target_: Loss@framework=keras` is ordinary YAML and `registry.parse_target_spec` reads it
-unchanged (the `$key` document form included). The codemod must NOT report it. Do not re-open
-deleting the selector: the "zero users" census that proposed it read YAML configs only, and it is
-the documented idiom in three consuming projects' user docs.
-
-**Detail — the line shapes.** Four, all found by running the tool over the workspace: `key: !tag`,
-`- !tag` (first key on the dash line), a tag ALONE on its line (keys join the block at the tag's
-OWN indent), and a trailing flow mapping (`!class:X {a: 1}`, merged inline). The flow scan is
-depth- AND quote-aware — a value may carry its own braces (`{ low_level: "-{template}" }`) and a
-`\{[^}]*\}` pattern stops at the wrong one.
-
-**Detail — interpolation.** `${NAME}` / `$NAME` → `${env:NAME}`, `${NAME:d}` → `${env:NAME,d}`; a
-dotted name is a config key and is left alone. Meaning-preserving today, and it is what removes
-every ambiguous spelling before a bare `${name}` is re-read as a config key. The pass MUST skip a
-placeholder already naming a resolver, or it is not idempotent (`${env:X}` → `${env:env,X}`).
-
-**Pins.** `tests/test_migrate.py` — the form matrix, the comments-are-never-edited group, the
-real-config shapes, and the equivalence tests that feed WRONG conversions in (a check that only
-ever passes is worse than none). **Docs.** `docs/plain-format.md` → "Migrating an existing config".
 
 ### There are exactly TWO construction modes
 
@@ -547,10 +514,9 @@ purely so a mapping carrying it still reaches the marker gate and is REFUSED wit
 instead of loading silently as plain data with a literal `_clone_` key (the degradation the format
 forbids). `clone` stays in `resolver._MARKER_RESOLVERS` for the same reason — `${clone:x}` routes
 to the marker resolver and raises there rather than surviving as a literal string. The `!clone:`
-constructor is unregistered, so the tag fails at parse; `confluid-migrate` REPORTS a `!clone:`
-line as a Finding instead of converting it to a key the loader now refuses.
+constructor is unregistered, so the tag fails at parse.
 **Pins.** the Clone-removal group in `tests/test_plain_format.py` (all four spellings + the
-`_ref_` con case) and `tests/test_migrate.py::test_a_clone_tag_is_REPORTED_not_converted`.
+`_ref_` con case).
 
 ### A target may be ANY callable
 
@@ -1446,37 +1412,14 @@ scenario `examples/deep_injection.py` stays a flat script — inline YAML, no fi
 **Rule.** An example that DEMONSTRATES A RULE should assert it, not just print it — a print-only
 script exits 0 while printing the wrong number, and these files double as the documentation's proof.
 
-**Rule — the CANONICAL spelling, at three strictnesses.** No file under `examples/` may contain
-`!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:` / `!notscope:` anywhere — not in a YAML
-literal, not in a docstring, not in a comment, not in a directory example's `README.md`. In
-`docs/`, prose MAY name the deprecated spelling (that is how a reader with old configs learns
-what to convert), but a fenced ```` ```yaml ```` block MUST NOT: a guide's config samples have
-to agree with the companion example that proves them. Convert a config with `confluid-migrate`;
-rewrite prose to name the reserved key.
-
-The THIRD surface is the public API itself (2026-08-13): no docstring of a
-`confluid.__all__` member may carry a tag LITERAL — `help(confluid.load)` is documentation with
-the same obligation, and sixteen public objects still taught the tag spelling after the examples
-and guides were converted. Prose naming the deprecated spelling ("the deprecated tag spelling
-parses to the same marker") stays fine; implementation modules (`loader` / `resolver` /
-`migrate`) are out of scope — they implement the tags.
-
-Exemptions live with their reason in `tests/test_canonical_spelling.py` — examples
-`plain_format.py` (proves the spellings agree) and `tags_deferred.py` (documents the tag form);
-guides `targets.md` (the marker reference it converts FROM) and `architecture.md` (records
-quoting the configs that motivated them). All four go with the constructors in 0.4.0.
-
-**Why.** These are the first confluid a reader writes by hand. Twelve of the twenty-four
-examples still taught the tag spelling on 2026-08-12 — including `lifecycle.py`, which the
-README designates "start here" — so following the documentation path emitted the deprecation
-warning; converting them then left 69 tag lines across nine guides showing configs their own
-companion no longer matched. Running the examples proves nothing here: `ml_pipeline.py` warned
-about nothing because it used the QUOTED-STRING spelling, and `examples/ml_experiments/` had
-migrated YAML with comments, docstrings and a README still describing tags. The check is
-therefore static, over source text.
-
-**Pins.** `tests/test_canonical_spelling.py` (including the two inverse pins: an allow-list
-entry naming a missing file, and an entry that is no longer needed).
+**Rule — examples and guides show TAG input beside PLAIN output** (user ruling 2026-08-15,
+record 19; this REVERSED the "no tags in examples" rule that stood here, and its scanner
+`tests/test_canonical_spelling.py` was deleted with it). A guide's config sample is written the
+way a reader would write it — the tag form — and where the emitted/machine form matters (a
+`hydraide` artefact, a `dump()`, `confluid.example.yaml`) it is shown as OUTPUT, labelled as such.
+An example that demonstrates both spellings agree (`plain_format.py`) keeps both. Do not
+reintroduce a spelling scan in either direction: the property worth pinning is that both
+spellings resolve identically, and `tests/test_hydraide.py` pins it.
 
 ---
 

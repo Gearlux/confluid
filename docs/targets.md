@@ -9,21 +9,22 @@ a live **Solid** object. This two-stage lifecycle is what lets Confluid
 broadcast values into a node *before* it is built and inject runtime arguments
 *as* it is built.
 
-Each marker also has a legacy TAG spelling (the middle column below). Tags are
-parsed only by confluid's own loader (a private `yaml.SafeLoader` subclass) — a
-plain `yaml.safe_load` raises on them, which is the reason the reserved-key
-format replaced them. The tag column is deprecated: it warns on every document
-in 0.3 and is removed in 0.4.0 (`confluid-migrate` converts a file).
+Each marker has two spellings (both columns below). The TAG form is the
+preferred way to *write* a config — one line per node. Tags are parsed only by
+confluid's own loader (a private `yaml.SafeLoader` subclass); a plain
+`yaml.safe_load` raises on them, which is why the reserved-key form exists: it is
+what [`hydraide`](hydraide.md) *emits*, ordinary YAML any tool reads. Both are
+first-class input, may be mixed in one file, and produce the SAME markers.
 
-| Reserved key | Legacy tag | Purpose | Produces |
+| Reserved key | Tag | Purpose | Produces |
 |---|---|---|---|
 | `_ref_: path` (or `${ref:path}`) | `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |
 | `_target_: Name` | `!class:Name` / `!class:Name(...)` | The callable to build — built at load | `Target` |
-| `_target_: Name` + `_partial_: true` | `!lazy:Name(...)` | Built by nobody until an explicit `flow()` (runtime injection) | `Partial` |
+| `_target_: Name` + `_partial_: true` | `!partial:Name(...)` (`!lazy:` is an alias) | Built by nobody until an explicit `flow()` (runtime injection) | `Partial` |
 | `_scope_: {KEY: VAL}` / `_notscope_: …` | `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
 
-This page keeps documenting the tag column because it still parses and
-because `confluid-migrate` converts from it.
+The tag column is the one you will mostly write; the reserved-key column is
+what you will mostly *read* — in a `hydraide` artefact, a `dump()`, or a diff.
 
 ## The lifecycle: Fluid → Solid
 
@@ -125,7 +126,8 @@ Four grammar notes (all pinned by the test suite):
   tag form's escape hatch was to QUOTE it (`"!class:Adam(lr=!ref:base_lr)"`), and
   that quoted-string form is a third grammar with sharp edges: it parses only
   `!class:` and `!ref:`, refuses the rest, and is honoured by nothing inside a
-  marker's own kwargs. It is deprecated and removed in 0.4.0. `_target_` has none
+  marker's own kwargs. It is refused where it cannot be honoured and is slated for
+  deletion (`TASKS.md`, Phase 5e). `_target_` has none
   of these problems, because nesting a mapping in a mapping needs no escape at
   all: `{_target_: Adam, lr: ${ref:base_lr}}`. (A tag block body works too:
   nested tags are valid as block values.) Note `1e-3` is *not* a YAML float —

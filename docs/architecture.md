@@ -1365,8 +1365,8 @@ history rather than as a live rule that contradicts this one.
 
 The loudness is the part that costs code: `_clone_` stays in `RESERVED_KEYS` so the loader refuses
 it with a location instead of loading it as data; `clone` stays in the marker-resolver set so
-`${clone:x}` raises instead of surviving as a string; the codemod reports `!clone:` as a Finding
-instead of converting it to a refused key.
+`${clone:x}` raises instead of surviving as a string; the (since-deleted) codemod reported
+`!clone:` as a Finding instead of converting it to a refused key.
 
 **Consequences.** ~150 lines gone (a marker class, a tag constructor, a resolver arm, two engine
 helpers with their four-arm override semantic, a dumper branch, a codemod rule, 21 tests). One

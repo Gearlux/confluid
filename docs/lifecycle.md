@@ -49,6 +49,7 @@ run in, what each one consumes, and what it decides **permanently**. Most
 | `load_config(path)` | 1–3 | the raw merged document, markers unresolved | you want the document, not the objects |
 | `load(x, flow=False)` | 1–6 | the Fluid IR, scopes applied | you want to inspect or re-merge before anything is built |
 | `resolve(x)` | 1–7 | markers with their final kwargs, no objects | structural introspection (a YAML→graph import) |
+| `hydraide x.yaml` | 1–7 | the same, written as ONE plain-YAML file | "what did my config resolve to?" — see [hydraide](hydraide.md) |
 | `load(x)` / `materialize(x)` | 1–9 | live objects | the normal path |
 | `load(x, solidify=False)` | 1–8 | live but unfinalized objects | you want objects without paying for the expensive finalize |
 | `configure(obj, config=…)` | 5–7, 9 | the same document applied to objects that already exist | post-construction configuration |

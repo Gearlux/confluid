@@ -34,11 +34,11 @@ unless_debug:
   log_level: WARNING
 ```
 
-> **The legacy tag spelling** (`!scope:debug`, `!scope:task=classification`, the
-> equivalent `!scope:task(classification)` call form, `!notscope:…`) still parses
-> and produces the same markers, but it is DEPRECATED and removed in 0.4.0 — and
-> a tag suffix is a string, so it can carry only ONE dimension. Convert a file
-> with `confluid-migrate`.
+> **The tag spelling** (`!scope:debug`, `!scope:task=classification`, the
+> equivalent `!scope:task(classification)` call form, `!notscope:…`) produces the
+> same markers and is the concise way to write a block — with one limit: a tag
+> suffix is a string, so it carries ONE dimension. A block conditional on several
+> dimensions is written with the `_scope_:` mapping.
 
 ## Where a scope block may live
 

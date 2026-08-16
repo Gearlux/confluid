@@ -6,6 +6,40 @@ All notable changes to confluid are documented here. The format follows
 
 ## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
 
+### Added
+
+- **`hydraide` — the preprocessor** (architecture record 19, phase 1). `hydraide cfg.yaml
+  [--scope k=v] [-o out.yaml | --check]` resolves a config — either spelling — to ONE plain-YAML
+  document: includes spliced, scopes applied, dotted keys expanded, interpolation burned in,
+  broadcasting settled, shared markers emitted as NAMED anchors (`&preprocess_0`, not `&id001`),
+  deferral kept as `_partial_: true`. Python: `confluid.hydraide.emit(source, scopes=…)` and
+  `check(path)`. Both spellings of one document emit byte-identical output, and `emit` is
+  idempotent — the property `--check` rests on. A malformed document is refused exactly as
+  `load()` refuses it (CLI exit 2, the located error on stderr, no traceback). It is a WRAPPER:
+  `dump(resolve(source))` plus a `dump(anchor_names=…)` hook; no engine pass changed. Guide:
+  `docs/hydraide.md`; example: `examples/hydraide.py`.
+- **`!partial:`** — the tag for a deferred marker, the same name as the key it emits. `!lazy:`
+  stays as an alias.
+
+### Changed
+
+- **Tags are the preferred AUTHORING form; the reserved keys are the MACHINE form; neither
+  warns** (user ruling 2026-08-15, record 19). This REVERSES the tag deprecation announced in
+  this release: the once-per-document `FutureWarning` is gone, the 0.4.0 tag deletion is off,
+  and both spellings are first-class input that may be mixed in one file. Two engine facts are
+  pinned by the tool's suite because the tool exposes them: identity is per MARKER, not per
+  container (a list reached via `${ref:}` is emitted twice with its elements anchored), and an
+  anchor does NOT follow an include-overlay tune (the key gets the tuned copy, alias sites keep
+  the original — use `${ref:}` for a cross-file reference).
+
+### Removed
+
+- **`confluid-migrate`** (`confluid/migrate.py`, its tests, the script) — the tag→plain codemod
+  has no job when tags are not deprecated; `hydraide` is the one emitter of the plain form. Not
+  breaking: v0.2.0 shipped no such script and no downstream code called it.
+- **`tests/test_canonical_spelling.py`** — it enforced "no tags in examples", the opposite of the
+  ruling.
+
 ### Documentation
 
 - **The docs-truth pass (2026-08-13).** The refactor's documentation debt, closed in one sweep:
