@@ -584,28 +584,22 @@ def test_a_PartialClass_body_slot_is_unchanged() -> None:
 
 
 def test_a_Reference_body_slot_still_raises() -> None:
-    """The scope guard: ``Partial`` IS a ``Target`` but ``Reference``/``Clone`` are
+    """The scope guard: ``Partial`` IS a ``Target`` but ``Reference`` is
     NOT, so widening the check to ``Target`` must leave them on the flow path.
 
     Swallowing them into the tune path would turn this loud failure into a silent
     no-op — the exact degradation this whole family is about.
     """
     from confluid.exceptions import ReferenceResolutionError
-    from confluid.fluid import Clone, Reference
+    from confluid.fluid import Reference
 
     @configurable
     class HostRef:
         def __init__(self) -> None:
             self.opt = Reference("nowhere")
 
-    @configurable
-    class HostClone:
-        def __init__(self) -> None:
-            self.opt = Clone("nowhere")
-
-    for cls in (HostRef, HostClone):
-        with pytest.raises(ReferenceResolutionError):
-            configure(cls(), config="lr: 0.75")
+    with pytest.raises(ReferenceResolutionError):
+        configure(HostRef(), config="lr: 0.75")
 
 
 def test_a_marker_body_slot_IS_emitted_by_dump() -> None:

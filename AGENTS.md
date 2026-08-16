@@ -529,33 +529,24 @@ A kwarg literally named `target` is legal (the loader assigns kwargs post-constr
 
 **Pins.** `tests/test_loader.py`, `tests/test_partial.py`. **Docs.** `docs/targets.md`.
 
-### Clone — ONE override semantic, decided by the referent's kind
+### Clone is REMOVED (user ruling 2026-08-15)
 
-**Rule.** A Clone's overrides are applied by `engine._clone_of` — the ONE site, called by BOTH
-paths (`_flow_recursive`'s document branch and `_flow_clone`). The semantic follows the
-REFERENT's kind, never the resolving path: a MARKER referent merges overrides into the copy's
-kwargs and the clone is BUILT from them; a MAPPING merges keys (override wins); a LIVE object
-takes setattrs (the `configure()` semantic); a scalar/list with overrides raises a located
-`ConfigurationError` — never a silent drop. Deepcopy happens FIRST, so the template is never
-mutated by its clones. Never re-inline an override application in one path.
+**Rule.** There is no copy marker. `Clone` / `_clone_` / `${clone:}` / the `!clone:` tag are gone;
+independence has ONE spelling — write the marker again (`<<:` an anchored base into each site if
+the recipe is long). `_ref_` / `${ref:}` remain the ONE sharing spelling. Do NOT reintroduce a
+copy marker: architecture records 9 and 10 kept it as an "escape hatch" on a zero-user census, and
+this ruling supersedes both — the same census, a different decision, recorded so the next audit
+stops here.
 
-**Rule.** `flow(clone, **runtime_kwargs)` configures the CLONE and runtime wins — never the
-referent's build (the pre-2026-08-13 behaviour fed runtime kwargs to the referent and let the
-clone's stored kwarg beat them). The fresh cloned marker is pinned in `memo_keepalive` (the
-memos key on `id()`).
-
-**Why.** `docs/architecture.md` record 14 — the split was invisible for convention-compliant
-classes and measured three ways (an eager class's 0.4-vs-0.1, the runtime-kwarg inversion, the
-silent drops).
-
-**Pins.** `tests/test_clone.py` — the 2026-08-13 group:
-`::test_clone_overrides_reach_the_constructor_on_BOTH_paths`,
-`::test_runtime_kwargs_on_a_flowed_clone_win`,
-`::test_a_live_referents_override_is_applied_not_dropped`,
-`::test_clone_of_a_mapping_merges_overrides`,
-`::test_clone_of_a_scalar_with_overrides_raises_located`,
-`::test_clone_overrides_never_mutate_the_template_marker`.
-**Docs.** `docs/targets.md` → "What the overrides mean".
+**Rule — the removal is LOUD, in every spelling.** `_clone_` stays in `loader.RESERVED_KEYS`
+purely so a mapping carrying it still reaches the marker gate and is REFUSED with a location,
+instead of loading silently as plain data with a literal `_clone_` key (the degradation the format
+forbids). `clone` stays in `resolver._MARKER_RESOLVERS` for the same reason — `${clone:x}` routes
+to the marker resolver and raises there rather than surviving as a literal string. The `!clone:`
+constructor is unregistered, so the tag fails at parse; `confluid-migrate` REPORTS a `!clone:`
+line as a Finding instead of converting it to a key the loader now refuses.
+**Pins.** the Clone-removal group in `tests/test_plain_format.py` (all four spellings + the
+`_ref_` con case) and `tests/test_migrate.py::test_a_clone_tag_is_REPORTED_not_converted`.
 
 ### A target may be ANY callable
 

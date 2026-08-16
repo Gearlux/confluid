@@ -321,6 +321,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Breaking
 
+- **`Clone` is removed — `_clone_`, `${clone:…}` and the `!clone:` tag, and the `Clone` marker
+  class** (user ruling 2026-08-15; architecture record 18). It had zero users workspace-wide (one
+  comment in `confluid.example.yaml`); records 9 and 10 kept it as an "escape hatch" on that same
+  census, and this ruling supersedes both. Independence now has one spelling — write the marker
+  again (or `<<:` an anchored base into each site) — and sharing has one, `_ref_` / `${ref:}`.
+  The removal is LOUD in every spelling: `_clone_` still reaches the marker gate and is refused
+  with a `file:line:col`, `${clone:x}` raises at the resolver instead of surviving as a string,
+  `!clone:` no longer parses, and `confluid-migrate` reports a `!clone:` line as a Finding rather
+  than converting it to a key the loader now refuses. **Breaking for a 0.2.0 config using
+  `!clone:`** — the located error names both replacement spellings. Pinned by the Clone-removal
+  group in `tests/test_plain_format.py`; `tests/test_clone.py` deleted.
+
 - **`@ignore_config` is REMOVED** — `from confluid import ignore_config` now raises `ImportError`.
   There is no deprecation shim: the decorator was a no-op on every class that existed.
 

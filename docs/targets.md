@@ -18,7 +18,6 @@ in 0.3 and is removed in 0.4.0 (`confluid-migrate` converts a file).
 | Reserved key | Legacy tag | Purpose | Produces |
 |---|---|---|---|
 | `_ref_: path` (or `${ref:path}`) | `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |
-| `_clone_: path` (or `${clone:path}`) | `!clone:path` | Like a reference but returns a deep copy | `Clone` |
 | `_target_: Name` | `!class:Name` / `!class:Name(...)` | The callable to build — built at load | `Target` |
 | `_target_: Name` + `_partial_: true` | `!lazy:Name(...)` | Built by nobody until an explicit `flow()` (runtime injection) | `Partial` |
 | `_scope_: {KEY: VAL}` / `_notscope_: …` | `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
@@ -30,7 +29,7 @@ because `confluid-migrate` converts from it.
 
 | State | What it is | Tag types |
 |---|---|---|
-| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Target`, `Partial`, `Reference`, `Clone` |
+| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Target`, `Partial`, `Reference` |
 | **Solid** (live) | The actual Python instance your code uses. | — |
 
 `load(text)` (≡ `load(text, flow=True)`) and `materialize(data)` walk the tree
@@ -386,38 +385,29 @@ class Model:
 `flow(obj, solidify=False)` suppresses the hook for the whole subtree, live
 objects included — see [Introspection](introspection.md).
 
-## `!ref:` vs `!clone:` — shared instance vs. deep copy
+## `!ref:` — shared instance
 
-Both point at another node in the same document; the difference is identity.
+`!ref:` points at another node in the same document and yields the **same** live
+object wherever it appears:
 
 ```yaml
 proto: !class:Box(size=3)
 a: !ref:proto     # a is the SAME object as proto (and as b)
 b: !ref:proto
-c: !clone:proto   # c is a deep copy — independent of proto
+c: !class:Box(size=3)   # a SECOND marker — a second, independent instance
 ```
 
 Within one `materialize()` pass, a marker reached directly or through any number
-of `!ref:` resolves to **one** live instance (so `a is b`). `!clone:` opts out
-with an explicit `deepcopy`, and may carry extra kwargs to override on the copy
-(`!clone:proto` + a block). `!ref:` also resolves dotted attribute / method
-paths — `!ref:my_split.train`, `!ref:some_obj.build()` — against that single
-materialized instance.
+of `!ref:` resolves to **one** live instance (so `a is b`). `!ref:` also resolves
+dotted attribute / method paths — `!ref:my_split.train`, `!ref:some_obj.build()`
+— against that single materialized instance.
 
-**What the overrides mean** (one rule, both engine paths, 2026-08-13): a clone
-of a *marker* merges the overrides into the copy's kwargs and is **built** from
-them — the constructor runs with the override, so an [eager class](eager-classes.md)
-computes from it and the dump round-trip holds. A clone of a plain *mapping*
-merges keys (override wins). A clone of a *live object* applies them as
-attribute writes — what `configure()` does, since a live constructor cannot
-re-run. A clone of a scalar or list cannot take overrides and raises a located
-`ConfigurationError` rather than dropping them silently. On a directly flowed
-clone, `flow(clone, lr=0.9)` runtime kwargs configure the **clone** and win
-over its stored kwargs, like every other `flow()` call. The referent is always
-deep-copied first, so a template is never mutated by its clones.
+Independence has exactly one spelling: write the marker again (`c` above). The
+`!clone:` / `_clone_` / `${clone:}` deep-copy marker was removed in 0.3.0 — it
+had no users, and a second marker says the same thing in plain YAML.
 
 ## Runnable example
 
 [`examples/tags_deferred.py`](../examples/tags_deferred.py) exercises every
 behaviour above: deferred vs eager `!class:`, `!lazy:` + `flow()` runtime
-injection, and `!ref:` / `!clone:` identity.
+injection, and `!ref:` identity.

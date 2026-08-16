@@ -34,7 +34,6 @@ migration safe.
 | `_target_: Name` | build this callable | `!class:Name()` |
 | `_partial_: true` | **don't** build it — the receiver flows it later | `!lazy:Name` |
 | `_ref_: path` | a shared reference to another node | `!ref:path` |
-| `_clone_: path` | an independent deep copy | `!clone:path` |
 | `_scope_: {dim: value}` | conditional block (several dims are ANDed) | `!scope:KEY[=VAL]` |
 | `_notscope_: {dim: value}` | negated conditional block | `!notscope:…` |
 
@@ -101,27 +100,24 @@ slow:
 `fast` and `slow` are independent `Trainer` markers. A merge of several anchors
 (`<<: [*a, *b]`) and an anchor that is itself built from a merge key both work.
 
-Note the difference from `_clone_`: a merge key is resolved by the YAML parser
-*before* confluid sees the document, so it copies **keys**. `_clone_` is resolved
-by confluid and copies a **node**, which is what you want when the template is
-built elsewhere or you need the copy to track a reference.
+A merge key is resolved by the YAML parser *before* confluid sees the document,
+so it copies **keys** — which is also the way to get two independent instances of
+one recipe: write the marker again (`<<:` an anchored base into each).
 
 ## References: two spellings
 
 `_ref_` points at another node in the same document and yields the **same**
-object; `_clone_` yields an independent deep copy:
+object:
 
 ```yaml
 proto: {_target_: Box, size: 3}
 
 a: ${ref:proto}      # scalar shorthand — a is b (one shared instance)
-b: ${ref:proto}
-c: ${clone:proto}    # an independent copy
-
-d:                   # the mapping form, which can override kwargs on the copy
-  _clone_: proto
-  size: 9
+b: {_ref_: proto}    # the mapping form, same thing
 ```
+
+There is no "copy" marker. A second instance is a second marker — the `${clone:}`
+escape hatch was removed in 0.3.0 with no users; see the CHANGELOG.
 
 Use the scalar `${ref:…}` for the common case and the mapping form when you need
 to carry kwargs. A reference resolves to an *object*, so it must be the **whole**
@@ -252,7 +248,7 @@ model.size: 3             # fine — builds Box(size=3)
 
 **`_partial_` pairs with `_target_` and nothing else.** It is a modifier on
 *construction*, and `_target_` is the only key that constructs — so it has no
-meaning beside `_ref_`, `_clone_` or a `_scope_` block, and those are refused
+meaning beside `_ref_` or a `_scope_` block, and those are refused
 rather than ignored. To defer what a reference points at, put the modifier on
 the node being constructed:
 
@@ -263,7 +259,7 @@ opt: {_ref_: proto}                # `opt` is the deferred marker
 
 ## Migrating an existing config — `confluid-migrate`
 
-The legacy tag spelling (`!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:`)
+The legacy tag spelling (`!class:` / `!lazy:` / `!ref:` / `!scope:`)
 still parses in 0.3 — emitting a `FutureWarning` once per document — and is
 **removed in 0.4.0**. Convert before then; the tool proves each conversion
 equivalent before writing. (A fully annotated reference config in the plain

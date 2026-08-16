@@ -4,7 +4,7 @@ Covers the tag family end-to-end: ``!class:Name`` (deferred ``Target`` stub) vs
 ``!class:Name(...)`` (eager ``Target``), ``!lazy:`` + ``flow()`` runtime injection
 (keyword AND positional), the Python-side ``Partial[T]`` annotation (typed with the
 interface the slot flows into), post-flow ``solidify()``, and ``!ref:`` (shared
-instance) vs ``!clone:`` (deep copy).
+instance) vs a second marker (a second instance).
 """
 
 from typing import Any, List, Optional
@@ -136,18 +136,18 @@ ready_engine: {_target_: Engine, cylinders: 8}
     assert blades is not None
     print(f"solidify() built {len(blades)} blades on a live object")
 
-    # --- !ref: vs !clone: shared identity vs deep copy ----------------------------------
+    # --- !ref: shared identity; a second marker is a second instance --------------------
     identity = load(
         """
 proto: !class:Engine(cylinders=12)
 a: !ref:proto
 b: !ref:proto
-c: !clone:proto
+c: !class:Engine(cylinders=12)
 """
     )
     assert identity["a"] is identity["proto"] and identity["b"] is identity["proto"]
     assert identity["c"] is not identity["proto"] and identity["c"].cylinders == 12
-    print("!ref: shares one instance; !clone: is an independent deep copy")
+    print("!ref: shares one instance; a marker written twice is two instances")
 
 
 if __name__ == "__main__":

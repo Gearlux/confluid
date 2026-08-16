@@ -6,7 +6,7 @@ Companion to `docs/plain-format.md`. Demonstrates — and ASSERTS — that:
    `yaml.safe_load` reads, while the tag spelling of the same document is not;
 2. the two spellings produce the same object graph;
 3. `_partial_: true` withholds construction while still being configured;
-4. `${ref:}` shares one instance and `${clone:}` makes an independent copy;
+4. `${ref:}` shares one instance; a marker written twice is two instances;
 5. YAML anchors and merge keys (`<<:`) compose with markers;
 6. `_scope_` blocks select between variants per run.
 
@@ -123,17 +123,19 @@ def main() -> None:
 
     print()
     print("=" * 70)
-    print("5. `${ref:}` shares one instance; `${clone:}` copies")
+    print("5. `${ref:}` shares one instance; a marker written twice is two")
     print("=" * 70)
     assert plain["trainer"].model is plain["model"], "a reference must share the instance"
     print(f"   trainer.model is model -> {plain['trainer'].model is plain['model']}")
 
-    copies = load("proto: {_target_: Model, hidden: 4}\na: ${ref:proto}\nc: ${clone:proto}")
-    assert copies["a"] is copies["proto"]
-    assert copies["c"] is not copies["proto"] and copies["c"].hidden == 4
+    # Independence has ONE spelling: write the marker again. (The `${clone:}`
+    # escape hatch was removed 2026-08-15 — it had no users.)
+    two = load("proto: {_target_: Model, hidden: 4}\na: ${ref:proto}\nc: {_target_: Model, hidden: 4}")
+    assert two["a"] is two["proto"]
+    assert two["c"] is not two["proto"] and two["c"].hidden == 4
     print(
-        f"   a is proto -> {copies['a'] is copies['proto']}   "
-        f"c is proto -> {copies['c'] is copies['proto']} (an independent copy)"
+        f"   a is proto -> {two['a'] is two['proto']}   "
+        f"c is proto -> {two['c'] is two['proto']} (a second marker, a second instance)"
     )
 
     print()

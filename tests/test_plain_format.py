@@ -56,7 +56,6 @@ def test_a_full_document_is_readable_by_plain_yaml() -> None:
     model: {_target_: Box, size: 3}
     opt: {_target_: Opt, _partial_: true, lr: 0.5}
     alias: ${ref:model}
-    copy: {_clone_: model}
     variant:
       _scope_: {mode: big}
       model: {_target_: Box, size: 99}
@@ -122,23 +121,46 @@ def test_ref_shares_one_instance(spelling: str) -> None:
     assert graph["a"].size == 3
 
 
-@pytest.mark.parametrize(
-    "spelling",
-    ["{_clone_: proto}", "${clone:proto}"],
-    ids=["mapping", "scalar"],
-)
-def test_clone_makes_an_independent_copy(spelling: str) -> None:
-    graph = load(f"proto: {{_target_: Box, size: 3}}\na: {{_ref_: proto}}\nc: {spelling}")
-    assert graph["a"] is not graph["c"]
-    assert graph["c"].size == 3
+# --------------------------------------------------------------------------- #
+# Clone is REMOVED (user ruling 2026-08-15) — every spelling refuses loudly
+#
+# `_clone_` / `${clone:}` / the `!clone:` tag had zero users workspace-wide (one
+# comment in confluid.example.yaml). Records 9 and 10 kept it as an "escape
+# hatch"; the ruling supersedes them. Independence now has ONE spelling: write
+# the marker twice — which is also what a preprocessor emits.
+# --------------------------------------------------------------------------- #
 
 
-def test_clone_mapping_form_overrides_kwargs_on_the_copy() -> None:
-    """The reason the mapping form is kept alongside the scalar shorthand: a
-    scalar has nowhere to put the overrides."""
-    graph = load("proto: {_target_: Box, size: 3}\nc: {_clone_: proto, size: 9}")
-    assert graph["proto"].size == 3
-    assert graph["c"].size == 9
+def test_the_clone_reserved_key_is_refused_loudly() -> None:
+    """A mapping carrying `_clone_` must not silently load as data with a
+    literal `_clone_` key — that is exactly the degradation the format forbids."""
+    with pytest.raises(ConfigurationError, match="_clone_") as exc:
+        load("proto: {_target_: Box, size: 3}\nc: {_clone_: proto}")
+    assert "<unicode string>:2" in str(exc.value), "the refusal must be located"
+
+
+def test_the_clone_placeholder_is_refused_loudly() -> None:
+    with pytest.raises(ConfigurationError, match="clone"):
+        load("proto: {_target_: Box, size: 3}\nc: ${clone:proto}")
+
+
+def test_the_clone_tag_no_longer_parses() -> None:
+    """The deprecated tag spelling loses its constructor with the feature."""
+    with pytest.raises((yaml.YAMLError, ConfigurationError)):
+        load("proto: {_target_: Box, size: 3}\nc: !clone:proto")
+
+
+def test_Clone_is_not_importable_from_the_public_surface() -> None:
+    import confluid
+
+    assert not hasattr(confluid, "Clone")
+    assert "Clone" not in confluid.__all__
+
+
+def test_the_reference_spellings_are_untouched_by_the_removal() -> None:
+    """The con case: `_ref_` / `${ref:}` keep sharing identity exactly as before."""
+    graph = load("proto: {_target_: Box, size: 3}\na: {_ref_: proto}\nb: ${ref:proto}")
+    assert graph["a"] is graph["b"] is graph["proto"]
 
 
 def test_a_reference_cannot_be_embedded_in_a_string() -> None:
@@ -263,7 +285,6 @@ def test_asking_for_an_undeclared_scope_value_still_raises() -> None:
         # BUGS-2026-08-13 P10 — the modifier is read by the _target_ branch alone,
         # so every other discriminator used to strip and discard it silently.
         ("p: {_target_: Box}\nx: {_ref_: p, _partial_: true}", "_partial_ only modifies _target_"),
-        ("p: {_target_: Box}\nx: {_clone_: p, _partial_: true}", "_partial_ only modifies _target_"),
         ("x:\n  _scope_: {mode: fast}\n  _partial_: true\n  a: 1", "_partial_ only modifies _target_"),
         ("x:\n  _notscope_: {mode: }\n  _partial_: true\n  a: 1", "_partial_ only modifies _target_"),
         ("x: {_target_: 42}", "_target_ must be a non-empty string"),
@@ -292,14 +313,14 @@ def test_malformed_markers_raise(doc: str, match: str) -> None:
 
 
 def test_the_lone_modifier_error_names_only_the_key_that_works() -> None:
-    """The message used to list `_ref_` / `_clone_` / `_scope_` / `_notscope_` as
+    """The message used to list `_ref_` / `_scope_` / `_notscope_` (and the since-removed `_clone_`) as
     valid partners for `_partial_` — the exact four the code then ignored."""
     with pytest.raises(ConfigurationError) as exc:
         load("x: {_partial_: true, lr: 1}")
 
     message = str(exc.value)
     assert "_partial_ needs _target_ in the same mapping" in message
-    for advertised in ("_ref_", "_clone_", "_scope_", "_notscope_"):
+    for advertised in ("_ref_", "_scope_", "_notscope_"):
         assert advertised not in message, f"the message still advertises {advertised}"
 
 
@@ -307,7 +328,6 @@ def test_the_lone_modifier_error_names_only_the_key_that_works() -> None:
     "doc, hint",
     [
         ("p: {_target_: Box}\nx: {_ref_: p, _partial_: true}", "put it on the node _ref_ points at"),
-        ("p: {_target_: Box}\nx: {_clone_: p, _partial_: true}", "put it on the node _clone_ points at"),
         ("x:\n  _scope_: {mode: fast}\n  _partial_: true\n  a: 1", "put it on the marker inside the _scope_ block"),
     ],
 )
@@ -526,15 +546,11 @@ def _shape(value: Any) -> Any:
             "p: {_target_: Box, size: 3}\na: {_ref_: p}\nb: {_ref_: p}",
         ),
         (
-            "p: !class:Box(size=3)\na: !ref:p\nc: !clone:p",
-            "p: {_target_: Box, size: 3}\na: ${ref:p}\nc: ${clone:p}",
-        ),
-        (
             "seed: 7\nh: !class:Holder()\n  box: !class:Box()",
             "seed: 7\nh: {_target_: Holder, box: {_target_: Box}}",
         ),
     ],
-    ids=["inline-kwargs", "block-body", "lazy", "ref-identity", "ref-vs-clone", "broadcast"],
+    ids=["inline-kwargs", "block-body", "lazy", "ref-identity", "broadcast"],
 )
 def test_both_spellings_agree(tagged: str, plain: str) -> None:
     """Both front-ends must produce the same object graph, key for key."""
@@ -643,7 +659,7 @@ def test_the_notice_is_ONCE_PER_DOCUMENT_not_once_per_tag(tmp_path: Path) -> Non
     Per-tag would bury the message it is trying to deliver; once-per-PROCESS would
     name the user's first config and stay silent about every other one.
     """
-    caught = _load_capturing("a: !class:Model\nb: !lazy:SGD\nc: !ref:a\nd: !clone:a\n", tmp_path, name="many.yaml")
+    caught = _load_capturing("a: !class:Model\nb: !lazy:SGD\nc: !ref:a\n", tmp_path, name="many.yaml")
 
     assert len(caught) == 1, f"one document, one notice — got {len(caught)}"
 

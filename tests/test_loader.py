@@ -302,7 +302,6 @@ def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> No
     ("text", "replacement"),
     [
         ('"!lazy:Model(layers=5)"', "{_target_: Model, _partial_: true, layers: 5}"),
-        ('"!clone:other"', "{_clone_: other}"),
         ('"!scope:debug"', "{_scope_: {debug: }}"),
         ('"!notscope:debug"', "{_notscope_: {debug: }}"),
     ],

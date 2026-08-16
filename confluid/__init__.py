@@ -37,7 +37,7 @@ from confluid.exceptions import (
     ValidationModeError,
     WorkspaceEnvError,
 )
-from confluid.fluid import Clone, Fluid
+from confluid.fluid import Fluid
 from confluid.fluid import Partial as PartialClass
 from confluid.fluid import Reference, Target, format_yaml_loc
 from confluid.llm_schema import sanitize_schema
@@ -110,7 +110,6 @@ __all__ = [
     "collect_report",
     "Fluid",
     "Target",
-    "Clone",
     "Reference",
     "flow",
     "cast",

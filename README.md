@@ -3,12 +3,12 @@
 **Confluid** is a modern, hierarchical configuration and dependency injection framework for Python, built for researchers and engineers who need modularity and 100% reproducibility in their experiment pipelines.
 
 ## Key Features
-- **Plain YAML — no custom tags required:** write `model: {_target_: MLP, hidden: 32}` and the file stays ordinary YAML that `yaml.safe_load`, `yq`, editor schemas and linters all read. `_partial_: true` defers construction, `_ref_` / `_clone_` (or `${ref:…}` / `${clone:…}`) wire references, `_scope_` selects variants. The legacy [tag spelling](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) (`!class:`, `!lazy:`, …) still loads in 0.3 — emitting a `FutureWarning` once per document — and is **removed in 0.4.0**; convert a file with `confluid-migrate`. See the [Plain-YAML Format guide](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md).
+- **Plain YAML — no custom tags required:** write `model: {_target_: MLP, hidden: 32}` and the file stays ordinary YAML that `yaml.safe_load`, `yq`, editor schemas and linters all read. `_partial_: true` defers construction, `_ref_` (or `${ref:…}`) wires references, `_scope_` selects variants. The legacy [tag spelling](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) (`!class:`, `!lazy:`, …) still loads in 0.3 — emitting a `FutureWarning` once per document — and is **removed in 0.4.0**; convert a file with `confluid-migrate`. See the [Plain-YAML Format guide](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md).
 - **Works with plain Python classes:** Required constructor params and real work in `__init__` are fully supported for load/flow/dump — the lazy/zero-arg class-design convention is optional.
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) — or plain builder **functions** — part of your configurable graph via `@configurable` / `register`.
-- **Smart Reference Resolution:** `_ref_` / `${ref:…}` for cross-config references (shared instance), `_clone_` / `${clone:…}` for a deep copy, `${env:VAR}` for environment variables and `${train.dataset}` for config keys.
+- **Smart Reference Resolution:** `_ref_` / `${ref:…}` for cross-config references (shared instance), `${env:VAR}` for environment variables and `${train.dataset}` for config keys.
 - **Deferred Initialization — two modes, nothing implicit:** a node is built at load, or `_partial_: true` keeps it deferred until you `flow()` it with runtime-injected arguments (e.g. an optimizer needing `params=model.parameters()`, or a model needing `num_classes` from the dataset). Nothing about the surrounding document changes which one you get.
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
 - **Schema Export & Validation:** Auto-generated pydantic schemas validate every `@configurable` constructor; docstring `Args:` blocks become machine-readable parameter help (`parse_param_docs`); `sanitize_schema` downgrades schemas to the subset strict LLM function-calling APIs accept.
@@ -28,8 +28,8 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | Guide | What it covers | Example |
 |---|---|---|
 | [**The Lifecycle**](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md) — *start here* | How a document becomes objects: the nine passes in order (parse → import → include → scope → interpolate → expand → broadcast → flow → solidify), what each one decides permanently, and where you can stop | `lifecycle.py` |
-| [**The Plain-YAML Format**](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md) | Writing configs as ordinary YAML that `yaml.safe_load` and `yq` read: `_target_` / `_partial_` construction, `_ref_` / `_clone_` and their `${ref:…}` shorthand, `${env:…}`, anchors and `<<:` merge keys, `_scope_` blocks | `plain_format.py` |
-| [Targets & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) | The marker family and the Fluid→Solid lifecycle: `Target` vs `Partial`, `flow()` runtime injection, references vs clones, and the legacy tag spelling of each | `tags_deferred.py` |
+| [**The Plain-YAML Format**](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md) | Writing configs as ordinary YAML that `yaml.safe_load` and `yq` read: `_target_` / `_partial_` construction, `_ref_` and its `${ref:…}` shorthand, `${env:…}`, anchors and `<<:` merge keys, `_scope_` blocks | `plain_format.py` |
+| [Targets & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) | The marker family and the Fluid→Solid lifecycle: `Target` vs `Partial`, `flow()` runtime injection, reference identity, and the legacy tag spelling of each | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |
 | [Closing the Config Surface](https://github.com/Gearlux/confluid/blob/main/docs/strict-attrs.md) | `strict_attrs=True` — refuse an addressed key the class declares nowhere (the permissive default warns and applies it); what stays untouched: bare keys, `**kwargs` targets, declared slots; `register(..., strict_attrs=True)` for classes you don't own | `strict_attrs.py` |
@@ -77,8 +77,8 @@ Python, no ML dependencies — run them as-is):
 
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
-- **Reserved-Key IR:** Markers are ordinary YAML mappings carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_clone_`, `_scope_`) — no proprietary symbols and no custom tags, so the file stays readable by any YAML parser.
-- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `Partial`, `Reference`, `Clone`) for internal resolution.
+- **Reserved-Key IR:** Markers are ordinary YAML mappings carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_scope_`) — no proprietary symbols and no custom tags, so the file stays readable by any YAML parser.
+- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `Partial`, `Reference`) for internal resolution.
 
 ### Dependency Injection
 - **Automatic Hydration:** Support `@configurable` decorator for automatic class registration and instantiation.

@@ -55,7 +55,6 @@ def convert(text: str) -> str:
         ("m: !lazy:Opt", "m:\n  _target_: Opt\n  _partial_: true"),
         ("m: !lazy:Opt(lr=0.5)", "m:\n  _target_: Opt\n  _partial_: true\n  lr: 0.5"),
         ("a: !ref:proto", "a: ${ref:proto}"),
-        ("a: !clone:proto", "a: ${clone:proto}"),
         ("b: !scope:size=big", "b:\n  _scope_: {size: big}"),
         ("b: !notscope:size", "b:\n  _notscope_: {size: }"),
         ("b: !scope:extra=yes", 'b:\n  _scope_: {extra: "yes"}'),
@@ -90,11 +89,6 @@ def test_nesting_depth_is_preserved() -> None:
     got = convert("outer:\n  inner: !class:Box\n    size: 3")
     assert got == "outer:\n  inner:\n    _target_: Box\n    size: 3"
     assert yaml.safe_load(got)["outer"]["inner"] == {"_target_": "Box", "size": 3}
-
-
-def test_a_clone_with_kwargs_uses_the_mapping_form() -> None:
-    """A scalar ``${clone:}`` has nowhere to put the overrides."""
-    assert convert("c: !clone:proto\n  size: 9") == "c:\n  _clone_: proto\n  size: 9"
 
 
 # --------------------------------------------------------------------------- #
@@ -432,3 +426,15 @@ def test_a_live_object_is_compared_by_TYPE_not_by_repr() -> None:
         pass
 
     assert _marker_shape(_Opaque()) != _marker_shape(_Other()), "a real type change must still show"
+
+
+def test_a_clone_tag_is_REPORTED_not_converted() -> None:
+    """`!clone:` was removed (2026-08-15). Converting it to `_clone_` would hand the
+    author a key the loader now refuses, so the codemod reports it for a hand
+    rewrite and leaves the line alone."""
+    from confluid.migrate import migrate_text
+
+    migrated, _conversions, findings = migrate_text("c: !clone:proto\n", path="x.yaml")
+
+    assert migrated == "c: !clone:proto\n", "the line must be left untouched"
+    assert any("clone" in f.reason and "removed" in f.reason for f in findings)
