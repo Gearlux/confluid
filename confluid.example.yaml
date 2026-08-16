@@ -6,10 +6,10 @@
 #
 # ---------------------------------------------------------------------------
 # This file is written in the PLAIN-YAML spelling: ordinary YAML that
-# `yaml.safe_load`, `yq` and editor schemas can all read. Confluid also still
-# reads the legacy TAG spelling — DEPRECATED: it warns on every document in 0.3
-# and is removed in 0.4.0 (convert with `confluid-migrate`) — see
-# docs/plain-format.md and docs/targets.md. The equivalences:
+# `yaml.safe_load`, `yq` and editor schemas can all read — the form `hydraide`
+# EMITS. The concise TAG spelling is the preferred form to WRITE; both are
+# first-class input and may be mixed (docs/hydraide.md, docs/targets.md,
+# docs/plain-format.md). The equivalences:
 #
 #   _target_: Model            ==  !class:Model
 #   _partial_: true            ==  !lazy:Name   (deferred; the receiver flow()s it)

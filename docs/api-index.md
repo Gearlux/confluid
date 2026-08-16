@@ -157,3 +157,11 @@ plugs into the passes, and from the eight names most configs need:
 | `IntrospectionError` | A signature/docstring scan failure (also a `TypeError`) |
 | `WorkspaceEnvError` | A workspace-env loading failure (also a `RuntimeError`) |
 | `format_yaml_loc` | The `file:line` suffix helper error messages use |
+
+## `confluid.hydraide` — the preprocessor
+
+| Name | What it does | Guide |
+|---|---|---|
+| `emit(source, *, scopes=None)` | The resolved document for a path or YAML text, as plain YAML — passes 1–7 + the serializer | [hydraide](hydraide.md) |
+| `check(path, *, scopes=None)` | `None` when the file is its own resolution, else a unified diff | [hydraide](hydraide.md) |
+| `hydraide` (script) | `hydraide CONFIG [--scope k=v …] [-o OUT | --check]`; exit 0 / 1 (differs) / 2 (located error) | [hydraide](hydraide.md) |

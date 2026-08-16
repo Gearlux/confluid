@@ -257,61 +257,20 @@ proto: {_target_: SGD, _partial_: true, lr: 0.5}
 opt: {_ref_: proto}                # `opt` is the deferred marker
 ```
 
-## Migrating an existing config — `confluid-migrate`
+## From either spelling to this one — `hydraide`
 
-The legacy tag spelling (`!class:` / `!lazy:` / `!ref:` / `!scope:`)
-still parses in 0.3 — emitting a `FutureWarning` once per document — and is
-**removed in 0.4.0**. Convert before then; the tool proves each conversion
-equivalent before writing. (A fully annotated reference config in the plain
-spelling ships at the repository root as
-[`confluid.example.yaml`](https://github.com/Gearlux/confluid/blob/main/confluid.example.yaml).)
+There is nothing to migrate. Both spellings are first-class input; the tag form
+is the concise way to *write* a config, and this reserved-key form is what the
+[`hydraide`](hydraide.md) preprocessor *emits* after resolving includes, scopes,
+dotted keys and broadcasting:
 
 ```bash
-confluid-migrate config/                  # rewrite every YAML under config/
-confluid-migrate config/ --check          # exit 1 if anything would change; write nothing
-confluid-migrate config/ --verify         # + prove the conversion is equivalent
-confluid-migrate config/ --report out.csv # a row per converted site
+hydraide experiment.yaml --scope framework=torch -o resolved.yaml
+hydraide resolved.yaml --check     # a committed artefact that drifts fails CI
 ```
 
-It **edits lines rather than reparsing the document**, so everything it does not
-convert stays byte-identical — comments, key order, spacing and quoting are
-untouched. That matters because a config's comments are usually its
-documentation, and a migration diff has to be reviewable.
-
-`--verify` is the check worth running. It compares the *resolved marker trees* of
-the old and new documents, **once per scope activation the document declares** —
-a wrong conversion inside a variant block never shows up in a plain resolve,
-because the block is dropped before any marker is built. A file whose conversion
-is not provably equivalent is left untouched and reported.
-
-Anything the grammar cannot convert is reported with its line, never guessed at:
-
-```
-config/odd.yaml:128: tag survived conversion — convert by hand — - !scope:verbose 42
-```
-
-One form needs a hand edit, and it is rare: the quoted-string marker spelling
-(`"!class:Adam(lr=!ref:base)"`). It is a third grammar the codemod deliberately
-reports rather than guesses at — it parses only `!class:` and `!ref:`, and since
-0.3.0 every other marker written that way raises a `ConfigurationError` naming
-the plain-YAML line to write, instead of reaching your config as literal text.
-Everything else converts, including sequence- and scalar-bodied scope blocks —
-measured over this workspace, 626 sites across 56 files with zero findings.
-
-An `@axis=value` [target selector](discovery.md) needs no migration — it is part
-of the target NAME, so it rides along unchanged and stays ordinary YAML:
-
-```yaml
-loss:
-  _target_: Loss@framework=keras     # picks between classes sharing one name
-  from_logits: false
-```
-
-The tool also makes every environment read explicit — `${DATA_ROOT}` and
-`$DATA_ROOT` both become `${env:DATA_ROOT}`, and `${PORT:8080}` becomes
-`${env:PORT,8080}`. That is meaning-preserving today (a plain-named `${...}` is
-already an environment variable) and it is what lets a bare `${name}` later be
-read as a config key without any config being ambiguous.
+A fully annotated reference config in this spelling ships at the repository root
+as [`confluid.example.yaml`](https://github.com/Gearlux/confluid/blob/main/confluid.example.yaml).
 
 ## Runnable example
 
