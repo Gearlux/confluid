@@ -78,9 +78,34 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
 
 
 def _target_name(target: Any) -> str:
-    """A marker target's dumpable spelling: dotted path for a class/callable, verbatim string otherwise."""
-    if isinstance(target, type):
-        return f"{target.__module__}.{target.__qualname__}"
+    """A marker target's dumpable spelling.
+
+    The REGISTRY answers first, exactly as it does for a live instance a few
+    lines below — its public key is the bare name while unique and the dotted key
+    once a namesake claims it, so the emitted name re-resolves to THIS target.
+    Bypassing it (a raw ``module.qualname``) made two targets undumpable, and both
+    failed loudly on reload rather than resolving to something wrong (F3):
+
+    * a class built by a FACTORY carries ``<locals>`` in its qualname, which the
+      registry strips for its key and a dotted path keeps —
+      ``__main__._make.<locals>.Widget`` resolves to nothing;
+    * a registered FUNCTION is not a ``type``, so it fell through to ``str()`` and
+      emitted ``<function build at 0x108420fe0>``. A memory address in a dumped
+      artifact is not merely unreloadable — it makes two dumps of the SAME object
+      differ, so the document cannot be compared or committed.
+
+    A target with no registry key (an unregistered class) keeps the dotted path:
+    still importable, and the best spelling available. A target that is already a
+    STRING is the spelling the document used and passes through verbatim.
+    """
+    if isinstance(target, str):
+        return target
+    key = get_registry().key_for(target)
+    if key:
+        return key
+    module, qualname = getattr(target, "__module__", None), getattr(target, "__qualname__", None)
+    if module and qualname:
+        return f"{module}.{qualname}"
     return str(target)
 
 

@@ -64,6 +64,15 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A marker's target is named by the registry, like a live instance's** (BUGS-2026-08-13 F3).
+  The live-instance branch asks `registry.key_for()` so the emitted name re-resolves to THIS class
+  rather than to a namesake; `_target_name` bypassed it and emitted a raw `module.qualname`. Two
+  targets have no importable qualname and so could not reload at all: a class built by a FACTORY
+  keeps the `<locals>` the registry strips, and a registered FUNCTION is not a `type`, so it fell
+  through to `str()` and emitted `<function build at 0x108420fe0>` — a memory address, which also
+  made two dumps of the same object differ. An unregistered target keeps its dotted path and a
+  string target passes through verbatim. Pinned by the F3 group in `tests/test_dumper.py`.
+
 - **`dump()` emits body slots, so a configured object round-trips** (BUGS-2026-08-13 F2). The
   dumper reconstructed a node from its CONSTRUCTOR params only, so an `__init__`-body attribute was
   absent from the document: `self.epochs = 1` configured to 50 dumped as bare `_target_: BodyHost`
