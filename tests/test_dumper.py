@@ -275,3 +275,124 @@ def test_a_nested_non_configurable_class_value_dumps_its_qualname() -> None:
 
     text = dump(HoldsClass())
     assert "Holder.Inner" in text
+
+
+# ---------------------------------------------------------------------------
+# BODY SLOTS are dumped too (BUGS-2026-08-13 F2)
+#
+# `dump()` reconstructed a node from its CONSTRUCTOR params only, so an
+# `__init__`-body attribute — a first-class configurable slot that `configure()`
+# sets, `to_pydantic` types and the accept-list admits — was silently absent
+# from the document. A config written beside a checkpoint as a reproducibility
+# artifact therefore omitted every body-slot value the run actually used.
+#
+# The rule matches the one already applied to ctor params: dump the value
+# ALWAYS, never "only when it differs from the default". That is what makes a
+# dumped document self-contained — a later edit to a default in the source
+# cannot change what an existing dump reloads to.
+# ---------------------------------------------------------------------------
+
+
+def test_a_body_slot_survives_dump_and_reload() -> None:
+    from confluid import configure, load
+
+    @configurable
+    class BodyHost:
+        def __init__(self) -> None:
+            self.epochs = 1
+
+    host = BodyHost()
+    configure(host, config="epochs: 50")
+    assert host.epochs == 50
+
+    assert load(dump(host)).epochs == 50
+
+
+def test_a_body_slot_is_dumped_even_when_it_equals_its_default() -> None:
+    """The lose-nothing property, and the reason "dump only what changed" is wrong.
+
+    A dumped document must reload to the value it RECORDS. If the value were
+    omitted because it happened to match the default, then editing that default
+    in the source later would silently change what every existing dump means.
+    Constructor params already work this way; body slots now match.
+    """
+    import yaml as _yaml
+
+    @configurable
+    class BodyHost:
+        def __init__(self) -> None:
+            self.epochs = 1
+
+    emitted = _yaml.safe_load(dump(BodyHost()))
+    assert emitted["epochs"] == 1, "an untouched body slot is still recorded"
+
+
+def test_a_MARKER_body_slot_survives_dump_and_reload() -> None:
+    """The C4 round trip: a marker tuned by configure() must come back tuned."""
+    import yaml as _yaml
+
+    from confluid import PartialClass, Target, configure
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class TargetHost:
+        def __init__(self) -> None:
+            self.opt = Target(Opt)
+
+    @configurable
+    class PartialHost:
+        def __init__(self) -> None:
+            self.opt = PartialClass(Opt)
+
+    for cls in (TargetHost, PartialHost):
+        host = cls()
+        configure(host, config="lr: 0.75")
+        assert host.opt.kwargs == {"lr": 0.75}
+
+        emitted = _yaml.safe_load(dump(host))
+        assert emitted["opt"]["lr"] == 0.75, f"{cls.__name__} lost its tuning"
+        assert emitted["opt"]["_target_"].endswith("Opt")
+        # `_partial_` rides along so the slot comes back DEFERRED, not built.
+        assert emitted["opt"].get("_partial_", False) is (cls is PartialHost)
+
+    # The reload half is asserted on a module-level class: a marker's target is
+    # emitted as a raw dotted path (F3), which a `<locals>` test class cannot
+    # resolve — an artifact of defining the class in a function, not of F2.
+
+
+def test_a_constructor_param_is_unchanged_by_the_body_slot_dump() -> None:
+    """The con case: params keep dumping exactly as before, in signature order."""
+    import yaml as _yaml
+
+    @configurable
+    class Params:
+        def __init__(self, epochs: int = 1, lr: float = 0.5, name: str = "base") -> None:
+            self.epochs, self.lr, self.name = epochs, lr, name
+
+    emitted = _yaml.safe_load(dump(Params(epochs=50)))
+    assert emitted == {"_target_": "Params", "epochs": 50, "lr": 0.5, "name": "base"}
+
+
+def test_a_setterless_property_is_still_not_dumped() -> None:
+    """Derived state recomputes on reload; dumping it would be noise at best.
+
+    Body slots are dumped, properties are not — the class-design convention's
+    answer for derived state stays out of the document.
+    """
+    import yaml as _yaml
+
+    @configurable
+    class Derived:
+        def __init__(self, frac: float = 0.8) -> None:
+            self.frac = frac
+
+        @property
+        def n_train(self) -> int:
+            return int(1000 * self.frac)
+
+    emitted = _yaml.safe_load(dump(Derived(frac=0.6)))
+    assert emitted == {"_target_": "Derived", "frac": 0.6}
