@@ -9,7 +9,7 @@ constructors — the global ``yaml.SafeLoader`` is never touched),
 :func:`resolve_config_path` (the ONE path-probe site — CWD → ``./config/`` →
 XDG tiers), ``include:`` splicing AT the directive's line (document order IS
 precedence, so where an include is written is meaningful), ``import:``
-side-effect imports, and the once-per-document tag-deprecation notice.
+side-effect imports.
 
 Layering: ``fluid → state → broadcast → engine → loader`` — this module may
 import the engine (one deliberate late import at the bottom); nothing below
@@ -20,7 +20,6 @@ imports it. Docs: ``docs/lifecycle.md`` (the nine passes), ``docs/plain-format.m
 import importlib
 import os
 import re
-import warnings
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union, cast
@@ -324,11 +323,6 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     return target
 
 
-#: Documents already told their tag syntax is deprecated (once per file, not per tag).
-#: Module-level so the notice survives across `load()` calls in one process.
-_TAG_SPELLING_WARNED: set[str] = set()
-
-
 #: PyYAML's tag for a merge key (``<<:``). The TAG is what identifies one — a
 #: QUOTED ``"<<"`` is an ordinary string key and resolves to the str tag, so
 #: matching on the tag is also the false-positive guard.
@@ -623,70 +617,27 @@ def _register_constructors() -> None:
             )
         return _stamp(Target(val), loader, node)
 
-    # ---- the tag spelling is DEPRECATED — tell the user, once per document -------
+    # ---- the tag spelling is the PREFERRED AUTHORING form (ruling 2026-08-15) ------
     #
-    # A deprecation nobody sees is not a deprecation: the alias round in this same
-    # release found consumers still on names that had been "deprecated" for months,
-    # because nothing ever said so at runtime. So every tag constructor announces it.
-    #
-    # ONCE PER DOCUMENT, naming the file: per-tag would emit hundreds of lines for one
-    # config, and once-per-process would tell a user about the first of their configs
-    # and stay silent about the rest. `FutureWarning` rather than `DeprecationWarning`
-    # because Python SHOWS it by default — this is aimed at the person who wrote the
-    # YAML, not at library code, which is exactly the split the two categories encode.
-    #
-    # The remediation line is only offered when there IS a file to run it against.
-    # PyYAML names a string-loaded document `<unicode string>`, so the notice used to
-    # end in `confluid-migrate <unicode string>` — a command that cannot be copied,
-    # run, or acted on, from a message whose whole job is to say what to do next.
-    def _announce(loader: Any, node: Any) -> None:
-        name = str(getattr(loader, "name", None) or "")
-        from_file = bool(name) and not (name.startswith("<") and name.endswith(">"))
-        where = name or "<config>"
-        if where in _TAG_SPELLING_WARNED:
-            return
-        _TAG_SPELLING_WARNED.add(where)
-        mark = getattr(node, "start_mark", None)
-        line = f":{mark.line + 1}" if mark is not None else ""
-        remedy = (
-            f"Convert this file with `confluid-migrate {where}` — it rewrites the tags to "
-            f"the reserved-key format (_target_ / _partial_ / ${{ref:}}) and verifies the "
-            f"marker tree is unchanged before writing."
-            if from_file
-            else (
-                "This document was loaded from a string, so there is no file to convert — "
-                "rewrite it in the reserved-key format (_target_ / _partial_ / ${ref:}), or "
-                "run `confluid-migrate` on the file it came from."
-            )
-        )
-        warnings.warn(
-            f"{where}{line}: the YAML tag syntax (!class: / !lazy: / !ref: / "
-            f"!scope:) is DEPRECATED and is removed in confluid 0.4.0. {remedy} The new "
-            f"format is also plain YAML, so yq, editor schemas and linters can read it.",
-            FutureWarning,
-            stacklevel=2,
-        )
-
-    def _deprecated(constructor: Any) -> Any:
-        """Wrap a tag constructor so parsing a tag announces the deprecation."""
-
-        def wrapped(loader: Any, *args: Any) -> Any:
-            _announce(loader, args[-1])  # the NODE is last in both constructor arities
-            return constructor(loader, *args)
-
-        return wrapped
-
+    # Until 2026-08-15 every tag constructor announced a FutureWarning naming
+    # `confluid-migrate` and a 0.4.0 removal. Architecture record 19 reversed that:
+    # tags are what a human writes, the reserved-key form is what the `hydraide`
+    # preprocessor EMITS, and both are first-class INPUT. So: no warning, no
+    # migration tool, and `!partial:` joins `!lazy:` as the tag for a deferred
+    # marker — the same name as the key it emits (`_partial_: true`). `!lazy:`
+    # stays as an alias; whether it is ever removed is a later ruling.
     for _tag, _ctor in (
         ("!ref:", ref_constructor),
         ("!class:", class_constructor),
+        ("!partial:", lazy_constructor),
         ("!lazy:", lazy_constructor),
         ("!scope:", scope_constructor),
         ("!notscope:", notscope_constructor),
     ):
-        ConfluidLoader.add_multi_constructor(_tag, _deprecated(_ctor))
+        ConfluidLoader.add_multi_constructor(_tag, _ctor)
 
-    ConfluidLoader.add_constructor("!ref", _deprecated(ref_compat))
-    ConfluidLoader.add_constructor("!class", _deprecated(class_compat))
+    ConfluidLoader.add_constructor("!ref", ref_compat)
+    ConfluidLoader.add_constructor("!class", class_compat)
 
     # ---- the reserved-key format: plain mappings that carry ``_target_`` & co ----
     #

@@ -67,10 +67,11 @@ dev = [
 # broadcasting keeps seeing post-init attrs in compiled/frozen/zip deployments where
 # inspect.getsource fails (see confluid/bake.py; `confluid-bake <pkg>` == `python -m confluid.bake <pkg>`).
 confluid-bake = "confluid.bake:main"
-# One-time migration of tagged configs (!class:/!lazy:/!ref:/!scope:) to the
-# plain-YAML reserved-key format, so a config is readable by yaml.safe_load and yq
-# (see confluid/migrate.py and docs/plain-format.md). Removed with the tag spelling.
-confluid-migrate = "confluid.migrate:main"
+# The preprocessor (architecture record 19): resolves a config — either spelling — to
+# ONE plain-YAML document (includes spliced, scopes applied, broadcasting settled,
+# shared markers anchored) that yq reads and confluid reloads. `hydraide cfg.yaml
+# [--scope k=v] [-o out.yaml | --check]`; see confluid/hydraide.py and docs/hydraide.md.
+hydraide = "confluid.hydraide:main"
 
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"

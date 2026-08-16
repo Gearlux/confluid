@@ -202,11 +202,26 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     return dumper.represent_mapping("tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **kwargs})
 
 
-def dump(obj: Any) -> str:
-    """Serialize a (potentially nested) object tree to YAML."""
+def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
+    """Serialize a (potentially nested) object tree to YAML.
+
+    ``anchor_names`` maps ``id(value)`` → the anchor NAME to emit when that value
+    is reached twice (PyYAML's default is ``id001``, ``id002``, …). The
+    preprocessor passes names derived from each shared value's shortest path in
+    the document (``preprocess_0``), so an emitted artefact reads without a
+    lookup table. A value not in the map keeps PyYAML's default name.
+    """
 
     class _LocalDumper(CompactDumper):
-        pass
+        def generate_anchor(self, node: Any) -> Any:  # noqa: ANN401 - PyYAML's own signature
+            # PyYAML's Serializer names anchors from a counter. The representer kept
+            # ``represented_objects[id(value)] = node`` for every aliasable value, so
+            # the node → value direction is one reverse lookup away.
+            if anchor_names:
+                for object_id, represented in self.represented_objects.items():
+                    if represented is node and object_id in anchor_names:
+                        return anchor_names[object_id]
+            return super().generate_anchor(node)
 
     # Callable references (module-level functions, builtins) serialize as
     # `!ref:module.qualname` — the loader resolves these via dotted import.

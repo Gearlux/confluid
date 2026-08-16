@@ -588,86 +588,24 @@ def test_a_reserved_key_document_round_trips_through_dump() -> None:
     assert reloaded.box.size == 3
 
 
-# --------------------------------------------------------------------------------------
-# The tag spelling is DEPRECATED — and says so
-# --------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
+# Both spellings are first-class INPUT (ruling 2026-08-15, record 19)
+#
+# Until 2026-08-15 this section pinned a once-per-document FutureWarning on the
+# tag spelling and the `confluid-migrate` remedy it named. Tags are now the
+# PREFERRED AUTHORING form and the reserved keys are what `hydraide` EMITS, so
+# neither spelling warns. The parity matrix above (`test_both_spellings_agree`)
+# is the contract; this pins the silence.
+# --------------------------------------------------------------------------- #
 
 
-def _load_capturing(text: str, tmp_path: Path, name: str = "legacy.yaml") -> list:
-    """Load a config from a real FILE, returning the warnings it emitted.
-
-    A file rather than a string because the notice names the document, and naming it
-    is the whole point — a user with several configs needs to know WHICH to convert.
-    """
-    from confluid.loader import _TAG_SPELLING_WARNED
-
-    path = tmp_path / name
-    path.write_text(text)
-    _TAG_SPELLING_WARNED.discard(str(path))
+@pytest.mark.parametrize("doc", ["model: !class:Box(size=3)", "model: {_target_: Box, size: 3}"], ids=["tag", "plain"])
+def test_neither_spelling_warns(doc: str, tmp_path: Path) -> None:
+    path = tmp_path / "cfg.yaml"
+    path.write_text(doc + "\n")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         load_config(str(path))
-    return list(caught)
-
-
-def test_a_tagged_document_announces_the_deprecation(tmp_path: Path) -> None:
-    """The user must be TOLD, or the removal in 0.4.0 arrives as a surprise.
-
-    A deprecation nobody sees is not a deprecation: this project's own alias round
-    found consumers still on names deprecated for months, because nothing said so at
-    runtime. ``FutureWarning`` rather than ``DeprecationWarning`` because Python shows
-    it by DEFAULT — the audience is whoever wrote the YAML, not library code.
-    """
-    caught = _load_capturing("model: !class:Model\n  layers: 3\n", tmp_path)
-
-    assert len(caught) == 1
-    warning = caught[0]
-    assert warning.category is FutureWarning
-    message = str(warning.message)
-    assert "legacy.yaml" in message, "must name the file to convert"
-    assert "confluid-migrate" in message, "must name the tool that fixes it"
-    assert "0.4.0" in message, "must name the release that removes it"
-
-
-def test_a_string_loaded_document_is_not_told_to_run_an_uncopyable_command() -> None:
-    """The remediation must be a command the reader can actually run — or no command.
-
-    PyYAML names a string-loaded document ``<unicode string>``, and the notice
-    interpolated that straight into its fix: ``confluid-migrate <unicode string>``.
-    A message whose entire job is "here is what to do next" ended in an instruction
-    that cannot be copied, pasted or acted on — and the project's own
-    ``examples/performance.py`` (which builds its config as a string) printed it on
-    every run. Naming the pseudo-file is fine; offering it as an argument is not.
-    """
-    from confluid.loader import _TAG_SPELLING_WARNED
-
-    _TAG_SPELLING_WARNED.discard("<unicode string>")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        load("model: !class:Model\n  layers: 3\n", flow=False)
-
-    message = str(caught[0].message)
-    assert "confluid-migrate <unicode string>" not in message, "the command must not name a pseudo-file"
-    assert "loaded from a string" in message, "say WHY no file is named"
-    assert "_target_" in message, "still has to say what to write instead"
-    assert "0.4.0" in message, "must name the release that removes it"
-
-
-def test_the_notice_is_ONCE_PER_DOCUMENT_not_once_per_tag(tmp_path: Path) -> None:
-    """A 400-line tagged config must not emit 400 warnings.
-
-    Per-tag would bury the message it is trying to deliver; once-per-PROCESS would
-    name the user's first config and stay silent about every other one.
-    """
-    caught = _load_capturing("a: !class:Model\nb: !lazy:SGD\nc: !ref:a\n", tmp_path, name="many.yaml")
-
-    assert len(caught) == 1, f"one document, one notice — got {len(caught)}"
-
-
-def test_the_reserved_key_format_is_silent(tmp_path: Path) -> None:
-    """The migrated spelling is the destination, so it must warn about nothing."""
-    caught = _load_capturing("model:\n  _target_: Model\n  layers: 3\n", tmp_path, name="plain.yaml")
-
     assert caught == []
 
 
