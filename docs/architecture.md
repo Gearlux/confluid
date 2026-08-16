@@ -1421,11 +1421,16 @@ Four rulings, each with the measured fact it rests on:
    REPORTS a surviving attribute ref rather than emitting it. Import-path references
    (`${ref:pkg.func}`, 8 sites) are a different mechanism (importlib, no built object) and are an
    open sub-decision — the Hydra-native shape is a `_target_` on the function.
-2. **Both spellings are supported INPUT; plain is the emitted OUTPUT.** Neither is "the" authoring
-   format. This REVERSES the 0.4.0 tag-deletion plan and the once-per-document `FutureWarning`
-   (record 11's deprecation half); the two-spellings-one-IR invariant is unchanged and now has a
-   third witness — hydraide's output must be identical whichever spelling produced it. `!lazy:` is
-   renamed `!partial:` (alias kept one release) to match the key it emits.
+2. **Tags are the PREFERRED AUTHORING form; plain is the MACHINE form** (clarified 2026-08-15,
+   superseding an earlier "neither is authoring" wording). Both spellings are accepted input;
+   hydraide emits plain. This REVERSES the 0.4.0 tag-deletion plan and the once-per-document
+   `FutureWarning` (record 11's deprecation half); the two-spellings-one-IR invariant is unchanged
+   and gains a third witness — hydraide's output is identical whichever spelling produced it.
+   `!lazy:` is renamed `!partial:` (alias kept one release) to match the key it emits. Consequence
+   for documents: confluid's guides and examples show tag INPUT beside plain OUTPUT, and the
+   workspace's configs — converted to plain on 2026-08-11 — go back to tags by a reverse codemod,
+   once the two plain-only constructs have a tag spelling (a multi-dimension `_scope_`; the
+   `<<:`-into-marker idiom, which in tag form anchors the KWARGS and tags each variant).
 3. **`configure()` is dump → resolve → apply-paths.** F2 (body slots dumped, 2026-08-15) is what
    made `dump()` faithful enough to be the graph's document. Bare-key broadcasting on live objects
    keeps working; the flat-view scanner, `_LiveSink`, `_tune_deferred` and the four parity suites
