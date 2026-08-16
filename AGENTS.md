@@ -806,6 +806,20 @@ configure: keys BEFORE the block); the candidate set may not differ again.
 `_tune_deferred(beaten=…)`), never marker state — a marker-stamped verdict outlives the document
 that produced it. Deferred slots are tuned by their OWNER's scan; `_walk` returns early on a `Partial`.
 
+**Rule — a BLOCK-delivered mapping is arbitrated at the BLOCK's position, and only the scanner
+still knows it.** `_scan_view` hands every `dict_at_slot` emission a `bare_before` computed at the
+delivering block's own index. `_MergeSink` MUST record it (`beaten_per_slot`, mirroring
+`_LiveSink`) and `_prepare_kwargs` carries it out on the returned `_View`, because by the time the
+engine sees the merged kwargs they have been spliced at the MARKER's slot and the block's position
+is gone. `_late_bare_keys_per_slot` still computes the verdict for a marker's OWN dict kwargs —
+those genuinely sit at the marker — and the engine OVERRIDES only the slots a block delivered.
+Deleting either half is wrong: the second answers a question the first cannot.
+**Why.** Both EDGE orderings of the block-vs-bare contest agreed across paths and were pinned; the
+middle one — node first, bare key, then the block, i.e. the ordinary layout — had no pin and
+diverged, `load()` answering 99 where `configure()` answered 50 (C2).
+**Pins.** the C2 group in `tests/test_cross_path_pins.py` — all three orderings, per path AND
+compared across paths.
+
 **Rule.** The three engine fields on `Fluid` are read through `fluid.addressed_keys_of` /
 `is_order_resolved` / `late_bare_keys_of`, NEVER a bare `getattr`.
 

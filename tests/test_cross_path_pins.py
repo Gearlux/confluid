@@ -294,3 +294,65 @@ def test_d3_a_fluid_never_rides_the_kwargs_catchall_into_a_deferred_slot() -> No
     configure(holder, config={"anything": ConfluidClass(_Engine), "plain": 7})
     assert "anything" not in holder.engine.kwargs  # a Fluid never rides the catchall
     assert holder.engine.kwargs.get("plain") == 7  # a scalar still does
+
+
+# ---------------------------------------------------------------------------
+# The block-vs-bare contest agrees across paths, in EVERY ordering
+# (BUGS-2026-08-13 C2)
+#
+# One deferred slot, two competing specs — a bare sweep key and a class block
+# addressing the slot — written in the three possible orders. The two EDGE
+# orderings were already pinned and already agreed; the MIDDLE one (node first,
+# then the bare key, then the block) is the ordinary way anyone writes this, had
+# no pin, and diverged: load() answered 99 where configure() answered 50.
+#
+# The cause was two implementations of one rule. The shared scanner hands every
+# `dict_at_slot` emission a `bare_before` computed at the BLOCK's position;
+# `_LiveSink` records it, and `_MergeSink` ignored it while the engine computed a
+# second verdict from the MARKER's splice position instead.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class C2Engine:
+    def __init__(self, power: int = 1) -> None:
+        self.power = power
+
+
+@configurable
+class C2Car:
+    def __init__(self) -> None:
+        self.engine = PartialClass(C2Engine, power=1)
+
+
+_C2_NODE = "vehicle: {_target_: C2Car}\n"
+_C2_BARE = "power: 99\n"
+_C2_BLOCK = "C2Car:\n  engine: {power: 50}\n"
+
+C2_LAYOUTS = {
+    # name: (document, the value the LAST-written spec asks for)
+    "bare_node_BLOCKlast": (_C2_BARE + _C2_NODE + _C2_BLOCK, 50),
+    "node_bare_BLOCKlast": (_C2_NODE + _C2_BARE + _C2_BLOCK, 50),
+    "node_block_BARElast": (_C2_NODE + _C2_BLOCK + _C2_BARE, 99),
+}
+
+
+@pytest.mark.parametrize("layout", sorted(C2_LAYOUTS))
+def test_the_block_vs_bare_contest_follows_document_order_on_the_LOAD_path(layout: str) -> None:
+    document, expected = C2_LAYOUTS[layout]
+
+    assert flow(load(document)["vehicle"].engine).power == expected
+
+
+@pytest.mark.parametrize("layout", sorted(C2_LAYOUTS))
+def test_the_block_vs_bare_contest_agrees_across_BOTH_paths(layout: str) -> None:
+    """The parity pin. `node_bare_BLOCKlast` is the cell that diverged."""
+    document, expected = C2_LAYOUTS[layout]
+
+    via_load = flow(load(document)["vehicle"].engine).power
+
+    live = C2Car()
+    configure(live, config=document.replace(_C2_NODE, ""))
+    via_configure = flow(live.engine).power
+
+    assert via_load == via_configure == expected

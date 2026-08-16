@@ -531,11 +531,15 @@ class _View(dict):
     root document, lossy anywhere else — construct a ``_View`` instead.
     """
 
-    __slots__ = ("scopes",)
+    __slots__ = ("scopes", "beaten_per_slot")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.scopes: Dict[str, _KeyScope] = {}
+        #: Per slot, the cascade keys the delivering BLOCK out-positioned — set by
+        #: ``_prepare_kwargs`` from the scanner's verdict, read by the engine (C2).
+        #: Deliberately NOT inherited on copy: it belongs to one scan of one node.
+        self.beaten_per_slot: Dict[str, FrozenSet[str]] = {}
         if args and isinstance(args[0], _View):
             self.scopes.update(args[0].scopes)
 
@@ -1700,7 +1704,7 @@ class _MergeSink:
     do both).
     """
 
-    __slots__ = ("cls_name", "merged", "report", "origins", "contest", "target", "self_obj")
+    __slots__ = ("cls_name", "merged", "report", "origins", "contest", "target", "self_obj", "beaten_per_slot")
 
     def __init__(self, cls_name: str, target: Any = None, self_obj: Any = None) -> None:
         self.cls_name = cls_name
@@ -1717,6 +1721,11 @@ class _MergeSink:
         # happens in ``record_applied``, and only for keys something contested.
         # Built only when a report is active; the default path stays zero-cost.
         self.contest: Dict[str, List[Tuple[str, Any, int]]] = {}
+
+        #: Per slot, the cascade keys the DELIVERING BLOCK out-positioned —
+        #: the scanner's verdict, at the block's own position (C2). Mirrors
+        #: ``configurator._LiveSink.beaten_per_slot``.
+        self.beaten_per_slot: Dict[str, FrozenSet[str]] = {}
 
     def _mark_used(self, k: str, origin: str) -> None:
         if self.report is not None:
@@ -1754,6 +1763,14 @@ class _MergeSink:
             self.merged.set(key, tune_marker(prev, block), _KeyScope.EXACT)
         else:
             self.merged.set(key, block, _KeyScope.EXACT)
+        # KEEP the scanner's verdict. It is computed at THIS BLOCK's position, which
+        # is the only place that position still exists — by the time the engine sees
+        # the merged kwargs they have been spliced at the MARKER's slot, and a second
+        # verdict computed from there answers a different question (C2). The live
+        # sink has always recorded it; this one accepted the argument and dropped it,
+        # so the two paths disagreed for the ordinary "node first, overrides below"
+        # layout while both edge orderings agreed.
+        self.beaten_per_slot[key] = bare_before
         if self.report is not None:
             self.origins[key] = origin
 
@@ -1845,6 +1862,9 @@ def _prepare_kwargs(
         for k, origin in sink.origins.items():
             sink.report.record_applied(k, label, origin, candidates=sink.contest.get(k, ()))
 
+    # Ride out on the view: the engine stamps this onto the marker, and the
+    # view is the only thing this function returns.
+    sink.merged.beaten_per_slot = sink.beaten_per_slot
     return sink.merged
 
 

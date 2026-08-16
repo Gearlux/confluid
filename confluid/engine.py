@@ -52,6 +52,7 @@ from confluid.broadcast import (  # noqa: F401
     _acceptable_keys_cache,
     _broadcast_pool,
     _cache_key,
+    _cascade_scalar_positions,
     _get_acceptable_keys,
     _is_glob_key,
     _KeyScope,
@@ -441,7 +442,20 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         # by position — last spec wins. Record that, so the later broadcast pass
         # leaves the outcome alone instead of re-applying the bare key blind.
         res_obj._order_resolved = True
-        res_obj._late_bare_keys = _late_bare_keys_per_slot(child_ctx, resolved_kwargs)
+        # The verdict per dict-valued slot: which cascade keys BEAT it. Computed
+        # from the slot's position for the marker's OWN dict kwargs — which is
+        # correct, they sit at the marker — then OVERRIDDEN for any slot a class
+        # block delivered, where the authoritative position is the BLOCK's and only
+        # the scanner still has it (C2). The scanner records the complement (the
+        # keys the block out-positioned), so the winners are the rest of the pool.
+        late = _late_bare_keys_per_slot(child_ctx, resolved_kwargs)
+        beaten = getattr(merged_kwargs, "beaten_per_slot", None)
+        if beaten:
+            pool = _cascade_scalar_positions(child_ctx)
+            for slot, out_positioned in beaten.items():
+                if slot in resolved_kwargs:
+                    late[slot] = frozenset(k for k in pool if k not in out_positioned)
+        res_obj._late_bare_keys = late
         if flow_memo is not None:
             flow_memo[raw_id] = res_obj
         return res_obj
