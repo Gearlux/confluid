@@ -10,9 +10,22 @@ from confluid.registry import get_registry
 #: name can never be passed by keyword and a ``**kwargs`` name is never a declared
 #: slot, so neither belongs in a dumped config: a ``kwargs: {...}`` line never
 #: round-tripped anyway (on reload the ctor filter passes it INSIDE the catchall as
-#: a literal ``"kwargs"`` key, doubly nested). Body slots stay out too — ``dump()``
-#: models the CONSTRUCTOR; post-init attributes ride ``__confluid_extra__``.
-_DUMP_KINDS = frozenset({"keyword", "positional_only"})
+#: a literal ``"kwargs"`` key, doubly nested).
+#:
+#: BODY SLOTS are IN (F2, 2026-08-15). ``dump()`` used to model the constructor
+#: alone, on the theory that post-init attributes ride ``__confluid_extra__`` —
+#: but that list is populated by ``engine._apply_post_init_attrs``, i.e. only for
+#: names a CONFIG KEY landed on during load. A slot the class's own ``__init__``
+#: assigned, or that ``configure()`` set afterwards, was in neither place and
+#: vanished from the document: `self.epochs = 1` configured to 50 dumped as bare
+#: ``_target_: BodyHost`` and reloaded as 1. That contradicts the round-trip rule
+#: for a slot every OTHER surface treats as first-class — ``configure()`` sets it,
+#: ``to_pydantic`` types it, the accept-list admits it.
+#:
+#: The two mechanisms are complementary and both stay: this projection covers
+#: DECLARED slots, ``__confluid_extra__`` covers names nothing declares (a key
+#: setattr'd onto a ``**kwargs`` class).
+_DUMP_KINDS = frozenset({"keyword", "positional_only", "body_slot"})
 
 
 class CompactDumper(yaml.SafeDumper):

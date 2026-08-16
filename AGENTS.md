@@ -1226,6 +1226,20 @@ pydantic property the split rests on), and
 **Rule.** `dump()` followed by `load()` MUST reconstruct an identical object graph. Round-trip
 fidelity is non-negotiable.
 
+**Rule — BODY SLOTS are dumped, and every value is dumped ALWAYS.** `dump()` modelled the
+constructor alone, so an `__init__`-body attribute vanished from the document — `self.epochs = 1`
+configured to 50 dumped as bare `_target_: BodyHost` and reloaded as 1 (F2). Every OTHER surface
+treats a body slot as first-class (`configure()` sets it, `to_pydantic` types it, the accept-list
+admits it), so the omission contradicted the round-trip rule above. `dumper._DUMP_KINDS` therefore
+carries `body_slot`. Never "optimize" the dumper to emit only what differs from a default: a value
+is dumped even when it equals its default (as ctor params always were), because that is what makes
+a dumped document self-contained — otherwise editing a default in the source later would silently
+change what every existing dump reloads to. `__confluid_extra__` stays and is complementary: this
+projection covers DECLARED slots, that list covers names nothing declares.
+**Pins.** the body-slot group in `tests/test_dumper.py`, incl.
+`::test_a_body_slot_is_dumped_even_when_it_equals_its_default` and
+`::test_a_setterless_property_is_still_not_dumped` (derived state recomputes; it stays out).
+
 **Detail.** Two mechanisms serve it: the dumper reconstructs kwargs per param (live same-named
 attribute preferred, CAPTURED ctor kwargs as the fallback for eager classes that transform params),
 and a `None` value is omitted ONLY when the param's default is also `None` — any other default dumps

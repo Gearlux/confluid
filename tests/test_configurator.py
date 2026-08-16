@@ -608,14 +608,16 @@ def test_a_Reference_body_slot_still_raises() -> None:
             configure(cls(), config="lr: 0.75")
 
 
-def test_a_marker_body_slot_is_not_emitted_by_dump() -> None:
-    """Pinned as CURRENT behaviour, and identical for both marker kinds.
+def test_a_marker_body_slot_IS_emitted_by_dump() -> None:
+    """The C4 tuning reaches a dumped document (BUGS-2026-08-13 F2).
 
-    ``dump()`` reconstructs a node from its CONSTRUCTOR params, so a body slot —
-    marker-valued or not — is not emitted at all. The tuning C4 restores therefore
-    lives on the object, not in a dumped document. Reported alongside C4; changing
-    it is a dumper decision, not a configure() one.
+    This test asserted the opposite when C4 landed: ``dump()`` modelled the
+    constructor alone, so the value configure() merged into a marker lived on the
+    object but never in the artifact. Fixed by adding ``body_slot`` to the
+    dumper's kind projection.
     """
+    import yaml as _yaml
+
     from confluid import PartialClass, Target, dump
 
     @configurable
@@ -637,4 +639,4 @@ def test_a_marker_body_slot_is_not_emitted_by_dump() -> None:
         host = cls()
         configure(host, config="lr: 0.75")
         assert host.opt.kwargs == {"lr": 0.75}, "the marker itself carries the value"
-        assert dump(host).strip() == f"_target_: {cls.__name__}", "but dump() emits no body slot"
+        assert _yaml.safe_load(dump(host))["opt"]["lr"] == 0.75, "and the document carries it too"

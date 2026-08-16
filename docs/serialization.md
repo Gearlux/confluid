@@ -20,7 +20,8 @@ param (`collate_fn: ${ref:mypkg.collate_records}`) and the informational
 placeholder it falls back to for an opaque object.
 
 For each `@configurable` (or registered) instance, `dump()` emits a
-`_target_:` mapping whose kwargs are reconstructed **per parameter**:
+`_target_:` mapping covering **both kinds of slot** — constructor parameters and
+`__init__`-body attributes — reconstructed per slot:
 
 1. the **live attribute of the same name**, when the instance still carries
    it — so post-construction changes (a `configure()` call, a broadcast) are
@@ -34,11 +35,29 @@ own `_target_:` node, a shared instance reached twice dumps once and is
 referenced (`${ref:...}`), a deferred slot still holding a partial marker dumps
 as `_partial_: true` — deferred in, deferred out.
 
+**Every value is emitted, including one equal to its default.** That is what
+makes a dumped document self-contained: if a value were omitted because it
+happened to match the default, then changing that default in the source later
+would silently change what an existing dump reloads to.
+
+```python
+@configurable
+class Trainer:
+    def __init__(self, lr: float = 0.1):
+        self.lr = lr
+        self.epochs = 10          # a body slot, no constructor parameter
+
+configure(trainer, config={"epochs": 50})
+dump(trainer)                     # _target_: Trainer / lr: 0.1 / epochs: 50
+```
+
 ## What a dump deliberately omits
 
 - **Derived state** — read-only properties and `_`-prefixed internals are
   never emitted; they are recomputed by the reconstructed object
-  ([Class Design](class-design.md)).
+  ([Class Design](class-design.md)). This is why the convention asks for a
+  recomputing `@property` rather than a stored attribute: a property stays out
+  of the document, while a stored one is a body slot and is dumped.
 - **Runtime-injected arguments** — the `params=` / positional inputs handed
   to `flow()` at build time are call arguments, not configuration; the slot
   they fed round-trips as its `_partial_` recipe.

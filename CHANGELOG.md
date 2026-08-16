@@ -64,6 +64,17 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`dump()` emits body slots, so a configured object round-trips** (BUGS-2026-08-13 F2). The
+  dumper reconstructed a node from its CONSTRUCTOR params only, so an `__init__`-body attribute was
+  absent from the document: `self.epochs = 1` configured to 50 dumped as bare `_target_: BodyHost`
+  and reloaded as 1, and a marker slot tuned by `configure()` came back untuned. Every other surface
+  treats a body slot as first-class, so this contradicted the round-trip rule outright — and it
+  meant a config written beside a checkpoint omitted values the run actually used. `_DUMP_KINDS`
+  now carries `body_slot`. Values are emitted ALWAYS, never "only when different from the default",
+  matching how ctor params already behaved: that is what keeps a dumped document self-contained
+  when a default later changes in the source. Setterless properties stay out (derived state
+  recomputes on reload). Pinned by the body-slot group in `tests/test_dumper.py`.
+
 - **A string annotation resolves instead of leaking as a `str`** (BUGS-2026-08-13 I4, I5). A
   QUOTED body-slot annotation (`self.optimizer: "Partial[Optim]"`, the ordinary way to defer an
   import) lost its deferral entirely — the AST node is a string constant, so `eval` returned the
