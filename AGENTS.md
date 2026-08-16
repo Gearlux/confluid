@@ -784,7 +784,18 @@ author's reading order:
 - `merger.deep_merge` re-anchors a key the overlay re-states at the OVERLAY's position, so a key
   written on both sides survives once, at the later position, with the later value.
 - `merger.expand_dotted_mapping` anchors a fresh head where the dotted spelling was WRITTEN, never
-  appended at the end.
+  appended at the end — and applies every key in ONE pass, in DOCUMENT ORDER. It used to run two:
+  every plain key, then every dotted key sorted by depth and then ALPHABETICALLY, so a dotted LEAF
+  was always applied last and could not lose — `a.b: 1` beat a later `a: {b: 0}`, and the two
+  orderings of one leaf gave the same answer (P7). The head half was fixed in August; this is the
+  same bug one level down. Both branches of the single pass are SYMMETRIC: a dict landing on a dict
+  merges via the `merge_leaf` hook, anything else replaces. The plain branch needs that too — in
+  the old form it never met a dotted result, and an unconditional assign there drops `a.**.x` when
+  a later `a: {'**': {y}}` block arrives.
+  **Pins.** the position group in `tests/test_merger.py`, incl. `::test_the_two_orderings_DISAGREE`
+  (the rule-level pin) and
+  `tests/test_broadcast_scoping.py::test_top_level_dotted_glob_pair_merges_in_merger` (the
+  symmetry guard).
 
 **Rule.** The candidate set both paths' verdicts draw from is the ONE
 `broadcast._cascade_scalar_positions` (bare keys at their own index, a `'**'` rider's scalar

@@ -110,3 +110,61 @@ def test_two_plain_dicts_still_deep_merge() -> None:
 
     merged = deep_merge({"a": {"x": 1, "y": 2}}, {"a": {"y": 9}})
     assert merged["a"] == {"x": 1, "y": 9}
+
+
+# ---------------------------------------------------------------------------
+# A dotted key competes on POSITION, like every other spelling
+# (BUGS-2026-08-13 P7)
+#
+# The expansion ran in TWO passes — plain keys first, then every dotted key,
+# sorted by depth and then alphabetically — so a dotted leaf always landed last
+# and could not lose to anything. The head was already anchored where written
+# (fixed in August); this is the same bug one level down, at the LEAF.
+# ---------------------------------------------------------------------------
+
+
+def test_a_nested_block_written_AFTER_a_dotted_key_wins() -> None:
+    from confluid.merger import expand_dotted_keys
+
+    assert expand_dotted_keys({"a.b": 1, "a": {"b": 0}})["a"] == {"b": 0}
+
+
+def test_a_dotted_key_written_AFTER_a_nested_block_wins() -> None:
+    from confluid.merger import expand_dotted_keys
+
+    assert expand_dotted_keys({"a": {"b": 0}, "a.b": 1})["a"] == {"b": 1}
+
+
+def test_the_two_orderings_DISAGREE() -> None:
+    """The rule-level pin: if these ever match, position has stopped deciding."""
+    from confluid.merger import expand_dotted_keys
+
+    first = expand_dotted_keys({"a.b": 1, "a": {"b": 0}})["a"]
+    second = expand_dotted_keys({"a": {"b": 0}, "a.b": 1})["a"]
+    assert first != second, "two orderings of one leaf must not give the same answer"
+
+
+def test_a_deeper_dotted_key_still_merges_into_a_shallower_one() -> None:
+    """The depth sort is gone; document order must still compose these."""
+    from confluid.merger import expand_dotted_keys
+
+    assert expand_dotted_keys({"a.b": {"x": 1}, "a.b.c": 2})["a"]["b"] == {"x": 1, "c": 2}
+    assert expand_dotted_keys({"a.b.c": 2, "a.b": {"x": 1}})["a"]["b"] == {"c": 2, "x": 1}
+
+
+def test_a_dotted_key_still_descends_into_a_MARKER() -> None:
+    """The P1 partner: a dotted path walks into a marker's kwargs, not over it."""
+    from confluid.fluid import Target
+    from confluid.merger import expand_dotted_keys
+
+    expanded = expand_dotted_keys({"model": Target("Counter", red=1), "model.blue": 3})
+
+    assert isinstance(expanded["model"], Target)
+    assert expanded["model"].kwargs == {"red": 1, "blue": 3}
+
+
+def test_an_unrelated_dotted_key_keeps_its_written_position() -> None:
+    """Position is the arbitration, so the merged ORDER is part of the contract."""
+    from confluid.merger import expand_dotted_keys
+
+    assert list(expand_dotted_keys({"z": 1, "a.b": 2, "m": 3})) == ["z", "a", "m"]
