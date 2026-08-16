@@ -1385,3 +1385,93 @@ d: {_clone_: proto}              # -> ConfigurationError, located, naming both s
 
 **What you may change.** The wording of the refusal. Not the loudness — a removed spelling that
 degrades to data is the failure mode the reserved-key format exists to end.
+
+---
+
+## 19. hydraide — one preprocessor emits a resolved plain document; the runtime consumes it
+
+*2026-08-15 — DESIGN, not yet implemented. Rulings taken; phased in `TASKS.md`.*
+
+**Context.** A `load()` runs nine passes and applies the ONE precedence rule to a document, then
+`configure()` re-derives the same rule over live objects. Two implementations of one rule is where
+the 2026-08-13 report's largest family came from (C1/C1b/P1/P7/C2 — each a site where the copies
+disagreed), and every ordering question this month was answered by measuring engine behaviour,
+because nothing wrote the resolved document down. Meanwhile the format converged on Hydra's
+vocabulary (`_target_` / `_partial_`) without being consumable by anything Hydra-shaped, and three
+census-kept features (Clone, attribute references, the tag deprecation) each carried a runtime
+branch for a spelling that a preprocessor makes unnecessary.
+
+**Decision.** `hydraide` is passes 1–7 — parse (either spelling), import, include, scope,
+interpolate, expand, broadcast — followed by a serializer and a CLI. It emits ONE plain-YAML
+document in which every marker carries its FINAL kwargs, every contest is settled, references are
+YAML anchors, and deferral is `_partial_: true`. The runtime consumes that document: recursive
+construction of every `_target_` (Hydra's `instantiate` shape), anchors sharing one instance via
+the id-memo, `_partial_` deferring. `configure()` reuses the same rule by way of the document —
+`dump()` the object graph, resolve overrides against it with hydraide, apply the resulting explicit
+paths — so the rule exists once and no path re-derives it. Most of this exists: `resolve()` IS
+passes 1–7, `dump()` IS a serializer, and `confluid-migrate` carried the tag line-grammar; hydraide
+replaces `confluid-migrate` outright.
+
+Four rulings, each with the measured fact it rests on:
+
+1. **Attribute references are removed** (`${ref:obj.attr}` / `obj.method()` — ~13 sites, one
+   shape: two streams reading `.train` / `.val` of one built split). They have no plain-YAML or
+   Hydra form. The referent becomes the reference (an anchor) and the consumer reads the attribute
+   — a selector parameter or a small adapter target; the consuming projects choose. hydraide
+   REPORTS a surviving attribute ref rather than emitting it. Import-path references
+   (`${ref:pkg.func}`, 8 sites) are a different mechanism (importlib, no built object) and are an
+   open sub-decision — the Hydra-native shape is a `_target_` on the function.
+2. **Both spellings are supported INPUT; plain is the emitted OUTPUT.** Neither is "the" authoring
+   format. This REVERSES the 0.4.0 tag-deletion plan and the once-per-document `FutureWarning`
+   (record 11's deprecation half); the two-spellings-one-IR invariant is unchanged and now has a
+   third witness — hydraide's output must be identical whichever spelling produced it. `!lazy:` is
+   renamed `!partial:` (alias kept one release) to match the key it emits.
+3. **`configure()` is dump → resolve → apply-paths.** F2 (body slots dumped, 2026-08-15) is what
+   made `dump()` faithful enough to be the graph's document. Bare-key broadcasting on live objects
+   keeps working; the flat-view scanner, `_LiveSink`, `_tune_deferred` and the four parity suites
+   go, because there is no second path left to keep in parity.
+4. **Clone is already gone** (record 18); a second marker is the one independence spelling, which
+   is exactly what the emitted document contains.
+
+**Consequences.** "What did my config resolve to?" is `hydraide cfg.yaml` — a file, not an
+experiment. The runtime loses broadcasting, `_late_bare_keys`, `_order_resolved`, `beaten_per_slot`
+and the parity contract; F4 (`_deep_flow` one level deep) is settled by construction — every
+`_target_` in the emitted document is built, and anchors + the id-memo build a shared list once, so
+the `preprocess:` template idiom costs nothing extra. Costs: dump-fidelity limits become
+`configure()` limits (an opaque subtree cannot be re-resolved); the anchor form's behaviour under an
+include overlay is measured correct but its mechanism is untraced and needs a pin before phase 1
+ships; and Hydra's own `instantiate` shares no identity across an interpolated node (unmeasured
+here — hydra is not installed in this workspace), so "Hydra-instantiable" means loadable and
+buildable, not identity-preserving.
+
+**Example.**
+
+```yaml
+# base.yaml — either spelling; the tag one shown        # experiment.yaml
+model: &m !class:Model(hidden=32)                        include: base.yaml
+lr: 0.1                                                  model.hidden: 64
+train_set: !class:Stream                                 torch_only:
+  ops: !ref:preprocess                                     _scope_: {framework: torch}
+preprocess: [!class:Resize(size=224), !class:ToTensor]     lr: 0.3
+optimizer: !partial:Adam
+```
+```bash
+hydraide experiment.yaml --scope framework=torch -o resolved.yaml
+```
+```yaml
+model: &model {_target_: Model, hidden: 64, lr: 0.3}     # every contest settled, visible
+train_set:
+  _target_: Stream
+  ops: &preprocess [{_target_: Resize, size: 224}, {_target_: ToTensor}]
+preprocess: *preprocess                                  # one list, built once, shared
+optimizer: {_target_: Adam, _partial_: true, lr: 0.3}
+```
+```python
+tree = instantiate(load_plain("resolved.yaml"))          # recursive; anchors -> one object each
+configure(tree, "lr: 0.5")   # == apply_paths(tree, diff(dump(tree), hydraide.resolve(dump(tree) + overrides)))
+```
+
+**What you may change.** The serializer's cosmetics (anchor names, key order within a node). Not
+the invariants: hydraide's output for the two spellings of one document is byte-identical; a
+construct hydraide cannot express in plain YAML is REPORTED, never emitted as data; and the runtime
+never re-derives precedence — if a runtime path needs the rule, it goes through the document.

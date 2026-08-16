@@ -25,9 +25,13 @@ plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_clone_` 
 recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` /
 `sanitize_schema`) that every AI- and GUI-facing consumer reads for tool schemas and form specs.
 
-The equivalent TAG spelling (`!class:` / `!lazy:` / `!ref:` / `!scope:`) still parses in 0.3.0 and
-is REMOVED in 0.4.0 — it warns on every document it loads. Write the reserved keys; convert an
-old file with `confluid-migrate`.
+The equivalent TAG spelling (`!class:` / `!lazy:` / `!ref:` / `!scope:`) still parses in 0.3.0
+and today warns on every document it loads. **Direction (user ruling 2026-08-15, architecture
+record 19 — `hydraide`):** BOTH spellings are supported INPUT and neither is deprecated; the plain
+form is what the `hydraide` preprocessor EMITS. The deprecation rules below (the `FutureWarning`,
+the 0.4.0 deletion, `confluid-migrate`) describe the code as it stands and are scheduled for
+reversal in hydraide phase 1 (`TASKS.md`) — do not extend them, and do not act on them as
+direction. Clone is already removed (record 18).
 
 **Published on PyPI — v0.1.0 and v0.2.0. v0.3.0 is prepared and DELIBERATELY HELD** (user
 instruction 2026-08-04): do not tag it until confluid's functionality is verified complete against
