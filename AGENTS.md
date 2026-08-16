@@ -598,7 +598,24 @@ dict). `_MergeSink.dict_at_slot` applies the marker arm pre-construction, so a c
 override tunes a nested ctor-param recipe instead of deleting it. The classifier reads
 `__dict__`-sourced values and the CLASS mark only — no property getter runs. Never add a
 per-path arm: two arms on one path and three on the other is exactly how C1/C1b shipped
-(`docs/architecture.md` record 15). **Pins.** `tests/test_dict_at_slot.py` (all nine).
+(`docs/architecture.md` record 15).
+
+**A THIRD site is document COMPOSITION** (P1, 2026-08-15). `merger.deep_merge` recursed only when
+BOTH sides were dicts, and a `Fluid` is not a dict — so an overlay mapping REPLACED the whole
+marker: the commonest composition in the system (a base file defines the model, an experiment file
+overrides one knob) silently produced a plain dict with no target and no error, while the DOTTED
+spelling of the same override tuned it correctly. It now tunes, restricted to `Target` to mirror
+the classifier's marker arm — a `Reference` / `Clone` base keeps the replace behaviour, since the
+classifier calls those opaque. It does NOT call `tune_marker`: that helper is single-level by
+design and lives above this module anyway (`broadcast` imports `merger`, so the reverse is a
+cycle), while composition must RECURSE — the dotted and class-block spellings both reach a marker
+nested inside the overridden one. Recursing through `deep_merge` also keeps the re-anchoring rule
+applying at every depth, and the marker is COPIED, never mutated: `_preserve_identity_copy` shares
+markers with the base document, so tuning in place would rewrite the included file for every other
+consumer.
+**Pins.** `tests/test_dict_at_slot.py` (all nine) and the marker-merge group in
+`tests/test_merger.py`, incl. `::test_the_merge_recurses_into_a_NESTED_marker` and
+`::test_the_merge_does_not_mutate_the_BASE_marker`.
 **Docs.** `docs/broadcasting.md` → "What a mapping at a slot means".
 
 **Rule.** Subscript the alias with the INTERFACE the slot flows into (`Partial[Optimizer]`, never

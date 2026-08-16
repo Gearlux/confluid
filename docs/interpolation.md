@@ -107,6 +107,19 @@ so `s` gets `lr = 0.2`. This is the natural way to say *"here are my defaults,
 let the shared file win"*, and an include in the middle splits the file cleanly:
 keys above it are overridden by the paste, keys below it override the paste.
 
+- **An overlay mapping TUNES a marker, it does not replace it.** Re-stating a
+  node your base file declared with `_target_` merges into that marker's kwargs,
+  at any depth — the same thing the dotted spelling (`model.blue: 3`) does:
+
+  ```yaml
+  # base.yaml                       # experiment.yaml
+  model:                            include: base.yaml
+    _target_: Counter               model:
+    red: 1                            blue: 3      # -> Counter(red=1, blue=3)
+  ```
+
+  Re-declaring the node instead — writing `_target_` again in the overlay — is a
+  replacement, and the overlay's marker wins outright.
 - **Between two includes, the later one wins** (`include: [first, second]`) — they
   paste in listed order at the same slot.
 - **A nested block still deep-merges.** Splicing decides *where* a block lands,

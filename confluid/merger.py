@@ -1,7 +1,7 @@
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import Any, Callable, Dict, cast
 
-from confluid.fluid import Fluid
+from confluid.fluid import Fluid, Target
 
 
 def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -38,8 +38,40 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
         _preserve_identity_copy(base) if isinstance(base, dict) else deepcopy(base),
     )
     for key, value in overlay.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            merged = deep_merge(result[key], value)
+        existing = result.get(key) if key in result else None
+        merged: Any  # a merged dict, a tuned marker, or a copied leaf
+        if key in result and isinstance(existing, dict) and isinstance(value, dict):
+            merged = deep_merge(existing, value)
+        elif isinstance(existing, Target) and isinstance(value, dict):
+            # A mapping merged OVER a marker TUNES it — the same rule the two
+            # materialization paths dispatch through ``broadcast.dict_at_slot_kind``,
+            # applied to document COMPOSITION, which was a third site nobody counted
+            # (BUGS-2026-08-13 P1). A ``Fluid`` is not a ``dict``, so the branch above
+            # missed it and the overlay replaced the whole marker: the single most
+            # common composition in the system — a base file defining the model, an
+            # experiment file overriding one knob — silently produced a plain dict with
+            # no target and no error, while the DOTTED spelling of the same override
+            # tuned it correctly.
+            #
+            # The recursion is load-bearing, and is why this is not a call to
+            # ``broadcast.tune_marker`` (which is single-level by design, and lives
+            # above this module besides — ``broadcast`` imports ``merger``): the dotted
+            # and class-block spellings both reach a marker NESTED inside the
+            # overridden one, so composition has to as well. Recursing through
+            # ``deep_merge`` also keeps the re-anchoring rule below applying at every
+            # depth.
+            #
+            # ``Target`` and not ``Fluid``: this mirrors the classifier's "marker" arm.
+            # A ``Reference`` / ``Clone`` base keeps the previous replace behaviour —
+            # the classifier calls those opaque, and widening here would invent a
+            # semantic for them that no other path has.
+            tuned = copy(existing)
+            # COPY, never mutate: markers are preserved by identity through
+            # ``_preserve_identity_copy``, so the base document's marker is the same
+            # object and tuning it in place would rewrite the included file for every
+            # other consumer of it.
+            tuned.kwargs = deep_merge(existing.kwargs, value)
+            merged = tuned
         else:
             merged = _preserve_identity_copy(value)
         # Re-anchor: delete before re-inserting so the key lands at the overlay's

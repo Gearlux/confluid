@@ -64,6 +64,26 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **An include-file override of one kwarg no longer deletes the whole marker** (BUGS-2026-08-13
+  P1). The commonest composition in the system — a base file defining the model, an experiment file
+  overriding one knob — produced a plain `dict` with no target and no error:
+
+  ```yaml
+  # base.yaml                       # experiment.yaml
+  model:                            include: base.yaml
+    _target_: collections.Counter   model:
+    red: 1                            blue: 3
+  ```
+  `load()` returned `{'blue': 3}`, while the DOTTED spelling of the same override
+  (`model.blue: 3`) correctly gave `Counter({'blue': 3, 'red': 1})` — two spellings of one
+  override disagreeing, which the format's own rule forbids. `deep_merge` recursed only when both
+  sides were dicts, and a marker is not a dict, so this was a THIRD site of the dict-at-slot rule
+  C1/C1b settled; document composition was a path nobody counted. It now tunes the marker,
+  recursing so a marker NESTED inside the overridden one survives too (which the dotted and
+  class-block spellings both do), and copying rather than mutating — the base document's markers
+  are shared by identity. Restricted to `Target`, mirroring the classifier's marker arm.
+  Pinned by the marker-merge group in `tests/test_merger.py`.
+
 - **A marker's target is named by the registry, like a live instance's** (BUGS-2026-08-13 F3).
   The live-instance branch asks `registry.key_for()` so the emitted name re-resolves to THIS class
   rather than to a namesake; `_target_name` bypassed it and emitted a raw `module.qualname`. Two
