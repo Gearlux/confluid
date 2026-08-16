@@ -64,6 +64,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The block-vs-bare contest agrees across both paths, in every ordering** (BUGS-2026-08-13 C2).
+  One deferred slot with two competing specs — a bare sweep key and a class block addressing the
+  slot — resolved differently on the two paths for the ordinary "node first, overrides below"
+  layout: `load()` gave 99 where `configure()` gave 50. Both EDGE orderings agreed and were
+  pinned; the middle one, the way anyone actually writes it, had no pin. The cause was one rule
+  implemented twice — the shared scanner already computes the verdict at the delivering BLOCK's
+  position and hands it to every sink, `_LiveSink` recorded it, and `_MergeSink` accepted the
+  argument and dropped it while the engine computed a second verdict from the MARKER's splice
+  position, where the block's position no longer exists. `_MergeSink` now keeps it and the engine
+  overrides only the slots a block delivered; a marker's OWN dict kwargs keep the existing
+  computation, since those really do sit at the marker. Pinned by the C2 group in
+  `tests/test_cross_path_pins.py` — all three orderings, per path and compared across paths.
+
 - **A dotted key competes on position, like every other spelling** (BUGS-2026-08-13 P7). The
   dotted expansion ran in two passes — every plain key first, then every dotted key sorted by depth
   and then alphabetically — so a dotted leaf was always applied last and could not lose to anything
