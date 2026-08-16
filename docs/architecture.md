@@ -1443,9 +1443,12 @@ experiment. The runtime loses broadcasting, `_late_bare_keys`, `_order_resolved`
 and the parity contract; F4 (`_deep_flow` one level deep) is settled by construction — every
 `_target_` in the emitted document is built, and anchors + the id-memo build a shared list once, so
 the `preprocess:` template idiom costs nothing extra. Costs: dump-fidelity limits become
-`configure()` limits (an opaque subtree cannot be re-resolved); the anchor form's behaviour under an
-include overlay is measured correct but its mechanism is untraced and needs a pin before phase 1
-ships; and Hydra's own `instantiate` shares no identity across an interpolated node (unmeasured
+`configure()` limits (an opaque subtree cannot be re-resolved); an anchor does NOT follow an
+include-overlay tune — the tune COPIES the marker at the key (P1) and every alias site keeps the
+original, so `&m`/`*m` is not an authoring replacement for the late-bound `${ref:m}` under includes
+(the 2026-08-15 probe that showed otherwise had its parameter named like the top-level key and was
+seeing bare-key BROADCAST; corrected and pinned in `tests/test_hydraide.py`, phase 1); and Hydra's
+own `instantiate` shares no identity across an interpolated node (unmeasured
 here — hydra is not installed in this workspace), so "Hydra-instantiable" means loadable and
 buildable, not identity-preserving.
 
