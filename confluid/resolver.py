@@ -410,19 +410,15 @@ class Resolver:
 
             return value
 
-        # 2. Handle Fluid citizens
+        # 2. Handle Fluid citizens. A ``Reference`` to another MARKER is substituted here
+        #    so identity is visible before pass 7 (``load(flow=False)``: ``alias is thing``);
+        #    a reference to a plain value is left for pass 7 (``engine._settle_reference``),
+        #    which inlines it. The scope probe skips a hit that IS this reference (`exclude`):
+        #    ``r: {x: !ref:x}`` with a root ``x`` used to find its own marker and recurse
+        #    forever (F6).
         if isinstance(value, Reference):
-            res = self._resolve_ref(value.target, local_context)
-            if res == f"!ref:{value.target}":
-                return value  # unresolvable — leave the Reference for flow() to retry
-            # When the Reference points at another Fluid (Class / Instance /
-            # nested Reference), substitute it eagerly so identity-based
-            # aliasing works (``result["alias"] is result["thing"]``). When
-            # it resolves to a scalar / list / dict, keep the Reference Fluid
-            # so later overrides of the source key (e.g. a CLI's
-            # ``--drone_index 8`` merged into ``config_data`` after load)
-            # can flow through to the rendered value at materialize time.
-            if isinstance(res, Fluid):
+            res = self._resolve_ref(value.target, local_context, exclude=value)
+            if isinstance(res, Fluid) and res is not value:
                 return self.resolve(res, local_context)
             return value
 
@@ -538,19 +534,25 @@ class Resolver:
             return fluid
         return Target(content)
 
-    def _resolve_ref(self, ref_path: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
+    def _resolve_ref(
+        self, ref_path: str, local_context: Optional[Dict[str, Any]] = None, *, exclude: Any = None
+    ) -> Any:
         """
         Resolve a dotted path against local and global contexts.
+
+        ``exclude`` is the ``Reference`` being resolved: a scope whose key holds that very
+        marker is not an answer (it is the question), so the probe falls through to the
+        next scope instead of handing the reference back to itself.
         """
         # 1. Try Local Context First
         if local_context:
             val = self._lookup_path(ref_path, local_context)
-            if val is not None and (not isinstance(val, str) or not val.startswith("!ref:")):
+            if val is not None and val is not exclude and (not isinstance(val, str) or not val.startswith("!ref:")):
                 return val
 
         # 2. Try Global Context
         val = self._lookup_path(ref_path, self.context)
-        if val is not None:
+        if val is not None and val is not exclude:
             return val
 
         # Debug, not warning: this load-time pass legitimately misses refs that

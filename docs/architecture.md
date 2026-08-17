@@ -1438,7 +1438,7 @@ Four rulings, each with the measured fact it rests on:
 4. **Clone is already gone** (record 18); a second marker is the one independence spelling, which
    is exactly what the emitted document contains.
 
-**Consequences.** "What did my config resolve to?" is `hydraide cfg.yaml` — a file, not an
+**Consequences.** "What did my config resolve to?" is `emit(cfg)` — a file, not an
 experiment. The runtime loses broadcasting, `_late_bare_keys`, `_order_resolved`, `beaten_per_slot`
 and the parity contract; F4 (`_deep_flow` one level deep) is settled by construction — every
 `_target_` in the emitted document is built, and anchors + the id-memo build a shared list once, so
@@ -1463,8 +1463,8 @@ train_set: !class:Stream                                 torch_only:
 preprocess: [!class:Resize(size=224), !class:ToTensor]     lr: 0.3
 optimizer: !partial:Adam
 ```
-```bash
-hydraide experiment.yaml --scope framework=torch -o resolved.yaml
+```python
+emit("experiment.yaml", scopes=["framework=torch"])   # the command line wraps this call
 ```
 ```yaml
 model: &model {_target_: Model, hidden: 64, lr: 0.3}     # every contest settled, visible
@@ -1497,7 +1497,7 @@ The FIRST segment of a dotted `!ref:` decides what it is: a document key walks S
 document key and whose structural walk misses — `!ref:split.train` reading a property of the
 built object, `!ref:obj.build()` calling a method — is REFUSED by
 `resolver.refuse_attribute_reference` with the node's `file:line:col` and the rewrite, on both
-paths: `load()` and `resolve()`, so hydraide reports it (exit 2, the same message) instead of
+paths: `load()` and `resolve()`, so hydraide reports it (the same located message) instead of
 emitting `_ref_: split.train` unresolved as it did. The object policy is DELETED (the
 `getattr_fallback` walker arm, `_materialize_cursor` and its lazy seam into `engine`, the trailing
 `()` grammar, `_EngineState.structural`); the resolver constructs nothing any more, so the two
@@ -1521,3 +1521,29 @@ document key stays an unresolved `Reference` after `load()` while the same ref i
 kwargs resolves; and a plain mapping whose key references a same-named outer key
 (`r: {val_fraction: !ref:val_fraction}`) recurses forever in `Resolver.resolve` — the reason the
 recipe is anchored on a marker, not on a plain mapping.
+
+*Phase 3 landed 2026-08-17 — the runtime consumes the settled document.* `materialize()` is now
+`_flow_recursive` (pass 7, the ONE broadcast/reference pass — what `emit` serializes) followed by
+`instantiate` (pass 8), which builds every `Target` at any depth from its settled kwargs; the
+second cascade into a marker's own kwargs at construction is gone (`_flow_target` feeds the
+resolver the marker's own glob blocks only), and the benchmark that constructs its 2,500 markers
+runs at the same wall time the non-constructing one did. References are settled once, in pass 7
+(`_settle_reference`): a reference to a marker shares it, a reference to a plain value is
+INLINED, a miss is a located error — so the emitted document is CLOSED (no `_ref_`) and F4, F5
+and F6 close by construction (F4: `instantiate` recurses through plain containers; F5: nothing is
+late-bound after `load()`, the CLI-override contract is `load(flow=False)` → merge → `materialize`,
+which is what the app framework already did; F6: a scope never answers a reference with the
+reference itself — the self-hit is skipped on the pass-5 marker-aliasing probe and in pass 7).
+**Two things the plan expected to leave the engine did NOT, and the reason is measured, not
+chosen:** a marker created INSIDE a constructor — `self.optimizer = PartialClass(Adam)` as a body
+slot, or a ctor default — is invisible to pass 7 (the AST scan knows the slot's NAME, not the
+marker it will hold), yet the workspace's trainers rely on a top-level `lr: 0.3` reaching it
+(measured: `emit` shows `trainer: {_target_: Trainer, epochs: 5}` with no `lr`, and after `load()`
+the body-slot marker carries `lr: 0.3`). So `_broadcast_onto_instance` and the post-init
+dict-at-slot tune stay, fed from the document's top-level keys — the one delivery the emitted
+document cannot show, and `load(emit(x))` still reproduces it because those keys are in the
+document. And the flat-view scanner (`broadcast.py`) is pass 7 itself, so it never leaves; what
+left is the second COPY of the rule at construction. Scoping of a `!ref:` also stayed nearest-scope
+-then-root rather than root-only: an included FRAGMENT's internal reference must find the
+fragment's key (`tests/test_nested_refs.py`, the TorchSig shape), and the emitted document is
+Hydra-parseable either way because it carries no references at all.

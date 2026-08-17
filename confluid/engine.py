@@ -196,7 +196,7 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     )
     try:
         result = _flow_recursive(data, parent_context=context)
-        return _deep_flow(result)
+        return instantiate(result)
     finally:
         _ENGINE_STATE.reset(token)
 
@@ -209,7 +209,7 @@ def resolve(
 ) -> Any:
     """Broadcast-resolve a config to a Fluid marker graph WITHOUT instantiating.
 
-    Like :func:`materialize`, but stops before ``_deep_flow``: it parses,
+    Like :func:`materialize`, but stops before ``instantiate``: it parses,
     resolves scopes/includes, applies broadcasting and reference resolution
     (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
     ``${ref:...}`` is one object reached twice), and returns the resulting
@@ -255,30 +255,26 @@ def resolve(
         _ENGINE_STATE.reset(token)
 
 
-def _deep_flow(data: Any) -> Any:
-    """Flow the top-level Fluid + any Instance objects in the tree.
+def instantiate(data: Any) -> Any:
+    """Build every ``Target`` in a SETTLED tree, at any depth — pass 8 (record 19, phase 3).
 
-    ``Partial`` Fluids are left deferred at every level — they are
-    runtime-injection points whose construction happens later (e.g.
-    inside ``configure_optimizers`` once ``model.parameters()`` is
-    available). Flowing them here would either fail (missing runtime
-    args) or produce a partially-initialized object.
+    The tree is what pass 7 (``_flow_recursive`` — the document ``hydraide`` emits) produced:
+    every marker carries its final kwargs, every reference is resolved. So this walk is
+    plain: a ``Target`` is built (its nested markers are built by ``flow`` from their own
+    settled kwargs, a marker reached twice — a YAML alias, a shared reference — builds once
+    through the instance memo); a ``Partial`` stays deferred (a runtime-injection point,
+    built later by ``flow(partial, **runtime)`` with its nested markers); dicts and lists
+    are walked recursively, so a marker inside a plain mapping or list is built too — it
+    used to descend ONE level and hand back an unbuilt marker (F4).
     """
-    _flow = flow  # same-module; alias keeps the moved body verbatim
-
-    def _maybe_flow(v: Any) -> Any:
-        if isinstance(v, Target):
-            return v if v.partial else _flow(v)
-        return v
-
-    if isinstance(data, Target) and data.partial:
-        return data
+    if isinstance(data, Target):
+        return data if data.partial else flow(data)
     if isinstance(data, Fluid):
-        return _flow(data)
+        return flow(data)
     if isinstance(data, dict):
-        return {k: _maybe_flow(v) for k, v in data.items()}
+        return {k: instantiate(v) for k, v in data.items()}
     if isinstance(data, list):
-        return [_maybe_flow(item) for item in data]
+        return [instantiate(item) for item in data]
     return data
 
 
@@ -459,35 +455,15 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
             flow_memo[raw_id] = res_obj
         return res_obj
 
-    # 3. Reference — resolve against parent context
+    # 3. Reference — resolved against the DOCUMENT ROOT, once, here (record 19, phase 3).
+    #    A `!ref:` means the root key it names: the enclosing plain mapping never shadows
+    #    it (a local probe is what used to recurse forever on `r: {x: !ref:x}` — F6), and
+    #    a reference to a plain VALUE is inlined now rather than left as a late-bound
+    #    marker for a consumer to materialize later (F5). The result: hydraide's
+    #    document is CLOSED — no `_ref_` survives — and construction never resolves a
+    #    reference. Unresolvable → a located error, on `resolve()` and `load()` alike.
     if isinstance(data, Reference):
-        if parent_context and data.target in parent_context:
-            resolved = parent_context[data.target]
-            # Self-reference guard: a kwarg like ``foo: !ref:foo`` with no
-            # outer ``foo`` in scope splices itself into ``parent_context``,
-            # so the only ``foo`` it can resolve against is itself —
-            # recursing here would stack-overflow. Fail loudly instead.
-            if resolved is data:
-                raise ReferenceResolutionError(
-                    f"Self-referential !ref:{data.target}{_at_yaml_loc(data)}: the only "
-                    f"{data.target!r} in scope is this reference itself. "
-                    f"Define a top-level {data.target!r} key (e.g. "
-                    f"`{data.target}: null`), or remove the kwarg."
-                )
-            return _flow_recursive(resolved, parent_context=parent_context)
-        # A dotted path: the FIRST segment decides (record 19, phase 2). A document
-        # key walks STRUCTURE only and stays late-bound here (the deferred-Reference
-        # machinery resolves it at final materialize time); a walk that would leave
-        # structure — an attribute of a built object, a method call — is REFUSED with
-        # the node's location, on THIS path as well as under `resolve()`, which is
-        # how `hydraide` reports it. Anything else is an import path, resolved now.
-        # Nothing is constructed here any more: `resolve()` needs no special flag.
-        if parent_context:
-            refuse_attribute_reference(data.target, parent_context, _at_yaml_loc(data))
-            resolved = resolve_reference_path(data.target, parent_context)
-            if resolved is not None:
-                return resolved
-        return data
+        return _settle_reference(data, parent_context)
 
     # 4. Generic Fluid — pass through
     if isinstance(data, Fluid):
@@ -498,6 +474,57 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         return [_flow_recursive(item, parent_context=parent_context) for item in data]
 
     return data
+
+
+def _settle_reference(ref: Reference, parent_context: Optional[Dict[str, Any]]) -> Any:
+    """Resolve a ``Reference`` in pass 7 — nearest enclosing scope first, then the document root.
+
+    Scope: ``parent_context`` is the enclosing mapping's view (its own keys over its parents'),
+    so an included FRAGMENT's internal reference finds the fragment's key, and a top-level key is
+    the fallback. What a scope may NOT do is answer with the reference itself: ``r: {x: !ref:x}``
+    with a root ``x`` used to find its own marker in the enclosing scope and recurse forever (F6);
+    that hit is skipped and the root answers. The FIRST segment decides the rest (phase 2): an
+    exact key shares the marker (identity via ``flow_memo``), a dotted/bracketed path walks dict
+    keys and list indices and yields the VALUE (inlined — nothing is late-bound any more, F5),
+    a walk that leaves structure is refused as an attribute reference, and anything else is an
+    import path. A miss raises a located ``ReferenceResolutionError`` — so ``hydraide`` reports
+    it instead of emitting `_ref_`.
+    """
+    root: Any = get_active_context() or {}
+    scope: Any = parent_context if parent_context else root
+    target = ref.target
+
+    for ctx in (scope, root):
+        if target in ctx and ctx[target] is not ref:
+            return _flow_recursive(ctx[target], parent_context=parent_context)
+    if target in scope or target in root:
+        raise ReferenceResolutionError(
+            f"Self-referential !ref:{target}{_at_yaml_loc(ref)}: the only {target!r} in scope is this "
+            f"reference itself. Define a top-level {target!r} key, or remove the reference."
+        )
+    refuse_attribute_reference(target, root if _first_key(target) in root else scope, _at_yaml_loc(ref))
+    for ctx in (scope, root):
+        found = Resolver(context=ctx)._lookup_path(target, ctx)
+        if found is not None and found is not ref:
+            return (
+                _flow_recursive(found, parent_context=parent_context)
+                if isinstance(found, (Fluid, dict, list))
+                else found
+            )
+    imported = resolve_reference_path(target, root)  # an import path (`posixpath.join`), or None
+    if imported is not None:
+        return imported
+    raise ReferenceResolutionError(
+        f"Cannot resolve !ref:{target}{_at_yaml_loc(ref)}: no key in scope, no structural path and no "
+        "importable name matches it."
+    )
+
+
+def _first_key(target: str) -> str:
+    """The first path segment of a reference target (`split` for `split.train` / `packs[0].x`)."""
+    from confluid.resolver import _first_segment
+
+    return _first_segment(target)
 
 
 def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: Any) -> Any:
@@ -559,7 +586,7 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
 
     # An EXPLICIT ``flow(lazy)`` call builds the Partial — even with no runtime
     # kwargs. A ``Partial`` defers construction past the AUTO-flow walkers
-    # (``_deep_flow`` and ``materialize``'s recursive descent, which both skip it
+    # (``instantiate`` and ``materialize``'s recursive descent, which both skip it
     # without calling ``flow()``); a deliberate ``flow()`` by domain code is a
     # "build this now" request. The runtime-injection case still works because
     # the missing args are passed as ``runtime_kwargs`` (e.g.
@@ -636,10 +663,14 @@ def _flow_target(
     # attribute 'setup'"). For those targets, eagerly materialize nested
     # Class fluids inside list/dict kwargs.
     #
-    # The nested-Class broadcast pool is the ACTIVE context (bare root keys
-    # + '**' contents) — never the receiver's own kwargs (addressed keys do
-    # not cascade); without a context only the marker's own glob blocks feed it.
-    broadcast_ctx = _broadcast_pool(context) if context else glob_pool
+    # The marker's OWN kwargs were settled in pass 7 (record 19, phase 3): every bare
+    # key that reaches this marker or the markers nested in its kwargs is already IN
+    # ``obj.kwargs``, so no cascade pool feeds them here — only the marker's own glob
+    # blocks (`'**'` riders written on it) still route. The ACTIVE context's bare keys
+    # are needed ONLY below, for what pass 7 cannot see: markers born inside the
+    # constructor (a body slot `self.optimizer = PartialClass(...)`, a ctor default).
+    broadcast_ctx = glob_pool
+    root_pool = _broadcast_pool(context) if context else glob_pool
     # A slot the RECEIVING class declared deferred (`Partial[T]`, or a body slot
     # holding a `PartialClass(...)`) keeps its value unbuilt, whatever the value's
     # own `partial` says. This is the receiver's declared contract — "this slot
@@ -702,8 +733,8 @@ def _flow_target(
         except (TypeError, AttributeError):
             pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
 
-    _apply_post_init_attrs(instance, target, merged, ctor, obj, context, broadcast_ctx)
-    _broadcast_onto_instance(instance, params, ctor, context, broadcast_ctx)
+    _apply_post_init_attrs(instance, target, merged, ctor, obj, context, root_pool)
+    _broadcast_onto_instance(instance, params, ctor, context, root_pool)
     _maybe_solidify(instance)
     return instance
 

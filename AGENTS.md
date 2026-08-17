@@ -27,7 +27,7 @@ recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` 
 
 The TAG spelling (`!class:` / `!partial:` (alias `!lazy:`) / `!ref:` / `!scope:`) is the
 PREFERRED AUTHORING form; the reserved-key spelling is the MACHINE form that the `hydraide`
-preprocessor EMITS (`hydraide cfg.yaml --scope k=v -o out.yaml`). Both are first-class input,
+preprocessor EMITS (`confluid.hydraide.emit(cfg, scopes=[...])`; the `hydraide` COMMAND lives in liquifai — confluid ships functions only, user instruction 2026-08-17). Both are first-class input,
 neither warns (user ruling 2026-08-15, architecture record 19 — phase 1 landed). Clone is removed
 (record 18). Phases 2–4 of record 19 (attribute refs out, the runtime consuming hydraide output,
 `configure()` via the document) are in `TASKS.md`.
@@ -134,7 +134,7 @@ imports; extend the right module instead.
 | `fluid` | the marker DATA classes (`Fluid`/`Target`/`Partial`/`Reference`/`Clone`/`ScopeBlock`) + `format_yaml_loc`. A dependency LEAF — imports no other confluid module. |
 | `state` | `_EngineState` / `_ENGINE_STATE` (one `ContextVar`) + the public `active_context` / `collect_report`. Exists so `broadcast` can read the ambient report without importing the engine. |
 | `broadcast` | the ONE precedence rule and all its machinery — see "Precedence & broadcasting". Materializes NOTHING. |
-| `engine` | `flow`/`cast`, `materialize`/`resolve`, `_flow_recursive`/`_deep_flow`, the construction-side broadcast consumers. |
+| `engine` | `flow`/`cast`, `materialize`/`resolve`, `_flow_recursive` (pass 7 — settle) / `instantiate` (pass 8 — build), and the two post-construction deliveries pass 7 cannot see (body-slot / ctor-default markers). |
 | `loader` | YAML parsing and composition ONLY (`ConfluidLoader`, `load`/`load_config`, includes/imports/scopes glue). |
 | `introspect` | stdlib-only AST/signature scanning — the ONE `scan_init_body`, `init_callable`, `marked_param_names`. |
 
@@ -304,11 +304,11 @@ that no longer exists — reading `.train` off the object built at `split`, or c
 it — and is REFUSED by `resolver.refuse_attribute_reference` with the node's `file:line:col` and the
 rewrite (a selector parameter on the referent's class + `!ref:split`, or the marker written again
 with the selector set). The refusal fires in `_flow_recursive` AND `_flow_reference`, i.e. under
-`resolve()` as well as `load()` — that is how `hydraide` reports it (exit 2, the same message).
+`resolve()` as well as `load()` — that is how `hydraide` reports it (the same message; liquifai's CLI renders it, exit 1).
 Nothing is constructed on behalf of a Reference any more, which is why `_EngineState.structural`
 (the flag that used to gate that construction off for `resolve()`) is gone. Two things did NOT
 change and are pinned as CON cases: a PURELY structural resolution still returns `None` from the
-rich path (the deferred-Reference machinery keeps it late-bound for post-load overrides), and a
+rich path (pass 7's `_settle_reference` walks it and INLINES the value — phase 3), and a
 document key literally named `a.b` still wins over the walk. Do NOT "extend" the walker into a
 marker's kwargs (`!ref:model.hidden`) — census 2026-08-17: zero uses; it is refused like an
 attribute, not silently invented.
@@ -463,8 +463,12 @@ no-op, and `convert_file`'s activation-gated write.
 **Rule — `hydraide` is the ONE emitter of the plain form, and it is a WRAPPER over passes 1–7.**
 `hydraide.emit(source, scopes=…)` is `dump(resolve(source))` plus named anchors; it adds NO pass and
 re-derives NO rule — if the emitted document is wrong, the defect is in `resolve()` or `dump()`,
-never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`;
-CLI exit 2, no traceback). Named anchors ride `dump(anchor_names=…)` — a `generate_anchor` hook
+never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`).
+**confluid ships FUNCTIONS only — `emit` / `check` (and `spelling.to_tags` / `convert_file`); the
+`hydraide` COMMAND is a `LiquifyApp` in liquifai (`liquifai/hydraide.py`, console script there),
+user instruction 2026-08-17 (repeated). Never add an argparse `main()` or a `[project.scripts]`
+entry for a tool to confluid: liquifai already provides config promotion, `--scope` / dimension
+flags, the search tiers and the failure contract.** Named anchors ride `dump(anchor_names=…)` — a `generate_anchor` hook
 keyed on the shared value's SHORTEST path (`&preprocess_0`); the map is computed on the resolved
 tree, where identity already means what the document meant. Two engine facts are pinned in the
 tool's suite because the tool exposes them: identity is per MARKER, not per container
@@ -733,7 +737,7 @@ cases).
 
 ### Introspection without cost — `resolve()` and `solidify=False`
 
-**Rule.** `resolve(data)` = `materialize` MINUS `_deep_flow`: broadcasting and `!ref:` applied,
+**Rule.** `resolve(data)` = `materialize` MINUS `instantiate`: broadcasting and `!ref:` applied,
 markers returned, NOTHING constructed. `flow(obj, solidify=False)` constructs but suppresses the
 finalize. Neither changes default behaviour.
 
@@ -822,6 +826,33 @@ corollary) and 8 (D7).
 rule-level pin that two orderings of one spelling must DISAGREE, and
 `::test_a_second_configure_is_not_bound_by_the_first_ones_verdict`), `tests/test_includes.py`
 (the ordering group), `tests/test_ordered_merge.py`.
+
+### The rule runs ONCE — pass 7 settles, pass 8 builds (record 19, phase 3, 2026-08-17)
+
+**Rule.** `materialize()` = `_flow_recursive` (pass 7: the ONE broadcast/reference pass — what
+`hydraide` emits) → `instantiate` (pass 8: build every `Target` at ANY depth from its SETTLED
+kwargs). Construction does NOT re-run the cascade into a marker's own kwargs: `_flow_target` feeds
+`_resolve_kwarg_value` the marker's own glob blocks only. The active context's bare keys are read
+at construction for exactly what pass 7 cannot see — a marker born inside the constructor (a body
+slot `self.optimizer = PartialClass(...)`, a ctor default) — via `_broadcast_onto_instance` and the
+post-init dict-at-slot tune, fed from the document's top-level keys. That is the one delivery the
+emitted document cannot show; `load(emit(x))` reproduces it because those keys are IN the document.
+Never add a third reader of the context at construction.
+
+**Rule — a reference is settled ONCE, in pass 7 (`engine._settle_reference`).** Nearest enclosing
+scope first (an included fragment's internal `!ref:` finds the fragment's key), then the root —
+and a scope NEVER answers with the reference itself (`r: {x: !ref:x}` with a root `x` recursed
+forever, F6; the self-hit is skipped on both the pass-5 marker-aliasing probe and here). A reference
+to a MARKER shares it (identity via `flow_memo`); a reference to a plain VALUE is INLINED — after
+`load()` nothing is a late-bound `Reference` any more (F5); a walk that leaves structure is refused
+(phase 2); anything else is an import path; a miss raises a located `ReferenceResolutionError` on
+`resolve()` and `load()` alike, so hydraide reports it instead of emitting `_ref_`. The CLI-override
+contract is therefore `load(flow=False)` → merge into the DOCUMENT → `materialize` (what the app
+framework does), never "materialize a Reference the caller kept". F4 is settled by construction:
+`instantiate` recurses through plain dicts and lists (`_deep_flow` descended one level).
+**Pins.** `tests/test_instantiate.py` (the `load(emit(x)) == load(x)` contract, the closed
+document, F4/F5/F6 rows, the two must-not-change deliveries),
+`tests/test_list_index_refs.py::test_e2e_drone_labels_index_pattern` (the override contract).
 
 ### Flat-view ordered matching — the ONE rule, for materialization AND `configure()`
 

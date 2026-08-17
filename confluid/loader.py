@@ -1011,7 +1011,7 @@ def load(
         if flow:
             # Route through materialize() so inner !ref: targets (dotted imports
             # like `posixpath.join`, cross-kwarg references) get resolved
-            # against the Fluid's own kwargs. A raw _deep_flow skips that pass.
+            # against the Fluid's own kwargs. A raw instantiate skips that pass.
             return materialize(data, context=context, solidify=solidify)
         return data
 

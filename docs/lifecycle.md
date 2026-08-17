@@ -36,10 +36,10 @@ run in, what each one consumes, and what it decides **permanently**. Most
 | 2 | **Import** | `import: pkg.mod` | the module is imported, so its `@configurable` classes are registered | a failed import warns, it does not raise |
 | 3 | **Include** | `include: other.yaml` | files merge into ONE document; the included document is **pasted at the `include:` line** | nothing is resolved yet |
 | 4 | **Scope** | `scopes=[...]` from the caller | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |
-| 5 | **Interpolate** | `${env:VAR}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `${ref:}` targets, which stay late-bound |
+| 5 | **Interpolate** | `${env:VAR}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `${ref:}` targets — pass 7 settles those, so an override merged into the document before then is what they see |
 | 6 | **Expand** | `trainer.lr: 0.1` | dotted keys nest, anchored where the dotted spelling was written | `'*'` / `'**'` — ordinary path segments here |
-| 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); `${ref:}` resolves and is shared by identity | `Partial` markers, unresolvable references |
-| 8 | **Flow** | the merged markers | objects are constructed, kwargs validated under `policy.yaml`, ctor kwargs captured for `dump()` | `Partial` markers — construction is the one thing deferral withholds |
+| 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); every `${ref:}` is settled — a marker is shared by identity, a plain value is inlined; an unresolvable one is a located error | `Partial` markers — settled but not built |
+| 8 | **Instantiate** | the settled tree — what `hydraide` emits | every marker at any depth is constructed from its settled kwargs (no second look at the document), kwargs validated under `policy.yaml`, ctor kwargs captured for `dump()` | `Partial` markers — construction is the one thing deferral withholds |
 | 9 | **Solidify** | the built graph | `solidify()` fires post-order — children final, then the parent | objects flowed with `solidify=False` |
 
 ## Where you can stop
@@ -49,7 +49,7 @@ run in, what each one consumes, and what it decides **permanently**. Most
 | `load_config(path)` | 1–3 | the raw merged document, markers unresolved | you want the document, not the objects |
 | `load(x, flow=False)` | 1–6 | the Fluid IR, scopes applied | you want to inspect or re-merge before anything is built |
 | `resolve(x)` | 1–7 | markers with their final kwargs, no objects | structural introspection (a YAML→graph import) |
-| `hydraide x.yaml` | 1–7 | the same, written as ONE plain-YAML file | "what did my config resolve to?" — see [hydraide](hydraide.md) |
+| `hydraide.emit(x)` | 1–7 | the same, written as ONE plain-YAML file | "what did my config resolve to?" — see [hydraide](hydraide.md) |
 | `load(x)` / `materialize(x)` | 1–9 | live objects | the normal path |
 | `load(x, solidify=False)` | 1–8 | live but unfinalized objects | you want objects without paying for the expensive finalize |
 | `configure(obj, config=…)` | 5–7, 9 | the same document applied to objects that already exist | post-construction configuration |
@@ -59,8 +59,12 @@ run in, what each one consumes, and what it decides **permanently**. Most
 **"Why is my `${...}` frozen?"** — Interpolation (5) runs *before* anything is
 built (8), and it is a single pass. The value it produced is what the marker
 carries from then on; `dump()` emits it and a deferred slot flowed an hour later
-still sees it. For a value that must stay late-bound, use `${ref:}` — reference
-resolution happens in pass 7, and an unresolved reference survives even that.
+still sees it. For a value that must follow a LATER override, use `${ref:}` — it is
+settled in pass 7, so an override merged into the document before pass 7 (what a
+CLI does between `load(flow=False)` and `materialize`) is the value it takes. After
+pass 7 nothing is late-bound: a reference to a plain value is the value, a
+reference to a marker is that marker, and one that resolves to nothing is an error
+naming its line.
 
 **"Why can't a `_scope_` block choose a `${...}` value?"** — Scopes (4) resolve
 before interpolation (5), so a block's activation cannot depend on a substituted

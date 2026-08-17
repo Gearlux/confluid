@@ -145,12 +145,12 @@ def test_e2e_drone_labels_index_pattern(tmp_path: Any) -> None:
     """The user's actual pattern: a labels list + a single index key →
     one resolved ``drone`` value used everywhere downstream.
 
-    Scalar-target References are deferred to flow time (so CLI overrides
-    of the source key can flow through) — we materialize the Reference
-    explicitly to get the final string.
+    Since record 19 phase 3 the reference is settled in pass 7 and ``load()`` hands back
+    the VALUE (it used to hand back a late-bound ``Reference`` for the caller to
+    materialize). The CLI-override contract lives where the app framework actually
+    applies it: overrides land in the ``load(flow=False)`` document, BEFORE pass 7, and
+    ``materialize`` of that document re-resolves the reference against the merged keys.
     """
-    from confluid.fluid import Reference
-
     cfg = tmp_path / "main.yaml"
     cfg.write_text(
         """
@@ -163,17 +163,11 @@ drone_index: 2
 drone: !ref:drone_labels[drone_index]
 """
     )
-    result = load(str(cfg))
-    assert isinstance(result["drone"], Reference)
-    drone = materialize(result["drone"], context=result)
-    assert drone == "DJI MINI3"
-    # Override-flowthrough: bumping drone_index AFTER load and re-flowing
-    # the Reference must pick up the new value. This is exactly the path
-    # liquifai uses when CLI ``--drone_index 8`` lands as a deep_merge
-    # into ``config_data`` after ``confluid.load(flow=False)``.
-    result["drone_index"] = 3
-    drone2 = materialize(result["drone"], context=result)
-    assert drone2 == "DJI FPV COMBO"
+    assert load(str(cfg))["drone"] == "DJI MINI3"
+
+    document = load(str(cfg), flow=False)  # markers, references still unsettled
+    document["drone_index"] = 3  # a CLI's ``--drone_index 3``, merged into the document
+    assert materialize(document)["drone"] == "DJI FPV COMBO"
 
 
 def test_e2e_index_ref_inside_class_kwargs(tmp_path: Any) -> None:
