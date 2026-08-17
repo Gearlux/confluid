@@ -141,8 +141,10 @@ imports; extend the right module instead.
 **Rule.** `broadcast` MUST NOT materialize anything — no `flow`, no `_flow_recursive`. Code that
 BUILDS an object belongs in `engine`. That prohibition is why the edge is one-directional.
 
-**Rule.** Exactly TWO lazy seams are sanctioned, both documented at the site: `engine.resolve()`
-body-imports `loader.load`, and `resolver._materialize_cursor` body-imports `engine`.
+**Rule.** Exactly ONE lazy seam is sanctioned, documented at the site: `engine.resolve()`
+body-imports `loader.load`. (The second — `resolver._materialize_cursor` body-importing `engine` to
+FLOW a reference's cursor — went with the attribute references, record 19 phase 2; the resolver
+constructs nothing any more, so `broadcast → engine → loader` is the only direction left.)
 
 **Rule.** The engine state rides ONE `contextvars.ContextVar`, so it is inherited by asyncio tasks
 and `asyncio.to_thread` workers — NOT by a raw `Thread` / `run_in_executor`, which need
@@ -285,22 +287,35 @@ a developer's real `~/.config` must never leak into a run.
 
 **Pins.** `tests/test_search_paths.py`. **Docs.** `docs/search-paths.md`.
 
-### ONE path grammar, two policies
+### ONE path grammar, ONE policy — the FIRST segment decides
 
 **Rule.** Every dotted/bracketed path — `!ref:` targets, `${key.path}`, `configure()`'s dotted
 candidates — is tokenized by `resolver._parse_path_segments` and walked by `_walk_path_segments`.
-Extend the shared walker; never add a fourth grammar.
+Extend the shared walker; never add a fourth grammar — and never re-add a second POLICY.
 
-**Detail.** Two policies share it: **structural** (default — dict keys / list indices only) and
-**object** (`getattr_fallback=True` — a `key` segment on a non-container cursor falls back to
-`getattr`, flowing Fluid cursors through the engine's `flow_memo` so dotted refs share one
-instance). Dict-key lookup ALWAYS wins on containers, so `${train.split}` can never grab
-`str.split`. A trailing `()` CALLS the resolved attr per resolution, never memoized. A PURELY
-structural resolution returns `None` from the rich path so the deferred-Reference machinery keeps
-it late-bound for post-load overrides.
-
-**Pins.** `tests/test_method_ref.py`, `tests/test_list_index_refs.py`,
-`tests/test_ref_identity.py::test_dotted_attribute_ref_reuses_single_instance`.
+**Rule — attribute references are REMOVED (record 19 phase 2, user ruling 1b, 2026-08-17).** The
+walker is STRUCTURAL: a `key` segment steps into a dict, an `idx` segment into a list, and
+anything else — a marker, a live object, a scalar — ends the walk. What a dotted `!ref:` MEANS is
+decided by its FIRST segment: a DOCUMENT KEY walks structure only (`!ref:cfg.lr`,
+`!ref:packs[1].name`); anything else is an IMPORT PATH (`!ref:posixpath.join` — the spelling
+`dump()` emits for a function-valued param, and the reason import refs stay). A reference whose
+first segment is a document key and whose structural walk misses was asking for the object policy
+that no longer exists — reading `.train` off the object built at `split`, or calling `.build()` on
+it — and is REFUSED by `resolver.refuse_attribute_reference` with the node's `file:line:col` and the
+rewrite (a selector parameter on the referent's class + `!ref:split`, or the marker written again
+with the selector set). The refusal fires in `_flow_recursive` AND `_flow_reference`, i.e. under
+`resolve()` as well as `load()` — that is how `hydraide` reports it (exit 2, the same message).
+Nothing is constructed on behalf of a Reference any more, which is why `_EngineState.structural`
+(the flag that used to gate that construction off for `resolve()`) is gone. Two things did NOT
+change and are pinned as CON cases: a PURELY structural resolution still returns `None` from the
+rich path (the deferred-Reference machinery keeps it late-bound for post-load overrides), and a
+document key literally named `a.b` still wins over the walk. Do NOT "extend" the walker into a
+marker's kwargs (`!ref:model.hidden`) — census 2026-08-17: zero uses; it is refused like an
+attribute, not silently invented.
+**Pins.** `tests/test_attribute_refs_removed.py` (the refusal on both paths + hydraide, the
+method-call refusal, every CON row, the deletion pin, the OmegaConf-parseability pin),
+`tests/test_list_index_refs.py`,
+`tests/test_ref_identity.py::test_a_dotted_attribute_ref_is_refused_not_resolved`.
 
 ### Two spellings, ONE intermediate representation
 
@@ -722,23 +737,22 @@ cases).
 markers returned, NOTHING constructed. `flow(obj, solidify=False)` constructs but suppresses the
 finalize. Neither changes default behaviour.
 
-**Detail.** `resolve()` constructs NOTHING — a *dotted* `!ref:a.b` stays a `Reference` just as a
-plain `!ref:name` does. The dotted branch in `_flow_recursive` is the ONE place a Reference
-triggers construction (reading `split.train` means building `split`), and it is gated on
-`_EngineState.structural`, which only `resolve()` sets. `materialize()` / `load()` are unchanged,
-so a dotted ref still resolves off ONE shared instance there.
+**Detail.** `resolve()` constructs NOTHING — and since record 19 phase 2 no Reference can make
+it: a structural dotted `!ref:a.b` stays a `Reference` just as a plain `!ref:name` does, an
+attribute reference is REFUSED on this path exactly as under `load()`, and the
+`_EngineState.structural` flag that used to gate a construction off for `resolve()` alone is
+deleted (there is nothing left to gate).
 
-**Why.** Until 2026-08-11 the dotted branch ran on this path too, so the "introspection without
-cost" API walked a dataset: 3.9s on a real config whose split scans 37 archives, for a call
-documented as constructing nothing. Two consumers already claimed behaviour they were not getting
-(a visual editor's YAML importer — "no instantiation, every node is a Fluid marker"; a flow-graph
-builder — "step markers stay UNbuilt"), and two projects' shipped-config suites hand-rolled a
-tag-stubbing parser because `resolve()` "is not an escape either". Steady-state cost is now 10ms.
+**Why.** Until 2026-08-11 reading `split.train` BUILT `split` on this path too, so the
+"introspection without cost" API walked a dataset: 3.9s on a real config whose split scans 37
+archives, for a call documented as constructing nothing. Two consumers already claimed behaviour
+they were not getting (a visual editor's YAML importer — "no instantiation, every node is a Fluid
+marker"; a flow-graph builder — "step markers stay UNbuilt"), and two projects' shipped-config
+suites hand-rolled a tag-stubbing parser because `resolve()` "is not an escape either".
+Steady-state cost is now 10ms.
 
-**Pins.** `tests/test_resolve.py::test_resolve_leaves_a_DOTTED_ref_deferred` and
-`::test_a_dotted_ref_still_resolves_through_load` (the two halves — the deferral is `resolve()`-only);
-`tests/test_ref_identity.py::test_dotted_attribute_ref_reuses_single_instance` (one construction
-through `load()`, unchanged).
+**Pins.** `tests/test_resolve.py::test_resolve_refuses_a_dotted_ATTRIBUTE_ref_exactly_as_load_does`
+(one message on both paths, nothing built on either).
 
 **Pins.** `tests/test_resolve.py`. **Docs.** `docs/lifecycle.md` → "Where you can stop".
 

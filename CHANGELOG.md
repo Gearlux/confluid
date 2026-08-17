@@ -369,6 +369,21 @@ All notable changes to confluid are documented here. The format follows
 
 ### Breaking
 
+- **Attribute references are REMOVED** (architecture record 19, phase 2 — user ruling 1b).
+  `!ref:split.train` / `${ref:split.train}` (reading a property of the object built at `split`)
+  and `!ref:obj.build()` (calling a method) are REFUSED with a located `ConfigurationError`
+  naming the rewrite, on both `load()` and `resolve()` — so `hydraide` reports one (exit 2)
+  instead of emitting it unresolved. What a dotted `!ref:` MEANS is decided by its FIRST
+  segment: a document key walks STRUCTURE only (`!ref:cfg.lr`, `!ref:packs[1].name` — unchanged);
+  anything else is an import path (`!ref:posixpath.join` — unchanged, and still what `dump()`
+  emits for a function-valued param). The object policy is deleted from the resolver
+  (`getattr_fallback`, `_materialize_cursor` and its lazy seam into the engine, the trailing-`()`
+  grammar) together with `_EngineState.structural`, which only existed to keep that policy from
+  building under `resolve()`. **Rewrite:** give the referent's class a selector parameter and
+  reference the whole object — for a train/val split, one `DatasetSplit`-style marker per view
+  with `split:` set, the recipe anchored on the first view and `<<:`-merged into the others
+  (every view `!ref:`-ing the same upstream source keeps it ONE instance).
+  `tests/test_attribute_refs_removed.py`.
 - **`Clone` is removed — `_clone_`, `${clone:…}` and the `!clone:` tag, and the `Clone` marker
   class** (user ruling 2026-08-15; architecture record 18). It had zero users workspace-wide (one
   comment in `confluid.example.yaml`); records 9 and 10 kept it as an "escape hatch" on that same

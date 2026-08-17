@@ -1490,3 +1490,34 @@ form `convert_file` writes only when `emit(before) == emit(after)` under every s
 the document declares. Neither of the two "missing tag spellings" this record's phase-1b entry
 anticipated (a multi-dimension `_scope_`, a `<<:` merged into a marker) was needed: the corpus
 census found zero of each, so both stay REPORTED (`Finding`), not invented. See `TASKS.md`.
+
+*Phase 2 landed 2026-08-17 — attribute references out; the import-path sub-decision settled.*
+The FIRST segment of a dotted `!ref:` decides what it is: a document key walks STRUCTURE only
+(dict keys, list indices), anything else is an import path. A reference whose first segment is a
+document key and whose structural walk misses — `!ref:split.train` reading a property of the
+built object, `!ref:obj.build()` calling a method — is REFUSED by
+`resolver.refuse_attribute_reference` with the node's `file:line:col` and the rewrite, on both
+paths: `load()` and `resolve()`, so hydraide reports it (exit 2, the same message) instead of
+emitting `_ref_: split.train` unresolved as it did. The object policy is DELETED (the
+`getattr_fallback` walker arm, `_materialize_cursor` and its lazy seam into `engine`, the trailing
+`()` grammar, `_EngineState.structural`); the resolver constructs nothing any more, so the two
+paths cannot disagree. **Import-path references are KEPT** — the sub-decision above closes the
+other way: the Hydra-native `_target_` on the function CALLS it (`!class:pkg.collate_list` →
+`collate_list()`), Hydra's answer for the function OBJECT is `functools.partial` via
+`_partial_: true`, and in confluid `!partial:` is the deferred-marker mode — a third construction
+mode is forbidden by rule; and `${ref:module.qualname}` is already what `dump()` emits for a
+function-valued param, so the spelling is the round-trip spelling too. Measured for the record:
+OmegaConf parses everything hydraide emits — anchors, `_target_`, `_partial_`, the `_ref_`
+mapping, `${ref:...}` — and rejects only the `!class:` tag; that is the "parseable with Hydra"
+contract (parseability, not instantiation), pinned in `tests/test_attribute_refs_removed.py` with
+`omegaconf` as a test-only dev dependency. The one shape in the workspace (two streams reading
+`.train`/`.val` of one split) rewrote with NO engine or consumer-code change: `DatasetSplit`
+already had the `split=` selector, so each view is a `DatasetSplit` marker of its own, the recipe
+anchored on the train view and `<<:`-merged into the val view (a `<<:` from a TAGGED node's
+mapping works today — measured), every view `!ref:`-ing the same source (still ONE instance;
+a split's own partition is one seeded shuffle). Two pre-existing findings surfaced and are
+REPORTED, not fixed (F5, F6 in `BUGS-2026-08-13.md`): a structural dotted `!ref:` at a TOP-LEVEL
+document key stays an unresolved `Reference` after `load()` while the same ref inside a marker's
+kwargs resolves; and a plain mapping whose key references a same-named outer key
+(`r: {val_fraction: !ref:val_fraction}`) recurses forever in `Resolver.resolve` — the reason the
+recipe is anchored on a marker, not on a plain mapping.

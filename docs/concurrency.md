@@ -18,7 +18,7 @@ explicitly with the public `active_context`:
 from confluid import Reference, active_context, flow
 
 with active_context({"model": model}):
-    optimizer = flow(Reference("model.parameters()"))
+    same_model = flow(Reference("model"))     # the live object the context holds
 ```
 
 For a raw thread or executor, either enter `active_context(...)` inside the

@@ -1,15 +1,15 @@
 """Tests for ``!ref:`` identity semantics.
 
 A ``!ref:target`` must resolve to the **same live object** as ``target``
-itself — it is a late-bound alias, not a copy. Use ``!clone:target`` when
-independent copies are wanted.
+itself — it is a late-bound alias, not a copy (Clone is removed; write the
+marker again when an independent copy is wanted).
 """
 
 from typing import Any
 
 import pytest
 
-from confluid import configurable, get_registry, load
+from confluid import ConfigurationError, configurable, get_registry, load
 
 
 @pytest.fixture(autouse=True)
@@ -148,14 +148,13 @@ def test_ref_does_not_re_instantiate_even_with_many_aliases() -> None:
         assert result[f"alias{i}"] is result["root"]
 
 
-def test_dotted_attribute_ref_reuses_single_instance() -> None:
-    """``!ref:obj.attr`` must resolve against the SAME materialized ``obj`` as the top-level key.
+def test_a_dotted_attribute_ref_is_refused_not_resolved() -> None:
+    """``!ref:obj.attr`` — the attribute reference — is REMOVED (record 19, phase 2).
 
-    Regression: the dotted-ref used to re-flow the RAW marker (missing the instance memo, which
-    keys on the *resolved* marker), building a SECOND ``obj`` and re-running its constructor — so a
-    splitter referenced via ``.train`` / ``.val`` reloaded its upstream source. ``_resolve_dotted_ref``
-    now maps the raw marker through ``flow_memo`` first, so every attribute-ref shares the one live
-    instance the memo caches (one construction → one load).
+    This test used to pin that ``!ref:loader.head`` / ``.tail`` resolved off ONE shared
+    ``loader`` (a regression where the dotted ref re-flowed the raw marker). The sharing
+    guarantee is now carried by the whole-object ref alone: reference ``!ref:loader`` and read
+    the attribute on the consumer side. The old spelling is refused, located, naming that.
     """
 
     @configurable
@@ -170,23 +169,15 @@ def test_dotted_attribute_ref_reuses_single_instance() -> None:
         def head(self) -> str:
             return f"head-of-{self.size}"
 
-        @property
-        def tail(self) -> str:
-            return f"tail-of-{self.size}"
+    Loader.instantiations = 0
+    with pytest.raises(ConfigurationError) as exc:
+        load("loader: !class:Loader()\n  size: 5\na: !ref:loader.head\n")
+    assert "ATTRIBUTE `head`" in str(exc.value) and "!ref:loader" in str(exc.value)
+    assert Loader.instantiations == 0, "refused before anything is built"
 
-    yaml_str = """
-loader: !class:Loader()
-  size: 5
-a: !ref:loader.head
-b: !ref:loader.tail
-"""
-    result: Any = load(yaml_str)
-
-    assert Loader.instantiations == 1, "dotted-ref re-flowed a duplicate instance (extra load)"
-    assert result["a"] == "head-of-5"
-    assert result["b"] == "tail-of-5"
-    # The attribute-refs resolved off the SAME instance as the top-level key.
-    assert result["a"] == result["loader"].head
+    # The whole-object ref still shares ONE instance across every site.
+    graph = load("loader: !class:Loader()\n  size: 5\na: !ref:loader\nb: !ref:loader\n")
+    assert graph["a"] is graph["b"] is graph["loader"] and Loader.instantiations == 1
 
 
 def test_ref_inside_list_shares_instance() -> None:

@@ -36,14 +36,15 @@ graph = materialize(data, solidify=False)   # also load(..., solidify=False) / f
 
 Both leave `Partial` (`_partial_: true`) slots deferred and default behaviour unchanged (`solidify=True`).
 
-**`resolve()` constructs NOTHING — dotted references included.** A *dotted* reference
-(`${ref:split.train}` — attribute access on another node) stays a `Reference` under
-`resolve()`, exactly as a plain whole-object `${ref:split}` does: reading `.train` would
-mean *building* `split`, and this API promises introspection without construction. The
-same document through `materialize()` / `load()` still resolves the attribute off ONE
-shared instance. (Before 2026-08-11 the dotted branch ran here too, so "introspection
-without cost" could walk a dataset — 3.9 s on a real config whose split scans 37
-archives; steady-state cost is now ~10 ms.)
+**`resolve()` constructs NOTHING — and no reference can make it.** A structural dotted
+reference (`${ref:cfg.lr}`) stays a `Reference` under `resolve()`, exactly as a plain
+whole-object `${ref:split}` does. An *attribute* reference (`${ref:split.train}` — reading a
+property of the object built at `split`) is refused on this path exactly as it is under
+`load()`; the spelling was removed (see [Targets](targets.md#ref--shared-instance)) because
+resolving it meant *building* `split`, and this API promises introspection without
+construction. (Before 2026-08-11 that construction ran here too, so "introspection without
+cost" could walk a dataset — 3.9 s on a real config whose split scans 37 archives;
+steady-state cost is now ~10 ms.)
 
 ## Dump and reconstruct
 
