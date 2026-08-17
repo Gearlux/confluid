@@ -269,6 +269,11 @@ hydraide experiment.yaml --scope framework=torch -o resolved.yaml
 hydraide resolved.yaml --check     # a committed artefact that drifts fails CI
 ```
 
+And back: a file in this spelling that you want to *edit* again is converted line
+by line — comments and layout kept — by `confluid.spelling.to_tags`, whose file
+form writes only when hydraide's output is byte-identical before and after (see
+[hydraide — the other direction](hydraide.md#the-other-direction-confluidspellingto_tags)).
+
 A fully annotated reference config in this spelling ships at the repository root
 as [`confluid.example.yaml`](https://github.com/Gearlux/confluid/blob/main/confluid.example.yaml).
 

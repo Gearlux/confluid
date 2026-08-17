@@ -8,6 +8,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`confluid.spelling.to_tags` / `convert_file` — the reserved-key spelling → the tag spelling**
+  (record 19, phase 1b). The inverse of the 2026-08-11 codemod, and line-based for the same
+  reason: it puts the tag on the KEY line, deletes the `_target_:` / `_partial_:` / `_scope_:`
+  line, and touches nothing else (comments, order, spacing, quoting). A flow marker becomes
+  `!class:X(k=v)` when every kwarg is a plain scalar, else `!class:X {…}`; nested inside a flow
+  container it takes the flow-body form (`{a: !class:X {}}` — measured: a tag directly before
+  `}` / `]` / `,` does not scan); `${ref:x}` ending a line becomes `!ref:x` (a quoted one inside a
+  flow container stays); a single-dimension `_scope_` becomes `!scope:k=v` / `!scope:k`, the
+  list-form scope block `- - _scope_: {k: v}` becomes `- !scope:k=v` with its body items kept.
+  What it cannot convert it REPORTS with `file:line` (a multi-dimension `_scope_`, a `<<:` merged
+  into a marker) and leaves in place. `convert_file` writes only when `hydraide.emit(before) ==
+  hydraide.emit(after)` under every scope activation the document declares. First corpus: 26
+  workspace configs (chainwind · sonair · traidwind — waivefront's 25 wait for a clean tree),
+  confluid's own examples and guides. `tests/test_spelling.py`.
 - **`hydraide` — the preprocessor** (architecture record 19, phase 1). `hydraide cfg.yaml
   [--scope k=v] [-o out.yaml | --check]` resolves a config — either spelling — to ONE plain-YAML
   document: includes spliced, scopes applied, dotted keys expanded, interpolation burned in,

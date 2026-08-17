@@ -165,3 +165,10 @@ plugs into the passes, and from the eight names most configs need:
 | `emit(source, *, scopes=None)` | The resolved document for a path or YAML text, as plain YAML — passes 1–7 + the serializer | [hydraide](hydraide.md) |
 | `check(path, *, scopes=None)` | `None` when the file is its own resolution, else a unified diff | [hydraide](hydraide.md) |
 | `hydraide` (script) | `hydraide CONFIG [--scope k=v …] [-o OUT | --check]`; exit 0 / 1 (differs) / 2 (located error) | [hydraide](hydraide.md) |
+
+## `confluid.spelling` — the reserved-key spelling → the tag spelling
+
+| Name | What it does | Guide |
+|---|---|---|
+| `to_tags(text, *, path="<config>")` | `(new_text, findings)` — the tag spelling, line by line, comments and layout kept; a `Finding(path, line, text, reason)` per site left untouched | [hydraide](hydraide.md) |
+| `convert_file(path, *, dry_run=False)` | Rewrites a file ONLY when `hydraide.emit` is byte-identical before and after, under every declared scope activation; `Result(path, written, findings, activations_checked)` | [hydraide](hydraide.md) |
