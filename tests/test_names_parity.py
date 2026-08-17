@@ -90,18 +90,23 @@ def test_deeply_nested_name_path() -> None:
         child=Level(name="b", child=Level(name="c", child=Level(name="d"))),
     )
 
+    # A chain of INSTANCE names (`a.b.c.value`) was a configure()-only grammar — the load path
+    # never routed by names past the first level, and configure() runs through the document
+    # since record 19 phase 4. The spelling both paths share is the ATTRIBUTE path from a
+    # NAMED object. (A bare `value:` beside these would win at every level it reaches — a
+    # dotted override merges into the marker at the MARKER's position, so a bare key written
+    # after the object outranks it, on both paths; the ordering suites pin that.)
     configure(
-        obj,
+        a=obj,
         config="""
-value: 1
 a.value: 2
-a.b.value: 3
-a.b.c.value: 4
-a.b.c.d.value: 5
+a.child.value: 3
+a.child.child.value: 4
+a.child.child.child.value: 5
 """,
     )
 
-    assert obj.value == 2  # Matches "a.value"
-    assert obj.child.value == 3  # Matches "a.b.value"
-    assert obj.child.child.value == 4  # Matches "a.b.c.value"
-    assert obj.child.child.child.value == 5  # Matches "a.b.c.d.value"
+    assert obj.value == 2
+    assert obj.child.value == 3
+    assert obj.child.child.value == 4
+    assert obj.child.child.child.value == 5

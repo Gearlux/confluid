@@ -91,7 +91,10 @@ def test_report_applied_addressed_recursion_origin() -> None:
     root = Root(mid=Child())
     report = configure(root, config={"Root": {"mid": {"lr": 0.7}}})
     assert root.mid.lr == 0.7
-    assert [(a.key, a.target, a.origin) for a in report.applied] == [("lr", "Child", "addressed")]
+    # Through the document (record 19, phase 4) the class block delivers `mid` — a mapping at
+    # a slot holding the child's marker — to Root, and the tune lands on the child: ONE
+    # applied record, at the receiver the block addressed, in the scanner's vocabulary.
+    assert [(a.key, a.target, a.origin) for a in report.applied] == [("mid", "Root", "block 'Root'")]
     assert report.unused == []
 
 
@@ -110,13 +113,15 @@ def test_report_one_applied_record_per_attr_last_write_wins() -> None:
 
 
 def test_report_failed_unknown_attribute_and_warning_still_fires(monkeypatch: pytest.MonkeyPatch) -> None:
-    import confluid.configurator as configurator_module
+    import confluid.broadcast as broadcast_module
 
+    # The typo is caught by the ONE scanner (configure() runs through the document since
+    # record 19 phase 4), so the warning is broadcast's — the same line the load path emits.
     warnings_seen: list[str] = []
     monkeypatch.setattr(
-        configurator_module,
+        broadcast_module,
         "logger",
-        SimpleNamespace(warning=lambda msg: warnings_seen.append(msg), trace=lambda msg: None),
+        SimpleNamespace(warning=lambda msg: warnings_seen.append(msg), trace=lambda msg: None, debug=lambda msg: None),
     )
     Model = _model_cls()
     model = Model()
@@ -492,7 +497,11 @@ def test_explain_agrees_across_the_load_and_configure_paths() -> None:
         entry = next(a for a in report.applied if a.key == "lr")
         return [(c.origin, c.value) for c in entry.contest]
 
-    assert shape(load_report) == shape(live_report) == [("block '_Tuned'", "0.5"), ("bare", "0.9")]
+    assert shape(load_report) == [("block '_Tuned'", "0.5"), ("bare", "0.9")]
+    # The live object's CURRENT value is a candidate too — its document carries `lr: 0.0`
+    # (dump writes every value), and an own kwarg is a competitor like any other. Same rule,
+    # same vocabulary; the extra entry is the object's state, not a second explanation.
+    assert shape(live_report) == [("own", "0.0"), ("block '_Tuned'", "0.5"), ("bare", "0.9")]
 
 
 def test_explain_says_so_when_a_key_overrode_nothing() -> None:

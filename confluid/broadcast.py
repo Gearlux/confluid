@@ -688,6 +688,16 @@ def dict_at_slot_kind(existing: Any) -> Literal["marker", "configurable", "assig
     return "opaque"
 
 
+def holds_marker(container: Any, marker: Any) -> bool:
+    """``container`` is a list/tuple/dict whose ELEMENT (one level) is ``marker`` — the slot a
+    marker nested in a plain container sits in, for the identity-based slot match."""
+    if isinstance(container, (list, tuple)):
+        return any(item is marker for item in container)
+    if isinstance(container, dict) and not isinstance(container, Fluid):
+        return any(item is marker for item in container.values())
+    return False
+
+
 def tune_marker(existing: Fluid, mapping: Dict[str, Any]) -> Fluid:
     """A mapping addressed at a slot holding a deferred marker TUNES it — the ONE spelling.
 
@@ -701,7 +711,17 @@ def tune_marker(existing: Fluid, mapping: Dict[str, Any]) -> Fluid:
     other did not); this is the single implementation both call.
     """
     tuned = copy(existing)
-    tuned.kwargs = {**existing.kwargs, **mapping}
+    merged = dict(existing.kwargs)
+    for key, value in mapping.items():
+        held = merged.get(key)
+        # A mapping meant for a slot that itself holds a MARKER tunes that marker too —
+        # `root: {child: {child: {lr: 0.5}}}` used to REPLACE the second-level marker with
+        # the plain dict `{lr: 0.5}` (single-level merge), so the load path built
+        # `root.child.child` as a dict and only the old live walker got it right (F8,
+        # 2026-08-17). Recursion is marker-only: a plain dict at a plain-dict slot still
+        # replaces, as the dict-at-slot dispatch says.
+        merged[key] = tune_marker(held, value) if isinstance(held, Target) and isinstance(value, dict) else value
+    tuned.kwargs = merged
     return tuned
 
 
@@ -880,6 +900,14 @@ def _splice_kwargs_at_slot(
             return False  # glob riders always re-emit, merged with the parent's
         if kk not in parent_context:
             return False
+        if kk == self_key:
+            # The parent's entry at THIS key is the receiver itself — the slot being
+            # replaced — not a broadcast aimed at descendants. Treating it as "parent
+            # wins" dropped a same-named child slot (`child:` inside `child:`), so a
+            # third-level marker had no slot in its parent view, its own kwargs were
+            # appended AFTER every root key, and a later bare key could not beat them:
+            # `lr: 0.9` reached depths 1 and 2 and not 3 (F7, 2026-08-17).
+            return False
         if isinstance(kv, Reference):
             return True
         if acceptable is None:
@@ -948,101 +976,6 @@ def _splice_kwargs_at_slot(
         else:
             _emit_parent(k, v)
     _shield_glob_rider()
-    return out
-
-
-def _spliced_subtree_view(view: Dict[str, Any], cls_name: str, instance_name: Optional[str]) -> Dict[str, Any]:
-    """Return the subtree view: routing hoisted from matched blocks, spent levels dropped.
-
-    The live-object analogue of ``broadcast._splice_kwargs_at_slot``:
-
-    * a matched (floating) block STAYS in the view — a deeper node with the
-      same class/instance name matches it again (``**.name`` anchoring); its
-      scalars were already applied to this object and are simply carried
-      inside the block, never as ambient bare keys (the cascade removal);
-    * a matched block's ROUTING contents are hoisted as additional entries
-      at the block's position: ``'**'`` keeps floating (BARE, merged with an
-      existing rider), ``'*'`` and named sub-blocks become STRICT (valid for
-      the direct children only);
-    * inherited STRICT entries and ``'*'`` glob blocks are dropped — their
-      one level is spent at this object.
-    """
-    block_keys = {cls_name, instance_name} - {None}
-    has_block = any(
-        k in view and isinstance(view[k], dict) and _scope_of(view, k) is not _KeyScope.EXACT for k in block_keys
-    )
-    has_routing = ("*" in view and isinstance(view["*"], dict)) or (
-        isinstance(view, _View) and any(s in (_KeyScope.STRICT, _KeyScope.ADDRESSED) for s in view.scopes.values())
-    )
-    star2 = view.get("**")
-    has_glob_router = isinstance(star2, dict) and isinstance(star2.get("*"), dict)
-    if not (has_block or has_routing or has_glob_router):
-        return view
-
-    out = _View()
-    for k, v in view.items():
-        scope = _scope_of(view, k)
-        if scope is _KeyScope.ADDRESSED:
-            # Delivered to the object that just consumed this view; its dict
-            # contents route one level further, scalars are spent.
-            if isinstance(v, dict):
-                _hoist_block_routing(out, {k: v}, instance_name)
-            continue
-        if isinstance(v, dict) and k in block_keys and scope is not _KeyScope.EXACT:
-            if scope is not _KeyScope.STRICT:
-                out.set(k, v, scope)  # floating block — deeper same-name nodes rematch
-            _hoist_block_routing(out, v, instance_name)
-            continue
-        if k == "*" and isinstance(v, dict):
-            continue  # one-level routing — spent at this boundary
-        if k == "**" and isinstance(v, dict):
-            out.set(k, v, _KeyScope.BARE)
-            if isinstance(v.get("*"), dict):
-                _merge_routing(out, "*", v["*"])  # '*' inside a floating '**' routes my children
-            continue
-        if scope is _KeyScope.STRICT:
-            continue  # routing for a sibling name — spent
-        out.set(k, v, scope)
-    return out
-
-
-def _hoist_block_routing(out: Any, block: Dict[str, Any], instance_name: Optional[str]) -> None:
-    """Hoist a matched block's routing contents ('**'/'*'/named sub-blocks) into ``out``."""
-    for bk, bv in _expand_block_keys(block).items():
-        if bk == instance_name and isinstance(bv, dict):
-            _hoist_block_routing(out, bv, instance_name)  # Cls.inst.attr form unrolls inline
-            continue
-        if not isinstance(bv, dict):
-            continue  # scalars were applied by _apply; the floating block keeps them visible
-        if bk == "**":
-            _merge_routing(out, "**", bv)  # rider hoist — the ONE merge spelling; keeps floating below
-            merged = out.get("**")
-            if isinstance(merged, dict) and isinstance(merged.get("*"), dict):
-                _merge_routing(out, "*", merged["*"])  # '*' inside the rider routes my children
-            continue
-        _merge_routing(out, bk, bv)  # '*' or a deeper path segment — one level
-
-
-def _spliced_at_slot(view: Dict[str, Any], key: str, sub_block: Dict[str, Any]) -> Dict[str, Any]:
-    """Return ``view`` with ``sub_block``'s entries spliced at ``key``'s position.
-
-    Used for child recursion: the block addressed to the child replaces the
-    attr-keyed entry, so its values sit at the block's document position
-    (later than earlier broadcasts → they win for the child, as authored).
-    The entries are ADDRESSED — consumed by that one child, spent below it.
-    """
-    out = _View()
-    placed = False
-    for k, v in view.items():
-        if k == key and not placed:
-            for bk, bv in sub_block.items():
-                out.set(bk, bv, _KeyScope.ADDRESSED)
-            placed = True
-        else:
-            out.set(k, v, _scope_of(view, k))
-    if not placed:
-        for bk, bv in sub_block.items():
-            out.set(bk, bv, _KeyScope.ADDRESSED)
     return out
 
 
@@ -1438,79 +1371,6 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
     return receiver
 
 
-def _receiver_for_instance(obj: Any) -> _Receiver:
-    """The LIVE-OBJECT-path receiver: an already-built instance under configure().
-
-    Kept DIRECTLY beside :func:`_receiver_for_target` on purpose — the fields
-    where the two differ are the documented cross-path behaviors, each with a
-    named pin in ``tests/test_cross_path_pins.py``:
-
-    * ``accepts_value`` is NAME-ONLY (``_settable``: the accept-list union the
-      live ``vars(obj)`` names, minus ignore-marked members and setterless
-      properties) and refuses every dict — a top-level dict is always a BLOCK
-      on this path (D4).
-    * ``dict_slot`` matches the marker path since the D5 adjudication
-      (2026-08-09): a rider-delivered dict reaches a declared slot on BOTH
-      paths, gated deliveries respecting the NoBroadcast opt-outs.
-    * There is no own-kwargs consumption and no same-target parent skip — a
-      live object has no marker kwargs, and its view values were already
-      ordered by the ancestors' splices.
-
-    NOT cached in ``_receiver_cache``: the predicates close over THIS
-    instance's ``vars`` — per-object state, not per-class.
-    """
-    cls = obj.__class__
-    cls_name = str(getattr(cls, "__confluid_name__", cls.__name__))
-    instance_name = getattr(obj, "name", None)
-    instance_str = instance_name if isinstance(instance_name, str) else None
-
-    acceptable = _get_acceptable_keys(cls)
-    blocked = _broadcast_blocked_keys(cls)
-    own_attrs = {k for k in vars(obj) if not k.startswith("_")}
-
-    def _settable(key: str) -> bool:
-        member = getattr(cls, key, None)
-        if isinstance(member, property) and member.fset is None:
-            return False
-        return acceptable is None or key in acceptable or key in own_attrs
-
-    def _accepts(k: str, v: Any) -> bool:
-        return not isinstance(v, dict) and _settable(k)
-
-    def _dict_slot(k: str, delivery: _Delivery) -> bool:
-        # Mirrors the marker-path predicate since the D5 adjudication: a
-        # glob (rider / '*') delivery is a cascade form and respects the
-        # NoBroadcast opt-outs; this path always reached the slot but never
-        # consulted ``blocked``, which broke the NoBroadcast promise for
-        # glob-delivered mappings.
-        if not _settable(k):
-            return False
-        if delivery != "addressed":
-            return blocked is not None and k not in blocked
-        return True
-
-    def _own_dict_routes(k: str) -> bool:  # no own kwargs on this path
-        return False
-
-    def _skip_bare(v: Any) -> bool:
-        return False
-
-    names = frozenset(n for n in (cls_name, instance_str) if n)
-    return _Receiver(
-        cls_name=cls_name,
-        block_names=names,
-        inner_names=names,
-        instance_name=instance_str,
-        target_cls=cls,
-        acceptable=acceptable,
-        blocked=blocked,
-        accepts_value=_accepts,
-        dict_slot=_dict_slot,
-        own_dict_routes=_own_dict_routes,
-        skip_bare_value=_skip_bare,
-    )
-
-
 # Origin labels the scanner attaches to its emissions. They reach TRACE lines
 # and the report VERBATIM (docs/report.md documents them); the ONE place that
 # ever PARSES one is :func:`_mark_used_key` directly below — keep the labels
@@ -1559,6 +1419,7 @@ def _scan_view(
     *,
     own_kwargs: Optional[Dict[str, Any]] = None,
     self_obj: Any = None,
+    self_key: Optional[str] = None,
 ) -> None:
     """The ONE walk of a document view for a receiving node — both paths.
 
@@ -1658,12 +1519,28 @@ def _scan_view(
     instance_name = receiver.instance_name
     for pos, (k, v) in enumerate(view.items()):
         current_pos = pos
-        # Receiving Fluid's own slot — unroll its kwargs at this position.
-        if self_obj is not None and v is self_obj and not self_unrolled:
-            if own_kwargs is not None:
-                _consume_own(own_kwargs)
-            self_unrolled = True
-            continue
+        # Receiving Fluid's own slot — unroll its kwargs at this position. The slot may
+        # hold the marker itself, or a LIST / dict of markers the receiver sits in
+        # (`items: [!class:T, !class:T]`): an element has no key of its own, and without
+        # this it had no slot either — its own kwargs were appended after every root key
+        # and a later block or bare key could never beat them (F10, 2026-08-17).
+        if self_obj is not None and not self_unrolled:
+            # With the slot key known (every descent from a marker's kwargs passes it) the
+            # match is the key — no identity search over container values per entry, which
+            # measured as the whole cost of the fix below on a 2,500-marker tree.
+            at_slot = (k == self_key) if self_key is not None else (v is self_obj or holds_marker(v, self_obj))
+            if at_slot:
+                if own_kwargs is not None:
+                    _consume_own(own_kwargs)
+                self_unrolled = True
+                if v is self_obj or holds_marker(v, self_obj):
+                    continue
+                # The receiver's slot key is here but the VALUE is not the receiver: a same-named
+                # entry displaced it in this view (an instance-name block `middle:` for the marker
+                # sitting at the attribute `middle` — F11, 2026-08-17). The own kwargs unrolled at
+                # THIS position; the entry itself is now processed like any other, so the block
+                # that displaced the marker is matched by name and, sitting at the same position,
+                # is the later spec.
         if skip_bare_value(v):
             continue
         scope = _scope_of(view, k)
@@ -1807,6 +1684,7 @@ def _prepare_kwargs(
     parent_context: Dict[str, Any],
     target: Any = None,
     self_obj: Any = None,
+    self_key: Optional[str] = None,
 ) -> "_View":
     """Flat-view, document-order, last-write-wins kwarg assembly.
 
@@ -1854,7 +1732,7 @@ def _prepare_kwargs(
     """
     receiver = _receiver_for_target(cls_name, own_kwargs, target)
     sink = _MergeSink(receiver.cls_name, target=target or cls_name, self_obj=self_obj)
-    _scan_view(parent_context, receiver, sink, own_kwargs=own_kwargs, self_obj=self_obj)
+    _scan_view(parent_context, receiver, sink, own_kwargs=own_kwargs, self_obj=self_obj, self_key=self_key)
 
     if sink.report is not None and sink.origins:
         name = receiver.instance_name

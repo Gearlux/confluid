@@ -67,6 +67,7 @@ from confluid.broadcast import (  # noqa: F401
     _View,
     clear_pass_caches,
     dict_at_slot_kind,
+    holds_marker,
     merge_bare_pool_into_kwargs,
     refuse_if_undeclared,
     refuse_if_variadic_name,
@@ -363,7 +364,7 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
 # ``accepts_any_key`` — importable from there or from ``confluid`` top-level.)
 
 
-def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
+def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, slot_key: Optional[str] = None) -> Any:
     # Shared-identity memo: ensures the same raw marker (reached directly or via
     # !ref:) always flows to the same Instance/Class marker object, so a single
     # live object is instantiated downstream.
@@ -379,7 +380,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 local_ctx.set(k, v, _KeyScope.BARE)
         else:
             local_ctx = _View(data)
-        return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
+        return {k: _flow_recursive(v, parent_context=local_ctx, slot_key=k) for k, v in data.items()}
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
     if isinstance(data, Target):
@@ -403,21 +404,47 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
         actual_target = data.target if not isinstance(data.target, str) else None
         # Always prepared (even with no parent context) so own kwargs get
         # scope tags, glob routing, and in-marker dotted-key expansion.
+        # The slot this marker sits in: the key the caller descended through (a kwarg name,
+        # shared by every element of a list kwarg), else the entry that IS / holds the marker.
+        self_key = None
+        if parent_context:
+            if slot_key is not None and slot_key in parent_context:
+                self_key = slot_key
+            else:
+                self_key = next((k for k, v in parent_context.items() if v is data or holds_marker(v, data)), None)
         merged_kwargs = _prepare_kwargs(
-            target_name, data.kwargs, parent_context or {}, target=actual_target, self_obj=data
+            target_name, data.kwargs, parent_context or {}, target=actual_target, self_obj=data, self_key=self_key
         )
 
         # Splice this Fluid's prepared kwargs into its slot in parent_context to
         # preserve document order for downstream broadcasts.
-        self_key = None
-        if parent_context:
-            self_key = next((k for k, v in parent_context.items() if v is data), None)
         child_ctx = _splice_kwargs_at_slot(parent_context or {}, self_key, merged_kwargs, receiver_cls=data.target)
         # Routing entries ('**'/'*' glob blocks, STRICT sub-blocks) are
         # addressing metadata: they ride in child_ctx only, never into the
         # marker's kwargs (→ ctor / post-init / dump / resolve() output).
+        # A slot a BLOCK delivered was arbitrated at the block's position (C2): the bare
+        # keys the block out-positioned must not reach the marker nested at that slot
+        # through the child view — where the slot sits at THIS marker's earlier position
+        # and would lose to them again. Pop exactly those keys for that slot's descent, so
+        # pass 7 settles the contest itself (record 19, phase 4 — the settled document is
+        # what configure() applies, so it must already be right).
+        beaten = getattr(merged_kwargs, "beaten_per_slot", None) or {}
+
+        def _view_for(slot: str) -> Any:
+            lost = beaten.get(slot)
+            if not lost:
+                return child_ctx
+            narrowed = _View(child_ctx)
+            for bk in lost:
+                narrowed.pop(bk, None)
+            rider = narrowed.get("**")
+            if isinstance(rider, dict) and any(bk in rider for bk in lost):
+                # a `'**'` rider's scalar sits at the RIDER's index in the cascade — it lost too
+                narrowed.set("**", {rk: rv for rk, rv in rider.items() if rk not in lost}, narrowed.scope_of("**"))
+            return narrowed
+
         resolved_kwargs = {
-            k: _flow_recursive(v, parent_context=child_ctx)
+            k: _flow_recursive(v, parent_context=_view_for(k), slot_key=k)
             for k, v in merged_kwargs.items()
             if not (_is_glob_key(k) or merged_kwargs.scope_of(k) is _KeyScope.STRICT)
         }
@@ -471,7 +498,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
 
     # 5. Lists
     if isinstance(data, list):
-        return [_flow_recursive(item, parent_context=parent_context) for item in data]
+        return [_flow_recursive(item, parent_context=parent_context, slot_key=slot_key) for item in data]
 
     return data
 

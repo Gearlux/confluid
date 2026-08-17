@@ -46,7 +46,7 @@ plugs into the passes, and from the eight names most configs need:
 
 | Name | One line |
 |---|---|
-| `configure` | Apply a document to live objects, in place |
+| `configure` | Apply a document to live objects, in place — through the document: the objects' own document + the config, resolved once, written back; keyword-named objects are addressable by dotted path |
 | `configure_from_file` | Load a path, then `configure` |
 
 ## Reports — [Configuration Reports](report.md)

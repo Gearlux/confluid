@@ -1547,3 +1547,35 @@ left is the second COPY of the rule at construction. Scoping of a `!ref:` also s
 -then-root rather than root-only: an included FRAGMENT's internal reference must find the
 fragment's key (`tests/test_nested_refs.py`, the TorchSig shape), and the emitted document is
 Hydra-parseable either way because it carries no references at all.
+
+*Phase 4 landed 2026-08-17 — `configure()` runs through the document.* `configure(*objs, config,
+**named)` is now `dumper.to_markers(objs)` (the objects as a marker document — the SAME
+reconstruction rule `dump()` uses, factored into `dumpable_kwargs`) → the config merged after it
+(a key naming an object tunes its marker in place, so a bare key beside it still competes on
+position) → `resolve()` (pass 7, recording into the call's report) → `_apply`, which writes the
+settled values back: a plain value is set under the init policy, a marker at a slot holding a
+marker is tuned in place (identity kept, markers inside it stay markers), a marker standing for a
+live child recurses, a marker the config introduced is built or kept deferred, a mapping at a slot
+holding an opaque live object is refused, `solidify()` fires post-order. The second walker
+(`configurator._walk` / `_LiveSink` / `_tune_deferred` / `_assign`, ~460 lines) and its
+broadcast-side helpers (`_receiver_for_instance`, `_spliced_subtree_view`, `_spliced_at_slot`,
+`_hoist_block_routing`) are deleted — `configurator.py` is 315 lines, 240 fewer in the two modules
+net. Gained: a NAMED object is addressable by a dotted attribute path (`configure(trainer=t,
+config={"trainer.model.lr": 0.7})` — the live walker left it unused). Lost, deliberately: a chain
+of INSTANCE names past the first level (`a.b.c.value`), a configure()-only grammar the load path
+never had (`configure()` has zero external callers, measured). Cost: `configure` on the 2,500-marker
+benchmark went from 163 ms to 188 ms — it now runs the full pass 7. **The document path exposed
+four pass-7 defects, all fixed IN pass 7 (so `load()` gets them too) and each measured first:**
+F7 — a same-named child slot (`child:` inside `child:`) lost its slot in the parent view, so a
+third-level marker's own kwargs were appended after every root key and a later bare key reached
+depths 1 and 2 but not 3; F8 — `tune_marker` was single-level, so `root: {child: {child: {lr}}}`
+replaced the second-level marker with a plain dict on the load path (only the live walker got it
+right); F10 — a marker nested in a LIST kwarg had no slot at all (its own kwargs always won —
+`test_inner_overrides_beat_the_glob_cascade` was passing on that accident and is now the
+EARLIER-rider pin plus a LATER-rider con case); F11 — an instance-name block whose name equals the
+marker's attribute key (`middle:` for the marker at `.middle`) displaced the marker from its slot.
+The mechanism for F10/F11 is the slot KEY threaded through pass 7 (`_flow_recursive(slot_key=)` →
+`_prepare_kwargs(self_key=)` → `_scan_view`), which also removed the identity search that made the
+first fix cost 15 % of a resolve. And the C2 verdict is applied inside pass 7 (`_view_for(slot)`
+pops the beaten bare keys — and a rider's — for the descent into a block-delivered slot), which is
+what makes the settled document the answer `configure()` can apply.

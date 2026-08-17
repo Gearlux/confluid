@@ -1,102 +1,85 @@
-"""Post-construction configuration (``configure`` / ``configure_from_file``).
+"""Post-construction configuration (``configure`` / ``configure_from_file``) — via the document.
 
-Applies a config document to ALREADY-CONSTRUCTED object graphs, in place —
-the Post-Construction Paradigm. Matching follows confluid's ONE rule:
-**flat-view, document-order, last-write-wins** (the same rule the YAML
-materialization path applies via ``broadcast._prepare_kwargs``), scanned over
-live objects instead of Fluid markers:
+Applies a config to ALREADY-CONSTRUCTED object graphs, in place — the Post-Construction Paradigm.
+Since architecture record 19 (phase 4) it does so through the ONE precedence rule rather than a
+second implementation of it over live objects:
 
-* a ``ClassName:`` / ``<instance-name>:`` dict block is unrolled inline at
-  its document position (a sub-block keyed by the instance name inside a
-  class block — the ``Cls.inst.attr`` form — unrolls inline too);
-* a bare non-dict key broadcasts into any object whose accept-list carries it;
-* whichever assignment comes LAST in document order wins — no priority tiers;
-* a dict-valued block entry addressing a configurable child recurses into it,
-  with the sub-block spliced into the child's visible view at its position;
-* **addressed keys are exact** (2026-07): a matched block's values configure
-  that object only — they stay visible in the subtree view for ordering but
-  never re-apply below. Cascade is opt-in via glob blocks: ``'**'`` applies
-  its contents like bare keys to the matched object AND every descendant
-  (``mid.**.lr``), ``'*'`` to the direct children only; both are gated by
-  the NoBroadcast opt-outs like bare keys. Deeper named segments
-  (``root.mid.lr``) are strict one-level hops, mirroring
-  ``_splice_kwargs_at_slot`` / ``_prepare_kwargs`` in the engine.
+1. the objects become a marker document — :func:`confluid.dumper.to_markers`, the same
+   reconstruction rule ``dump()`` uses, so an object's document is one thing;
+2. the config is merged AFTER it (``deep_merge`` + dotted-key expansion) — document order, last
+   spec wins, exactly as an experiment overlay lands on a base file;
+3. pass 7 settles the merged document (:func:`confluid.engine.resolve` — the pass ``hydraide``
+   emits): bare keys, class-name blocks, ``Cls.inst.attr`` forms, ``'*'`` / ``'**'`` riders,
+   dict-at-slot tunes, references — one scanner, the report recorded as it goes;
+4. the settled values are applied back onto the live objects — a plain value is set (validated
+   under the init policy), a marker at a slot holding a marker is tuned IN PLACE, a marker
+   standing for a live child recurses into it, ``solidify()`` fires post-order.
 
-The object graph is walked via ``vars(obj)`` — property getters are NEVER
-executed. Unknown non-dict keys inside a block addressed to an object emit a
-warning (typo protection); a present key with value ``None`` SETS ``None``
-(presence is explicit in the scan, so ``dropout: null`` works).
+The caller's positional objects are addressable only by class name and bare keys (as before);
+NAMED objects (``configure(config=…, trainer=t)``) are additionally addressable by that name —
+``trainer.model.lr: 0.7`` reaches the nested model, which the live walker used to leave unused.
+An object the dumper cannot represent (not ``@configurable``, not built by confluid) is warned
+about and skipped: it has no document, so nothing can be settled for it.
 
-Both entry points return a :class:`confluid.ConfigurationReport` — applied /
-failed / unused override keys for the whole call (see ``confluid.report``);
-inside a :func:`confluid.collect_report` block the ambient report is adopted,
-so a load-then-configure pass aggregates into one report.
+Both entry points return a :class:`confluid.ConfigurationReport` — applied / failed / unused
+override keys for the whole call (see ``confluid.report``); inside a
+:func:`confluid.collect_report` block the ambient report is adopted, so a load-then-configure
+pass aggregates into one report.
 """
 
-import inspect
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Optional, Set, Union
 
 import yaml
 from loggair import get_logger
 
-from confluid.broadcast import (
-    _broadcast_pool,
-    _mark_used_key,
-    _receiver_for_instance,
-    _scan_view,
-    _settability_target,
-    _spliced_at_slot,
-    _spliced_subtree_view,
-    clear_pass_caches,
-    dict_at_slot_kind,
-    merge_bare_pool_into_kwargs,
-    refuse_if_undeclared,
-    trace_enabled,
-    tune_marker,
-)
-from confluid.engine import _ctor_params, _maybe_solidify, flow
+from confluid.broadcast import clear_pass_caches, dict_at_slot_kind
+from confluid.dumper import to_markers
+from confluid.engine import _ctor_params, _maybe_solidify, flow, resolve
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Target
+from confluid.fluid import Fluid, Target
 from confluid.loader import ConfluidLoader, load_config
-from confluid.merger import expand_dotted_keys
+from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, parse_value
-from confluid.state import _active_report
+from confluid.state import _ENGINE_STATE, _active_report
 from confluid.validation import get_policy, validate_setattr
 
 logger = get_logger("confluid.configurator")
 
+_MISSING = object()
 
-def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = None) -> ConfigurationReport:
-    """Apply configuration to one or more existing object instances.
 
-    Recursively walks the object graph and sets attributes by matching class
-    names, instance names, and broadcast keys — document order,
-    last-write-wins (see the module docstring for the full matching rule).
+def configure(
+    *instances: Any, config: Any, context: Optional[Dict[str, Any]] = None, **named: Any
+) -> ConfigurationReport:
+    """Apply ``config`` to existing objects, in place, through the document (see the module doc).
+
+    Args:
+        *instances: Objects to configure — reachable by class-name blocks and bare keys.
+        config: A mapping, or YAML text; ``ClassName:`` / bare keys / dotted keys / ``'**'``
+            riders, the same grammar a config file uses.
+        context: Optional explicit interpolation context for ``${...}`` in ``config`` (defaults
+            to ``config`` itself).
+        **named: Objects addressable by NAME as well — ``configure(config={"trainer.epochs": 5},
+            trainer=t)`` — the name is the document key the object sits under.
 
     Returns:
-        A :class:`confluid.ConfigurationReport` spanning ALL instances of the
-        call: every applied override (with receiver + origin), failed keys
-        (unknown block attributes, per-field validation failures), and the
-        document keys that matched nothing. Inside a
-        :func:`confluid.collect_report` block the ambient report is adopted
-        (and returned), so a load-then-configure pass aggregates into one
-        report; otherwise a fresh report is returned and its unused-keys
-        DEBUG summary logged here.
+        A :class:`confluid.ConfigurationReport` spanning every object of the call: applied
+        overrides (with receiver + origin), failed keys (unknown block attributes, per-field
+        validation failures), and the config keys that matched nothing. Inside a
+        :func:`confluid.collect_report` block the ambient report is adopted (and returned).
     """
     ambient = _active_report()
     report = ambient if ambient is not None else ConfigurationReport()
-
     if config is None:
         return report
-
     if isinstance(config, str) and (":" in config or "\n" in config):
         # Parse with ConfluidLoader so tag-carrying strings (e.g. "!class:Model")
         # construct Fluid markers. Plain yaml.safe_load would raise on the tags —
         # the global SafeLoader deliberately knows nothing about them.
         config = yaml.load(config, Loader=ConfluidLoader)
-
     if not isinstance(config, dict):
         # A silent empty report here read as "configured fine" — the canonical
         # miss being configure(model, config="overrides.yaml"): a plain
@@ -105,42 +88,75 @@ def configure(*instances: Any, config: Any, context: Optional[Dict[str, Any]] = 
         hint = " — for a config file path, use configure_from_file(path=...)" if isinstance(config, str) else ""
         logger.warning(f"configure(): config is a {type(config).__name__}, not a mapping; nothing applied{hint}")
         return report
+    config = expand_dotted_keys(Resolver(context=context if context is not None else config).resolve(config))
 
-    resolved_context = context if context is not None else config
-    resolver = Resolver(context=resolved_context)
-    config = expand_dotted_keys(resolver.resolve(config))
-
-    # Register unused-tracking candidates: every top-level document key is an
-    # override candidate here (unlike the engine path, a marker-valued key IS
-    # an override — _assign flows it); glob blocks register per non-dict leaf.
+    # Register unused-tracking candidates: every top-level config key (dotted keys already
+    # expanded to their block, which is what pass 7 marks used) is an override candidate —
+    # a marker-valued key IS an override, it lands on a slot; glob blocks register per
+    # non-dict leaf.
     for k, v in config.items():
         if k in ("*", "**") and isinstance(v, dict):
             report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
         else:
             report.add_config_keys((k,))
 
-    # configure() is an entry point exactly like materialize()/resolve(): a
-    # class redefined since the last pass (a notebook cell re-run) must not be
-    # served its previous definition's accept-list (the caches key on
-    # module.qualname, which a redefinition reuses).
+    # 1. The objects as a marker document. Positional objects sit under names no config
+    #    key can address or collide with (`_0`, `_1`, …); named ones under their name.
+    objects: Dict[str, Any] = {f"_{i}": obj for i, obj in enumerate(instances)}
+    objects.update(named)
+    memo: Dict[int, Any] = {}  # id(live) -> marker: a shared object is ONE marker
+    document: Dict[str, Any] = {}
+    for name, obj in objects.items():
+        node = to_markers(obj, memo)  # a configurable → a marker; a dict/list of them → the container
+        if not _contains_marker(node):
+            logger.warning(
+                f"configure(): {type(obj).__name__} is not @configurable and was not built by confluid — it "
+                "has no document to settle, so nothing can be applied to it; skipped"
+            )
+            continue
+        document[name] = node
+    if not document:
+        if ambient is None:
+            report.log_unused()
+        return report
+
+    # 2. The config lands AFTER the objects' own keys — document order makes it win. A config
+    #    key that NAMES an object (`trainer: {...}`, or `trainer.model.lr` expanded to it) tunes
+    #    that object's marker where it stands — it must not re-anchor the object after the
+    #    other config keys, or a bare key written next to it would lose to the object's own
+    #    current values.
+    addressed = {k: v for k, v in config.items() if k in document}
+    rest = {k: v for k, v in config.items() if k not in document}
+    for k, v in addressed.items():
+        document[k] = deep_merge({k: document[k]}, {k: v})[k]  # P1: an overlay mapping TUNES a marker
+    merged = expand_dotted_keys({**document, **rest})
+
+    # 3. Pass 7 settles the whole thing, recording into THIS report. configure() is an
+    #    entry point exactly like materialize()/resolve(): a class redefined since the
+    #    last pass must not be served its previous accept-list.
     clear_pass_caches()
+    token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), report=report))
+    try:
+        settled = resolve(merged)
+    finally:
+        _ENGINE_STATE.reset(token)
 
-    # id -> the OBJECT itself: recording an id PINS the object for the call.
-    # A plain Set[int] recorded ids of flow() temporaries the walk then dropped;
-    # gc recycled their addresses and later objects read as "already visited" —
-    # whole subtrees silently unconfigured (BUGS-2026-08-13 X1: 450 of 512
-    # objects missed under DEFAULT gc, measured).
+    # 4. Apply the settled values back onto the live objects. ``visited`` maps id -> the
+    #    OBJECT (recording an id pins it for the call — see the id-pinning rule).
     visited: Dict[int, Any] = {}
-    for instance in instances:
-        _walk(instance, config, resolved_context, visited, report)
-
+    for name in document:
+        node = settled.get(name)
+        if isinstance(node, Target):
+            _apply(objects[name], node, visited, report)
+        else:
+            _materialize_value(node, visited, report)  # a container: every marker inside applies to its object
     if ambient is None:
         report.log_unused()
     return report
 
 
 def configure_from_file(
-    *instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None
+    *instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None, **named: Any
 ) -> ConfigurationReport:
     """Load a YAML config file and apply it to existing instances in one call.
 
@@ -150,384 +166,150 @@ def configure_from_file(
 
     is equivalent to ``configure(trainer, config=load_config("experiment.yaml"))``.
     The file is read via :func:`confluid.load_config`, so recursive ``include:``
-    / ``import:`` directives and ``_target_`` / reference markers are honoured;
-    the loaded config is then walked and applied to each instance exactly as
-    :func:`configure` does (same matching, resolution, and per-field
-    validation). This is a wrapper only — it adds no behaviour beyond loading.
+    / ``import:`` directives and ``_target_`` / reference markers are honoured. This is
+    a wrapper only — it adds no behaviour beyond loading.
 
     Args:
         *instances: The already-constructed objects to configure in place.
         path: Path to the YAML config file (``str`` or ``Path``).
-        context: Optional explicit resolution context for references / ``${...}``
-            (defaults to the loaded config itself, mirroring :func:`configure`).
+        context: Optional explicit interpolation context (defaults to the loaded config).
+        **named: Objects addressable by name, as in :func:`configure`.
 
     Raises:
         confluid.ConfigFileNotFoundError: If ``path`` does not exist.
     """
-    return configure(*instances, config=load_config(path), context=context)
+    return configure(*instances, config=load_config(path), context=context, **named)
 
 
-def _walk(
-    obj: Any,
-    view: Dict[str, Any],
-    context: Dict[str, Any],
-    visited: Dict[int, Any],
-    report: ConfigurationReport,
-) -> None:
-    """Traverse the object graph, configuring each configurable object from its view.
+# --------------------------------------------------------------------------- #
+# Applying a settled marker back onto the live object it stands for
+# --------------------------------------------------------------------------- #
 
-    ``view`` is the object's *visible* config — the document with every
-    ancestor's addressed blocks spliced in at their positions (the live-object
-    mirror of the loader's flat-view context propagation). Recursion follows
-    ``vars(obj)`` (instance attributes only): property getters are never
-    executed, and derived/property-held state is by mandate recomputed, never
-    configured.
-    """
-    if obj is None:
+
+def _contains_marker(node: Any) -> bool:
+    """A marker, or a dict/list holding one (any depth) — something the document can settle."""
+    if isinstance(node, Fluid):
+        return True
+    if isinstance(node, dict):
+        return any(_contains_marker(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_contains_marker(v) for v in node)
+    return False
+
+
+def _live_of(node: Any) -> Any:
+    """The live object a settled marker stands for (``to_markers`` stamped it; the pass-7 copy
+    keeps the stamp), or ``None`` for a marker the config introduced."""
+    return getattr(node, "__confluid_live__", None)
+
+
+def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: ConfigurationReport) -> None:
+    """Set every settled kwarg of ``node`` on ``obj`` that differs from what ``obj`` holds."""
+    if id(obj) in visited:
         return
+    visited[id(obj)] = obj
+    cls = obj.__class__
+    label = getattr(cls, "__confluid_name__", cls.__name__)
+    live_vars = getattr(obj, "__dict__", None) or {}
+    eager_params: Set[str] = _ctor_params(cls) or set() if getattr(cls, "__confluid_eager__", False) else set()
 
-    if isinstance(obj, Target):
-        # A marker slot is NOT walked into, and is NOT tuned here either — its OWNER
-        # tunes it (see ``_apply``), because only the owner's scan knows where each of
-        # its blocks sat relative to the bare keys. Flowing it would build the target
-        # early (an optimizer with no ``params``) and configure an object that is never
-        # written back to the attribute, discarding every key applied to it.
-        #
-        # ``Target``, not ``Partial``: the hazard the paragraph above describes is not
-        # about deferral, it is about the marker being the thing the attribute HOLDS.
-        # For a plain ``self.opt = Target(Opt)`` the next line used to commit exactly
-        # that — flow a temporary, configure it, discard it, and record the key as
-        # applied, so a later ``flow(obj.opt)`` built with the defaults (C4).
-        # ``Partial`` IS a ``Target``, so deferred slots are unaffected; ``Reference``
-        # is NOT, so it stays on the flow path and keeps raising rather
-        # than degrading to a silent no-op.
-        obj_id = id(obj)
-        if obj_id in visited:
-            return
-        visited[obj_id] = obj  # the value IS the pin — see the note at the call site
-        # A marker's kwargs can hold LIVE objects (``Target(Stage, dep=widget)``), and
-        # those are part of the graph: a bare key must still reach them. Flowing the
-        # marker used to reach them as a side effect, so NOT walking here would trade
-        # one silent skip for another — measured against
-        # ``test_memo_pinning.py::test_configure_reaches_every_object_…``, which went
-        # from 0 to 64 missed widgets.
-        for kwarg_value in list(obj.kwargs.values()):
-            _walk(kwarg_value, view, context, visited, report)
-        return
-
-    # Materialize marker-valued attrs, but with solidify SUPPRESSED: since
-    # flow() finalizes live objects too (architecture record 2), an unsuppressed
-    # call here fired every solidify() BEFORE this pass applied its values —
-    # derived state was built from the PRE-configure config and, solidify being
-    # idempotent-by-contract, never rebuilt. The hook is re-fired post-order
-    # below, after this object AND its subtree carry their new values — the
-    # same point in an object's life the load path fires it (children final,
-    # own config final, then finalize).
-    obj = flow(obj, solidify=False)
-
-    obj_id = id(obj)
-    if obj_id in visited:
-        return
-    visited[obj_id] = obj  # the value IS the pin — see the note at the call site
-
-    if isinstance(obj, (list, tuple)):
-        for item in obj:
-            _walk(item, view, context, visited, report)
-        return
-
-    if isinstance(obj, dict):
-        for v in obj.values():
-            _walk(v, view, context, visited, report)
-        return
-
-    child_view = view
-    if getattr(obj.__class__, "__confluid_configurable__", False):
-        child_view = _apply(obj, view, context, visited, report)
-
-    # Recurse into instance attributes only (vars, not dir) — no getters fire.
-    # Scalars / __slots__ objects carry no __dict__ and simply end the walk.
-    #
-    # ROUTINES and CLASSES are skipped, not everything CALLABLE: an op and a
-    # framework module define ``__call__``, so the old ``callable()`` filter
-    # skipped every one of them — the load path broadcasts into the same class
-    # fine (C3). Such a child was usually still reached BY ACCIDENT, through the
-    # ctor-kwargs capture dict sitting in ``__dict__``, which is why the defect
-    # surfaced only for ``capture=False`` or for a constructor that stores
-    # something other than what it captured (there the discarded object was
-    # configured and the key reported applied).
-    #
-    # ``isclass`` is not decoration: a class object's ``__dict__`` is a TRUTHY
-    # mappingproxy of its own attributes, so recursing into one would walk class
-    # internals and could write a config key onto the CLASS.
-    obj_dict = getattr(obj, "__dict__", None)
-    if obj_dict:
-        for attr_val in list(obj_dict.values()):
-            if not (inspect.isroutine(attr_val) or inspect.isclass(attr_val)):
-                _walk(attr_val, child_view, context, visited, report)
-
-    # Post-order finalize: the suppressed solidify from the flow() above is
-    # re-fired now that the configuration has been applied to this object and
-    # its whole subtree. First visit only (the visited check above) — the hook
-    # is idempotent by contract, but the ordering promise is what matters here.
+    for attr, settled in node.kwargs.items():
+        current = live_vars.get(attr, _MISSING)  # never getattr: a property getter must not run
+        if isinstance(settled, Target):
+            if isinstance(current, Fluid):
+                # A marker at a slot holding a marker (a deferred body slot): tune IN PLACE —
+                # the owner keeps its object, `flow(self.optimizer, ...)` later sees the values.
+                # Live objects the marker's kwargs held come back as themselves, configured.
+                current.kwargs.update(
+                    {k: _materialize_value(v, visited, report, build=False) for k, v in settled.kwargs.items()}
+                )
+                continue
+            live = _live_of(settled)
+            if live is not None and live is current:
+                _apply(live, settled, visited, report)  # a child object: recurse, no reassignment
+                continue
+            value: Any = settled if settled.partial else flow(settled)  # a marker the config introduced
+        else:
+            value = _materialize_value(settled, visited, report)
+            if attr in live_vars and _same(value, current):
+                continue
+            if isinstance(value, dict) and dict_at_slot_kind(current) == "opaque":
+                # The dict-at-slot rule's fourth arm (user ruling): a mapping addressed at a
+                # slot holding a live object that is neither a marker nor configurable is
+                # REFUSED, never silently swapped for a dict.
+                raise ConfigurationError(
+                    f"configure(): a mapping was addressed at {label}.{attr}, which holds a live "
+                    f"{type(current).__name__} that is not @configurable — refusing to replace an object "
+                    "with a dict. Register the class (or mark it @configurable), or replace the whole value in code."
+                )
+            if isinstance(value, str):
+                value = parse_value(value)
+        _set(obj, attr, value, label, eager_params, report)
     _maybe_solidify(obj)
 
 
-def _tune_deferred(
-    marker: Any, view: Dict[str, Any], report: ConfigurationReport, beaten: FrozenSet[str] = frozenset()
-) -> None:
-    """Merge the bare keys a deferred slot did NOT already beat into its kwargs.
+def _materialize_value(value: Any, visited: Dict[int, Any], report: ConfigurationReport, *, build: bool = True) -> Any:
+    """A settled value with the markers INSIDE it resolved back to the live world.
 
-    The live-object analogue of the engine's nested-``Class`` broadcast. Two rules
-    carry over unchanged and both are load-bearing:
-
-    * the target's accept-list gates what may land (a bare key the class never
-      declared is not silently attached), as do the NoBroadcast opt-outs;
-    * ``beaten`` — the keys a block addressed at this slot out-positioned, computed
-      by the caller's scan and passed in — are skipped, because document order
-      already settled them. Everything else is a bare key written LATER than the
-      block, so it wins. It is a PARAMETER rather than marker state on purpose: a
-      verdict about one document must not survive into the next ``configure()``.
-
-    A kwarg the marker already carries and that nothing beat is left alone only when
-    the bare key lost; otherwise last-spec-wins applies and the bare key overwrites.
+    A marker standing for a live object is applied to that object and becomes it; a marker
+    standing for a live MARKER (a deferred slot found inside a container) is tuned in place;
+    a marker the config introduced is built — unless ``build`` is False, which is the case
+    INSIDE a deferred marker's kwargs, where a marker stays a marker until the owner flows it
+    (exactly what the load path does with a bare marker delivered into a `Partial`).
     """
-    target_cls = _settability_target(marker.target)
-    if target_cls is None:
-        # KEPT difference with the engine cascade (which merges accept-everything
-        # for an unresolvable target, serving resolve()-introspection of free
-        # inputs): a configure-path slot whose target this process cannot even
-        # resolve can never be flowed by it either — tuning would be noise.
-        return
-    # ``_broadcast_pool`` unrolls a ``'**'`` rider's scalars into the pool
-    # (tagged BARE — rider contents cascade by definition), exactly as the
-    # engine's nested-marker loop does. Passing the RAW view here was the
-    # D5-mirror gap: rider contents sat under the ``'**'`` dict key, which
-    # the cascade's container gate skips, so ``'**.lr': 0.01`` tuned a
-    # deferred slot under load() and was silently ignored under configure().
-    merge_bare_pool_into_kwargs(
-        marker.kwargs,
-        _broadcast_pool(view),
-        target_cls,
-        protected=beaten,
-        on_applied=report.mark_used,
-        origin="deferred slot",
-    )
-
-
-class _LiveSink:
-    """The configure-path sink: scanner decisions become assignments/recursions/tunes.
-
-    An effect writer only — every gate already ran in ``_scan_view`` against
-    the receiver ``_receiver_for_instance`` built for this object. What this
-    sink owns is the LIVE three-way dispatch a marker path cannot have: a dict
-    at a settable key tunes a deferred ``Class`` slot (recording which bare
-    keys its block out-positioned), recurses into a live configurable child,
-    or lands as a plain dict attribute. Warnings keep originating from THIS
-    module's logger (the monkeypatch target tests rely on).
-    """
-
-    __slots__ = (
-        "obj",
-        "cls_name",
-        "target_label",
-        "report",
-        "assignments",
-        "origins",
-        "contest",
-        "recursions",
-        "beaten_per_slot",
-    )
-
-    def __init__(self, obj: Any, cls_name: str, target_label: str, report: ConfigurationReport) -> None:
-        self.obj = obj
-        self.cls_name = cls_name
-        self.target_label = target_label
-        self.report = report
-        # ``origins`` mirrors ``assignments`` with each key's LAST write, so the
-        # report gets ONE applied record per attribute — the final assignment.
-        self.assignments: Dict[str, Any] = {}
-        self.origins: Dict[str, str] = {}
-        # The marker path's ``_MergeSink.contest`` twin — raw ``(origin, value,
-        # pos)`` per key, rendered by ``record_applied`` only where contested.
-        self.contest: Dict[str, List[Tuple[str, Any, int]]] = {}
-        self.recursions: Dict[str, Dict[str, Any]] = {}
-        # attr name -> the bare keys a block addressed at that DEFERRED slot
-        # out-positioned. Call-scoped by construction: lives and dies with this
-        # scan (a verdict about one document must not survive into the next).
-        self.beaten_per_slot: Dict[str, FrozenSet[str]] = {}
-
-    def _mark_used(self, key: str, origin: str) -> None:
-        self.report.mark_used(_mark_used_key(key, origin))
-
-    def apply(self, key: str, value: Any, origin: str, scope: Any, own: bool, gated: bool, pos: int) -> None:
-        if trace_enabled(logger):  # per-KEY site — see broadcast's log-gate block
-            logger.trace(f"configure: {key!r} -> {self.cls_name} ({origin})")
-        self.assignments[key] = value
-        self.origins[key] = origin
-        self.contest.setdefault(key, []).append((origin, value, pos))
-        self._mark_used(key, origin)
-
-    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
-        # The ONE dict-at-slot dispatch (broadcast.dict_at_slot_kind) — value-state,
-        # decided by what the slot HOLDS, identical on both paths (C1/C1b,
-        # BUGS-2026-08-13). Reads ``__dict__`` only: no property getter ever runs.
-        existing = self.obj.__dict__.get(key)
-        kind = dict_at_slot_kind(existing)
-        if kind == "marker":
-            # A deferred marker slot (``self.optimizer = PartialClass(...)``) —
-            # TUNE the marker (the engine's rule for the identical spelling),
-            # never recurse into it or replace it with the raw dict. The bare
-            # keys this block out-positioned ride along for _tune_deferred.
-            tuned = tune_marker(existing, block)
-            self.beaten_per_slot[key] = bare_before
-            self.assignments[key] = tuned
-            self.origins[key] = origin
-        elif kind == "configurable":
-            self.recursions[key] = block  # a live configurable child — recurse after the scan
-        elif kind == "opaque":
-            # User decision 2026-08-13: never silently replace a live object with a dict.
-            raise ConfigurationError(
-                f"configure(): {self.cls_name} slot {key!r} holds a live "
-                f"{type(existing).__name__}, which is not @configurable — a mapping cannot be "
-                f"applied into it. Register the class (or mark it @configurable), or replace "
-                f"the whole value in code."
+    if isinstance(value, Target):
+        live = _live_of(value)
+        if isinstance(live, Fluid):  # a marker that was inside a container / another marker's kwargs
+            live.kwargs.update(
+                {k: _materialize_value(v, visited, report, build=False) for k, v in value.kwargs.items()}
             )
-        else:
-            self.assignments[key] = block  # a plain dict-typed attribute value
-            self.origins[key] = origin
-        self._mark_used(key, origin)
-
-    def route(self, key: str, block: Dict[str, Any]) -> None:
-        # Deliberately a no-op — the live path derives its subtree routing in
-        # `_spliced_subtree_view`, which needs the WHOLE view's scope tags (an
-        # ADDRESSED entry's spent scalars, floating-block rematch), not just
-        # this scan's route emissions. Phase B weighed consuming these
-        # emissions and kept the re-derivation: the splice pair is the one
-        # sanctioned duality (docs/architecture.md record 8).
-        pass
-
-    def unknown(self, key: str, value: Any, *, origin: str) -> None:
-        # The mark binds BOTH paths, or it means two different things.
-        refuse_if_undeclared(self.obj, key)
-        logger.warning(f"configure(): {self.cls_name} block has no attribute {key!r} — ignored")
-        self.report.record_failed(key, self.target_label, "unknown-attribute")
-
-    def matched(self, name: str) -> None:
-        self.report.mark_used(name)  # a named block is "used" once it matches an object
+            return live
+        if live is not None:
+            _apply(live, value, visited, report)
+            return live
+        if value.partial or not build:
+            return value
+        return flow(value)
+    if isinstance(value, dict):
+        return {k: _materialize_value(v, visited, report, build=build) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_materialize_value(v, visited, report, build=build) for v in value]
+    return value
 
 
-def _apply(
-    obj: Any, view: Dict[str, Any], context: Dict[str, Any], visited: Dict[int, Any], report: ConfigurationReport
-) -> Dict[str, Any]:
-    """Configure one object from its view; return the spliced view for its subtree.
-
-    Scans ``view`` in document order collecting assignments (last write wins),
-    dict-valued child recursions, and the subtree view. Assignment values are
-    resolved, string-coerced via ``parse_value``, ``Class``/``Instance``
-    markers flowed, then validated + setattr'd. Scope tags (see
-    ``broadcast._KeyScope``) gate what applies: EXACT entries are an ancestor's
-    addressed values (inert here), STRICT entries are one-level routing
-    blocks (matched by name or skipped), glob blocks apply gated like bare
-    keys.
-    """
-    receiver = _receiver_for_instance(obj)
-    name = receiver.instance_name
-    target_label = f"{receiver.cls_name} {name!r}" if name else receiver.cls_name
-
-    sink = _LiveSink(obj, receiver.cls_name, target_label, report)
-    _scan_view(view, receiver, sink)
-
-    _assign(obj, sink.assignments, context, report, sink.origins, target_label, sink.contest)
-
-    # Deferred slots are tuned by their OWNER, here, because only this scan knows where
-    # each block sat relative to the bare keys. ``_walk`` deliberately does not touch a
-    # Partial. Every deferred slot is visited — not only those a block addressed — since a
-    # bare key with nothing competing must still reach one.
-    for attr_name, slot in list(vars(obj).items()):
-        if isinstance(slot, Target):
-            _tune_deferred(slot, view, report, beaten=sink.beaten_per_slot.get(attr_name, frozenset()))
-
-    # Splice this object's addressed blocks into the subtree view at their
-    # positions (the live-object analogue of ``_splice_kwargs_at_slot``):
-    # scalars become EXACT (visible for ordering, never re-applied), nested
-    # dicts STRICT (one level), glob blocks keep their reach; inherited
-    # one-level routing is dropped — its level is spent at this boundary.
-    child_view = _spliced_subtree_view(view, receiver.cls_name, receiver.instance_name)
-
-    for attr_name, sub_block in sink.recursions.items():
-        child = getattr(obj, attr_name, None)
-        if child is not None:
-            _walk(child, _spliced_at_slot(child_view, attr_name, sub_block), context, visited, report)
-
-    return child_view
+def _same(new: Any, current: Any) -> bool:
+    """``new`` is the value ``current`` already is — identity first, equality when it is a bool."""
+    if new is current:
+        return True
+    try:
+        eq = new == current
+    except Exception:  # noqa: BLE001 — an array-like whose __eq__ is elementwise: treat as changed
+        return False
+    return eq is True
 
 
-def _assign(
-    obj: Any,
-    assignments: Dict[str, Any],
-    context: Dict[str, Any],
-    report: ConfigurationReport,
-    origins: Dict[str, str],
-    target_label: str,
-    contest: Optional[Dict[str, List[Tuple[str, Any, int]]]] = None,
-) -> None:
-    """Resolve, coerce, materialize, validate, and setattr the merged assignments.
-
-    Reports into ``report``: a validation failure records a ``"validation"``
-    failed key (strict mode records then re-raises; warn mode records with
-    the value still applied), and every successful setattr records ONE
-    applied key with its last-write origin from ``origins`` (plus the
-    eager-class staleness note when it fires).
-    """
-    cls = obj.__class__
-    resolver = Resolver(context=context)
-
-    # Staleness guard for @configurable(eager=True) classes: their __init__
-    # does real work FROM its params, and a post-construction setattr of a
-    # ctor-param attribute cannot re-run it. Body attributes stay silent —
-    # they are freely reconfigurable by design.
-    eager_params: Set[str] = set()
-    if getattr(cls, "__confluid_eager__", False):
-        eager_params = _ctor_params(cls) or set()
-
-    for attr_name, val in assignments.items():
-        note: Optional[str] = None
-        if attr_name in eager_params:
-            cls_label = getattr(cls, "__confluid_name__", cls.__name__)
-            note = "eager-class constructor param — __init__ work not re-run"
-            logger.warning(
-                f"configure(): setting constructor param {attr_name!r} on eager class {cls_label} — "
-                f"__init__ work will NOT re-run; derived state may be stale"
-            )
-        resolved_val = resolver.resolve(val)
-        if isinstance(resolved_val, str):
-            resolved_val = parse_value(resolved_val)
-        # Materialize class markers (e.g. a "!class:Model(...)" string value
-        # resolved to an Instance/Class Fluid) into live instances before setattr.
-        # A ``Partial`` is EXCLUDED, exactly as it is in ``engine._apply_post_init_attrs``:
-        # it is a deliberate runtime-injection point the owning class flows when it has
-        # the missing argument, so building it here produces the wrong object (an
-        # optimizer with no ``params``) and destroys the slot. `Partial` subclasses `Class`,
-        # so the isinstance test above caught it and configure() ALONE built it eagerly —
-        # a straight divergence from the load path for the identical config.
-        if isinstance(resolved_val, Target) and not resolved_val.partial:
-            resolved_val = flow(resolved_val)
-        # Post-construction overrides honour the same per-field schema as the
-        # constructor — re-uses ``policy.init`` because configure() is the
-        # moral equivalent of "instantiate this attribute with this value",
-        # just performed after the parent object exists.
-        try:
-            detail = validate_setattr(cls, attr_name, resolved_val, get_policy().init)
-        except Exception as exc:  # strict mode — record, then let it propagate
-            report.record_failed(attr_name, target_label, "validation", str(exc))
-            raise
-        if detail is not None:  # warn mode — recorded, value still applied below
-            report.record_failed(attr_name, target_label, "validation", detail)
-        setattr(obj, attr_name, resolved_val)
-        report.record_applied(
-            attr_name,
-            target_label,
-            origins.get(attr_name, "block"),
-            note,
-            candidates=(contest or {}).get(attr_name, ()),
+def _set(obj: Any, attr: str, value: Any, label: str, eager_params: Set[str], report: ConfigurationReport) -> None:
+    """Validate under the init policy and set — recording a validation failure on the report."""
+    note: Optional[str] = None
+    if attr in eager_params:
+        note = "eager-class constructor param — __init__ work not re-run"
+        logger.warning(
+            f"configure(): setting constructor param {attr!r} on eager class {label} — "
+            f"__init__ work will NOT re-run; derived state may be stale"
         )
+    try:
+        detail = validate_setattr(obj.__class__, attr, value, get_policy().init)
+    except Exception as exc:  # strict mode — record, then let it propagate
+        report.record_failed(attr, label, "validation", str(exc))
+        raise
+    if detail is not None:  # warn mode — recorded, value still applied below
+        report.record_failed(attr, label, "validation", detail)
+    setattr(obj, attr, value)
+    if note is not None:
+        # Pass 7 already recorded the override; the staleness note rides on THAT record
+        # (AppliedKey is frozen — replace the entry in place).
+        for i in range(len(report.applied) - 1, -1, -1):
+            entry = report.applied[i]
+            if entry.key == attr and entry.target == label:
+                report.applied[i] = replace(entry, note=note)
+                break

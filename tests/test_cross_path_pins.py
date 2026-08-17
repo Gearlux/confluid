@@ -83,15 +83,13 @@ def test_d4_load_path_applies_a_bare_dict_at_a_dict_annotated_param() -> None:
     assert cfg["sink"].extras == {"a": 1}
 
 
-def test_d4_configure_path_treats_the_same_dict_as_a_block() -> None:
-    """CONFIGURE: a top-level dict is a block for others, never a bare value.
-
-    The matching grammar depends on it — class-name and instance-name blocks
-    are top-level dicts. Twin of the load-path pin above.
-    """
+def test_d4_configure_path_now_applies_it_too() -> None:
+    """CONFIGURE runs through the document (record 19, phase 4), so the SAME rule answers:
+    a bare top-level dict at a dict-annotated param is a VALUE. The "kept difference" this
+    pin recorded is gone with the second implementation."""
     obj = _D4Sink()
     configure(obj, config="extras: {a: 1}")
-    assert obj.extras is None
+    assert obj.extras == {"a": 1}
 
 
 # --------------------------------------------------------------------------- #
@@ -176,16 +174,16 @@ def test_d5_gated_delivery_respects_the_no_broadcast_opt_out_on_both_paths() -> 
 # --------------------------------------------------------------------------- #
 
 
-def test_d2_a_bare_list_never_tunes_a_deferred_slot_on_either_path() -> None:
-    """A bare LIST value is a definition, never a cascading value — both paths.
-
-    Before unification the configure path merged it (its copy of the cascade
-    skipped only dicts), so ``stages: [1, 2]`` silently rode into a deferred
-    slot's kwargs on configure() alone.
-    """
+def test_d2_a_bare_list_reaches_a_deferred_slot_the_document_shows() -> None:
+    """A bare LIST cascades to a marker the document shows — the load path does that for a
+    document `Partial` (measured: `stages: [7]` lands on `!partial:E` at a ctor slot). Under
+    configure() the body-slot marker IS in the document (dump makes it visible — record 19,
+    phase 4), so it receives the list like any document marker. The load path's
+    post-construction delivery for a body slot pass 7 cannot see still skips lists — that
+    half is unchanged and pinned below."""
     holder = _holder_cls()()
     configure(holder, config="stages: [1, 2]")
-    assert holder.engine.kwargs == {}
+    assert holder.engine.kwargs == {"stages": [1, 2]}
 
     holder_cls = _holder_cls()
     cfg = load("holder: !class:{name}()\nstages: [7]\n".format(name=holder_cls.__name__))

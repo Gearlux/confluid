@@ -18,7 +18,7 @@ these pins make it bind every id-keyed store.
 """
 
 import gc
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import pytest
 
@@ -41,6 +41,12 @@ class Widget:
 class Stage:
     def __init__(self, dep: Optional[Widget] = None) -> None:
         self.dep = dep
+
+
+@configurable
+class Pipeline:
+    def __init__(self, stages: Optional[List[Any]] = None) -> None:
+        self.stages = stages if stages is not None else []
 
 
 @configurable
@@ -95,7 +101,7 @@ class Maker:
 def _register() -> None:
     from confluid import register
 
-    for cls in (Widget, Stage, Engine, Owner, SlottedOwner, Maker):
+    for cls in (Widget, Stage, Pipeline, Engine, Owner, SlottedOwner, Maker):
         register(cls)
 
 
@@ -115,9 +121,10 @@ def test_configure_reaches_every_object_even_when_gc_recycles_walk_temporaries()
     try:
         for _ in range(5):
             widgets = [Widget() for _ in range(64)]
-            pipeline = type("Pipeline", (), {})()
-            for i, w in enumerate(widgets):
-                setattr(pipeline, f"stage{i}", Target(Stage, dep=w))
+            # configure() reads the object's DOCUMENT (record 19, phase 4): the markers must sit
+            # in a declared slot — a body-slot list here — for the widgets inside them to be
+            # reachable; a dynamically set attribute is not part of any document.
+            pipeline = Pipeline([Target(Stage, dep=w) for w in widgets])
             configure(pipeline, config="lr: 5.0\n")
             missed = [i for i, w in enumerate(widgets) if w.lr != 5.0]
             assert missed == [], f"configure() silently skipped widgets {missed}"
