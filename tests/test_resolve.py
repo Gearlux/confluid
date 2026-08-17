@@ -7,7 +7,9 @@ the expensive ``solidify()`` finalize (e.g. building a model backbone).
 
 from typing import Any
 
-from confluid import PartialClass, Reference, Target, configurable, flow, load, materialize, resolve
+import pytest
+
+from confluid import ConfigurationError, PartialClass, Reference, Target, configurable, flow, load, materialize, resolve
 
 
 def test_resolve_returns_markers_without_instantiating() -> None:
@@ -159,17 +161,16 @@ def test_flow_solidify_false_skips_nested_solidify() -> None:
     assert calls == ["again"]
 
 
-def test_resolve_leaves_a_DOTTED_ref_deferred() -> None:
-    """``resolve()`` constructs nothing — including for a dotted ``!ref:a.b``.
+def test_resolve_refuses_a_dotted_ATTRIBUTE_ref_exactly_as_load_does() -> None:
+    """``resolve()`` constructs nothing — and since record 19 phase 2 an attribute reference
+    (``${ref:s.train}``, reading a property of the object built at ``s``) is REFUSED on both
+    paths with one message, instead of being deferred here and built there.
 
-    Reading ``split.train`` means BUILDING ``split``, which is the one place a
-    Reference triggers construction. It used to happen on this path too, so
-    ``resolve()`` — the "introspection without cost" API — walked a dataset:
-    measured 3.91s on a real config whose split scans 37 archives, for a call
-    documented as constructing nothing. Two external consumers (a visual editor's
-    YAML importer, a flow-graph builder) already documented that they need
-    markers, and two projects' config suites hand-rolled a tag-stubbing parser
-    because ``resolve()`` "is not an escape".
+    History: reading ``split.train`` used to mean BUILDING ``split`` — the one place a Reference
+    triggered construction — and it ran on this path too, so the "introspection without cost" API
+    walked a dataset (measured 3.91s on a real config). A ``structural`` engine flag then gated it
+    off for ``resolve()`` alone. Both the construction and the flag are gone: the resolver never
+    builds a cursor any more, so the two paths cannot disagree.
     """
     built: list[str] = []
 
@@ -183,35 +184,11 @@ def test_resolve_leaves_a_DOTTED_ref_deferred() -> None:
         def train(self) -> str:
             return f"train-of-{self.source}"
 
-    doc = "s: {_target_: _Split, source: disk}\nuse: '${ref:s.train}'"
-    out = resolve(doc)
-
-    assert built == [], "resolve() must construct nothing, dotted refs included"
-    assert isinstance(out["use"], Reference)
-    assert out["use"].target == "s.train"
-
-
-def test_a_dotted_ref_still_resolves_through_load() -> None:
-    """The deferral is `resolve()`-only: `load()` still reads the attribute off ONE
-    shared instance, which is the whole point of writing `split.train`/`split.val`."""
-    built: list[str] = []
-
-    @configurable
-    class _Split:
-        def __init__(self, source: str = "") -> None:
-            built.append(source)
-            self.source = source
-
-        @property
-        def train(self) -> str:
-            return f"train-of-{self.source}"
-
-        @property
-        def val(self) -> str:
-            return f"val-of-{self.source}"
-
-    graph = load("s: {_target_: _Split, source: disk}\na: '${ref:s.train}'\nb: '${ref:s.val}'")
-
-    assert built == ["disk"], "exactly one construction, shared by both refs"
-    assert graph["a"] == "train-of-disk"
-    assert graph["b"] == "val-of-disk"
+    doc = "s: {_target_: _Split, source: disk}\nuse: {_target_: _Split, source: '${ref:s.train}'}"
+    with pytest.raises(ConfigurationError) as via_resolve:
+        resolve(doc)
+    with pytest.raises(ConfigurationError) as via_load:
+        load(doc)
+    assert str(via_resolve.value) == str(via_load.value)
+    assert "ATTRIBUTE `train`" in str(via_load.value)
+    assert built == [], "refused before anything is built, on either path"

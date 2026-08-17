@@ -5,12 +5,14 @@ Two things live here, and both exist exactly once:
 * **The path grammar.** Every dotted/bracketed path in the system —
   reference targets, ``${key.path}`` interpolation, ``configure()``'s dotted
   candidates — is tokenized by ``_parse_path_segments`` and walked by
-  ``_walk_path_segments``. TWO policies share the walker: *structural*
-  (dict keys / list indices only — the default, which is what keeps
-  ``${train.split}`` from ever grabbing ``str.split``) and *object*
-  (``getattr_fallback=True`` — attribute access once the walk leaves
-  structured data; :func:`resolve_reference_path`). Extend the shared walker;
-  never add another grammar.
+  ``_walk_path_segments``. The walker is STRUCTURAL — dict keys / list
+  indices only, which is what keeps ``${train.split}`` from ever grabbing
+  ``str.split``. It used to carry a second, *object* policy (``getattr`` once
+  the walk left structured data — the ``!ref:split.train`` attribute reference);
+  that was removed 2026-08 (architecture record 19, phase 2): the FIRST segment
+  of a reference decides — a document key walks structure only, anything else is
+  an import path (:func:`resolve_reference_path`). Extend the shared walker;
+  never add another grammar, and never re-add a policy.
 
 * **Interpolation** (:class:`Resolver`). ``${...}`` dispatches on the NAME
   SHAPE — a plain identifier is an environment variable, a dotted/bracketed
@@ -216,37 +218,12 @@ def _parse_path_segments(path: str) -> Optional[List[_PathSegment]]:
     return segments
 
 
-def _materialize_cursor(value: Any) -> Any:
-    """Flow a Fluid cursor into its live object before attribute access.
-
-    Maps the raw marker through the active ``flow_memo`` first (the
-    per-context shared-identity memo ``_flow_recursive`` populates) so a
-    dotted ref reuses the SINGLE materialized instance — ``!ref:split.train``
-    + ``!ref:split.val`` share one live ``split`` instead of each rebuilding
-    the whole subtree. Non-Fluid values pass through untouched.
-    """
-    from confluid.fluid import Fluid
-
-    if not isinstance(value, Fluid):
-        return value
-    # The sanctioned lazy seam: resolver is imported by engine at top level,
-    # so the reverse dependency (flow + the engine-state memo) is body-local.
-    from confluid.engine import _ENGINE_STATE, flow
-
-    flow_memo = _ENGINE_STATE.get().flow_memo
-    if flow_memo is not None:
-        value = flow_memo.get(id(value), value)
-    return flow(value)
-
-
 def _walk_path_segments(
     segments: List[_PathSegment],
     context: Any,
     lookup_fn: Callable[[str, Dict[str, Any]], Any],
-    *,
-    getattr_fallback: bool = False,
 ) -> Any:
-    """Walk pre-tokenized segments through nested dicts and lists.
+    """Walk pre-tokenized segments through nested dicts and lists — STRUCTURE only.
 
     For ``"idxref"`` segments, ``lookup_fn(name, context)`` is called with
     the *original* context (not the current cursor) so the inner name
@@ -254,18 +231,11 @@ def _walk_path_segments(
     decides the step semantics: ``int`` → list index, ``str``/``int``
     → dict key.
 
-    Two policies share this walker:
-
-    * **structural** (``getattr_fallback=False``, the default) — dicts and
-      lists only; the policy behind ``_lookup_path`` (string ``!ref:`` /
-      ``${...}`` interpolation / ``configure()``). A ``${train.split}`` can
-      never accidentally grab a ``str.split`` method.
-    * **object** (``getattr_fallback=True``) — a ``key`` segment on a
-      NON-container cursor falls back to ``getattr`` (Fluids are flowed via
-      :func:`_materialize_cursor` first). Dict-key/index lookup still wins
-      while the cursor IS a container — attribute access only starts once
-      the walk leaves structured data. This is the Reference-resolution
-      policy (:func:`resolve_reference_path`).
+    A ``key`` segment steps into a dict; an ``idx`` segment into a list; anything
+    else — a marker, a live object, a scalar — ends the walk. There is ONE
+    policy: a ``${train.split}`` can never grab a ``str.split`` method, and a
+    ``!ref:split.train`` never reads an attribute (record 19, phase 2 — see
+    :func:`refuse_attribute_reference` for the located refusal).
 
     Returns ``None`` when the walk can't proceed (key missing, index
     out of range, type mismatch), preserving the caller's
@@ -274,17 +244,8 @@ def _walk_path_segments(
     current: Any = context
     for kind, val in segments:
         if kind == "key":
-            if isinstance(current, dict):
-                if val in current:
-                    current = current[val]
-                    continue
-                return None  # dict-key wins on dicts — never getattr into a dict
-            if getattr_fallback and not isinstance(current, (list, tuple)):
-                current = _materialize_cursor(current)
-                nxt = getattr(current, str(val), None)
-                if nxt is None:
-                    return None
-                current = nxt
+            if isinstance(current, dict) and val in current:
+                current = current[val]
                 continue
             return None
         if kind == "idx":
@@ -316,7 +277,8 @@ def _walk_path_segments(
     return current
 
 
-_CALL_SUFFIX_RE = re.compile(r"^(.+)\.([\w-]+)\(\)$")
+_CALL_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.(?P<name>[\w-]+)\(\)$")
+"""``obj.method()`` — the removed method-call reference; matched only to REFUSE it with its name."""
 
 
 def _import_base(obj_path: str) -> Any:
@@ -331,85 +293,79 @@ def _import_base(obj_path: str) -> Any:
         return resolve_class(obj_path)
 
 
-def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> Any:
-    """Resolve a dotted / bracketed ``!ref:`` path with OBJECT-access semantics.
+def _first_segment(target: str) -> str:
+    """The first path segment of a reference target (``split`` for ``split.train`` / ``packs[0].x``)."""
+    m = _PATH_TOKEN_RE.match(target)
+    return m.group(1) if m and m.group(1) is not None else target
 
-    The single rich resolver behind ``Reference`` resolution (used by
-    ``flow()`` and ``_flow_recursive`` after their exact-key probe). One
-    grammar covers everything the old per-module resolvers split between
-    them:
 
-    * ``obj.attr`` — attribute access on a (flowed) context object; the base
-      is materialized via :func:`_materialize_cursor`, so dotted refs share
-      the single live instance (``!ref:split.train`` / ``!ref:split.val``).
-    * ``a.b.c`` / ``packs[0].name`` / ``items[idx]`` — full multi-level
-      walks mixing dict keys, list indices, bracketed name-refs, and
-      attribute steps (:func:`_walk_path_segments` with the object policy).
-    * ``obj.method()`` — a trailing ``()`` CALLS the resolved final
-      attribute (zero-arg, re-invoked on every resolution — never memoized).
-    * ``package.module.attr`` — when the base is not in ``context``, it is
-      imported (``importlib``) or resolved via the class registry, e.g.
-      ``${ref:mypkg.detection.detection_collate_fn}``.
+def refuse_attribute_reference(target: str, context: Optional[Dict[str, Any]], where: str = "") -> None:
+    """Raise the located refusal for a reference that would read an ATTRIBUTE or call a METHOD.
 
-    A literal context key containing dots (``"a.b"``) still wins over the
-    segment walk for its prefix, mirroring ``_lookup_path``'s
-    literal-key-first rule. Returns ``None`` when unresolvable — the caller
-    decides whether that leaves the ``Reference`` deferred or raises.
+    The FIRST segment decides what a dotted reference is (record 19, phase 2): a document key
+    walks STRUCTURE only — dict keys and list indices — while anything else is an import path.
+    So a reference whose first segment is a document key and whose structural walk misses is
+    asking for the object policy that no longer exists — reading ``.train`` off the object
+    built at ``split``, or calling ``.build()`` on it — and is refused HERE, on both the
+    ``load()`` and the ``resolve()`` path, which is how ``hydraide`` reports it (exit 2).
+
+    ``where`` is the reference node's ``file:line:col`` suffix (``format_yaml_loc``-shaped,
+    empty for the ``${ref:...}`` string spelling — a scalar carries no location).
     """
     ctx = context or {}
-
-    call_match = _CALL_SUFFIX_RE.match(target)
-    if call_match:
-        base = _resolve_base_path(call_match.group(1), ctx)
-        if base is None:
-            return None
-        method = getattr(base, call_match.group(2), None)
-        if method is not None and callable(method):
-            return method()
-        return None
-
-    # Attribute form: literal-prefix probe first (grammar parity for context
-    # keys literally named "a.b"), then the rich segment walk, then import.
-    prefix, _, last = target.rpartition(".")
-    if prefix and prefix in ctx:
-        base = _materialize_cursor(ctx[prefix])
-        # Containers keep dict-key/index semantics (the walker's job) — never
-        # getattr into a dict/list, or ``cfg.items`` would silently resolve to
-        # the builtin ``dict.items`` method instead of missing.
-        if not isinstance(base, (dict, list, tuple)):
-            return getattr(base, last, None)
-
+    call = _CALL_SUFFIX_RE.match(target)
+    if call is not None:
+        raise ConfigurationError(
+            f"!ref:{target}{where} calls the METHOD `{call.group('name')}` of the object built at "
+            f"`{call.group('base')}` — method-call references were removed (2026-08, architecture record 19). "
+            "Compute the value on the consumer side, or expose it as a constructor parameter of the class "
+            f"that needs it and reference the whole object (`!ref:{_first_segment(target)}`)."
+        )
+    first = _first_segment(target)
+    if first not in ctx or "." not in target and "[" not in target:
+        return  # not a document key (an import path), or a whole-object ref — not this refusal's case
     segments = _parse_path_segments(target)
-    if segments is not None:
-        lookup = Resolver(context=ctx)._lookup_path
-        # A PURELY structural path (dict keys / list indices only) is NOT this
-        # resolver's to take: the deferred-Reference machinery deliberately
-        # keeps it late-bound so post-load overrides (e.g. a CLI's
-        # ``--drone_index 8``) still flow through at final materialize time.
-        # Only when the structural walk misses do we retry with the OBJECT
-        # policy — i.e. the resolution genuinely required an attribute step.
-        if _walk_path_segments(segments, ctx, lookup) is None:
-            found = _walk_path_segments(segments, ctx, lookup, getattr_fallback=True)
-            if found is not None:
-                return found
+    if segments is not None and _walk_path_segments(segments, ctx, Resolver(context=ctx)._lookup_path) is not None:
+        return  # a structural walk that succeeds is legitimate
+    attr = target.rsplit(".", 1)[-1] if "." in target else target
+    raise ConfigurationError(
+        f"!ref:{target}{where} reads the ATTRIBUTE `{attr}` of the object built at `{first}` — attribute "
+        "references were removed (2026-08, architecture record 19). Read the attribute on the consumer side: "
+        f"give `{first}`'s class a selector parameter and reference the whole object (`!ref:{first}`), or "
+        "write the marker again with the selector set."
+    )
 
+
+def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> Any:
+    """Resolve a dotted / bracketed ``!ref:`` path — STRUCTURE first, then IMPORT.
+
+    The single rich resolver behind ``Reference`` resolution (used by ``flow()`` and
+    ``_flow_recursive`` after their exact-key probe). The FIRST segment decides:
+
+    * a DOCUMENT KEY — ``a.b.c`` / ``packs[0].name`` / ``items[idx]`` walk dict keys, list
+      indices and bracketed name-refs (:func:`_walk_path_segments`). A walk that leaves
+      structure — an attribute of a built object, a method call — is REFUSED by
+      :func:`refuse_attribute_reference` (record 19, phase 2), never resolved.
+    * anything else — ``package.module.attr`` is imported (``importlib``) or resolved via the
+      class registry, e.g. ``${ref:mypkg.detection.detection_collate_fn}`` — the spelling
+      ``dump()`` emits for a function-valued param.
+
+    A literal context key containing dots (``"a.b"``) still wins over the segment walk,
+    mirroring ``_lookup_path``'s literal-key-first rule. A PURELY structural resolution returns
+    ``None`` from this resolver: the deferred-Reference machinery deliberately keeps it late-bound
+    so post-load overrides still flow through at final materialize time. Returns ``None`` when
+    unresolvable — the caller decides whether that leaves the ``Reference`` deferred or raises.
+    """
+    ctx = context or {}
+    refuse_attribute_reference(target, ctx)
+    if _first_segment(target) in ctx or target in ctx:
+        return None  # structural — the late-bound machinery's to resolve
+    prefix, _, last = target.rpartition(".")
     if prefix:
         base = _import_base(prefix)
         if base is not None:
             return getattr(base, last, None)
     return None
-
-
-def _resolve_base_path(obj_path: str, ctx: Dict[str, Any]) -> Any:
-    """Resolve the base object of a ``.method()`` reference (context → walk → import)."""
-    if obj_path in ctx:
-        return _materialize_cursor(ctx[obj_path])
-    segments = _parse_path_segments(obj_path)
-    if segments is not None:
-        found = _walk_path_segments(segments, ctx, Resolver(context=ctx)._lookup_path, getattr_fallback=True)
-        if found is not None:
-            return _materialize_cursor(found)
-    return _import_base(obj_path)
 
 
 class Resolver:

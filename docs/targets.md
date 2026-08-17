@@ -394,9 +394,28 @@ c: !class:Box(size=3)   # a SECOND marker — a second, independent instance
 ```
 
 Within one `materialize()` pass, a marker reached directly or through any number
-of `!ref:` resolves to **one** live instance (so `a is b`). `!ref:` also resolves
-dotted attribute / method paths — `!ref:my_split.train`, `!ref:some_obj.build()`
-— against that single materialized instance.
+of `!ref:` resolves to **one** live instance (so `a is b`). A dotted `!ref:` is
+decided by its **first segment**: a document key walks *structure* only — dict
+keys and list indices (`!ref:cfg.lr`, `!ref:packs[1].name`); anything else is an
+import path (`!ref:posixpath.join` — the spelling `dump()` emits for a
+function-valued parameter). Reading an **attribute** of a built object
+(`!ref:my_split.train`) or calling a method (`!ref:obj.build()`) is refused, with
+the line and the rewrite: give the referent's class a selector parameter and
+reference the whole object.
+
+```yaml
+# refused: !ref:split.train reads the ATTRIBUTE `train` of the object built at `split`
+train_set: !class:Stream
+  source: &split_recipe !class:DatasetSplit    # instead: the selector on the marker,
+    source: !ref:indexable                     # the recipe written once (anchored)…
+    val_fraction: 0.2
+    seed: 42
+    split: train
+val_set: !class:Stream
+  source: !class:DatasetSplit
+    <<: *split_recipe                          # …and merged into the other view.
+    split: val                                 # `indexable` is still ONE instance.
+```
 
 Independence has exactly one spelling: write the marker again (`c` above). The
 `!clone:` / `_clone_` / `${clone:}` deep-copy marker was removed in 0.3.0 — it

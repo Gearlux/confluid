@@ -26,9 +26,10 @@ Both callers now import the one module. Names with users stay importable from he
 found — sixteen so far, ledger in the AGENTS broadcast mandate and the CHANGELOG.
 NEW code imports from the real home (``confluid.broadcast`` / ``confluid.state``).
 
-Two deliberate lazy seams remain (both documented at the site):
-``resolve()`` body-imports ``loader.load`` (str/Path convenience), and
-``resolver._materialize_cursor`` body-imports this module (``_ENGINE_STATE``/``flow``).
+ONE deliberate lazy seam remains (documented at the site): ``resolve()``
+body-imports ``loader.load`` (str/Path convenience). The second — ``resolver``
+body-importing this module to flow a Reference's cursor — went with the attribute
+references (record 19, phase 2): the resolver constructs nothing any more.
 
 (``confluid.loader``'s own compat re-export block was pruned 2026-08-08 — it
 had zero users; only its real ``materialize`` dependency remains. New code
@@ -96,7 +97,7 @@ from confluid.merger import expand_dotted_keys
 from confluid.partial import partial_param_names
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
-from confluid.resolver import Resolver, resolve_reference_path
+from confluid.resolver import Resolver, refuse_attribute_reference, resolve_reference_path
 
 # The engine state moved to `confluid.state` so `confluid.broadcast` can read
 # the ambient report without importing the engine (see that module's docstring
@@ -246,7 +247,6 @@ def resolve(
             flow_memo={},
             instance_memo={},
             memo_keepalive=[],
-            structural=True,
         )
     )
     try:
@@ -475,17 +475,15 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                     f"`{data.target}: null`), or remove the kwarg."
                 )
             return _flow_recursive(resolved, parent_context=parent_context)
-        # Support dotted paths and method calls (e.g., "obj.method()") via
-        # the unified rich resolver (attribute access, brackets, module import).
-        #
-        # This is the ONE place `_flow_recursive` constructs on behalf of a
-        # Reference: reading `split.train` means building `split`. `resolve()`
-        # promises to construct NOTHING, so it withholds this step and hands the
-        # Reference back untouched — a dotted ref stays late-bound exactly as a
-        # plain `!ref:name` already does. `materialize()` / `load()` are
-        # unaffected, so the one-instance guarantee (one `split` shared by
-        # `.train` and `.val`) is untouched.
-        if parent_context and not _ENGINE_STATE.get().structural:
+        # A dotted path: the FIRST segment decides (record 19, phase 2). A document
+        # key walks STRUCTURE only and stays late-bound here (the deferred-Reference
+        # machinery resolves it at final materialize time); a walk that would leave
+        # structure — an attribute of a built object, a method call — is REFUSED with
+        # the node's location, on THIS path as well as under `resolve()`, which is
+        # how `hydraide` reports it. Anything else is an import path, resolved now.
+        # Nothing is constructed here any more: `resolve()` needs no special flag.
+        if parent_context:
+            refuse_attribute_reference(data.target, parent_context, _at_yaml_loc(data))
             resolved = resolve_reference_path(data.target, parent_context)
             if resolved is not None:
                 return resolved
@@ -1396,16 +1394,17 @@ def _flow_reference(
     runtime_args: Tuple[Any, ...],
     runtime_kwargs: Dict[str, Any],
 ) -> Any:
-    """Resolve a ``Reference``: exact context key → rich path resolver → structural fallback.
+    """Resolve a ``Reference``: exact context key → import path → structural fallback.
 
     The exact whole-object key flows the referenced value (sharing identity);
-    ``resolve_reference_path`` handles dotted attribute access, brackets, and
-    module imports; the structural ``_resolve_ref`` is the last resort for
-    nested paths. Unresolvable → typed ``ReferenceResolutionError``.
+    ``resolve_reference_path`` REFUSES an attribute / method-call reference (record 19,
+    phase 2) and resolves an import path; the structural ``_resolve_ref`` is the last
+    resort for nested dict/list paths. Unresolvable → typed ``ReferenceResolutionError``.
     """
     if context and obj.target in context:
         return flow(context[obj.target], *runtime_args, **runtime_kwargs)
     if context:
+        refuse_attribute_reference(obj.target, context, _at_yaml_loc(obj))
         dotted = resolve_reference_path(obj.target, context)
         if dotted is not None:
             return dotted
