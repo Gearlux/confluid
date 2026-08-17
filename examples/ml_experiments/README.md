@@ -18,12 +18,12 @@ python examples/ml_experiments/run.py
 
 | Hydra concept | confluid feature |
 |---|---|
-| Config groups (`db: mysql`) | `_scope_: {model: cnn}` dimension blocks; `_notscope_: {model: }` holds the default (active while the dimension is unset) |
+| Config groups (`db: mysql`) | `!scope:model=cnn` dimension blocks; `!notscope:model` holds the default (active while the dimension is unset) |
 | Group selection (`db=mysql` on the CLI) | `load(path, scopes=["model=cnn"])` |
 | Defaults list / experiment overlays (`+experiment=full`) | `include: base.yaml` + overriding keys (document order, last write wins) |
-| `_target_:` / `instantiate()` | `_target_:` — same key, built at load |
-| `_partial_:` | `_partial_: true` — deferred until domain code flows it with runtime args |
-| Interpolation (`${db.port}`) | `${dotted.key}` / `${env:VAR}` strings, and `${ref:key}` for live objects |
+| `_target_:` / `instantiate()` | `!class:Name` — built at load (`_target_:` in the plain form, the same key) |
+| `_partial_:` | `!partial:Name` — deferred until domain code flows it with runtime args |
+| Interpolation (`${db.port}`) | `${dotted.key}` / `${env:VAR}` strings, and `!ref:key` for live objects |
 | `--cfg job` (show the composed config) | `dump(obj)` — and the dump reloads into the identical object graph |
 
 ## The pieces
@@ -36,15 +36,11 @@ with zero parameter-threading code.
 **Config groups are scope blocks.**
 
 ```yaml
-model_default:                      # active while no model=... dimension is set
-  _notscope_: {model: }
-  model:
-    _target_: MLP
+model_default: !notscope:model                      # active while no model=... dimension is set
+  model: !class:MLP
     hidden: 32
-model_cnn:
-  _scope_: {model: cnn}
-  model:
-    _target_: CNN
+model_cnn: !scope:model=cnn
+  model: !class:CNN
     channels: 8
 ```
 
@@ -60,7 +56,7 @@ A CLI framework forwards `--scope model=cnn` (or dimension flags) straight
 into `scopes=`.
 
 **The optimizer is deferred.** It needs the model's parameters — which only
-exist at run time — so the YAML declares it `_partial_: true` and the trainer builds it
+exist at run time — so the YAML declares it `!partial:` and the trainer builds it
 inside `fit()`:
 
 ```python

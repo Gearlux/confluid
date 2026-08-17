@@ -2,9 +2,9 @@
 #
 # Structure:
 #   * bare top-level keys  -> global knobs, broadcast tree-wide (implicit **.key)
-#   * _scope_ / _notscope_ -> "config groups": pick a model/optimizer per run
+#   * !scope: / !notscope: -> "config groups": pick a model/optimizer per run
 #                             without editing any file (scopes=["model=cnn"])
-#   * _target_ / ${ref:} / _partial_ -> object wiring
+#   * !class: / !ref: / !partial: -> object wiring
 
 # --- global knobs: bare keys reach EVERY component that accepts them ---
 seed: 7
@@ -13,43 +13,31 @@ verbose: false
 base_lr: 0.5
 
 # --- data ---
-# _target_ names the callable to build; its sibling keys are the constructor
-# kwargs. Built at load time (broadcast keys still reach it) unless _partial_.
-dataset:
-  _target_: SyntheticDataset
+# !class: names the callable to build; the keys below it are the constructor
+# kwargs. Built at load time (broadcast keys still reach it) unless !partial:.
+dataset: !class:SyntheticDataset
   n_records: 256
 
 # --- config group "model" (default: MLP; select others via scopes=["model=cnn"]) ---
-model_default:      # active while no model=... dimension is set
-  _notscope_: {model: }
-  model:
-    _target_: MLP
+model_default: !notscope:model      # active while no model=... dimension is set
+  model: !class:MLP
     hidden: 32
-model_cnn:
-  _scope_: {model: cnn}
-  model:
-    _target_: CNN
+model_cnn: !scope:model=cnn
+  model: !class:CNN
     channels: 8
 
 # --- config group "optimizer" (default: SGD; select via scopes=["optimizer=adam"]) ---
-# _partial_: true = deferred until the trainer flows it with params= at run time.
-optim_default:
-  _notscope_: {optimizer: }
-  optimizer:
-    _target_: SGD
-    _partial_: true
-    lr: ${ref:base_lr}
-optim_adam:
-  _scope_: {optimizer: adam}
-  optimizer:
-    _target_: Adam
-    _partial_: true
-    lr: ${ref:base_lr}
+# !partial: = deferred until the trainer flows it with params= at run time.
+optim_default: !notscope:optimizer
+  optimizer: !partial:SGD
+    lr: !ref:base_lr
+optim_adam: !scope:optimizer=adam
+  optimizer: !partial:Adam
+    lr: !ref:base_lr
 
 # --- the trainer wires everything together ---
-trainer:
-  _target_: Trainer
-  model: ${ref:model}
-  dataset: ${ref:dataset}
-  optimizer: ${ref:optimizer}
+trainer: !class:Trainer
+  model: !ref:model
+  dataset: !ref:dataset
+  optimizer: !ref:optimizer
   max_epochs: 10

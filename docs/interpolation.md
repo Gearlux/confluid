@@ -67,7 +67,7 @@ order, last spec wins — and the include obeys it like everything else.
 # base.yaml                    # main.yaml
 lr: 0.1                        include: base.yaml
 Stage:                         lr: 0.3
-  lr: 0.2                      s: {_target_: Stage}
+  lr: 0.2                      s: !class:Stage
 ```
 
 Read the composed document top to bottom:
@@ -76,7 +76,7 @@ Read the composed document top to bottom:
 Stage:
   lr: 0.2         # from the paste
 lr: 0.3           # your line, where you wrote it
-s: {_target_: Stage}
+s: !class:Stage
 ```
 
 `s` gets `lr = 0.3` — your bare key is the last spec. Note that base's `lr: 0.1`
@@ -90,14 +90,14 @@ Move the directive to the bottom and the same two files mean the opposite thing:
 ```yaml
 # main.yaml
 lr: 0.3
-s: {_target_: Stage}
+s: !class:Stage
 include: base.yaml     # everything above is a FALLBACK; base overrides it
 ```
 
 composes to
 
 ```yaml
-s: {_target_: Stage}
+s: !class:Stage
 lr: 0.1           # base's value now, at the paste's later position
 Stage:
   lr: 0.2         # the last spec addressing Stage
@@ -108,17 +108,17 @@ let the shared file win"*, and an include in the middle splits the file cleanly:
 keys above it are overridden by the paste, keys below it override the paste.
 
 - **An overlay mapping TUNES a marker, it does not replace it.** Re-stating a
-  node your base file declared with `_target_` merges into that marker's kwargs,
+  node your base file declared with `!class:` merges into that marker's kwargs,
   at any depth — the same thing the dotted spelling (`model.blue: 3`) does:
 
   ```yaml
   # base.yaml                       # experiment.yaml
-  model:                            include: base.yaml
-    _target_: Counter               model:
-    red: 1                            blue: 3      # -> Counter(red=1, blue=3)
+  model: !class:Counter             include: base.yaml
+    red: 1                          model:
+                                      blue: 3      # -> Counter(red=1, blue=3)
   ```
 
-  Re-declaring the node instead — writing `_target_` again in the overlay — is a
+  Re-declaring the node instead — writing `!class:` again in the overlay — is a
   replacement, and the overlay's marker wins outright.
 - **Between two includes, the later one wins** (`include: [first, second]`) — they
   paste in listed order at the same slot.
@@ -146,8 +146,7 @@ size: 7
 label: from-frag
 ```
 ```yaml
-m:
-  _target_: Widget
+m: !class:Widget
   include: frag.yaml     # -> Widget(size=7, label='from-frag')
 ```
 
@@ -164,8 +163,7 @@ reads best:
 ```yaml
 lr: 0.1
 
-post_include:
-  _notscope_: { default: }     # active unless `default` is activated
+post_include: !notscope:default     # active unless `default` is activated
   include: tuning.yaml         # its keys land here, overriding lr above
 ```
 
@@ -175,8 +173,7 @@ directive with it — a framework-specific overlay need not exist in a checkout 
 never activates that framework:
 
 ```yaml
-torch_only:
-  _scope_: { framework: torch }
+torch_only: !scope:framework=torch
   include: torch_overrides.yaml    # not opened unless --scope framework=torch
 ```
 

@@ -73,15 +73,14 @@ port: "${env:EXAMPLE_MISSING_PORT,8080}"
         # --- ${...} reaches a marker's own kwarg block, and BURNS IN ---------
         # A placeholder inside a marker's mapping body substitutes in the same
         # load-time pass as any plain key; the marker then CARRIES the
-        # substituted value (dump() emits it; a deferred `_partial_` slot flowed
-        # later sees it). A slot that must stay late-bound uses `${ref:...}`.
+        # substituted value (dump() emits it; a deferred `!partial:` slot flowed
+        # later sees it). A slot that must stay late-bound uses `!ref:`.
         marked = Path(tmp) / "marked.yaml"
         marked.write_text(
             """
 run:
   name: exp42
-sink:
-  _target_: ExampleSink
+sink: !class:ExampleSink
   out_dir: "${env:EXAMPLE_DATA_ROOT}/${run.name}"
 """
         )

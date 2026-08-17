@@ -38,14 +38,14 @@ class ClosedCache:
 def main() -> None:
     # 1. The permissive default: the typo'd key is APPLIED as a post-init
     #    attribute (and warned about — that is the B1 behaviour, not silence).
-    open_cache = load("cache: {_target_: OpenCache, pathh: /x}")["cache"]
+    open_cache = load("cache: !class:OpenCache(pathh=/x)")["cache"]
     assert open_cache.pathh == "/x"
     assert open_cache.path == "/tmp/cache"  # the real param kept its default
     print("permissive default: 'pathh' applied as an attribute (with a warning)")
 
     # 2. The strict class refuses the same spelling, naming its surface.
     try:
-        load("cache: {_target_: ClosedCache, pathh: /x}")
+        load("cache: !class:ClosedCache(pathh=/x)")
     except ConfigurationError as exc:
         assert "pathh" in str(exc) and "path, size_mb" in str(exc)
         print(f"strict_attrs=True: refused — {exc}")
@@ -54,12 +54,12 @@ def main() -> None:
 
     # 3. A BARE key never reaches the gate: it cascades tree-wide, matches
     #    nothing on ClosedCache, and the document still loads.
-    result = load("unrelated_sweep_knob: 7\ncache: {_target_: ClosedCache}")
+    result = load("unrelated_sweep_knob: 7\ncache: !class:ClosedCache")
     assert result["cache"].size_mb == 64
     print("bare keys: a sweep document still loads around a strict class")
 
     # 4. Declared slots are untouched by the mark.
-    cache = load("cache: {_target_: ClosedCache, size_mb: 128}")["cache"]
+    cache = load("cache: !class:ClosedCache(size_mb=128)")["cache"]
     assert cache.size_mb == 128
     assert marks(ClosedCache).strict_attrs is True
     print("declared params still configure; marks(ClosedCache).strict_attrs is True")

@@ -18,9 +18,9 @@ def main() -> None:
     else:
         raise AssertionError("expected ConfigFileNotFoundError")
 
-    # 2. Unknown _target_ -> UnknownClassError, also a ValueError.
+    # 2. Unknown target -> UnknownClassError, also a ValueError.
     try:
-        confluid.load("model:\n  _target_: NoSuchThing")
+        confluid.load("model: !class:NoSuchThing")
     except confluid.UnknownClassError as exc:
         assert isinstance(exc, ValueError)
         print(f"unknown class -> {type(exc).__name__} (also ValueError)")
@@ -29,7 +29,7 @@ def main() -> None:
 
     # 3. Everything roots at ConfluidError, so one except catches any confluid failure.
     try:
-        confluid.load("model:\n  _target_: StillMissing")
+        confluid.load("model: !class:StillMissing")
     except confluid.ConfluidError as exc:
         print(f"the root ConfluidError catches it too: {type(exc).__name__}")
 
@@ -49,7 +49,7 @@ def main() -> None:
 
     torch_op = _torch_variant()
     try:
-        confluid.load("op:\n  _target_: FourierOp")
+        confluid.load("op: !class:FourierOp")
     except confluid.AmbiguousClassError as exc:
         assert isinstance(exc, confluid.ConfigurationError)
         print(f"shared name -> {type(exc).__name__} listing {len(str(exc).splitlines()) - 2} candidates")
@@ -58,8 +58,8 @@ def main() -> None:
 
     # ...and each of the three ways to choose one:
     # The `@axis=value` selector is part of the target NAME, not tag syntax, so it
-    # rides an ordinary `_target_` string unchanged.
-    picked = confluid.load("op:\n  _target_: FourierOp@group=fft/torch")["op"]
+    # rides an ordinary target string unchanged.
+    picked = confluid.load("op: !class:FourierOp@group=fft/torch")["op"]
     assert isinstance(picked, torch_op), "the target selector picks the torch variant"
     assert confluid.get_registry().get_class("FourierOp", group="fft/numpy") is FourierOp
     print("selector / filter / dotted path each resolve one class")

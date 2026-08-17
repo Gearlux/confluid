@@ -148,9 +148,9 @@ carries the same filter into the lookup.
 In a config, three spellings choose one:
 
 ```yaml
-op: {_target_: myops.torch.FourierOp}       # the dotted path — always unambiguous
-op: {_target_: "FourierOp@group=fft/torch"}  # a target selector
-op: {_target_: "FourierOp@framework=$engine"}  # ...whose value may come from the document
+op: !class:myops.torch.FourierOp       # the dotted path — always unambiguous
+op: !class:FourierOp@group=fft/torch  # a target selector
+op: !class:FourierOp@framework=$engine  # ...whose value may come from the document
 engine: torch
 ```
 
@@ -172,13 +172,11 @@ Pair it with a [scope block](targets.md) that declares the key, and one config d
 either engine:
 
 ```yaml
-torch_run:
-  _scope_: {engine: torch}
+torch_run: !scope:engine=torch
   engine: torch
-keras_run:
-  _scope_: {engine: keras}
+keras_run: !scope:engine=keras
   engine: keras
-loss: {_target_: "CrossEntropy@framework=$engine"}
+loss: !class:CrossEntropy@framework=$engine
 ```
 
 **When it is a mistake instead.** If a second class claims a name and NO tag distinguishes

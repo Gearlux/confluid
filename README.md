@@ -8,13 +8,13 @@
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
 - **Third-Party Registration:** Easily make third-party classes (like PyTorch Optimizers) — or plain builder **functions** — part of your configurable graph via `@configurable` / `register`.
-- **Smart Reference Resolution:** `_ref_` / `${ref:…}` for cross-config references (shared instance), `${env:VAR}` for environment variables and `${train.dataset}` for config keys.
-- **Deferred Initialization — two modes, nothing implicit:** a node is built at load, or `_partial_: true` keeps it deferred until you `flow()` it with runtime-injected arguments (e.g. an optimizer needing `params=model.parameters()`, or a model needing `num_classes` from the dataset). Nothing about the surrounding document changes which one you get.
+- **Smart Reference Resolution:** `!ref:` (`_ref_` / `${ref:…}` in the plain form) for cross-config references (shared instance), `${env:VAR}` for environment variables and `${train.dataset}` for config keys.
+- **Deferred Initialization — two modes, nothing implicit:** a node is built at load, or `!partial:` (`_partial_: true`) keeps it deferred until you `flow()` it with runtime-injected arguments (e.g. an optimizer needing `params=model.parameters()`, or a model needing `num_classes` from the dataset). Nothing about the surrounding document changes which one you get.
 - **Full Hierarchy Dumping:** Export your runtime state to YAML/JSON and reconstruct it later.
 - **Schema Export & Validation:** Auto-generated pydantic schemas validate every `@configurable` constructor; docstring `Args:` blocks become machine-readable parameter help (`parse_param_docs`); `sanitize_schema` downgrades schemas to the subset strict LLM function-calling APIs accept.
 - **I/O Contract:** `@output` properties and `Mandatory[T]` inputs declare a Runnable's contract for GUIs and agents from one source.
 - **Flat-View Ordered Matching:** Bare keys broadcast tree-wide (an implicit `**.key`), addressed keys (`trainer.lr` / `trainer: {lr: …}`) are **exact** — no cascade to descendants — and glob wildcards opt back in (`trainer.*.lr` = direct children, `trainer.**.lr` = the node and all descendants). Matching scalars apply in YAML document order with **last-write-wins** semantics — no hidden priority tiers.
-- **Scopes:** conditional overlays (`_scope_: {debug: }`, `_scope_: {task: classification}`, `_notscope_: {…}`) activated per run — the value is a mapping of dimension to required value, so one block can require several at once.
+- **Scopes:** conditional overlays (`!scope:debug`, `!scope:task=classification`, `!notscope:…`) activated per run — the reserved-key spelling `_scope_: {…}` takes a mapping of dimension to required value, so one block can require several at once.
 
 ## Documentation
 
@@ -60,7 +60,7 @@ Python, no ML dependencies — run them as-is):
 - [`examples/ml_experiments/`](https://github.com/Gearlux/confluid/tree/main/examples/ml_experiments)
   — an ML experiment suite in the Hydra style: one base config, model/optimizer
   **config groups** selected per run via scopes (`scopes=["model=cnn"]`),
-  `include:` experiment overlays, `_target_`/`${ref:}`/`_partial_` object wiring,
+  `include:` experiment overlays, `!class:`/`!ref:`/`!partial:` object wiring,
   bare-key broadcast of global knobs (`seed`, `device`), and a `dump()`
   snapshot that reloads into the identical experiment. Its README maps each
   Hydra concept to the confluid feature that plays its role.
@@ -78,7 +78,7 @@ Python, no ML dependencies — run them as-is):
 
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
-- **Reserved-Key IR:** Markers are ordinary YAML mappings carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_scope_`) — no proprietary symbols and no custom tags, so the file stays readable by any YAML parser.
+- **Two Spellings, One IR:** a marker is a YAML tag (`!class:` / `!partial:` / `!ref:` / `!scope:` — the authoring form) or an ordinary mapping carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_scope_` — the machine form `hydraide` emits, readable by any YAML parser). Both parse to the same markers.
 - **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `Partial`, `Reference`) for internal resolution.
 
 ### Dependency Injection
@@ -116,14 +116,13 @@ class Trainer:
 
 ### 2. Configure via YAML
 ```yaml
-# experiment.yaml — ordinary YAML: `yaml.safe_load`, `yq` and editor schemas all read it
+# experiment.yaml — the tag form; `hydraide experiment.yaml` emits the plain form `yq` reads
 defaults:
   n_layers: 10
 
 Trainer:
   lr: 0.0001
-  model:
-    _target_: Model
+  model: !class:Model
     layers: ${defaults.n_layers}    # config-key interpolation — one source of truth
 ```
 
@@ -155,7 +154,7 @@ from confluid import configure_from_file
 configure_from_file(trainer, path="experiment.yaml")
 ```
 
-It reads the file via `load_config` (so `include:` / `import:` directives and `_target_` / `${ref:}` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
+It reads the file via `load_config` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
 
 ### 4. Dump and Reconstruct
 ```python

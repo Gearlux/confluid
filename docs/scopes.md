@@ -13,24 +13,21 @@ AND). Use `{name: }` with no value for a boolean dimension.
 
 ```yaml
 # Boolean — flips on with `--scope debug`
-if_debug:
-  _scope_: {debug: }
+if_debug: !scope:debug
   log_level: DEBUG
 
 # Keyed — flips on with `--scope task=classification` (or `--task classification`)
-if_classification:
-  _scope_: {task: classification}
-  model: {_target_: ClassifierModel}
+if_classification: !scope:task=classification
+  model: !class:ClassifierModel
 
 # Several dimensions at once — active only when BOTH are selected
 if_keras_classification:
   _scope_: {task: classification, framework: keras}
-  model: {_target_: KerasClassifier}
+  model: !class:KerasClassifier
 
 # Negation. `_notscope_` is also active when the user passes no `--KEY ...`
 # at all (the *unset ⇒ active* convention).
-unless_debug:
-  _notscope_: {debug: }
+unless_debug: !notscope:debug
   log_level: WARNING
 ```
 
@@ -47,18 +44,12 @@ Anywhere a mapping key does — the document root, a nested dict, a list item,
 alternative for a single slot without lifting it out to the root:
 
 ```yaml
-runnable:
-  _target_: Trainer
-  model:
-    _target_: TimmModel
-    _partial_: true
+runnable: !class:Trainer
+  model: !partial:TimmModel
     model_name: efficientvit_b0
   # Same slot, different value — `--model convnet` swaps it in.
-  alt:
-    _scope_: {model: convnet}
-    model:
-      _target_: TorchConvNet
-      _partial_: true
+  alt: !scope:model=convnet
+    model: !partial:TorchConvNet
 ```
 
 A marker's kwargs are a mapping like any other, so the same rule applies: the
@@ -87,19 +78,20 @@ mapping body cannot express "add these entries here":
 ```yaml
 ops:
   - always_first
-  - - _scope_: {extra: "yes"}   # extends: two entries, not one nested list
+  - !scope:extra=yes   # extends: two entries, not one nested list
     - extra_a
     - extra_b
-  - - _scope_: {verbose: }      # a one-item body: one conditional entry
+  - !scope:verbose      # a one-item body: one conditional entry
     - trace_it
   - always_last
 ```
 
-A LIST whose FIRST item is a `_scope_` mapping IS a scope block, and the
-remaining items are its body — the only way to write a conditional list *item*,
-because a YAML node is a mapping or a sequence and never both. A one-item body
-is how the tag form's scalar body is spelled here, and it is type-coerced the
-same way: `- 42` splices the integer `42`.
+The tag sits on the list item and the nested list under it is the body. In the
+reserved-key spelling the same thing is a LIST whose FIRST item is the `_scope_`
+mapping (`- - _scope_: {extra: "yes"}`, then the body items) — the only way to
+write a conditional list *item* there, because a YAML node is a mapping or a
+sequence and never both. A one-item body is how a scalar body is spelled, and it
+is type-coerced the same way: `- 42` splices the integer `42`.
 
 Quote a value YAML would read as a boolean. `{extra: yes}` becomes `True`, which
 then never matches the `extra=yes` string an activation carries — confluid
@@ -129,7 +121,7 @@ one it does not is a `ScopeError` that lists the real values:
 load("experiment.yaml", scopes=["task=classifcation"])   # note the typo
 # ScopeError: No scope block matches task='classifcation'. This document declares
 # task with: classification, segmentation. Either use one of those values, or add
-# a `_scope_: {task: classifcation}` block.
+# a `!scope:task=classifcation` block.
 ```
 
 Without the check a typo resolved to the document's *unscoped* keys — the run
@@ -173,11 +165,9 @@ scope_aliases:
   ci: [quick, verbose]      # one alias -> a list of scope names
   smoke: ci                 # ... or another alias — chains expand recursively
 
-quick_mode:
-  _scope_: {quick: }
+quick_mode: !scope:quick
   max_epochs: 1
-logging:
-  _scope_: {verbose: }
+logging: !scope:verbose
   log_level: DEBUG
 ```
 
