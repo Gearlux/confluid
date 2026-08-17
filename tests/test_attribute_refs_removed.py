@@ -24,7 +24,7 @@ import pytest
 import yaml
 
 from confluid import ConfigurationError, configurable, dump, load, resolve
-from confluid.hydraide import emit, main
+from confluid.hydraide import emit
 
 
 @configurable
@@ -91,14 +91,13 @@ def test_the_same_document_is_refused_by_resolve_with_the_same_message() -> None
     assert str(via_resolve.value) == str(via_load.value)
 
 
-def test_hydraide_reports_it_as_a_located_error_and_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_hydraide_emit_reports_it_as_the_same_located_error(tmp_path: Path) -> None:
+    """`emit` IS `resolve()` + the serializer, so the tool refuses exactly as `load()` does — the
+    file:line:col of the `!ref:` node in the message (the CLI framework renders it, exit 1)."""
     (tmp_path / "cfg.yaml").write_text(ATTRIBUTE_REF)
-    with pytest.raises(ConfigurationError):
+    with pytest.raises(ConfigurationError) as exc:
         emit(tmp_path / "cfg.yaml")
-    assert main([str(tmp_path / "cfg.yaml")]) == 2
-    err = capsys.readouterr().err
-    assert "cfg.yaml:4:11" in err and "ATTRIBUTE" in err
-    assert "Traceback" not in err
+    assert "cfg.yaml:4:11" in str(exc.value) and "ATTRIBUTE" in str(exc.value)
 
 
 def test_the_string_spelling_is_refused_too() -> None:

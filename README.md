@@ -29,7 +29,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 |---|---|---|
 | [**The Lifecycle**](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md) — *start here* | How a document becomes objects: the nine passes in order (parse → import → include → scope → interpolate → expand → broadcast → flow → solidify), what each one decides permanently, and where you can stop | `lifecycle.py` |
 | [**The Plain-YAML Format**](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md) | Writing configs as ordinary YAML that `yaml.safe_load` and `yq` read: `_target_` / `_partial_` construction, `_ref_` and its `${ref:…}` shorthand, `${env:…}`, anchors and `<<:` merge keys, `_scope_` blocks | `plain_format.py` |
-| [**hydraide — the preprocessor**](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) | Resolve a config (either spelling) to ONE plain-YAML document: includes spliced, scopes applied, dotted keys expanded, broadcasting settled, shared markers anchored; `hydraide cfg.yaml --scope k=v -o out.yaml`, `--check` for a committed artefact | `hydraide.py` |
+| [**hydraide — the preprocessor**](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) | Resolve a config (either spelling) to ONE plain-YAML document: includes spliced, scopes applied, dotted keys expanded, broadcasting settled, shared markers anchored — `emit(cfg, scopes=[...])` / `check(path)`; the `hydraide` command line ships with the CLI framework built on confluid | `hydraide.py` |
 | [Targets & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) | The marker family and the Fluid→Solid lifecycle: `Target` vs `Partial`, `flow()` runtime injection, reference identity, and the legacy tag spelling of each | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |
@@ -116,7 +116,7 @@ class Trainer:
 
 ### 2. Configure via YAML
 ```yaml
-# experiment.yaml — the tag form; `hydraide experiment.yaml` emits the plain form `yq` reads
+# experiment.yaml — the tag form; `hydraide.emit(...)` emits the plain form `yq` reads
 defaults:
   n_layers: 10
 

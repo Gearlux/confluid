@@ -9,8 +9,14 @@ and ``yq`` read, and it reloads under confluid to the same graph.
 
 "What did my config resolve to?" is therefore a file, not an experiment::
 
-    hydraide experiment.yaml --scope framework=torch -o resolved.yaml
-    hydraide resolved.yaml --check        # is this file its own resolution?
+    text = emit("experiment.yaml", scopes=["framework=torch"])   # the resolved document
+    diff = check("resolved.yaml")                                 # None, or a unified diff
+
+This module ships the FUNCTIONS only. The ``hydraide`` command line
+(``hydraide emit cfg.yaml [--scope k=v] [--output out.yaml]`` / ``hydraide check
+cfg.yaml``) is one app of the CLI framework built on confluid, which already
+provides config promotion, ``--scope`` / dimension flags, the search tiers and
+the failure contract — nothing a second argument parser here would add.
 
 Architecture record 19. Phase 1: this module is a WRAPPER — ``resolve()`` is
 passes 1–7 and ``dump()`` is the serializer; both existed. Nothing about the
@@ -19,9 +25,7 @@ engine changes here. The two invariants the tool rests on are pinned in
 output, and ``emit(emit(x)) == emit(x)``.
 """
 
-import argparse
 import difflib
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -29,7 +33,6 @@ from loggair import get_logger
 
 from confluid.dumper import dump
 from confluid.engine import resolve
-from confluid.exceptions import ConfluidError
 from confluid.fluid import Fluid
 
 logger = get_logger("confluid.hydraide")
@@ -111,58 +114,3 @@ def check(path: Union[str, Path], *, scopes: Optional[List[str]] = None) -> Opti
             tofile=f"{path} (resolved)",
         )
     )
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    """``hydraide CONFIG [--scope k=v ...] [-o OUT | --check]``.
-
-    Exit codes: 0 emitted / already resolved; 1 ``--check`` found a difference
-    (the diff is on stdout); 2 the document is malformed (the located error is on
-    stderr — no traceback, the location IS the diagnostic).
-    """
-    parser = argparse.ArgumentParser(
-        prog="hydraide",
-        description="Resolve a confluid config to ONE plain-YAML document: includes spliced, scopes "
-        "applied, dotted keys expanded, broadcasting settled, shared markers anchored.",
-    )
-    parser.add_argument("config", help="the YAML file to resolve (either spelling)")
-    parser.add_argument(
-        "--scope",
-        action="append",
-        default=[],
-        metavar="KEY[=VALUE]",
-        help="activate a scope dimension; repeatable (e.g. --scope framework=torch --scope debug)",
-    )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("-o", "--output", metavar="FILE", help="write the resolved document here (default: stdout)")
-    mode.add_argument(
-        "--check",
-        action="store_true",
-        help="exit 1 with a diff if CONFIG is not already its own resolution",
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        if args.check:
-            diff = check(args.config, scopes=args.scope)
-            if diff is None:
-                return 0
-            sys.stdout.write(diff)
-            return 1
-        text = emit(args.config, scopes=args.scope)
-    except ConfluidError as exc:
-        # A located error is the whole diagnostic; a traceback through the engine
-        # would bury the file:line:col that names the offending mapping.
-        sys.stderr.write(f"hydraide: {exc}\n")
-        return 2
-
-    if args.output:
-        Path(args.output).write_text(text)
-        logger.debug(f"hydraide: wrote {args.output} ({len(text)} bytes)")
-    else:
-        sys.stdout.write(text)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
