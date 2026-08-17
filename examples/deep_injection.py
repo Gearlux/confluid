@@ -109,30 +109,23 @@ class Pipeline:
 # The service topology: three stages, each with a worker, each worker with a
 # retry policy. Written once — every demo below layers overrides on top of it.
 TREE = """
-pipeline:
-  _target_: Pipeline
+pipeline: !class:Pipeline
   stages:
-    - _target_: Stage
+    - !class:Stage
       name: fetch
-      worker:
-        _target_: Worker
+      worker: !class:Worker
         name: fetch-worker
-        retry:
-          _target_: RetryPolicy
-    - _target_: Stage
+        retry: !class:RetryPolicy
+    - !class:Stage
       name: transform
-      worker:
-        _target_: Worker
+      worker: !class:Worker
         name: transform-worker
-        retry:
-          _target_: RetryPolicy
-    - _target_: Stage
+        retry: !class:RetryPolicy
+    - !class:Stage
       name: publish
-      worker:
-        _target_: Worker
+      worker: !class:Worker
         name: publish-worker
-        retry:
-          _target_: RetryPolicy
+        retry: !class:RetryPolicy
 """
 
 

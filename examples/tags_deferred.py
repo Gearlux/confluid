@@ -44,16 +44,15 @@ class Car:
 
 
 def main() -> None:
-    # --- construction: `_partial_` is the whole difference ------------------------------
+    # --- construction: `!partial:` is the whole difference ------------------------------
     # The trailing `()` used to decide eager-vs-deferred and a bare `!class:` produced a
     # stub whose fate depended on its parent. Both spellings build now; only
-    # `_partial_: true` (`!lazy:`) withholds construction.
+    # `!partial:` (alias `!lazy:`, or `_partial_: true`) withholds construction.
     doc = """
-car:
-  _target_: Car
+car: !class:Car
   color: blue
-  engine: {_target_: Engine}     # built, like every non-partial target
-ready_engine: {_target_: Engine, cylinders: 8}
+  engine: !class:Engine     # built, like every non-partial target
+ready_engine: !class:Engine(cylinders=8)
 """
     graph = load(doc)
     car, ready = graph["car"], graph["ready_engine"]

@@ -69,10 +69,8 @@ def main() -> None:
 
     # --- collect_report() spans a load-then-configure pass -------------------
     yaml_text = """
-trainer:
-  _target_: Trainer
-  model:
-    _target_: Model
+trainer: !class:Trainer
+  model: !class:Model
 lr: 0.005
 ghost: 2
 """
@@ -100,8 +98,7 @@ def explain_the_contest() -> None:
     document = """
 Model:
   lr: 0.5          # addressed at the class ...
-m:
-  _target_: Model
+m: !class:Model
 lr: 0.9            # ... and beaten by a bare key written LOWER in the file
 """
     with collect_report() as report:

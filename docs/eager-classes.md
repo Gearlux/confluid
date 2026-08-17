@@ -24,8 +24,7 @@ class Resampler:
 ```
 
 ```yaml
-resampler:
-  _target_: Resampler
+resampler: !class:Resampler
   rate: 48000
 ```
 

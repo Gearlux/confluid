@@ -199,9 +199,7 @@ beside the `_target_` and the marker is **never** auto-flowed — not by
 `materialize()`, not by an external deep-flow walker:
 
 ```yaml
-optimizer:
-  _target_: torch.optim.Adam
-  _partial_: true
+optimizer: !partial:torch.optim.Adam
   lr: 0.01
 ```
 
@@ -265,8 +263,7 @@ The slot wins, and that is the point: a plain `_target_:` written into a
 supplies the missing runtime argument itself.
 
 ```yaml
-optimizer:            # the slot is `Partial[Optimizer]`, so this is NOT built at load —
-  _target_: SGD       # `flow(self.optimizer, params=model.parameters())` builds it later
+optimizer: !class:SGD            # the slot is `Partial[Optimizer]`, so this is NOT built at load —       # `flow(self.optimizer, params=model.parameters())` builds it later
   lr: 0.01
 ```
 
@@ -322,9 +319,7 @@ class Trainer:
 ```
 
 ```yaml
-loaders:                    # YAML sets the knobs; the run supplies the inputs
-  _target_: Loaders
-  _partial_: true
+loaders: !partial:Loaders                    # YAML sets the knobs; the run supplies the inputs
   device: cuda
 ```
 
@@ -339,8 +334,7 @@ positionally, a key of that name can never reach the parameter — so writing on
 an error rather than a no-op:
 
 ```yaml
-loaders:
-  _target_: Loaders
+loaders: !class:Loaders
   loaders: [train.bin, valid.bin]    # ConfigurationError, naming the file and line
 ```
 

@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, cast
 
 import yaml
 
-# `PartialClass` is the MARKER class (what `_partial_: true` parses to); `confluid.Partial`
+# `PartialClass` is the MARKER class (what `!partial:` parses to); `confluid.Partial`
 # is the annotation alias that declares a deferred SLOT — different things, easy to mix up.
 from confluid import Fluid, PartialClass, configurable, dump, flow, load, load_config, resolve
 from confluid.loader import ConfluidLoader
@@ -35,19 +35,14 @@ include: base.yaml
 run_root: "${env:LIFECYCLE_ROOT}/runs"  # env interpolation — burns in at load
 width: 32                             # a bare key: broadcasts to any node taking `width`
 
-profile:
-  _scope_: {mode: fast}
+profile: !scope:mode=fast
   dropout: 0.0
 
-encoder:
-  _target_: Encoder
-head:
-  _target_: Head
+encoder: !class:Encoder
+head: !class:Head
 head.units: 128                       # dotted key — nests at the position written here
 
-optimizer:                            # deferred: configured, never built by load()
-  _target_: Adam
-  _partial_: true
+optimizer: !partial:Adam                            # deferred: configured, never built by load()
   lr: 0.01
 """
 
@@ -126,7 +121,7 @@ def _walk_the_passes(path: Path) -> None:
     print(f"scope spliced its contents:  dropout = {ir['dropout']}")
     print(f"interpolation burned in:     run_root = {ir['run_root']!r}")
     print(f"dotted key nested:           head kwargs = {ir['head'].kwargs}")
-    assert ir["dropout"] == 0.0  # the `_scope_: {mode: fast}` block replaced base.yaml's 0.9
+    assert ir["dropout"] == 0.0  # the `!scope:mode=fast` block replaced base.yaml's 0.9
     assert ir["run_root"] == "/store/runs"
     assert ir["head"].kwargs["units"] == 128
     assert isinstance(ir["encoder"], Fluid)  # still a marker — nothing is built yet

@@ -62,7 +62,7 @@ class Trainer:
         self.model = model
         self.epochs = epochs
         # The optimizer arrives as a deferred recipe (a ``Target`` stub by default, or a
-        # ``_target_: Adam`` block from YAML). The *live* optimizer is materialized lazily by the property.
+        # ``!class:Adam`` block from YAML). The *live* optimizer is materialized lazily by the property.
         self.optimizer: Any = Target(AdamOptimizer)
 
     @property
@@ -90,10 +90,9 @@ Trainer:
   # Dependency Injection: a deferred Adam recipe, built lazily by Trainer.built_optimizer.
   # `${defaults.base_lr}` is config-key INTERPOLATION: it substitutes at load and burns
   # the value in, so the recipe carries `lr: 0.0001` and stays flowable later, outside
-  # any document context. `${ref:...}` would instead stay a late-bound Reference — right
+  # any document context. `!ref:` would instead stay a late-bound Reference — right
   # when the whole graph materializes together, wrong for a slot flowed on demand.
-  optimizer:
-    _target_: Adam
+  optimizer: !class:Adam
     lr: ${defaults.base_lr}
 
 Model:
@@ -115,9 +114,10 @@ def main() -> None:
     print(trainer)
 
     # `configure` parses a YAML STRING with confluid's own loader, which is what turns
-    # the `_target_:` mapping into a marker. Reserved keys keep the document readable by
-    # `yaml.safe_load` / `yq` / an editor schema — but a plain parser hands back plain
-    # data, so let confluid do the parse whenever you want markers back.
+    # a `!class:` node (or a `_target_:` mapping — both spellings read alike) into a
+    # marker. A plain parser cannot: `yaml.safe_load` refuses the tag and hands the
+    # reserved-key form back as plain data, so let confluid do the parse whenever
+    # you want markers back.
     configure(trainer, config=experiment_yaml)
     configure(model, config=experiment_yaml)
 

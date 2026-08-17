@@ -27,8 +27,7 @@ class Backbone:
 
 
 DOC = """
-backbone:
-  _target_: Backbone
+backbone: !class:Backbone
   depth: 101
 """
 

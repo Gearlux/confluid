@@ -162,14 +162,13 @@ because the constructor would take either:
 
 | The key | Reaches | Why |
 |---|---|---|
-| written on the marker (`{_target_: Passthrough, tag: x}`), or in a block naming it | the **constructor** (`kwargs`) | it says what to build this node *with* |
+| written on the marker (`!class:Passthrough(tag=x)`), or in a block naming it | the **constructor** (`kwargs`) | it says what to build this node *with* |
 | injected at flow time (`flow(node, model=…)`) | the **constructor** (`kwargs`) | a call argument by construction |
 | bare, cascading (`name: "x"` at the top level) | a post-init **attribute** | it was aimed at the whole document, not at this node |
 
 ```python
 graph = load("""
-sink:
-  _target_: Passthrough
+sink: !class:Passthrough
   tag: addressed
 name: run-42
 """)
@@ -299,8 +298,7 @@ lr: 0.5                     # bare — cascades like any other key
 '**.lr': 0.5                # a rider SCALAR — cascades to every accepting slot target
 '**.optimizer.lr': 0.5      # a rider MAPPING — tunes every declared `optimizer` slot
 
-trainer:
-  _target_: Trainer
+trainer: !class:Trainer
   optimizer:                # a block TUNES the marker ...
     lr: 0.5                 # ... `weight_decay: 0.05` survives untouched
   optimizer.lr: 0.5         # the dotted form, same effect
@@ -321,7 +319,7 @@ Two points worth knowing:
 - **A block merges, it does not replace.** `optimizer: {lr: 0.5}` keeps every
   kwarg you did not mention. To replace the marker outright — a different
   optimizer class, say — write one:
-  `optimizer: {_target_: torch.optim.SGD, _partial_: true, lr: 0.5}`.
+  `optimizer: !partial:torch.optim.SGD(lr=0.5)`.
   That form starts from scratch, so restate what you need.
 
 ## What a mapping at a slot means — decided by what the slot holds
@@ -344,7 +342,7 @@ class Host:
         self.engine = Engine(power=-1)     # a real Engine, built right here
 ```
 ```yaml
-h: {_target_: Host, engine: {power: 50}}   # -> host.engine is that same Engine, power == 50
+h: !class:Host {engine: {power: 50}}   # -> host.engine is that same Engine, power == 50
 ```
 
 The refusal names the class to register when the child is not `@configurable` —
@@ -357,20 +355,14 @@ whole value in code.
 
   ```yaml
   lr: 0.9                          # a document-wide default ...
-  runnable:
-    _target_: Trainer
-    optimizer:
-      _target_: AdamW
-      _partial_: true
+  runnable: !class:Trainer
+    optimizer: !partial:AdamW
       lr: 0.5                      # ... overridden per-slot below it  -> 0.5
   ```
 
   ```yaml
-  runnable:
-    _target_: Trainer
-    optimizer:
-      _target_: AdamW
-      _partial_: true
+  runnable: !class:Trainer
+    optimizer: !partial:AdamW
       lr: 0.5                      # a per-slot value ...
   lr: 0.9                          # ... overridden by a later sweep   -> 0.9
   ```

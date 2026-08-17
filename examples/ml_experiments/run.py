@@ -118,10 +118,10 @@ class SGD:
     """Plain gradient descent.
 
     Args:
-        lr: Learning rate (wired to the shared ``base_lr`` via ``${ref:...}``).
+        lr: Learning rate (wired to the shared ``base_lr`` via ``!ref:``).
         model: The LIVE model whose parameters to update — injected at RUN
             time by the trainer (``flow(self.optimizer, model=...)``), which
-            is why the YAML declares the optimizer ``_partial_: true``. An object
+            is why the YAML declares the optimizer ``!partial:``. An object
             survives the flow by identity (a plain list kwarg would be copied).
             ``NoBroadcast`` keeps the bare top-level ``model:`` key from
             pre-wiring it at load — this slot belongs to the run.
@@ -168,9 +168,9 @@ class Trainer:
     """Wires model + dataset + optimizer and runs the loop.
 
     Args:
-        model: The model to train (``${ref:model}`` in YAML).
-        dataset: The training data (``${ref:dataset}``).
-        optimizer: A DEFERRED optimizer (``_partial_: true`` in YAML) — built inside
+        model: The model to train (``!ref:model`` in YAML).
+        dataset: The training data (``!ref:dataset``).
+        optimizer: A DEFERRED optimizer (``!partial:`` in YAML) — built inside
             ``fit()`` once the model's parameters exist.
         max_epochs: Training length — the knob overlays override.
         device: Reached by the broadcast ``device`` key.
@@ -243,7 +243,7 @@ def main() -> None:
     assert trainer.model.hidden == 128, "MLP class-block override from the overlay"
     loss = trainer.fit()
     opt = flow(trainer.optimizer)
-    assert opt.lr == 0.1, "${ref:base_lr} picked up the overlay's base_lr"
+    assert opt.lr == 0.1, "!ref:base_lr picked up the overlay's base_lr"
     w, b = trainer.model.params
     assert abs(w - 2.0) < 0.1 and abs(b + 1.0) < 0.1, "the long run genuinely recovers y = 2x - 1"
     print(f"hidden={trainer.model.hidden} epochs={trainer.max_epochs} lr={opt.lr} loss={loss:.4f}")

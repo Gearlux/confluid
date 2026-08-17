@@ -67,12 +67,10 @@ def build_yaml() -> str:
         for s in range(SUBGROUPS):
             lines.append(f"    s{s}:")
             for m in range(MARKERS):
-                lines.append(f"      m{m}:")
-                lines.append("        _target_: Stage")
+                lines.append(f"      m{m}: !class:Stage")
                 lines.append(f"        tag: g{g}s{s}m{m}")
                 if m % 4 == 0:
-                    lines.append("        child:")
-                    lines.append("          _target_: Stage")
+                    lines.append("        child: !class:Stage")
     return "\n".join(lines) + "\n"
 
 
