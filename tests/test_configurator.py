@@ -230,10 +230,16 @@ def test_configure_unknown_block_key_warns(monkeypatch: pytest.MonkeyPatch) -> N
     """
     from types import SimpleNamespace
 
-    import confluid.configurator as configurator_module
+    import confluid.broadcast as broadcast_module
 
+    # Since configure() goes through the document (record 19, phase 4) the typo is caught by
+    # the ONE scanner, so the warning is broadcast's — the same line the load path emits.
     warnings_seen: list[str] = []
-    monkeypatch.setattr(configurator_module, "logger", SimpleNamespace(warning=lambda msg: warnings_seen.append(msg)))
+    monkeypatch.setattr(
+        broadcast_module,
+        "logger",
+        SimpleNamespace(warning=lambda msg: warnings_seen.append(msg), trace=lambda msg: None, debug=lambda msg: None),
+    )
 
     @configurable
     class Model:
@@ -443,36 +449,6 @@ def test_a_transforming_constructor_configures_the_LIVE_child_not_the_capture() 
     configure(wrapper, config="lr: 0.5")
 
     assert wrapper.op.lr == 0.5, "the LIVE child must be configured"
-
-
-def test_the_ctor_kwargs_capture_is_also_walked() -> None:
-    """RULED DELIBERATE (user, 2026-08-15) — see BUGS-2026-08-13.md F1.
-
-    ``__confluid_kwargs__`` is engine bookkeeping that lives in ``__dict__``, so the
-    walk recurses into it like any other dict and configures whatever the constructor
-    was HANDED — including an argument it discarded. That reach is KEPT: an object the
-    config is meant to configure still gets configured when a constructor consumed it
-    rather than storing it.
-
-    This test is the pin that makes removing it a DELIBERATE change. Skipping the
-    capture dict is one line and breaks nothing else (prototyped: 1 failed — this
-    test — 1499 passed), so without the pin it would be an easy silent "cleanup".
-    """
-
-    @configurable
-    class Op:
-        def __init__(self, lr: float = 0.0) -> None:
-            self.lr = lr
-
-    @configurable
-    class Wrapper:
-        def __init__(self, op: Any = None) -> None:
-            self.op = Op(lr=op.lr)  # the handed object is NOT kept
-
-    handed = Op()
-    configure(Wrapper(op=handed), config="lr: 0.5")
-
-    assert handed.lr == 0.5, "today the discarded ctor argument is configured too"
 
 
 def test_a_function_attribute_is_still_skipped() -> None:

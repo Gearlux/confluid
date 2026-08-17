@@ -137,6 +137,8 @@ imports; extend the right module instead.
 | `engine` | `flow`/`cast`, `materialize`/`resolve`, `_flow_recursive` (pass 7 — settle) / `instantiate` (pass 8 — build), and the two post-construction deliveries pass 7 cannot see (body-slot / ctor-default markers). |
 | `loader` | YAML parsing and composition ONLY (`ConfluidLoader`, `load`/`load_config`, includes/imports/scopes glue). |
 | `introspect` | stdlib-only AST/signature scanning — the ONE `scan_init_body`, `init_callable`, `marked_param_names`. |
+| `configurator` | `configure` / `configure_from_file` — the objects → `dumper.to_markers` → merge → `resolve` → `_apply` back onto the objects; no walker of its own. |
+| `dumper` | `dump()` and the ONE object→document reconstruction (`dumpable_kwargs`), plus `to_markers` (the in-memory document `configure()` resolves). |
 
 **Rule.** `broadcast` MUST NOT materialize anything — no `flow`, no `_flow_recursive`. Code that
 BUILDS an object belongs in `engine`. That prohibition is why the edge is one-directional.
@@ -652,44 +654,22 @@ IDEMPOTENCY return, so an object that arrived already built is finalized too. `s
 idempotent (build-once-and-cache) and take no arguments. `flow(obj, solidify=False)` /
 `materialize(..., solidify=False)` suppress it for the whole subtree.
 
-**Rule — `configure()`'s walk skips ROUTINES and CLASSES, not everything CALLABLE.** An op and a
-framework module define `__call__`, so a `callable()` filter skipped every one of them while the
-load path broadcast into the same class fine (C3). Such a child was usually still reached BY
-ACCIDENT — through the ctor-kwargs capture dict sitting in `__dict__` — which is why the defect
-surfaced only for `capture=False`, or for a constructor storing something OTHER than what it
-captured (there the DISCARDED object was configured and the key reported applied). `isclass` is
-load-bearing, not decoration: a class object's `__dict__` is a TRUTHY mappingproxy of its own
-attributes, so recursing into one would walk class internals.
-**Pins.** the C3 group in `tests/test_configurator.py`, incl.
-`::test_a_CLASS_attribute_is_still_skipped`.
+**Rule — the C3 / F1 / C4 rules of the LIVE WALKER are HISTORY (record 19, phase 4).** `configure()`
+has no walk of its own any more: the objects' DOCUMENT (declared slots — ctor params and
+`__init__`-body attributes, `dumpable_kwargs`) is what pass 7 sees and `_apply` writes back.
+What those three rules protected is now structural: a class attribute is not a slot (never
+walked into — C3); a marker held as an attribute is TUNED in place, never flowed into a
+throwaway (C4 — pinned by the phase-4 suite); the ctor-kwargs capture is the DUMP FALLBACK for
+an eager class's transformed param, not a thing that gets configured (F1's "the walk reaches
+`__confluid_kwargs__`" ruling is superseded with the walk — a discarded ctor argument is not in
+the object's document, so it is not configured). Do not reintroduce a walker to restore any of
+them.
+**Pins.** `tests/test_configure_via_document.py`, the C3/C4 groups in `tests/test_configurator.py`
+(they pass by construction), `tests/test_memo_pinning.py::test_configure_reaches_every_object_even_when_gc_recycles_walk_temporaries`
+(markers in a DECLARED list slot — a dynamically set attribute is not part of any document).
 
-**Rule — `configure()`'s walk reaches `__confluid_kwargs__`, and that is DELIBERATE** (user
-ruling 2026-08-15; `BUGS-2026-08-13.md` F1). The ctor-kwargs capture lives in `__dict__`, so the
-walk recurses into it and configures whatever the constructor was HANDED — including an argument
-it consumed rather than stored. Do NOT "clean this up": skipping it is one line and breaks
-nothing else (prototyped — the whole suite passes bar the pin), which is exactly why it needs a
-rule and a pin rather than a comment. Revisit only with NEW evidence of a defect the reach
-causes, never a re-run of the reasoning (the case against it — a discarded object being mutated,
-a kept one configured twice, and this route having masked C3 — was measured and weighed).
-**Pins.** `tests/test_configurator.py::test_the_ctor_kwargs_capture_is_also_walked`.
-
-**Rule — a MARKER-valued attribute is tuned by its owner, never flowed into a throwaway; the
-check is `Target`, not `Partial`.** `_walk` returns early for any `Target` and `_apply` tunes
-every `Target` slot. The hazard the `Partial` early-return comment describes was never about
-deferral — it is about the marker being what the attribute HOLDS: for `self.opt = Target(Opt)`
-the next line flowed a temporary, configured it, discarded it and recorded the key as applied, so
-a later `flow(obj.opt)` built with the DEFAULTS (C4). `Partial` IS a `Target`, so deferred slots
-are unaffected; `Reference` and `Clone` are NOT, so they stay on the flow path and keep RAISING
-rather than degrading to a silent no-op. The early return MUST still walk the marker's kwargs —
-they can hold live objects (`Target(Stage, dep=widget)`) that flowing used to reach as a side
-effect; omitting that trades one silent skip for another (measured: 0 → 64 missed widgets against
-`tests/test_memo_pinning.py`).
-**Pins.** the C4 group in `tests/test_configurator.py`, incl.
-`::test_a_Reference_body_slot_still_raises` (the scope guard) and
-`tests/test_memo_pinning.py::test_configure_reaches_every_object_even_when_gc_recycles_walk_temporaries`.
-
-**Rule.** `configure()` finalizes AFTER applying: `_walk` flows with `solidify=False` and re-fires
-the hook POST-ORDER, matching the load path's ordering.
+**Rule.** `configure()` finalizes AFTER applying: `_apply` writes the settled values and fires the
+hook POST-ORDER (children first), matching the load path's ordering.
 
 **Why.** `docs/architecture.md` record 2. Note: a task runnable needing an expensive dataset-walking
 construction uses an explicit `initialize()` from `run()`, NOT this hook — so construction never
@@ -798,18 +778,21 @@ author's reading order:
 contents at the RIDER's index). The directional reads stay per-caller (load: keys AFTER the slot;
 configure: keys BEFORE the block); the candidate set may not differ again.
 
-**Rule.** The configure()-path verdict is CALL-SCOPED (`_LiveSink.beaten_per_slot` →
-`_tune_deferred(beaten=…)`), never marker state — a marker-stamped verdict outlives the document
-that produced it. Deferred slots are tuned by their OWNER's scan; `_walk` returns early on a `Partial`.
+**Rule.** A verdict is CALL-SCOPED, never marker state — a marker-stamped verdict outlives the
+document that produced it. Under `configure()` the document is rebuilt per call from the objects
+(`to_markers`), so nothing carries over between calls (pinned:
+`tests/test_document_order.py::test_a_second_configure_is_not_bound_by_the_first_ones_verdict`).
 
 **Rule — a BLOCK-delivered mapping is arbitrated at the BLOCK's position, and only the scanner
 still knows it.** `_scan_view` hands every `dict_at_slot` emission a `bare_before` computed at the
-delivering block's own index. `_MergeSink` MUST record it (`beaten_per_slot`, mirroring
-`_LiveSink`) and `_prepare_kwargs` carries it out on the returned `_View`, because by the time the
-engine sees the merged kwargs they have been spliced at the MARKER's slot and the block's position
-is gone. `_late_bare_keys_per_slot` still computes the verdict for a marker's OWN dict kwargs —
-those genuinely sit at the marker — and the engine OVERRIDES only the slots a block delivered.
-Deleting either half is wrong: the second answers a question the first cannot.
+delivering block's own index. `_MergeSink` MUST record it (`beaten_per_slot`) and `_prepare_kwargs`
+carries it out on the returned `_View`, because by the time the engine sees the merged kwargs they
+have been spliced at the MARKER's slot and the block's position is gone. Pass 7 applies the verdict
+ITSELF for the descent into that slot (`engine._flow_recursive._view_for` pops the beaten bare
+keys and rider entries — phase 4), so the settled document already carries the answer;
+`_late_bare_keys_per_slot` still computes the verdict for a marker's OWN dict kwargs and the
+engine's post-init tune consumes it for a body slot pass 7 cannot see. Deleting either half is
+wrong: the second answers a question the first cannot.
 **Why.** Both EDGE orderings of the block-vs-bare contest agreed across paths and were pinned; the
 middle one — node first, bare key, then the block, i.e. the ordinary layout — had no pin and
 diverged, `load()` answering 99 where `configure()` answered 50 (C2).
@@ -826,6 +809,49 @@ corollary) and 8 (D7).
 rule-level pin that two orderings of one spelling must DISAGREE, and
 `::test_a_second_configure_is_not_bound_by_the_first_ones_verdict`), `tests/test_includes.py`
 (the ordering group), `tests/test_ordered_merge.py`.
+
+### `configure()` runs THROUGH the document (record 19, phase 4, 2026-08-17)
+
+**Rule.** `configure(*objs, config=…, **named)` = `dumper.to_markers(objs)` (the objects as a
+marker document — the SAME reconstruction rule `dump()` uses, `dumpable_kwargs`) → the config
+merged after it (a key naming an object tunes that object's marker IN PLACE — P1's `deep_merge`
+— so a bare key beside it still competes on position; other keys append) → `resolve()` (pass 7,
+recording into the call's report) → `_apply`: a settled plain value is set (validated under the
+init policy; the eager-class note rides the pass-7 record); a settled marker at a slot holding a
+MARKER is tuned in place (`kwargs.update`, identity kept, markers inside it stay markers); a
+settled marker standing for a live child (`__confluid_live__`, stamped by `to_markers` and kept by
+the pass-7 copy) recurses; a marker the config introduced is built (`flow`) or kept deferred; a
+mapping at a slot holding an OPAQUE live object is refused (`dict_at_slot_kind`); `solidify()`
+fires post-order. There is NO second walker: `_walk`, `_LiveSink`, `_tune_deferred`, `_assign` and
+`broadcast._receiver_for_instance`'s only caller are gone, and with them the "parity" contract —
+`tests/test_*_parity.py` and `test_cross_path_pins.py` remain as BEHAVIOUR pins of one path.
+Consequences, each pinned: a NAMED object is addressable by a dotted ATTRIBUTE path
+(`trainer.model.lr`); a bare list/dict reaches a body-slot marker the document shows (D2/D4's
+"kept difference" is gone — one rule); a chain of INSTANCE names past the first level
+(`a.b.c.value`) is no longer a spelling (the load path never had it; use the attribute path from a
+named object); the F1 rule (the walk reaching `__confluid_kwargs__`) is superseded — there is no
+walk; the C3/C4 pins hold by construction. Warnings for a typo'd block key come from
+`broadcast.logger` (the scanner) — patch THAT in a test.
+**Pins.** `tests/test_configure_via_document.py`; `tests/test_configurator.py`;
+`tests/test_report.py` (the report vocabulary is the scanner's: a class block that delivers a
+mapping to a child records at the RECEIVER the block addressed).
+
+**Rule — four pass-7 defects the document path exposed are FIXED in pass 7, so `load()` gets them
+too (F7/F8/F10/F11, `BUGS-2026-08-13.md`):** a same-named child slot (`child:` inside `child:`)
+lost its slot in the parent view (`_splice_kwargs_at_slot._parent_wins` now returns False for the
+receiver's own key), so a third-level marker's own kwargs were appended after every root key and a
+later bare key could not beat them; `tune_marker` was single-level, so `root: {child: {child:
+{lr}}}` REPLACED the second-level marker with a dict (it recurses into markers now); a marker
+nested in a LIST kwarg had no slot (`holds_marker` + the slot KEY threaded through
+`_flow_recursive(slot_key=)` / `_scan_view(self_key=)`), and an instance-name block whose name
+equals the marker's attribute key displaced the marker from its slot (the own kwargs unroll at
+`self_key` and the block is then processed as the later spec). Also: the C2 verdict is applied
+INSIDE pass 7 (`_view_for(slot)` pops the beaten bare keys — and a `'**'` rider's — for the
+descent into a block-delivered slot), so the settled document IS the answer for that contest.
+**Pins.** `tests/test_document_order.py`, `tests/test_broadcast_scoping.py`,
+`tests/test_broadcast_wrapper_override.py::test_inner_overrides_beat_an_EARLIER_glob_cascade` (+
+its con case — a LATER rider wins; the old pin passed only because of F10),
+`tests/test_names_parity.py`.
 
 ### The rule runs ONCE — pass 7 settles, pass 8 builds (record 19, phase 3, 2026-08-17)
 
@@ -884,10 +910,9 @@ on keys or scopes — a new rule goes behind a `_Receiver` predicate, added to B
 **Rule.** Glob keys are routing metadata: they never reach ctor kwargs, post-init setattrs,
 `__confluid_kwargs__`, or `resolve()` marker kwargs.
 
-**Detail — configure() parity.** Blocks unroll inline at their position (the `Cls.inst.attr` form
-included), bare keys broadcast via the SHARED accept-list ∪ live `vars(obj)`, dict-valued entries
-addressing a configurable child RECURSE with the sub-block spliced ADDRESSED into the child's view.
-A present `null` SETS `None`; a typo'd non-dict key inside an object's own block emits ONE warning
+**Detail — configure().** Since phase 4 there is nothing to keep in parity: `configure()` runs the
+document through the SAME scanner (see "`configure()` runs THROUGH the document"). A present
+`null` SETS `None`; a typo'd non-dict key inside an object's block warns ONCE from the scanner
 (glob-delivered and bare keys never warn).
 
 **Why.** `docs/architecture.md` record 8. **Docs.** `docs/broadcasting.md`, `docs/configure.md`.

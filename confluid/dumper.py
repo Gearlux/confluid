@@ -1,4 +1,5 @@
 import types
+from copy import copy
 from typing import Any, Dict, Optional, Set
 
 import yaml
@@ -149,6 +150,34 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # registry (rather than reading a stamped attribute) is what keeps that correct: a name
     # becomes ambiguous at the second registration, when this class is already stamped.
     cls_name = get_registry().key_for(data.__class__) or getattr(data, "__confluid_name__", data.__class__.__name__)
+    kwargs = {p: _class_value_spelling(v) for p, v in dumpable_kwargs(data).items()}
+    return dumper.represent_mapping("tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **kwargs})
+
+
+def _class_value_spelling(val: Any) -> Any:
+    """A class-VALUED kwarg in the YAML spelling — the in-memory document keeps the class."""
+    from confluid.loader import TARGET_KEY
+
+    if not isinstance(val, type):
+        return val
+    if hasattr(val, "__confluid_configurable__"):
+        # Same reasoning as the instance branch: a class-VALUED kwarg needs the
+        # unambiguous key, not the shared short name.
+        key = get_registry().key_for(val) or getattr(val, "__confluid_name__", None)
+        return {TARGET_KEY: key or val.__name__}
+    return f"{val.__module__}.{val.__qualname__}"
+
+
+def dumpable_kwargs(data: Any) -> Dict[str, Any]:
+    """The kwargs a live ``@configurable`` object dumps as — the ONE reconstruction rule.
+
+    Shared by the YAML representer (``dump()``) and by :func:`to_markers` (the object graph
+    as an in-memory marker document, what ``configure()`` resolves), so the two can never
+    disagree about what an object's document is. Per declared slot (``_DUMP_KINDS``): the
+    live same-named attribute, else the ctor kwarg captured at construction (an eager class
+    that transforms a param); a ``None`` is omitted only when the slot's default is also
+    ``None``; a class-valued kwarg names the class; ``__confluid_extra__`` names are added.
+    """
     # The ONE enumeration, projected to _DUMP_KINDS. ``slots()`` returns signature
     # order by construction, which is what the dump-key round-trip is pinned on;
     # an unreadable signature yields no signature slots (the old except branch).
@@ -172,19 +201,11 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
             return False
         return defaults.get(param, NO_DEFAULT) is None
 
-    kwargs = {}
+    kwargs: Dict[str, Any] = {}
     for p in params:
         if hasattr(data, p):
             val = getattr(data, p)
             if not _skip_none(p, val):
-                if isinstance(val, type):
-                    if hasattr(val, "__confluid_configurable__"):
-                        # Same reasoning as the instance branch above: a class-VALUED
-                        # kwarg needs the unambiguous key, not the shared short name.
-                        key = get_registry().key_for(val) or getattr(val, "__confluid_name__", None)
-                        val = {TARGET_KEY: key or val.__name__}
-                    else:
-                        val = f"{val.__module__}.{val.__qualname__}"
                 kwargs[p] = val
         elif p in captured:
             val = captured[p]
@@ -198,8 +219,60 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         val = getattr(data, name, None)
         if val is not None:
             kwargs[name] = val
+    return kwargs
 
-    return dumper.represent_mapping("tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **kwargs})
+
+def is_dumpable_object(value: Any) -> bool:
+    """A live object the dumper represents as a marker: a ``@configurable`` instance, or an
+    object confluid built and stamped (``__confluid_class__``)."""
+    return hasattr(value.__class__, "__confluid_configurable__") or hasattr(value, "__confluid_class__")
+
+
+def to_markers(value: Any, memo: Optional[Dict[int, Any]] = None) -> Any:
+    """The object graph as an IN-MEMORY marker document — ``dump()`` without the text.
+
+    A live ``@configurable`` object becomes a ``Target`` whose target is its CLASS and whose
+    kwargs are :func:`dumpable_kwargs` (recursively converted); a stamped non-configurable
+    object becomes a ``Target`` on its stamped class with its captured kwargs; a marker
+    already held as an attribute (a deferred body slot) passes through as itself; dicts and
+    lists recurse; everything else is a value. ``memo`` (``id(live) -> marker``) makes a
+    shared object ONE marker, so identity survives into the resolved tree; the marker's
+    ``__confluid_live__`` names the object it stands for, which is how ``configure()`` maps a
+    settled marker back to the instance it applies to.
+    """
+    from confluid.fluid import Fluid, Target
+
+    memo = {} if memo is None else memo
+    if isinstance(value, Fluid):
+        # A marker held as an attribute (a deferred body slot) is part of the document as
+        # itself — a COPY, so the live one is not mutated, with its kwargs converted: they
+        # can hold live objects (`Target(Stage, dep=widget)`) that must stay reachable.
+        hit = memo.get(id(value))
+        if hit is not None:
+            return hit
+        marker = copy(value)
+        memo[id(value)] = marker
+        marker.kwargs = {k: to_markers(v, memo) for k, v in value.kwargs.items()}
+        marker.__confluid_live__ = value  # type: ignore[attr-defined]
+        return marker
+    if isinstance(value, dict):
+        return {k: to_markers(v, memo) for k, v in value.items()}
+    if isinstance(value, list):
+        return [to_markers(v, memo) for v in value]
+    if not is_dumpable_object(value):
+        return value
+    hit = memo.get(id(value))
+    if hit is not None:
+        return hit
+    if hasattr(value.__class__, "__confluid_configurable__"):
+        target, raw = value.__class__, dumpable_kwargs(value)
+    else:
+        target, raw = value.__confluid_class__, dict(getattr(value, "__confluid_kwargs__", {}))
+    marker = Target(target)
+    memo[id(value)] = marker  # BEFORE recursing, so a cycle meets the memo, not the stack
+    marker.kwargs = {k: to_markers(v, memo) for k, v in raw.items()}
+    marker.__confluid_live__ = value  # type: ignore[attr-defined]
+    return marker
 
 
 def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:

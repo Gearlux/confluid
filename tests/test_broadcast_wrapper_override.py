@@ -146,11 +146,19 @@ def test_glob_restores_the_old_cascade_deliberately() -> None:
     assert not hasattr(root, "**")
 
 
-def test_inner_overrides_beat_the_glob_cascade() -> None:
-    """Pinning ``ops: []`` on one inner Target shields that instance from an
-    active ``'**'`` cascade; its sibling still receives the glob value."""
+def test_inner_overrides_beat_an_EARLIER_glob_cascade() -> None:
+    """Pinning ``ops: []`` on one inner Target shields that instance from a ``'**'`` rider
+    written BEFORE it — document order, last spec wins; its sibling, which pins nothing,
+    still receives the glob value.
+
+    Until 2026-08-17 the inner marker won whatever the order, because a marker nested in a
+    LIST had no slot in the parent view and its own kwargs were appended after every key
+    (F10); it now sits at the list's slot, so the contest is decided by position like any
+    other. The rider therefore goes FIRST here, and the con case follows.
+    """
     config = _inst(
         "_Outer",
+        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
         source=_inst(
             "_Wrapper",
             children=[
@@ -158,12 +166,23 @@ def test_inner_overrides_beat_the_glob_cascade() -> None:
                 _inst("_Outer"),  # no override
             ],
         ),
-        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
     root = materialize(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
+
+
+def test_a_LATER_glob_cascade_beats_an_inner_own_value() -> None:
+    """The con case of the pin above: the rider written AFTER the subtree wins on the inner
+    marker too — its own kwarg competes on position, not on being 'own'."""
+    config = _inst(
+        "_Outer",
+        source=_inst("_Wrapper", children=[_inst("_Outer", ops=[]), _inst("_Outer")]),
+        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
+    )
+    root = materialize(config)
+    assert root.source.children[0].ops == ["heavy_a", "heavy_b"]
 
 
 # ---------------------------------------------------------------------------

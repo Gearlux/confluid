@@ -96,6 +96,16 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Four pass-7 ordering defects, exposed by running `configure()` through the document and fixed
+  IN pass 7 (`load()` gets them too), each measured before/after** — F7: a same-named child slot
+  (`child:` inside `child:`) lost its slot, so a later bare `lr` reached depths 1 and 2 and not 3;
+  F8: `tune_marker` was single-level, so `root: {child: {child: {lr: 0.5}}}` replaced the
+  second-level marker with the plain dict `{lr: 0.5}` (`root.child.child` came back as a dict);
+  F10: a marker nested in a LIST kwarg had no slot, so its own kwargs always beat a later block or
+  bare key; F11: an instance-name block whose name equals the marker's attribute key (`middle:`
+  for the marker at `.middle`) displaced the marker from its slot, so neither the block nor a
+  later bare key reached it. Plus: the C2 block-vs-bare verdict is now applied inside pass 7 for
+  the descent into a block-delivered slot, so the settled (emitted) document carries the answer.
 - **A plain mapping whose key references a same-named outer key no longer recurses forever**
   (F6): `val_fraction: 0.2` + `r: {val_fraction: !ref:val_fraction}` loads as `{'val_fraction': 0.2}`
   — a scope never answers a reference with the reference itself; the self-hit is skipped and the
@@ -376,6 +386,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Breaking
 
+- **`configure()` runs through the document** (architecture record 19, phase 4). The objects
+  become a marker document (`dumper.to_markers` — the same reconstruction `dump()` uses), the
+  config is merged after it, pass 7 settles the whole thing, and the settled values are written
+  back onto the objects. The second implementation of the precedence rule over live objects
+  (`configurator._walk` / `_LiveSink` / `_tune_deferred`) is gone. **New:** objects passed by
+  keyword are addressable by name — `configure(config={"trainer.model.lr": 0.7}, trainer=t)`
+  (positional objects stay reachable by class-name blocks and bare keys). **Changed:** a chain of
+  instance names past the first level (`a.b.c.value`) is no longer a spelling (the load path never
+  had it — use the attribute path from a named object); a bare list/dict reaches a body-slot
+  marker the document shows, exactly as it reaches a document marker under `load()`; an object
+  that is neither `@configurable` nor built by confluid is warned about and skipped; a plain
+  object with dynamically set attributes has no document (declared slots only). The report's
+  vocabulary is the scanner's (a class block delivering a mapping to a child records at the
+  receiver the block addressed). `tests/test_configure_via_document.py`.
 - **The runtime consumes the settled document** (architecture record 19, phase 3). `materialize()`
   = pass 7 (broadcast + references, settled ONCE — what `hydraide` emits) → `instantiate` (pass 8:
   every `Target` at ANY depth is built from its settled kwargs; construction no longer re-runs the

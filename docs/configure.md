@@ -5,8 +5,12 @@
 `configure()` applies a config document to objects that **already exist** — in
 place, no re-instantiation. It is the second half of confluid's core promise:
 `load()` builds an object graph *from* a document; `configure()` brings a live
-graph *up to* one. Both apply the same single matching rule, so a document
-means the same thing whichever way it is applied.
+graph *up to* one. Both apply the same single matching rule — literally: since
+[architecture record 19](architecture.md) (phase 4) `configure()` runs *through
+the document*. The objects become a marker document (the same reconstruction
+`dump()` uses), the config is merged after it, the ONE resolution pass settles
+the result, and the settled values are written back onto the objects. There is
+no second implementation of the rule over live objects any more.
 
 ```python
 from confluid import configurable, configure
@@ -25,13 +29,19 @@ assert trainer.lr == 0.01
 ## The call surface
 
 ```python
-configure(*instances, config=..., context=None) -> ConfigurationReport
-configure_from_file(*instances, path=..., context=None) -> ConfigurationReport
+configure(*instances, config=..., context=None, **named) -> ConfigurationReport
+configure_from_file(*instances, path=..., context=None, **named) -> ConfigurationReport
 ```
 
-- **`*instances`** — one or more already-constructed objects; each is walked
-  recursively (its attribute values too, so a nested configurable child is
-  reached without naming it).
+- **`*instances`** — one or more already-constructed objects (or dicts/lists of
+  them); each becomes a document node with its declared slots — constructor
+  params and `__init__`-body attributes — so a nested configurable child is
+  reached without naming it. An object that is neither `@configurable` nor built
+  by confluid has no document; it is warned about and skipped.
+- **`**named`** — objects addressable by that name too:
+  `configure(config={"trainer.model.lr": 0.7}, trainer=t)` reaches the nested
+  model by attribute path (positional objects are reachable by class-name
+  blocks and bare keys only).
 - **`config`** — a mapping, or YAML **text** (markers like `_target_` work — the
   text is parsed with confluid's own loader). A plain file *name* is not YAML
   text: it applies nothing, warns, and points you at `configure_from_file`,
