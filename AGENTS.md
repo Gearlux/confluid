@@ -423,10 +423,27 @@ warns** (user ruling 2026-08-15, architecture record 19 — this REVERSED the de
 here). Both spellings are first-class input and may be mixed in one file. `!partial:` is the tag
 for a deferred marker (the same name as the key it emits); `!lazy:` is an alias — whether it is
 ever removed is a later ruling, not a standing plan. Do not reintroduce a tag warning, a
-migration tool, or a "no tags in examples" scan: `tests/test_canonical_spelling.py` enforced the
-opposite of this ruling and was deleted with it. The two-spellings-one-IR invariant is unchanged
-and has a THIRD witness now — `hydraide` emits byte-identical output whichever spelling produced
-the document.
+tag→plain migration tool, or a "no tags in examples" scan: `tests/test_canonical_spelling.py`
+enforced the opposite of this ruling and was deleted with it. The two-spellings-one-IR invariant
+is unchanged and has a THIRD witness now — `hydraide` emits byte-identical output whichever
+spelling produced the document.
+
+**Rule — the ONE codemod runs plain → tags, and it is `confluid.spelling.to_tags`** (record 19,
+phase 1b). It converts a file a human wants to EDIT again (a committed hydraide artefact, a config
+written before the ruling) and it edits LINES — tag on the key line, reserved-key line deleted,
+every other byte kept — because these files are mostly comments and a parse-and-rewrite would
+reformat them. Three properties are load-bearing: (1) what the grammar cannot convert is
+REPORTED as a `Finding(path, line, text, reason)` and left in place — never guessed at (a
+multi-dimension `_scope_`, a `<<:` merged into a marker's keys); (2) `convert_file` writes ONLY
+when `hydraide.emit(before) == hydraide.emit(after)` under every scope activation the document
+declares — the safety is the check, not the grammar; (3) inside a FLOW container a tag must be
+followed by whitespace (measured: PyYAML scans `!c:N(h=8)}` as one tag and `[!ref:a, !ref:b]`
+reads `ref:a,`), so a nested marker takes the flow-body form `!class:X {…}` / `!class:X {}` and a
+`${ref:}` inside `[…]` stays. Generated documents (a `regen_examples` output, a `dump()`, a
+`runs/…/final.yaml`) are the MACHINE form and are NOT converted — a consumer's freshness gate
+compares them byte-for-byte to what its serializer renders.
+**Pins.** `tests/test_spelling.py` — the shape matrix, the three findings, idempotence, tag-form
+no-op, and `convert_file`'s activation-gated write.
 
 **Rule — `hydraide` is the ONE emitter of the plain form, and it is a WRAPPER over passes 1–7.**
 `hydraide.emit(source, scopes=…)` is `dump(resolve(source))` plus named anchors; it adds NO pass and

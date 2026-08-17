@@ -99,6 +99,42 @@ the key — the alias sites keep the original. `!ref:model` is late-bound and do
 see the tune. Prefer `!ref:` for a cross-file reference; use anchors within one
 file.
 
+## The other direction: `confluid.spelling.to_tags`
+
+hydraide turns the tag form into the plain form. A file that came the other way —
+an emitted artefact you now want to *edit*, a config written before the tag form
+was preferred — is converted back **line by line** by `confluid.spelling`, so its
+comments and layout survive:
+
+```yaml
+# before — the reserved keys
+runnable:                # the run
+  _target_: Trainer
+  model:
+    _target_: Model
+    _partial_: true
+    hidden: 32           # a kwarg keeps its line
+```
+```yaml
+# after — to_tags(text): the tag on the key line, the reserved-key lines gone, nothing else moved
+runnable: !class:Trainer                # the run
+  model: !partial:Model
+    hidden: 32           # a kwarg keeps its line
+```
+
+Whatever the grammar cannot convert is *reported*, never guessed: a `_scope_`
+with several dimensions (the tag suffix cannot carry two), a `<<:` merged into a
+marker. And the conversion of a *file* is gated by hydraide itself —
+`convert_file` writes only when `emit(before) == emit(after)` under every scope
+activation the document declares:
+
+```python
+from confluid.spelling import to_tags, convert_file
+
+text, findings = to_tags(open("cfg.yaml").read())   # findings: (path, line, text, reason)
+result = convert_file("cfg.yaml")                    # .written, .findings, .activations_checked
+```
+
 ## Python API
 
 ```python

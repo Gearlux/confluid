@@ -1483,3 +1483,10 @@ configure(tree, "lr: 0.5")   # == apply_paths(tree, diff(dump(tree), hydraide.re
 the invariants: hydraide's output for the two spellings of one document is byte-identical; a
 construct hydraide cannot express in plain YAML is REPORTED, never emitted as data; and the runtime
 never re-derives precedence — if a runtime path needs the rule, it goes through the document.
+
+*Phase 1b landed 2026-08-16:* the plain → tag direction is `confluid.spelling.to_tags` — a
+line-based codemod (the 2026-08-11 tag → plain codemod's inverse, deleted with phase 1) whose file
+form `convert_file` writes only when `emit(before) == emit(after)` under every scope activation
+the document declares. Neither of the two "missing tag spellings" this record's phase-1b entry
+anticipated (a multi-dimension `_scope_`, a `<<:` merged into a marker) was needed: the corpus
+census found zero of each, so both stay REPORTED (`Finding`), not invented. See `TASKS.md`.
