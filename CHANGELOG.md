@@ -22,16 +22,19 @@ All notable changes to confluid are documented here. The format follows
   hydraide.emit(after)` under every scope activation the document declares. First corpus: 26
   workspace configs (chainwind · sonair · traidwind — waivefront's 25 wait for a clean tree),
   confluid's own examples and guides. `tests/test_spelling.py`.
-- **`hydraide` — the preprocessor** (architecture record 19, phase 1). `hydraide cfg.yaml
-  [--scope k=v] [-o out.yaml | --check]` resolves a config — either spelling — to ONE plain-YAML
-  document: includes spliced, scopes applied, dotted keys expanded, interpolation burned in,
-  broadcasting settled, shared markers emitted as NAMED anchors (`&preprocess_0`, not `&id001`),
-  deferral kept as `_partial_: true`. Python: `confluid.hydraide.emit(source, scopes=…)` and
-  `check(path)`. Both spellings of one document emit byte-identical output, and `emit` is
-  idempotent — the property `--check` rests on. A malformed document is refused exactly as
-  `load()` refuses it (CLI exit 2, the located error on stderr, no traceback). It is a WRAPPER:
-  `dump(resolve(source))` plus a `dump(anchor_names=…)` hook; no engine pass changed. Guide:
-  `docs/hydraide.md`; example: `examples/hydraide.py`.
+- **`hydraide` — the preprocessor** (architecture record 19, phase 1). `confluid.hydraide.emit(source,
+  scopes=…)` resolves a config — either spelling — to ONE plain-YAML document: includes spliced,
+  scopes applied, dotted keys expanded, interpolation burned in, broadcasting settled, shared
+  markers emitted as NAMED anchors (`&preprocess_0`, not `&id001`), deferral kept as
+  `_partial_: true`; `check(path)` is `None` when a file is its own resolution, else a unified
+  diff. Both spellings of one document emit byte-identical output, and `emit` is idempotent — the
+  property `check` rests on. A malformed document is refused exactly as `load()` refuses it (a
+  located `ConfigurationError`). It is a WRAPPER: `dump(resolve(source))` plus a
+  `dump(anchor_names=…)` hook; no engine pass changed. **Functions only** — the `hydraide` command
+  line (`emit` / `check` verbs) is an app of the CLI framework built on confluid, not a script
+  here (the argparse `main()` and `[project.scripts] hydraide` that briefly lived in this
+  package were removed the same cycle, before any release). Guide: `docs/hydraide.md`; example:
+  `examples/hydraide.py`.
 - **`!partial:`** — the tag for a deferred marker, the same name as the key it emits. `!lazy:`
   stays as an alias.
 
@@ -93,6 +96,10 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A plain mapping whose key references a same-named outer key no longer recurses forever**
+  (F6): `val_fraction: 0.2` + `r: {val_fraction: !ref:val_fraction}` loads as `{'val_fraction': 0.2}`
+  — a scope never answers a reference with the reference itself; the self-hit is skipped and the
+  next scope answers. A self-reference with NO outer key is a located `ReferenceResolutionError`.
 - **A nested class-valued kwarg dumps its `__qualname__`.** `dump()` rendered a class VALUE with
   `__name__`, so `Holder.Inner` dumped as `pkg.Inner` — a path that resolves to nothing, or
   silently to an UNRELATED top-level class sharing the short name. Now `pkg.Holder.Inner`,
@@ -369,6 +376,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Breaking
 
+- **The runtime consumes the settled document** (architecture record 19, phase 3). `materialize()`
+  = pass 7 (broadcast + references, settled ONCE — what `hydraide` emits) → `instantiate` (pass 8:
+  every `Target` at ANY depth is built from its settled kwargs; construction no longer re-runs the
+  cascade into a marker's own kwargs). Three behaviours change, each measured before/after:
+  a marker inside a plain mapping or list is now BUILT (it used to come back as an unbuilt
+  `Target` — F4); a reference to a plain value is INLINED in pass 7, so `load()` hands back the
+  value where it used to hand back a late-bound `Reference` (F5) — a CLI that overrides after
+  loading merges into the `load(flow=False)` document and calls `materialize`, which is what the
+  app framework already did; an unresolvable reference is a located `ReferenceResolutionError` at
+  `resolve()`/`emit` and `load()` alike (it used to survive as a marker). The emitted document is
+  therefore CLOSED: no `_ref_` — markers are anchors, plain values are inlined, functions are
+  `${ref:module.qualname}`. `tests/test_instantiate.py`.
 - **Attribute references are REMOVED** (architecture record 19, phase 2 — user ruling 1b).
   `!ref:split.train` / `${ref:split.train}` (reading a property of the object built at `split`)
   and `!ref:obj.build()` (calling a method) are REFUSED with a located `ConfigurationError`

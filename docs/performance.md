@@ -40,17 +40,22 @@ Typical output (Apple M-series, Python 3.12):
 
 ```
 tree: 10x10 groups, 2000 top markers + 500 nested = 2500 markers
-parse         2500 markers   best    142.5 ms   mean    144.8 ms      17545 markers/s
-materialize   2500 markers   best    288.0 ms   mean    288.6 ms       8681 markers/s
-resolve       2500 markers   best    287.2 ms   mean    288.5 ms       8703 markers/s
-configure     2500 markers   best     12.7 ms   mean     12.7 ms     197413 markers/s
+parse         2500 markers   best    100.4 ms   mean    101.1 ms      24894 markers/s
+materialize   2500 markers   best    273.6 ms   mean    290.8 ms       9138 markers/s
+resolve       2500 markers   best    245.3 ms   mean    248.2 ms      10191 markers/s
+configure     2500 markers   best    162.1 ms   mean    165.6 ms      15424 markers/s
 ```
 
-`configure` was `38.0 ms / 65710 markers/s` until 2026-08-15. It is 3x faster
-because the walk no longer flows every marker-valued attribute into a temporary
-object that it configures and then discards — the marker is tuned in place
-instead. The construction that disappeared was never useful work: its result was
-thrown away (see [Post-construction configuration](configure.md)).
+Recorded 2026-08-17, after the runtime started consuming the settled document
+([Architecture Decisions](architecture.md) record 19, phase 3). Two things moved
+and both are the SAME cause: the benchmark's 2,500 markers sit under plain
+mappings (`groups.g0.s0.m0`), and construction used to descend one level only,
+so `materialize` built **none** of them and `configure` then walked a tree of
+unbuilt markers (`12.7 ms`). Now every marker is built (`instantiate` recurses
+through plain containers), so `materialize` includes 2,500 constructions at the
+same wall time as before — the second broadcast into each marker's own kwargs at
+construction is gone, which is what paid for it — and `configure` walks 2,500
+live objects (`162 ms`) — the number it always claimed to measure.
 
 
 ## Profiling mode
