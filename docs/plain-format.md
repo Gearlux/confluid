@@ -264,10 +264,14 @@ is the concise way to *write* a config, and this reserved-key form is what the
 [`hydraide`](hydraide.md) preprocessor *emits* after resolving includes, scopes,
 dotted keys and broadcasting:
 
-```bash
-hydraide experiment.yaml --scope framework=torch -o resolved.yaml
-hydraide resolved.yaml --check     # a committed artefact that drifts fails CI
+```python
+from confluid.hydraide import emit, check
+text = emit("experiment.yaml", scopes=["framework=torch"])
+diff = check("resolved.yaml")      # a committed artefact that drifts fails CI
 ```
+
+(The `hydraide` *command* — `hydraide emit … --output …` / `hydraide check …` —
+ships with the CLI framework built on confluid; confluid ships the functions.)
 
 And back: a file in this spelling that you want to *edit* again is converted line
 by line — comments and layout kept — by `confluid.spelling.to_tags`, whose file

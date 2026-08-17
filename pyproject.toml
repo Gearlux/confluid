@@ -70,11 +70,8 @@ dev = [
 # broadcasting keeps seeing post-init attrs in compiled/frozen/zip deployments where
 # inspect.getsource fails (see confluid/bake.py; `confluid-bake <pkg>` == `python -m confluid.bake <pkg>`).
 confluid-bake = "confluid.bake:main"
-# The preprocessor (architecture record 19): resolves a config — either spelling — to
-# ONE plain-YAML document (includes spliced, scopes applied, broadcasting settled,
-# shared markers anchored) that yq reads and confluid reloads. `hydraide cfg.yaml
-# [--scope k=v] [-o out.yaml | --check]`; see confluid/hydraide.py and docs/hydraide.md.
-hydraide = "confluid.hydraide:main"
+# NOTE: the `hydraide` command line is NOT here — confluid ships the FUNCTIONS
+# (confluid.hydraide.emit / check); the CLI is a LiquifyApp in the app framework.
 
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"

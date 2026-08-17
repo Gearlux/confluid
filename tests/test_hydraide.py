@@ -7,8 +7,6 @@ final kwargs, every contest is settled, shared markers are anchors and deferral 
 tool's contract, not the engine's.
 """
 
-import subprocess
-import sys
 import textwrap
 import warnings
 from pathlib import Path
@@ -211,63 +209,6 @@ def test_an_anchor_does_NOT_follow_an_include_overlay_tune(tmp_path: Path) -> No
 
 
 # --------------------------------------------------------------------------- #
-# The CLI
-# --------------------------------------------------------------------------- #
-
-
-def _cli(*args: str, cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, "-m", "confluid.hydraide", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def test_cli_writes_the_emitted_document(tmp_path: Path) -> None:
-    exp = _write_pair(tmp_path, PLAIN_BASE, "base.yaml")
-    proc = _cli(exp.name, "--scope", "framework=torch", "-o", "resolved.yaml", cwd=tmp_path)
-
-    assert proc.returncode == 0, proc.stderr
-    doc = yaml.safe_load((tmp_path / "resolved.yaml").read_text())
-    assert doc["model"]["hidden"] == 64 and doc["model"]["lr"] == 0.3
-
-
-def test_cli_prints_to_stdout_without_o(tmp_path: Path) -> None:
-    exp = _write_pair(tmp_path, PLAIN_BASE, "base.yaml")
-    proc = _cli(exp.name, cwd=tmp_path)
-
-    assert proc.returncode == 0, proc.stderr
-    assert yaml.safe_load(proc.stdout)["model"]["hidden"] == 64
-
-
-def test_cli_check_passes_on_a_file_that_is_its_own_resolution(tmp_path: Path) -> None:
-    exp = _write_pair(tmp_path, PLAIN_BASE, "base.yaml")
-    assert _cli(exp.name, "-o", "resolved.yaml", cwd=tmp_path).returncode == 0
-
-    proc = _cli("resolved.yaml", "--check", cwd=tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-
-
-def test_cli_check_fails_with_a_diff_on_an_unresolved_file(tmp_path: Path) -> None:
-    exp = _write_pair(tmp_path, PLAIN_BASE, "base.yaml")
-    proc = _cli(exp.name, "--check", cwd=tmp_path)
-
-    assert proc.returncode == 1
-    assert "---" in proc.stdout and "+++" in proc.stdout, "a unified diff is the report"
-
-
-def test_cli_a_located_config_error_is_reported_not_a_traceback(tmp_path: Path) -> None:
-    (tmp_path / "bad.yaml").write_text("m: {_target_: HModel, _partial_: sometimes}\n")
-    proc = _cli("bad.yaml", cwd=tmp_path)
-
-    assert proc.returncode == 2
-    assert "_partial_ must be true or false" in proc.stderr
-    assert "Traceback" not in proc.stderr
-
-
-# --------------------------------------------------------------------------- #
 # Ruling 2 — tags are the preferred authoring form: no warning, `!partial:` exists
 # --------------------------------------------------------------------------- #
 
@@ -306,10 +247,15 @@ def test_the_migrate_module_is_gone() -> None:
         importlib.import_module("confluid.migrate")
 
 
-def test_the_migrate_script_is_gone_and_hydraide_is_declared() -> None:
+def test_the_migrate_script_is_gone_and_no_hydraide_cli_lives_here() -> None:
+    """confluid ships the FUNCTIONS (`emit` / `check`); the `hydraide` command line is one app of
+    the CLI framework built on confluid — no argparse `main()` and no console script here."""
+    import confluid.hydraide as module
+
     text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
     assert "confluid-migrate" not in text
-    assert 'hydraide = "confluid.hydraide:main"' in text
+    assert "confluid.hydraide:main" not in text
+    assert not hasattr(module, "main")
 
 
 # --------------------------------------------------------------------------- #

@@ -6,7 +6,7 @@ Companion to `docs/hydraide.md`. Demonstrates — and ASSERTS — that:
    emits) resolve to BYTE-IDENTICAL output;
 2. the emitted document carries every settled value — the include, the dotted
    override, the scoped bare key — visibly, and reloads to the same graph;
-3. `emit` is idempotent, which is what `hydraide --check` rests on;
+3. `emit` is idempotent, which is what `check` rests on;
 4. a shared marker is a NAMED anchor.
 
 Run it:  python examples/hydraide.py
@@ -109,7 +109,7 @@ def main() -> None:
 
         print()
         print("=" * 70)
-        print("3. Idempotent — the property `hydraide --check` rests on")
+        print("3. Idempotent — the property `check` rests on")
         print("=" * 70)
         (root / "resolved.yaml").write_text(from_tags)
         assert emit(root / "resolved.yaml") == from_tags

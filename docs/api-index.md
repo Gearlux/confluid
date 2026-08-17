@@ -164,7 +164,7 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|---|
 | `emit(source, *, scopes=None)` | The resolved document for a path or YAML text, as plain YAML — passes 1–7 + the serializer | [hydraide](hydraide.md) |
 | `check(path, *, scopes=None)` | `None` when the file is its own resolution, else a unified diff | [hydraide](hydraide.md) |
-| `hydraide` (script) | `hydraide CONFIG [--scope k=v …] [-o OUT | --check]`; exit 0 / 1 (differs) / 2 (located error) | [hydraide](hydraide.md) |
+| *(no script here)* | The `hydraide` command line (`emit` / `check` verbs) ships with the CLI framework built on confluid; this module is functions only | [hydraide](hydraide.md) |
 
 ## `confluid.spelling` — the reserved-key spelling → the tag spelling
 
