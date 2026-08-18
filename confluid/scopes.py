@@ -19,8 +19,15 @@ when ``"debug"`` is not in the set; ``_notscope_: {task: segmentation}`` is acti
 when no ``task=…`` scope is supplied at all, OR when one is supplied but its
 value differs from ``segmentation``.
 
-``scope_aliases`` (top-level) and ``scopes`` (top-level metadata) are
-stripped at the end of resolution.
+A document may also declare ``default_scopes: [dim=value, ...]`` — the value a
+KEYED dimension takes when the caller names none. A default is filled in per
+dimension (a caller value for that dimension wins), goes through the same
+declared-value check as an activation, and is keyed ONLY: a boolean scope
+cannot be switched off by the caller, so as a default it would be always-on
+(``!notscope:`` is the spelling for "active while unset").
+
+``scope_aliases``, ``default_scopes`` (top-level load inputs) and ``scopes``
+(top-level metadata) are stripped at the end of resolution.
 """
 
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -45,13 +52,56 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
     return arg.strip(), None
 
 
-def normalize_active(scopes: List[str], aliases: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+#: The top-level keys that configure the LOAD rather than the program. Read by the
+#: loader before pass 4 and stripped from the resolved document by :func:`resolve_scopes`.
+METADATA_KEYS = ("scope_aliases", "default_scopes", "scopes")
+
+
+def parse_default_scopes(value: Any) -> Dict[str, str]:
+    """Validate a document's ``default_scopes:`` value into a ``{dimension: value}`` map.
+
+    The value must be a list of ``"dim=value"`` strings. Every entry MUST be keyed:
+    a bare name (a boolean scope, or an alias — aliases expand boolean names only)
+    is refused, because nothing the caller passes could switch such a default off.
+    ``None`` (key absent) is an empty map. Raises :class:`ScopeError` on any other
+    shape, naming the offending entry and the spelling that works.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ScopeError(
+            f"`default_scopes` must be a list of 'dimension=value' strings, got {value!r}. "
+            f"Write it as `default_scopes: [framework=lightning]`."
+        )
+    defaults: Dict[str, str] = {}
+    for raw in value:
+        key, val = parse_scope_arg(raw)
+        if val is None:
+            raise ScopeError(
+                f"`default_scopes` entry {raw!r} names no value: a default names the value a "
+                f"dimension takes when the caller passes none, and a boolean scope (or an alias) "
+                f"has no value to default — nothing the caller passes could switch it off. Write "
+                f"`{key}=<value>`, or use `!notscope:{key}` for a block that is active while `{key}` is unset."
+            )
+        defaults[key] = val  # last write wins, mirroring the activation list
+    return defaults
+
+
+def normalize_active(
+    scopes: List[str],
+    aliases: Optional[Dict[str, Any]] = None,
+    defaults: Optional[Dict[str, str]] = None,
+) -> Dict[str, Optional[str]]:
     """Build the post-alias post-hierarchy ``{key: value_or_None}`` activation map.
 
     Aliases only apply to *boolean* scope names; a keyed entry like
     ``task=classification`` is passed through verbatim. Hierarchical boolean
     names (``"prod.gpu"``) are expanded so each ancestor (``"prod"``) is also
     active. Last write wins per key, mirroring CLI re-specification.
+
+    ``defaults`` (the document's parsed ``default_scopes:``) fills in every KEYED
+    dimension the caller's ``scopes`` did not name — a caller value for that
+    dimension always wins, and a default never touches a boolean scope.
     """
     aliases = aliases or {}
     active: Dict[str, Optional[str]] = {}
@@ -69,6 +119,9 @@ def normalize_active(scopes: List[str], aliases: Optional[Dict[str, Any]] = None
         else:
             # Keyed scopes never alias-expand and never hierarchy-split their value.
             active[key] = value
+    for key, value in (defaults or {}).items():
+        if key not in active:
+            active[key] = value
     return active
 
 
@@ -83,8 +136,9 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
             one (the "no --scope flags" case).
 
     Returns:
-        A new structure with every ``ScopeBlock`` resolved. Top-level
-        ``scope_aliases`` and ``scopes`` metadata keys are stripped if present.
+        A new structure with every ``ScopeBlock`` resolved. The top-level
+        :data:`METADATA_KEYS` (``scope_aliases`` / ``default_scopes`` / ``scopes``)
+        are stripped if present.
 
     Raises:
         ScopeError: An active keyed scope names a dimension the document
@@ -95,7 +149,7 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
     _check_active_values_are_declared(config, active)
     resolved = _resolve_value(config, active)
     if isinstance(resolved, dict):
-        resolved = {k: v for k, v in resolved.items() if k not in ("scope_aliases", "scopes")}
+        resolved = {k: v for k, v in resolved.items() if k not in METADATA_KEYS}
     return resolved
 
 

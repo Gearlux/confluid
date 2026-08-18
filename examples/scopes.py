@@ -8,8 +8,9 @@ to offer an alternative for a single slot without lifting it to the document
 root. A marker's kwargs are a mapping like any other, so the wrapper splices at
 its own position and the later write wins.
 
-The last part asks a document which values it offers, and shows what happens
-when you ask for one it does not have.
+The last part asks a document which values it offers, shows what happens when
+you ask for one it does not have, and how a document declares the value a
+dimension takes when the caller names none (``default_scopes:``).
 """
 
 from typing import Any, Dict
@@ -39,6 +40,17 @@ quick_mode: !scope:quick
   max_epochs: 1
 logging: !scope:verbose
   log_level: DEBUG
+"""
+
+
+#: Every backend is a block, and the document says which one a bare `load()` runs.
+DEFAULT_DOC = """
+default_scopes: [framework=lightning]
+model: shared
+lightning: !scope:framework=lightning
+  runnable: LightningX
+keras: !scope:framework=keras
+  runnable: KerasX
 """
 
 
@@ -149,6 +161,16 @@ def main() -> None:
         print(f"{'typo rejected':<28} {exc}")
     else:  # pragma: no cover - the raise is the point of the example
         raise AssertionError("an undeclared scope value must raise")
+
+    # A document may declare the value a dimension takes when the caller passes
+    # none: every backend is then a block, with no privileged top level. A caller
+    # value still wins, and the metadata key never reaches the result.
+    defaulted = load(DEFAULT_DOC)
+    assert defaulted == {"model": "shared", "runnable": "LightningX"}
+    print(f"{'default_scopes, scopes=[]':<28} runnable={defaulted['runnable']}")
+    chosen = load(DEFAULT_DOC, scopes=["framework=keras"])
+    assert chosen["runnable"] == "KerasX"
+    print(f"{'default_scopes, keras':<28} runnable={chosen['runnable']}")
 
 
 if __name__ == "__main__":

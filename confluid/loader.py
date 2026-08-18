@@ -30,7 +30,7 @@ from loggair import get_logger
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, parse_value
-from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
+from confluid.scopes import normalize_active, parse_default_scopes, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
@@ -1070,14 +1070,18 @@ def _load(
         return data
 
     # ---- pass 4: scopes (alternating with the includes they expose) --------------
-    # Aliases live at the top level of the loaded dict; pull them out before
-    # normalizing the activation map. Scope resolution and include splicing then
-    # alternate until they settle: an activated block's own `include:` is still
-    # unspliced at this point, because processing it earlier would open a file
-    # the block may be about to discard.
+    # Aliases and defaults live at the top level of the loaded dict; pull them out
+    # before normalizing the activation map — both are STATIC document inputs read
+    # here, before anything is interpolated (a default is never a `${...}` value:
+    # a `${a.b}` may read a key an active block provides, so activation must be
+    # settled first). Scope resolution and include splicing then alternate until
+    # they settle: an activated block's own `include:` is still unspliced at this
+    # point, because processing it earlier would open a file the block may be
+    # about to discard.
     if isinstance(data, dict):
         aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
-        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases))
+        defaults = parse_default_scopes(data.get("default_scopes"))
+        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases, defaults))
     elif scopes:
         # Non-dict roots (e.g. a document whose root is a marker) carry no
         # metadata, but a ScopeBlock could still sit at the top level.

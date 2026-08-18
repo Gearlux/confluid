@@ -18,9 +18,10 @@ python examples/ml_experiments/run.py
 
 | Hydra concept | confluid feature |
 |---|---|
-| Config groups (`db: mysql`) | `!scope:model=cnn` dimension blocks; `!notscope:model` holds the default (active while the dimension is unset) |
+| Config groups (`db: mysql`) | `!scope:model=cnn` dimension blocks — one per member |
 | Group selection (`db=mysql` on the CLI) | `load(path, scopes=["model=cnn"])` |
-| Defaults list / experiment overlays (`+experiment=full`) | `include: base.yaml` + overriding keys (document order, last write wins) |
+| Defaults list (`defaults: [model: mlp]`) | `default_scopes: [model=mlp, optimizer=sgd]` — the member a dimension takes when the caller names none |
+| Experiment overlays (`+experiment=full`) | `include: base.yaml` + overriding keys (document order, last write wins) |
 | `_target_:` / `instantiate()` | `!class:Name` — built at load (`_target_:` in the plain form, the same key) |
 | `_partial_:` | `!partial:Name` — deferred until domain code flows it with runtime args |
 | Interpolation (`${db.port}`) | `${dotted.key}` / `${env:VAR}` strings, and `!ref:key` for live objects |
@@ -33,10 +34,11 @@ python examples/ml_experiments/run.py
 name receives it — the dataset, the model, and the trainer all get `seed: 7`
 with zero parameter-threading code.
 
-**Config groups are scope blocks.**
+**Config groups are scope blocks, and `default_scopes:` names the default member.**
 
 ```yaml
-model_default: !notscope:model                      # active while no model=... dimension is set
+default_scopes: [model=mlp, optimizer=sgd]          # what a bare load() picks, per dimension
+model_mlp: !scope:model=mlp
   model: !class:MLP
     hidden: 32
 model_cnn: !scope:model=cnn
@@ -45,11 +47,12 @@ model_cnn: !scope:model=cnn
 ```
 
 An active block splices its body into the document (the wrapper key
-disappears), so exactly one `model:` key survives per run:
+disappears), so exactly one `model:` key survives per run — and because every
+member is a block, `model=mlp` is a declared value too, not a fall-through:
 
 ```python
-load("base.yaml")                          # -> MLP (the default)
-load("base.yaml", scopes=["model=cnn"])    # -> CNN
+load("base.yaml")                          # -> MLP (default_scopes)
+load("base.yaml", scopes=["model=cnn"])    # -> CNN (optimizer stays SGD: defaults fill per dimension)
 ```
 
 A CLI framework forwards `--scope model=cnn` (or dimension flags) straight

@@ -133,7 +133,7 @@ The rule is narrow, and three neighbouring cases stay silent on purpose:
 | Situation | Outcome |
 |-----------|---------|
 | the dimension is **not declared** at all | inert no-op — a CLI may pass a dimension a config has not grown into yet |
-| the dimension is **not activated** | the document's unscoped keys apply (the default) |
+| the dimension is **not activated** | its `default_scopes:` value if the document declares one, else the unscoped keys |
 | the dimension carries **any** `_notscope_` block | every value is accepted — see below |
 
 That last row follows from what a negation means: `_notscope_: {task: segmentation}`
@@ -154,6 +154,47 @@ Note it takes the **raw** document (`load(path, until="raw")`), not a full `load
 result — by the time pass 4 has run, the blocks have already been spliced away. A dimension
 declared only by negated blocks maps to an empty set: it is a real dimension a
 CLI must bind, but it offers nothing to *select*.
+
+## Default scopes — the value a dimension takes when the caller names none
+
+Without a default, "no `--framework`" means "the document's unscoped keys", so
+the default backend has to *be* the top level — and still needs a block of its
+own, or `--framework lightning` is an undeclared value. A top-level
+`default_scopes:` list removes that asymmetry: every variant is a block, and the
+document says which one a bare `load()` picks.
+
+```yaml
+default_scopes: [framework=lightning]      # used only when the caller names no framework=
+
+model: shared                              # keys every backend shares stay at the top level
+lightning: !scope:framework=lightning
+  runnable: LightningX
+keras: !scope:framework=keras
+  runnable: KerasX
+```
+
+```python
+load(doc)                                  # {"model": "shared", "runnable": "LightningX"}
+load(doc, scopes=["framework=keras"])      # {"model": "shared", "runnable": "KerasX"}
+```
+
+The rules, each the same one an activation follows:
+
+- **A caller value wins, per dimension.** `default_scopes: [framework=lightning,
+  model=convnet]` with `scopes=["framework=keras"]` gives keras and convnet — the
+  default fills only the dimension the caller left unset.
+- **The value must be declared.** `default_scopes: [framework=kears]` raises the
+  same `ScopeError` a typo'd `--framework kears` does, naming the values the
+  document offers.
+- **Keyed only.** `default_scopes: [smoke]` is refused: nothing the caller passes
+  could switch a boolean default *off*, so it would be always-on, not a default.
+  For a block that is active while a dimension is unset, write `!notscope:smoke`.
+  An alias is refused for the same reason (aliases expand boolean names only).
+- **Static.** It is read beside `scope_aliases:` before pass 4, so it is never
+  a `${...}` value — see the [lifecycle](lifecycle.md) for why activation
+  settles before interpolation. It is stripped from the loaded result.
+
+`hydraide emit cfg.yaml` with no `--scope` therefore emits the defaulted variant.
 
 ## Scope aliases — one name for a bundle of scopes
 
@@ -180,9 +221,9 @@ Three rules bound the mechanism:
   alias-expands — its value is meaningful exactly as spelled.
 - **Hierarchy still applies afterwards.** An expanded name like `prod.gpu`
   activates its ancestors (`prod`) exactly as it would when passed directly.
-- **The key is load metadata.** `scope_aliases` — and a top-level `scopes:`
-  key, reserved for documenting a config's available scopes — are stripped
-  from the loaded result; they configure the load, not the program.
+- **The key is load metadata.** `scope_aliases` and `default_scopes` — and a
+  top-level `scopes:` key, reserved for documenting a config's available scopes —
+  are stripped from the loaded result; they configure the load, not the program.
 
 ## Runnable example
 

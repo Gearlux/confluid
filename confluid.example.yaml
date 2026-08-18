@@ -76,6 +76,12 @@ Trainer:
 scope_aliases:
   dev: [debug, local]
 
+# Optional defaults: the value a KEYED dimension takes when the caller names none
+# (`load(..., scopes=[])` / no `--env` flag). A caller value wins per dimension; the
+# value must be one a block below declares (a typo raises like a typo'd flag); a
+# boolean scope is refused here (nothing could switch it off — use _notscope_).
+default_scopes: [env=prod]
+
 # A scope wrapper lives at an arbitrary key whose VALUE carries the
 # _scope_ / _notscope_ entry. The key itself is inert — it's just YAML
 # scaffolding, because a mapping cannot be its own condition. Pick a

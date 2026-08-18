@@ -75,9 +75,22 @@ started raising (pinned by `tests/test_scopes.py::test_notscope_keyed_active_whe
   spliced away and there is nothing left to discover. Callers pass `load(..., until="raw")` or
   `yaml.load(..., Loader=ConfluidLoader)`.
 - **Breaking for a config relying on fall-through.** A "default" variant a consumer names
-  unconditionally must now be *declared* — typically a block that restates what the unscoped
-  keys already say. That cost is the point: the document states which variants it supports
-  instead of leaving it to be inferred from what does not crash.
+  unconditionally must now be *declared*. That cost is the point: the document states which
+  variants it supports instead of leaving it to be inferred from what does not crash.
+- **`default_scopes:` closes the asymmetry that left (2026-08-18).** Declaring the default
+  meant a block that restated what the unscoped keys already said — the top level *was* the
+  default backend, and a `lightning: !scope:framework=lightning` block existed only so
+  `--framework lightning` was a legal value. A top-level `default_scopes: [framework=lightning]`
+  is the value a KEYED dimension takes when the caller names none, filled in per dimension by
+  `normalize_active` (a caller value wins), read by the loader beside `scope_aliases:` before
+  pass 4 and stripped with it. It goes through THIS record's check, so a typo'd default raises
+  the same error. Two rules keep it a default and not a switch: it is **keyed only** (a boolean
+  scope has no value the caller could override, so as a default it would be always-on — the
+  refusal names `!notscope:` as the spelling for "active while unset"), and it is **static** —
+  never a `${...}` value, for the reason [the lifecycle](lifecycle.md) gives (a `${a.b}` may
+  read a key an active block provides, so activation must settle before interpolation).
+  Consequence for consumers: every backend is a block and no top-level key is privileged;
+  `hydraide emit` with no `--scope` emits the defaulted variant.
 
 **Example.**
 
@@ -91,6 +104,14 @@ load(raw, scopes=["task=classifcation"])
 # ScopeError: No scope block matches task='classifcation'. This document declares task
 # with: classification, segmentation. Either use one of those values, or add a
 # `!scope:task=classifcation` block.
+```
+
+```yaml
+default_scopes: [task=classification]     # what a bare load() picks; `--task segmentation` wins
+cls: !scope:task=classification
+  head: classifier
+seg: !scope:task=segmentation
+  head: decoder
 ```
 
 **What you may change.** Widen the *message*, not the rule. Each of the three exemptions

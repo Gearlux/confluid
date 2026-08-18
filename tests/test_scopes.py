@@ -936,3 +936,91 @@ def test_repr_format() -> None:
     assert "_notscope_: {debug}" in repr(nk)
     mk = ScopeBlock(dims={"framework": "keras", "model": "convnet"}, negate=False, contents={})
     assert "_scope_: {framework: keras, model: convnet}" in repr(mk)
+
+
+# ---------------------------------------------------------------------------
+# default_scopes — a document declares the value a dimension takes when the
+# caller names none. Keyed only; read beside `scope_aliases`, before pass 4.
+# ---------------------------------------------------------------------------
+
+_DEFAULTED = """
+default_scopes: [framework=lightning]
+model: shared
+lightning: !scope:framework=lightning
+  runnable: LightningX
+keras: !scope:framework=keras
+  runnable: KerasX
+"""
+
+
+def test_a_default_scope_fires_when_the_caller_names_no_value() -> None:
+    out = cast(Dict[str, Any], load(_DEFAULTED, until="document"))
+    assert out == {"model": "shared", "runnable": "LightningX"}
+    assert "default_scopes" not in out  # load metadata, stripped like scope_aliases
+
+
+def test_a_callers_value_wins_over_the_default() -> None:
+    out = cast(Dict[str, Any], load(_DEFAULTED, until="document", scopes=["framework=keras"]))
+    assert out["runnable"] == "KerasX"
+
+
+def test_a_default_only_fills_the_dimensions_the_caller_left_unset() -> None:
+    """Two dimensions, one defaulted, one named by the caller: each resolves independently."""
+    text = _DEFAULTED + "default_scopes: [framework=lightning, model=convnet]\n"
+    text = text.replace("default_scopes: [framework=lightning]\n", "")  # keep ONE key
+    text += "cnn: !scope:model=convnet\n  model: convnet\nres: !scope:model=resnet\n  model: resnet\n"
+    out = cast(Dict[str, Any], load(text, until="document", scopes=["framework=keras"]))
+    assert out == {"model": "convnet", "runnable": "KerasX"}
+
+
+def test_an_undeclared_default_value_is_a_scope_error() -> None:
+    """A typo'd default is loud — the same check an activation gets, not a silent nothing."""
+    with pytest.raises(ScopeError, match="framework='kears'.*keras, lightning"):
+        load(_DEFAULTED.replace("framework=lightning]", "framework=kears]"), until="document")
+
+
+def test_a_boolean_default_is_refused() -> None:
+    """The caller cannot switch a boolean default OFF, so it would be always-on, not a default."""
+    text = "default_scopes: [smoke]\nsmoke_on: !scope:smoke\n  epochs: 1\n"
+    with pytest.raises(ScopeError, match=r"default_scopes.*'smoke'.*!notscope:smoke"):
+        load(text, until="document")
+
+
+def test_an_alias_as_a_default_is_refused() -> None:
+    """Aliases expand boolean names only, and a default is keyed — an alias entry has no `=`."""
+    text = "scope_aliases:\n  ci: [quick]\ndefault_scopes: [ci]\nq: !scope:quick\n  n: 1\n"
+    with pytest.raises(ScopeError, match=r"default_scopes.*'ci'"):
+        load(text, until="document")
+
+
+def test_a_default_is_not_interpolated() -> None:
+    """Scopes settle before interpolation, so `${...}` in a default is a literal that matches nothing."""
+    text = _DEFAULTED.replace("[framework=lightning]", '["framework=${env:CONFLUID_FW}"]')
+    with pytest.raises(ScopeError, match=r"framework='\$\{env:CONFLUID_FW\}'"):
+        load(text, until="document")
+
+
+def test_a_default_deactivates_a_notscope_block_exactly_as_a_caller_value_would() -> None:
+    text = "default_scopes: [model=cnn]\nno_model: !notscope:model\n  model: mlp\ncnn: !scope:model=cnn\n  model: cnn\n"
+    assert cast(Dict[str, Any], load(text, until="document")) == {"model": "cnn"}
+
+
+def test_a_default_is_not_a_declared_value_by_itself() -> None:
+    """`discover_dimension_values` reads BLOCKS; a default that names no block is an error, not a declaration."""
+    raw = load(_DEFAULTED, until="raw")
+    assert discover_dimension_values(raw) == {"framework": {"lightning", "keras"}}
+    assert cast(Dict[str, Any], raw)["default_scopes"] == ["framework=lightning"]  # intact at "raw"
+
+
+def test_a_malformed_default_scopes_key_is_refused() -> None:
+    with pytest.raises(ScopeError, match="default_scopes"):
+        load("default_scopes: framework=lightning\nx: 1\n", until="document")  # a string, not a list
+
+
+def test_hydraide_emits_the_defaulted_variant_when_no_scope_is_given(tmp_path: Path) -> None:
+    from confluid import hydraide
+
+    path = tmp_path / "d.yaml"
+    path.write_text(_DEFAULTED)
+    assert "LightningX" in hydraide.emit(path)
+    assert "KerasX" in hydraide.emit(path, scopes=["framework=keras"])
