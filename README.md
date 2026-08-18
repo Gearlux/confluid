@@ -2,8 +2,114 @@
 
 **Confluid** is a modern, hierarchical configuration and dependency injection framework for Python, built for researchers and engineers who need modularity and 100% reproducibility in their experiment pipelines.
 
+## Installation
+
+Released on [PyPI](https://pypi.org/project/confluid/):
+
+```bash
+pip install confluid                # the configuration engine (pyyaml, loggair, typing-extensions)
+pip install "confluid[pydantic]"    # + pydantic-powered schema export & validation
+pip install "confluid[cli]"         # + the `hydraide` command (Click; `eval "$(hydraide completion bash)"`)
+```
+
+## Quick Start
+
+The whole walkthrough is [`examples/quickstart.py`](https://github.com/Gearlux/confluid/blob/main/examples/quickstart.py) — runnable, and every number below is asserted there.
+
+### 1. Define configurable classes
+
+```python
+from typing import Optional
+
+from confluid import configurable
+
+@configurable
+class Model:
+    def __init__(self, layers: int = 3, dropout: float = 0.1):
+        self.layers = layers
+        self.dropout = dropout
+
+@configurable
+class Trainer:
+    # Every parameter defaulted, so `Trainer()` works and the model can be wired afterwards
+    # (see "Class Design"). Optional: required params and real work in __init__ are fine too.
+    def __init__(self, model: Optional[Model] = None, lr: float = 0.001):
+        self.model = model
+        self.lr = lr
+```
+
+### 2. Describe the objects in YAML
+
+```yaml
+# experiment.yaml — the tag form; `hydraide emit` turns it into the plain form `yq` reads
+defaults:
+  n_layers: 10
+
+trainer: !class:Trainer
+  lr: 0.0001
+  model: !class:Model
+    layers: ${defaults.n_layers}      # config-key interpolation — one source of truth
+```
+
+### 3. Build everything from the document
+
+```python
+from confluid import load
+
+trainer = load("experiment.yaml")["trainer"]   # the whole graph, constructed and wired
+
+print(type(trainer).__name__, trainer.lr)            # Trainer 0.0001
+print(type(trainer.model).__name__, trainer.model.layers)   # Model 10
+```
+
+`load` runs the passes a document needs — includes, scopes, interpolation, broadcasting,
+construction — and stops where you say: `load(path, until="document")` gives you the
+merged document before anything is built, `until="settled"` the markers with their final
+kwargs (see [The Lifecycle](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md)).
+
+### 4. …or configure objects you already have
+
+A mapping at a slot tunes the live object **in place** — the existing `Model` stays the
+same object:
+
+```yaml
+# overrides.yaml
+Trainer:
+  lr: 0.0001
+  model:
+    layers: 10
+```
+
+```python
+from confluid import configure, configure_from_file, load
+
+model = Model()
+trainer = Trainer(model=model)
+
+report = configure(trainer, config=load("overrides.yaml", until="raw"))
+print(trainer.lr, trainer.model.layers)   # 0.0001 10
+print(trainer.model is model)             # True — tuned in place
+print(report.summary())                   # 2 applied, 0 failed, 0 unused
+
+configure_from_file(trainer, path="overrides.yaml")   # load + configure in one call
+```
+
+`configure` returns a [`ConfigurationReport`](https://github.com/Gearlux/confluid/blob/main/docs/report.md)
+(applied / failed / unused keys). Matching follows the one rule of the
+[Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md):
+document order, last write wins.
+
+### 5. Dump and reconstruct
+
+```python
+from confluid import dump, load
+
+state_yaml = dump(trainer)        # the live object graph as a reloadable document
+new_trainer = load(state_yaml)    # the identical hierarchy — e.g. in another process
+```
+
 ## Key Features
-- **Two spellings, one document:** write configs in the concise [tag form](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) — `model: !class:MLP(hidden=32)`, `optimizer: !partial:Adam`, `!ref:model` — or in the [reserved-key form](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md) — `model: {_target_: MLP, hidden: 32}` — which is ordinary YAML that `yaml.safe_load`, `yq`, editor schemas and linters read. Both are first-class input and may be mixed. **`hydraide` resolves either to one plain document** — includes spliced, scopes applied, broadcasting settled — see the [hydraide guide](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md).
+- **Modern layout, Hydra-like output:** write configs with custom YAML tags — `model: !class:MLP(hidden=32)`, `optimizer: !partial:Adam`, `!ref:model` (the [tag form](https://github.com/Gearlux/confluid/blob/main/docs/targets.md)) — and convert them with [`hydraide emit`](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) to a Hydra-like plain-YAML format — `model: {_target_: MLP, hidden: 32}` (the [reserved-key form](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md)) — that `yaml.safe_load`, `yq`, editor schemas and linters read: includes spliced, scopes applied, broadcasting settled, one file. Both forms load, and may be mixed.
 - **Works with plain Python classes:** Required constructor params and real work in `__init__` are fully supported for load/flow/dump — the lazy/zero-arg class-design convention is optional.
 - **Post-Construction Configuration:** Configure existing objects without requiring re-instantiation.
 - **Strict Gated Hierarchy:** Prevents deep-traversal into non-configurable third-party objects.
@@ -78,7 +184,7 @@ Python, no ML dependencies — run them as-is):
 
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
-- **Two Spellings, One IR:** a marker is a YAML tag (`!class:` / `!partial:` / `!ref:` / `!scope:` — the authoring form) or an ordinary mapping carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_scope_` — the machine form `hydraide` emits, readable by any YAML parser). Both parse to the same markers.
+- **Modern layout, Hydra-like output:** configs are written with custom YAML tags (`!class:` / `!partial:` / `!ref:` / `!scope:`) and can be converted — `hydraide emit` — to a Hydra-like plain-YAML format (`_target_` / `_partial_` / `_ref_` / `_scope_`) that any YAML parser reads. Both parse to the same markers.
 - **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `PartialClass`, `Reference`) for internal resolution.
 
 ### Dependency Injection
@@ -90,95 +196,6 @@ Python, no ML dependencies — run them as-is):
 - **IR-Aware Merging:** `deep_merge` and `expand_dotted_keys` must traverse into Fluid marker kwargs.
 - **Circular Reference Detection:** Gracefully handle and report circular dependencies in the object graph.
 - **Type Coercion:** Integrate `parse_value` to ensure CLI strings (e.g. "100") are cast to correct types (int 100).
-
-## Quick Start
-
-### 1. Define Configurable Classes
-```python
-from typing import Optional
-
-from confluid import configurable
-
-@configurable
-class Model:
-    def __init__(self, layers: int = 3, dropout: float = 0.1):
-        self.layers = layers
-        self.dropout = dropout
-
-@configurable
-class Trainer:
-    # Lazy + zero-arg: every parameter is defaulted, so `Trainer()` works and the model is
-    # wired afterwards. See the "Class Design" guide.
-    def __init__(self, model: Optional[Model] = None, lr: float = 0.001):
-        self.model = model
-        self.lr = lr
-```
-
-### 2. Configure via YAML
-```yaml
-# experiment.yaml — the tag form; `hydraide.emit(...)` emits the plain form `yq` reads
-defaults:
-  n_layers: 10
-
-Trainer:
-  lr: 0.0001
-  model: !class:Model
-    layers: ${defaults.n_layers}    # config-key interpolation — one source of truth
-```
-
-### 3. Load and Apply
-```python
-from confluid import load, configure
-
-# Instantiate with defaults
-model = Model()
-trainer = Trainer(model=model)
-
-# Apply configuration — returns a ConfigurationReport (applied/failed/unused keys)
-config = load("experiment.yaml", until="raw")
-report = configure(trainer, config=config)
-
-print(trainer.lr) # 0.0001
-print(trainer.model.layers) # 10
-print(report.summary()) # "2 applied, 0 failed, 1 unused"
-# (the "1 unused": `defaults` feeds the interpolation but sets no attribute
-#  itself, so it counts as an unused OVERRIDE — see docs/report.md)
-```
-
-`configure_from_file` collapses the load + apply into one call — handy when the config lives on disk:
-
-```python
-from confluid import configure_from_file
-
-# Equivalent to configure(trainer, config=load("experiment.yaml", until="raw"))
-configure_from_file(trainer, path="experiment.yaml")
-```
-
-It reads the file via `load(path, until="raw")` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
-
-### 4. Dump and Reconstruct
-```python
-from confluid import dump, load
-
-# Export current state
-state_yaml = dump(trainer)
-
-# Recreate exact same hierarchy in a new process
-new_trainer = load(state_yaml)
-```
-
-## Installation
-```bash
-pip install confluid                     # from PyPI
-pip install "confluid[pydantic]"    # + pydantic-powered schema export & validation
-pip install "confluid[cli]"         # + the `hydraide` command (Click; `eval "$(hydraide completion zsh)"`)
-```
-
-Or straight from GitHub:
-
-```bash
-pip install git+https://github.com/Gearlux/confluid.git@main
-```
 
 ## License
 MIT

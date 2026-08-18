@@ -32,7 +32,7 @@ def test_repro_dotted_override_into_tagged_class() -> None:
     Mirrors: DatasetProcessor.stream.source.count
     """
     config = {
-        "MockProcessor": {"stream": "!class:MockStream(source=!class:MockSource(count=10))"},
+        "MockProcessor": {"stream": Target("MockStream", source=Target("MockSource", count=10))},
         "MockProcessor.stream.source.count": 5,  # Dotted override
     }
 

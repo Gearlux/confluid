@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from confluid import configurable, get_registry
+from confluid import ConfigurationError, configurable, get_registry
 from confluid.resolver import Resolver
 
 
@@ -28,54 +28,21 @@ def test_resolve_env_var_default() -> None:
     assert resolver.resolve("${MISSING_VAR:default_val}") == "default_val"
 
 
-def test_resolve_string_reference() -> None:
-    """Verify that !ref: strings are resolved against the context."""
-    resolver = Resolver(context={"base_lr": 0.001})
-    assert resolver.resolve("!ref:base_lr") == 0.001
-
-
-def test_resolve_string_instantiation_marker() -> None:
-    """Verify that !class: strings are resolved into eager Target Fluids."""
-    from confluid.fluid import Target
-
-    resolver = Resolver()
-    marker = resolver.resolve("!class:Model(layers=10)")
-    assert isinstance(marker, Target)
-    assert marker.target == "Model"
-    assert marker.kwargs["layers"] == 10
-
-
-def test_recursive_string_instantiation_marker() -> None:
-    """Verify nested !class: and !ref: strings produce nested Target Fluids."""
-    from confluid.fluid import Target
-
-    resolver = Resolver(context={"global_lr": 0.5})
-    marker = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
-
-    assert isinstance(marker, Target)
-    assert marker.target == "Trainer"
-    assert marker.kwargs["lr"] == 0.5
-    assert isinstance(marker.kwargs["model"], Target)
-    assert marker.kwargs["model"].target == "Model"
-    assert marker.kwargs["model"].kwargs["layers"] == 5
-
-
-def test_resolve_empty_instantiation_marker() -> None:
-    from confluid.fluid import Target
-
-    resolver = Resolver()
-    marker = resolver.resolve("!class:Model()")
-    assert isinstance(marker, Target)
-    assert marker.target == "Model"
-
-
 def test_resolve_dict_and_list_strings() -> None:
-    resolver = Resolver(context={"val": 42})
-    data = {"a": "!ref:val", "b": ["!ref:val", "${HOME}"]}
+    resolver = Resolver(context={"c": {"val": 42}})
+    data = {"a": "${c.val}", "b": ["${c.val}", "${HOME}"]}  # a dotted name is a config key; a bare one an env var
     resolved = resolver.resolve(data)
     assert resolved["a"] == 42
     assert resolved["b"][0] == 42
     assert os.environ["HOME"] in resolved["b"][1]
+
+
+def test_a_marker_written_as_a_string_is_refused_at_every_depth() -> None:
+    """A marker is a tag or a reserved-key mapping; text that starts with a marker prefix is refused."""
+    resolver = Resolver(context={"val": 42})
+    for data in ("!ref:val", {"a": "!class:Model(layers=10)"}, {"b": ["!partial:Model"]}):
+        with pytest.raises(ConfigurationError, match="quoted STRING"):
+            resolver.resolve(data)
 
 
 # --- ${key.path} config-key string interpolation ---------------------------
@@ -156,25 +123,11 @@ def test_bare_env_var_unset_stays_literal(monkeypatch: pytest.MonkeyPatch) -> No
     assert Resolver().resolve("$CONFLUID_TEST_UNSET_VAR/sub") == "$CONFLUID_TEST_UNSET_VAR/sub"
 
 
-def test_bare_env_pass_leaves_marker_strings_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A marker STRING keeps its ``$`` text — the selector grammar owns it.
-
-    The ``@axis=$key`` document-selector spells ``$`` in a target, and it is
-    resolved at FLOW time against the active document. Expanding it here would
-    burn an environment variable in over a config key, so the bare-``$`` pass
-    skips every ``!``-prefixed string.
-
-    The vehicle is a TOP-LEVEL string: the same text inside a marker's own kwargs
-    is now refused outright (nothing ever honoured it there — see
-    ``tests/test_plain_format.py`` → the quoted-string group).
-    """
-    from confluid.fluid import Target
-
+def test_bare_env_pass_expands_in_any_ordinary_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bare-``$`` pass has no exemptions: an ordinary value starting with ``!`` expands too
+    (a tag TARGET's ``@axis=$key`` selector lives on the marker, never in a string value)."""
     monkeypatch.setenv("FRAMEWORK", "/env-value")
-    out = Resolver(context={}).resolve("!class:X@framework=$FRAMEWORK")
-
-    assert isinstance(out, Target)
-    assert out.target == "X@framework=$FRAMEWORK", "the selector survives to flow time"
+    assert Resolver(context={}).resolve("!important $FRAMEWORK") == "!important /env-value"
 
 
 def test_braced_default_behavior_unchanged_by_bare_pass(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -235,27 +188,3 @@ def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
     a.kwargs["child"] = b
     b.kwargs["parent"] = a  # cycle
     assert Resolver(context={}).resolve(a) is a
-
-
-def test_quoted_class_string_uses_the_one_target_call_grammar() -> None:
-    """The quoted-string marker parser matches ``_TARGET_CALL_RE`` — one grammar.
-
-    It used to hand-roll ``"(" in s and s.endswith(")")``, accepting names no
-    tag can carry (spaces, braces). A legal spelling parses identically; an
-    illegal one now falls to a deferred ``Target`` marker instead of minting an
-    eager ``Target`` under a name the registry can never resolve.
-    """
-    from confluid.fluid import Target
-
-    resolver = Resolver(context={})
-
-    legal = resolver.resolve("!class:a.b.Widget@role=metric(k=3)")
-    assert isinstance(legal, Target)
-    assert legal.target == "a.b.Widget@role=metric"
-    assert legal.kwargs == {"k": 3}
-
-    # A name the grammar rejects keeps the whole string as the target and parses
-    # NO inline kwargs — the marker type is the same either way now that eager and
-    # deferred are one class.
-    illegal = resolver.resolve("!class:not a name(k=3)")
-    assert isinstance(illegal, Target)

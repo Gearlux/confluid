@@ -32,16 +32,9 @@ def test_basic_flow_idempotent() -> None:
     assert flow(model).layers == 10
 
 
-def test_flow_string_reference() -> None:
-    @configurable
-    class Model:
-        def __init__(self, layers: int = 3) -> None:
-            self.layers = layers
-
-    # flow resolves !class: patterns
-    instance = flow("!class:Model(layers=20)")
-    assert instance.layers == 20
-    assert isinstance(instance, Model)
+def test_flow_of_a_string_is_a_pass_through() -> None:
+    """A string is a VALUE. Markers are YAML tags or reserved-key mappings — never parsed out of text."""
+    assert flow("!class:Model(layers=20)") == "!class:Model(layers=20)"
 
 
 def test_load_hierarchy() -> None:
@@ -84,7 +77,7 @@ def test_flow_auto_solidify_called() -> None:
             # Materialize derived state only once construction is complete.
             self.params = list(range(self.width))
 
-    instance = flow("!class:Backbone(width=4)")
+    instance = flow(Target(Backbone, width=4))
     assert isinstance(instance, Backbone)
     # solidify() ran automatically — params are populated post-flow.
     assert instance.params == [0, 1, 2, 3]
@@ -114,7 +107,7 @@ def test_flow_no_solidify_method_ok() -> None:
         def __init__(self, val: int = 0) -> None:
             self.val = val
 
-    instance = flow("!class:Plain(val=7)")
+    instance = flow(Target(Plain, val=7))
     assert instance.val == 7
 
 
@@ -127,7 +120,7 @@ def test_flow_non_callable_solidify_skipped() -> None:
             # ``solidify`` here is data, not a method — flow() must not call it.
             self.solidify = "not a method"
 
-    instance = flow("!class:HasAttr()")
+    instance = flow(Target(HasAttr))
     assert instance.solidify == "not a method"
 
 
@@ -149,7 +142,7 @@ def test_flow_idempotent_returns_the_same_object_and_refires_the_hook() -> None:
         def solidify(self) -> None:
             self.solidify_count += 1
 
-    instance = flow("!class:Counter()")
+    instance = flow(Target(Counter))
     assert instance.solidify_count == 1
 
     assert flow(instance) is instance

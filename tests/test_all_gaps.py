@@ -50,8 +50,8 @@ def test_fluid_proxy_logic() -> None:
     assert instance.__class__ == T
     assert instance.val == 5
 
-    # flow line 50-54: handle string tag !class: or !ref:
-    assert flow("!class:T").__class__ == T
+    # a string is a value: flow() passes it through (a marker is a tag or a reserved-key mapping)
+    assert flow("!class:T") == "!class:T"
 
     # flow line 57: fallback for primitives
     assert flow(42) == 42
@@ -242,18 +242,15 @@ def test_registry_coverage() -> None:
 
 
 def test_resolver_coverage() -> None:
-    r = Resolver(context={"a": {"b": 1}, "r": "!ref:a"})
+    r = Resolver(context={"a": {"b": 1}})
     # 24: non-str
     assert r.resolve(None) is None
-    # 31: recursion
-    assert r.resolve("!ref:r") == {"b": 1}
-    # 49, 53: !class string → eager Target Fluids (a malformed arg is skipped)
-    m_eager = r.resolve("!class:M()")
-    assert isinstance(m_eager, Target) and m_eager.target == "M" and m_eager.kwargs == {}
-    m_malformed = r.resolve("!class:M(x)")
-    assert isinstance(m_malformed, Target) and m_malformed.target == "M" and m_malformed.kwargs == {}
+    # a marker written as a quoted STRING is refused, naming the lines to write instead
+    for quoted in ("!ref:a", "!class:M()", "!partial:M", "!lazy:M(x=1)", "!scope:k=v"):
+        with pytest.raises(ConfigurationError, match="quoted STRING"):
+            r.resolve(quoted)
     # 103-104, 109: lookup miss
-    assert r._resolve_ref("m", local_context={"x": 1}) == "!ref:m"
+    assert r._resolve_ref("m", local_context={"x": 1}) is None
     # 121, 124, 130-132: navigate miss
     assert r._lookup_path("a.c", {"a": 1}) is None
     # 144, 152, 156, 158, 160, 164: interpolate

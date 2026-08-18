@@ -444,23 +444,25 @@ emitting false documentation about itself.
 **Rule — scope grammar.** `loader._parse_scope_suffix` is the ONE splitter for every activation
 spelling (the tag suffix, the `_scope_:` value, a CLI `--scope` argument). Never add a second.
 
-**Rule — the QUOTED-STRING spelling refuses what it cannot honour.** A marker written as a
-quoted string (`optimizer: "!class:Adam(lr=!ref:base)"`) is a THIRD grammar, parsed by
-`Resolver.resolve` / `_parse_class_string`, not by a tag constructor. It parses `!class:` and
-`!ref:` ONLY, and only OUTSIDE a marker's own kwargs. Every other combination now raises a
-`ConfigurationError` quoting the offending text and naming the plain-YAML line to write
-(`resolver._refuse_marker_string` / `_plain_yaml_for`). The refusal matches the exact marker
-prefixes, NEVER a bare leading `!` — an ordinary value may start with one. It carries no
-`file:line` because a scalar has none to carry (only markers are `_stamp_loc`-ed); that is
-tracked in `TASKS.md`, not worked around.
+**Rule — a marker is a TAG or a reserved-key MAPPING; a STRING is never parsed as one.** There
+is no third grammar: `Resolver.resolve` does not read markers out of text (user instruction
+2026-08-18 — "do not allow this, simplifies the parser, the user has to use the block form").
+A string value starting with a marker prefix (`!class:` / `!partial:` / `!lazy:` / `!ref:` /
+`!scope:` / `!notscope:` — `resolver._STRING_MARKERS_ALL`) is a quoted tag and is REFUSED with a
+`ConfigurationError` quoting the text and naming the two lines that work — the tag unquoted (block
+body for nested values) and the reserved-key mapping (`resolver._refuse_marker_string` /
+`_plain_yaml_for`), at the top level and inside a marker's own kwargs alike. The refusal matches
+the exact prefixes, NEVER a bare leading `!` — an ordinary value may start with one. It carries no
+`file:line` because a scalar has none to carry (only markers are `_stamp_loc`-ed); that is tracked
+in `TASKS.md`, not worked around. `flow()` of a string is a pass-through (a string is a value);
+`Resolver._resolve_ref` returns `None` on a miss, not a sentinel string. Do NOT re-add a string
+parser "for a nested `!ref:` inside an inline tag" — that is what the block body is for.
 
-**Rule — the whole path is DELETED in 0.4.0 (the tags themselves STAY — record 19).** It exists
-only to work around a tag limitation (YAML forbids two tags on one node, so a nested `!ref:` had
-to be quoted), and the reserved keys have no such limitation. Do NOT extend it — no new marker
-support. Census 2026-08-12: zero configs use it workspace-wide.
-
-**Pins.** `tests/test_loader.py` — the quoted-marker refusal group (incl.
-`::test_an_ordinary_value_starting_with_a_bang_is_untouched`, the false-positive guard).
+**Pins.** `tests/test_loader.py::test_a_marker_written_as_a_quoted_STRING_is_refused` (every
+prefix) / `::test_a_quoted_marker_inside_a_markers_own_kwargs_is_REFUSED` /
+`::test_an_ordinary_value_starting_with_a_bang_is_untouched` (the false-positive guard),
+`tests/test_resolver.py::test_a_marker_written_as_a_string_is_refused_at_every_depth`,
+`tests/test_fluid.py::test_flow_of_a_string_is_a_pass_through`.
 
 **Rule — tags are the PREFERRED AUTHORING form; the reserved keys are the MACHINE form; NEITHER
 warns** (user ruling 2026-08-15, architecture record 19 — this REVERSED the deprecation that stood
@@ -872,6 +874,26 @@ walk; the C3/C4 pins hold by construction. Warnings for a typo'd block key come 
 `tests/test_report.py` (the report vocabulary is the scanner's: a class block that delivers a
 mapping to a child records at the RECEIVER the block addressed).
 
+**Rule — a config key that NAMES an object is a delivery, and is reported as one (2026-08-18).**
+The naming key (`trainer: {…}` / `trainer: !class:Trainer {…}` / `trainer.model.lr`) is folded
+into the object's marker BEFORE pass 7 (P1's `deep_merge`, so a bare key beside it still
+competes on position), which means pass 7 sees its keys as the marker's OWN and records
+nothing — so `configure()` writes the record itself, in the scanner's vocabulary
+(`_record_named_overlay`): each key the overlay hands the object that the object accepts is
+ONE applied record at `"Class 'name'"`, origin `"addressed"`, and the raw config key (dotted
+spellings included) is marked used. The leaf sets this causes on children are NOT records —
+exactly as for a class-block delivery. Never record in `_set` "what was actually set": that
+is a second vocabulary, and it broke the block pin above.
+
+**Rule — a MARKER at a slot holding a LIVE `@configurable` child of the SAME class TUNES the
+child (user ruling 2026-08-18)** — `_apply` recurses into the child (`_tunes_live_child`:
+`_resolve_target_callable(marker) is type(current)`), identity kept, exactly what a MAPPING at
+that slot does. A marker naming a DIFFERENT class is a request for another object and is
+built (a typed slot's validation refuses a wrong class); a marker at an EMPTY slot is built; a
+marker at a slot holding a MARKER tunes that marker (unchanged). Do not "generalize" to
+subclasses or to markers inside containers without a measured case.
+**Pins.** `tests/test_configure_live_child.py` (both rules, every con case).
+
 **Rule — four pass-7 defects the document path exposed are FIXED in pass 7, so `load()` gets them
 too (F7/F8/F10/F11, `BUGS-2026-08-13.md`):** a same-named child slot (`child:` inside `child:`)
 lost its slot in the parent view (`_splice_kwargs_at_slot._parent_wins` now returns False for the
@@ -1267,8 +1289,8 @@ dotted/bracketed name is a config-key path resolved against the config tree (loc
 then global). That test is what keeps every pre-existing `${VAR}` an env var.
 
 **Rule.** Bare `$IDENTIFIER` expands as an ENV-ONLY read after the `${...}` pass — no dotted form,
-no `:default`. Strings starting with `!` are EXEMPT (a marker string keeps its `$` for flow-time
-parsing, where the `@axis=$key` selector grammar also spells `$`).
+no `:default`, no exemptions (a tag TARGET's `@axis=$key` selector lives on the marker, never in a
+string value, so nothing needs a leading-`!` escape).
 
 **Rule.** Interpolation is a SINGLE PASS and the substituted value BURNS IN — `dump()` emits it and
 a deferred slot flowed later sees it. Marker kwargs are IN the pass (walked in place, identity
@@ -1280,7 +1302,7 @@ checkpoint filenames that pass through configs as literals.
 **Why.** `docs/architecture.md` record 7. **Docs.** `docs/interpolation.md`.
 **Pins.** `tests/test_resolver.py` — the `${key.path}` block plus the bare-env group
 (`::test_bare_env_var_expands_embedded_in_a_path` / `::test_bare_env_var_unset_stays_literal` /
-`::test_bare_env_pass_leaves_marker_strings_untouched` /
+`::test_bare_env_pass_expands_in_any_ordinary_string` /
 `::test_braced_default_behavior_unchanged_by_bare_pass` /
 `::test_bare_env_var_expands_in_marker_kwargs_walk`); the marker-kwargs group in
 `tests/test_loader.py` + `::test_config_key_interpolation_end_to_end`.

@@ -60,6 +60,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Changed
 
+- **`configure()`: a marker at a slot holding a live child of the same class tunes the child;
+  naming an object is a reported delivery.** `model: !class:Model {layers: 10}` applied to a
+  Trainer whose `model` is a live `Model` configures that object in place (identity kept), as a
+  mapping at the slot always did; a marker of a different class is built, an empty slot is
+  filled. And `configure(trainer=t, config=load("experiment.yaml", until="raw"))` — the same
+  document `load()` builds from, applied by name (dotted `trainer.model.lr` included) —
+  reports each key the overlay hands the object as applied at `"Trainer 'trainer'"`, origin
+  `addressed`, and the naming key as used. `tests/test_configure_live_child.py`.
+
+- **A marker is a YAML tag or a reserved-key mapping — never a string.** A string value that
+  starts with a marker prefix (`"!class:Adam(lr=0.1)"`, `"!ref:x"`, `"!partial:…"`, …) is
+  refused with a `ConfigurationError` naming the tag to write unquoted (block body for nested
+  values) and the reserved-key line; nothing is parsed out of text, at the top level or inside a
+  marker's kwargs. `flow()` of a string is a pass-through. The bare-`$VAR` env pass has no
+  leading-`!` exemption any more.
+
 - **`load()` is the ONE door — every stop point is `until=<stage>`** (architecture record 20,
   2026-08-17). `load(data, *, until="raw" | "document" | "settled" | "objects", context, scopes,
   solidify, return_paths)`: `"raw"` is passes 1–3 (parsed, imported, includes spliced — scope
