@@ -137,7 +137,7 @@ def test_a_top_level_list_index_reference_is_the_value_after_load() -> None:
     assert g["pick"] == "c"
 
 
-def test_the_cli_override_contract_is_load_flow_false_then_materialize() -> None:
+def test_the_cli_override_contract_is_load_document_then_load() -> None:
     """A CLI merges overrides into the DOCUMENT and materializes it — the shape the app framework
     uses; the reference is re-resolved against the merged document, no late-bound marker needed."""
     doc = load("labels: [a, b, c]\nidx: 2\npick: !ref:labels[idx]\n", until="document")

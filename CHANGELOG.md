@@ -42,20 +42,18 @@ All notable changes to confluid are documented here. The format follows
 
 - **`load()` is the ONE door — every stop point is `until=<stage>`** (architecture record 20,
   2026-08-17). `load(data, *, until="raw" | "document" | "settled" | "objects", context, scopes,
-  solidify, return_paths)`: `"raw"` is passes 1–3 (was `load_config(path)` — and now works for
-  YAML text and a dict, not a path only), `"document"` is 1–6 (was `load(flow=False)`),
-  `"settled"` is 1–7 (was `resolve(x)`), `"objects"` (the default) is 1–9 (was `load(x)` and
-  `materialize(parsed)`); `return_paths=True` returns `(result, paths)` (was
-  `load_config_with_paths(path)`), and now also lists a file an ACTIVATED SCOPE BLOCK spliced in
-  (the old wrapper wrapped only the pre-scope read). An unknown stage raises `ConfigurationError`
-  rather than defaulting. `load` accepts a path, text or already-parsed data of any shape and runs
-  the passes the input still needs — `load(load(x, until="document")) == load(x)`. **Behaviour
-  changes:** a LIST root builds (`load([Target, Target])` used to hand the markers back
-  unbuilt); a `Path`, or a one-line `str` ending in `.yaml`/`.yml`, names a FILE and a missing one
-  raises `ConfigFileNotFoundError` (`load("missing.yaml")` used to parse the NAME as YAML text and
-  return the string). The engine's last lazy seam (`engine.resolve` body-importing `loader.load`)
-  is gone; `engine.materialize` (7–9) and `engine.settle` (7, the pass-7 half of the old
-  `resolve`) remain importable, not exported. `tests/test_load_stages.py`.
+  solidify, return_paths)`: `"raw"` is passes 1–3 (parsed, imported, includes spliced — scope
+  blocks intact), `"document"` 1–6, `"settled"` 1–7 (markers with final kwargs, nothing built),
+  `"objects"` (the default) 1–9; `return_paths=True` returns `(result, paths)` — every file read
+  for the call, a scope-spliced include included. An unknown stage raises `ConfigurationError`
+  rather than defaulting. `load` accepts a path, YAML text or already-parsed data of any shape
+  (a list root builds) and runs the passes the input still needs —
+  `load(load(x, until="document")) == load(x)`. A `Path`, or a one-line `str` ending in
+  `.yaml`/`.yml`, names a FILE: a missing one raises `ConfigFileNotFoundError`. The engine works
+  on prepared data only (`engine.materialize` 7–9, `engine.settle` 7): passes 5–6 (interpolation,
+  dotted-key expansion) run once, in `load`, for the data and for an explicit `context` — so
+  runtime kwargs handed to `flow()` from code keep their text, for a bare type exactly as for a
+  code-built marker. The engine imports nothing from the loader. `tests/test_load_stages.py`.
 
 - **Tags are the preferred AUTHORING form; the reserved keys are the MACHINE form; neither
   warns** (user ruling 2026-08-15, record 19). This REVERSES the tag deprecation announced in
@@ -68,12 +66,6 @@ All notable changes to confluid are documented here. The format follows
 
 ### Removed
 
-- **`materialize`, `resolve`, `load_config`, `load_config_with_paths`, and the `flow=` kwarg of
-  `load`** — folded into `load(until=…)` (see Changed). BREAKING for a v0.2.0 consumer: migrate
-  `materialize(x)` → `load(x)`, `resolve(x)` → `load(x, until="settled")`, `load_config(p)` →
-  `load(p, until="raw")`, `load_config_with_paths(p)` → `load(p, until="raw", return_paths=True)`,
-  `load(x, flow=False)` → `load(x, until="document")`. Deleted, not aliased — the same treatment
-  the `Class` / `Instance` / `Lazy` names got: importing one fails loudly.
 - **`confluid-migrate`** (`confluid/migrate.py`, its tests, the script) — the tag→plain codemod
   has no job when tags are not deprecated; `hydraide` is the one emitter of the plain form. Not
   breaking: v0.2.0 shipped no such script and no downstream code called it.

@@ -143,12 +143,9 @@ imports; extend the right module instead.
 **Rule.** `broadcast` MUST NOT materialize anything — no `flow`, no `_flow_recursive`. Code that
 BUILDS an object belongs in `engine`. That prohibition is why the edge is one-directional.
 
-**Rule.** NO lazy seam remains — the engine imports nothing from `loader`, and
-`tests/test_load_stages.py::test_the_engine_no_longer_imports_the_loader` pins it. (The last one,
-`engine.resolve()` body-importing `loader.load` for a str/Path convenience, went 2026-08-17 when the
-stop point moved onto `load(until="settled")`; the one before — `resolver._materialize_cursor`
-body-importing `engine` to FLOW a reference's cursor — went with the attribute references, record 19
-phase 2. `broadcast → engine → loader` is the only direction.)
+**Rule.** NO lazy seam: the engine imports nothing from `loader` — it works on PREPARED data
+only — and `tests/test_load_stages.py::test_the_engine_no_longer_imports_the_loader` pins it.
+`broadcast → engine → loader` is the only direction.
 
 ### `load()` is the ONE door (2026-08-17)
 
@@ -158,22 +155,23 @@ the ONE runtime tuple, an unknown value raises `ConfigurationError`, never defau
 a path, YAML text or already-parsed data (dict / list / marker) and runs the passes the input still
 needs — passes already applied are idempotent, so `load(load(x, until="document")) == load(x)`.
 `return_paths=True` returns `(result, paths)`, `paths` being every file read for that call in read
-order (a scope-spliced include included). Do NOT reintroduce a second entry name for a stage:
-`load_config` / `load_config_with_paths` / `materialize` / `resolve` / `load(flow=False)` were five
-names for four stop points, `materialize(parsed)` measured identical to `load(parsed)` on every
-input but a LIST root (which `load` handed back unbuilt — fixed), and `load_config` had no text
-form. `engine.materialize` (7–9) and `engine.settle` (7) remain as the engine's PREPARED-data
-functions behind `load` — importable, not exported.
+order (a scope-spliced include included). Do NOT add a second entry name for a stage, and do
+not make a stage reachable for one input shape only — every stage takes a path, text or parsed
+data. `engine.materialize` (7–9) and `engine.settle` (7) are the engine's PREPARED-data
+functions behind `load` — importable, not exported — and **passes 5–6 run ONCE, in
+`loader._load`, for `data` and for an explicit `context`; the engine entries run neither**
+(pinned: `test_the_engine_entries_run_neither_pass_5_nor_pass_6`). Consequence: interpolation
+is a DOCUMENT pass — runtime kwargs handed to `flow()` from code keep their text, for a bare type
+exactly as for a code-built marker (`test_runtime_kwargs_of_a_bare_type_are_code_not_document`).
 
 **Rule — a `Path`, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE.** A missing one
-raises `ConfigFileNotFoundError` (what `load_config` did); before the fold `load("missing.yaml")`
-parsed the NAME as YAML text and returned the string, so a typo'd path loaded as nothing. Any other
-`str` keeps the exists-under-the-search-tiers probe and otherwise parses as text
-(`loader._names_a_file`).
+raises `ConfigFileNotFoundError` — a typo'd path must not parse as YAML text and load as
+nothing. Any other `str` keeps the exists-under-the-search-tiers probe and otherwise parses as
+text (`loader._names_a_file`).
 
 **Pins.** `tests/test_load_stages.py` (the four stages on one document, the list-root pro/con, the
-fold idempotence, `return_paths` incl. the scope-spliced include and the stage that never opened it,
-the removed names, the seam, the missing-file rule and its con case).
+idempotence, `return_paths` incl. the scope-spliced include and the stage that never opened it,
+the exact signature, the seam, the missing-file rule and its con case).
 **Docs.** `docs/lifecycle.md` → "Where you can stop", `docs/api-index.md`,
 `docs/architecture.md` record 20.
 
@@ -1508,6 +1506,13 @@ in ISOLATION and under pytest-randomly. Never reintroduce alphabetical-ordering 
 `docs/<topic>.md`, and every docs page has a runnable companion in `examples/` — standalone,
 zero-arg, exit 0, executed by CI. A new topic gets a docs file + an example + a README index row,
 in the same change. `docs/architecture.md` is the one exception (decision records, no twin).
+
+**Rule — no obsolete-code documentation, no pre-1.0 backward compatibility** (user instruction
+2026-08-17). A removed name is removed: no strikethrough rows in `docs/api-index.md`, no "was X /
+migrate to Y" notes, no deprecation aliases, no test whose job is to recount the old name.
+`docs/` and the CHANGELOG describe the surface that exists. Nobody outside this workspace consumed
+0.x, so there is nobody to migrate — until 1.0, backward-compatibility scaffolding or migration
+notes are added ONLY when the user asks in that change; when in doubt, ask.
 
 **Rule.** README links MUST be absolute GitHub blob URLs (the README doubles as the PyPI landing
 page, where relative links do not resolve); links BETWEEN `docs/*.md` files stay relative.

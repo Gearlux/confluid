@@ -9,7 +9,7 @@ from confluid.fluid import Target
 from confluid.loader import ConfluidLoader
 
 
-def test_load_config_valid(tmp_path: Path) -> None:
+def test_load_raw_from_file_valid(tmp_path: Path) -> None:
     yaml_file = tmp_path / "config.yaml"
     yaml_file.write_text("Model:\n  layers: 10")
 
@@ -17,7 +17,7 @@ def test_load_config_valid(tmp_path: Path) -> None:
     assert data["Model"]["layers"] == 10
 
 
-def test_load_config_empty(tmp_path: Path) -> None:
+def test_load_raw_from_file_empty(tmp_path: Path) -> None:
     yaml_file = tmp_path / "empty.yaml"
     yaml_file.write_text("")
 
@@ -25,7 +25,7 @@ def test_load_config_empty(tmp_path: Path) -> None:
     assert data == {}
 
 
-def test_load_config_not_found() -> None:
+def test_load_raw_from_file_not_found() -> None:
     with pytest.raises(FileNotFoundError):
         load("non_existent.yaml", until="raw")
 
@@ -74,7 +74,7 @@ def test_kwarg_named_target_survives_the_legacy_class_spelling() -> None:
     assert marker.kwargs == {"target": "inner", "param": "low"}
 
 
-def test_load_config_with_import() -> None:
+def test_load_raw_with_import() -> None:
     import tempfile
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -107,7 +107,7 @@ def test_load_with_custom_tags(tmp_path: Path) -> None:
     assert data["ref"].target == "base_lr"
 
 
-def test_load_config_root_level_class(tmp_path: Path) -> None:
+def test_load_raw_root_level_class(tmp_path: Path) -> None:
     """Top-level `!class:` documents must round-trip via the path loader.
 
     The text loader (`confluid.loader.load(text)`) already handles a root
@@ -415,13 +415,11 @@ def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_materialize_interpolates_config_keys_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``load()`` runs the same Resolver pass ``load()`` runs.
+    """The engine entry runs the same Resolver pass the loader runs.
 
-    docs/interpolation.md promises interpolation "at materialization" naming
-    ``load()`` (every stage) — measured, the old ``materialize()`` entry
-    skipped it and the literal ``${...}`` rode into values silently while the
-    other two (and ``configure()``) resolved. Idempotent on the load() path,
-    which has already substituted.
+    docs/interpolation.md promises interpolation from ``until="document"`` on;
+    the engine entry substitutes too, and is idempotent on data ``load`` has
+    already substituted.
     """
 
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")

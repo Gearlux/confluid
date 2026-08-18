@@ -142,7 +142,7 @@ def test_configure_from_file_accepts_str_path(tmp_path: Path) -> None:
     assert model.val == 7
 
 
-def test_configure_from_file_equivalent_to_load_config_plus_configure(tmp_path: Path) -> None:
+def test_configure_from_file_equivalent_to_load_raw_plus_configure(tmp_path: Path) -> None:
     @configurable
     class Model:
         def __init__(self, val: int = 1):

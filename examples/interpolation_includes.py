@@ -55,7 +55,7 @@ port: "${env:EXAMPLE_MISSING_PORT,8080}"
 
         # The include tree: entrypoint first, then each transitively include:-d file.
         raw, paths = load(experiment, until="raw", return_paths=True)
-        assert "${env:EXAMPLE_DATA_ROOT}" in raw["data_dir"], "load_config returns the RAW parse"
+        assert "${env:EXAMPLE_DATA_ROOT}" in raw["data_dir"], 'until="raw" returns the RAW parse'
 
         # Interpolation happens at materialization — load() the same file.
         data = load(str(experiment))

@@ -1588,18 +1588,10 @@ what makes the settled document the answer `configure()` can apply.
 Lifecycle](lifecycle.md) → "Where you can stop"): after the raw read (scope discovery must see the
 `_scope_` blocks before pass 4 splices them away), after the Fluid IR (a CLI merges its overrides
 here, BEFORE pass 7 inlines `${ref:}` values), after pass 7 (a graph editor's YAML→graph import,
-`hydraide`), and after construction. Those four stops were reachable through FIVE public names —
-`load_config(path)`, `load(x, flow=False)`, `resolve(x)`, `load(x)` / `materialize(parsed)` — plus
-`load_config_with_paths(path)` for the include tree, and the names were not even parallel:
-`load_config` took a path only (no text form of the raw stage), `resolve` was a separate function
-where the pass-6 stop was a flag on `load`, and `materialize` — measured against `load` on the same
-inputs — gave the identical result on a dict, on a marker with a `context=`, and on a fragment,
-differing on exactly one input: a LIST root, which `load` handed back unbuilt (`if not
-isinstance(data, dict): return data`) while `materialize` built. That difference was a wart in
-`load`, not a reason for a second name. The census the fold rested on: `materialize` had 13
-workspace callers, every one expressible as `load(...)`; `resolve` had 2; `load_config` 3 (two of
-which needed the raw document, one of which did not); `load_config_with_paths` 1. One consumer
-called `materialize` on raw YAML TEXT — which `materialize` never parsed — and got the string back.
+`hydraide`), and after construction. Each stop used to be its own function with its own
+signature and its own idea of which input shapes it took — one was path-only, one built a list
+root while another handed it back unbuilt, one parsed no YAML at all — so a caller had to know
+five names to reach four states, and two consumers were measured holding the wrong one.
 
 **Decision.** `load(data, *, until: Stage = "objects", context, scopes, solidify, return_paths)`
 is the one door. `Stage = Literal["raw", "document", "settled", "objects"]` names the STATE handed
@@ -1607,26 +1599,23 @@ back (`_STAGES = get_args(Stage)` is the runtime tuple; an unknown value raises 
 rather than defaulting to objects). `load` accepts a path, YAML text or already-parsed data of any
 shape and runs the passes the input still needs; passes already applied are idempotent, so
 `load(load(x, until="document")) == load(x)`. `return_paths=True` returns `(result, paths)` —
-every file read for that call, in order, deduplicated. The four folded names and the `flow=` kwarg
-are REMOVED (deleted, not aliased — the same treatment `Class` / `Instance` / `Lazy` got in
-2026-08-11: a name that keeps working is a name nobody migrates off). Inside the engine,
-`materialize` (passes 7–9) and `settle` (pass 7, formerly `resolve` minus its str/Path
-convenience) remain as the PREPARED-data functions `load` calls — importable from
-`confluid.engine`, not exported.
+every file read for that call, in order, deduplicated, a scope-spliced include included. Inside
+the engine, `materialize` (passes 7–9) and `settle` (pass 7) are the PREPARED-data functions
+`load` calls — importable from `confluid.engine`, not exported — and the engine imports nothing
+from the loader: `broadcast → engine → loader` is the only direction. Passes 5–6 (interpolation,
+dotted-key expansion) run ONCE, in `load`, for the data and for an explicit `context`; the engine
+entries run neither (the second walk cost 2.9 ms per 2,500-marker load — ~1 % — and went because a
+pass has one home, not for speed). Consequence: interpolation is a document pass, so runtime kwargs
+handed to `flow()` from code keep their text, for a bare type exactly as for a code-built marker.
 
-**Consequences.** One name to learn, one signature to document, one row in the API index. The
-raw stage gains a TEXT and a DICT form for free (`load("include: base.yaml", until="raw")`), so
-scope discovery no longer needs a file. A list root builds. `return_paths` now also lists a file an
-ACTIVATED SCOPE BLOCK spliced in — the old wrapper wrapped only the pre-scope read, so those files
-were read but never listed. The engine's last lazy seam (`engine.resolve` body-importing
-`loader.load`) is gone: `broadcast → engine → loader` is the only direction, and the engine works
-on prepared data only. Two behaviour changes rode along, each pinned with its con case: a `Path`
-instance, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE and a missing one raises
-`ConfigFileNotFoundError` — folding `load_config` (which raised) into `load` (which parsed
-`"missing.yaml"` as YAML text and returned the string) required choosing, and the raise is the
-answer that does not let a typo'd path load as nothing; a bare word (`load("hello")`) still parses
-as text. Cost: a `load()` on already-loaded data re-runs passes 4–6 (idempotent, microseconds on
-a real document) — accepted for one door.
+**Consequences.** One name to learn, one signature to document, one row in the API index; every
+stage takes every input shape (scope discovery no longer needs a file — `load("include:
+base.yaml", until="raw")`); a list root builds. Two rules ride on the input shape, each pinned with
+its con case: a `Path` instance, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE and a
+missing one raises `ConfigFileNotFoundError` (a typo'd path must not parse as YAML text and load
+as nothing), while a bare word (`load("hello")`) still parses as text. Cost: a `load()` on
+already-loaded data re-runs passes 4–6 (idempotent, microseconds on a real document) — accepted
+for one door.
 
 **Example.**
 
@@ -1643,5 +1632,4 @@ objects, paths = load("experiment.yaml", return_paths=True)          # + every f
 ```
 
 **What you may change.** The stage NAMES (they are a Literal, one place). Not the shape: do not add
-a second entry function for a stage, do not re-add `flow=`, and do not make a stage reachable
-only for one input shape — the raw stage's path-only history is exactly what this record closes.
+a second entry function for a stage, and do not make a stage reachable for one input shape only.

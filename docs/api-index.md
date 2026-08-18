@@ -16,7 +16,6 @@ plugs into the passes, and from the eight names most configs need:
 | `load` | The ONE door: text, path or parsed data → `until="raw"` (1–3) / `"document"` (1–6) / `"settled"` (1–7) / `"objects"` (1–9, default); `return_paths=True` adds the list of every file read |
 | `flow` | Build one node now — with runtime args/kwargs for deferred slots |
 | `cast` | `flow` that also narrows the static type for checkers ([Introspection](introspection.md)) |
-| ~~`load_config` / `load_config_with_paths` / `materialize` / `resolve` / `load(flow=False)`~~ | **Folded into `load(until=…)` 2026-08-17.** `load_config(p)` → `load(p, until="raw")`; `load_config_with_paths(p)` → `load(p, until="raw", return_paths=True)`; `load(x, flow=False)` → `load(x, until="document")`; `resolve(x)` → `load(x, until="settled")`; `materialize(x)` → `load(x)` |
 
 ## The marker family — [Targets & Deferred Initialization](targets.md)
 
@@ -26,7 +25,6 @@ plugs into the passes, and from the eight names most configs need:
 | `Target` | A callable + its kwargs (`_target_:`) — built at load, shared by identity |
 | `Partial` / `PartialClass` | A runtime-injection slot (`_partial_: true`) — never auto-built; `PartialClass` is the Python spelling |
 | `partial_param_names` | Every slot of a class declared `Partial[...]` — ctor params and body slots |
-| ~~`Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names`~~ | **Removed 2026-08-11.** Use `Target` / `Partial` / `PartialClass` / `partial_param_names` |
 | `Reference` | A `${ref:}` / `_ref_` — the same object reached twice |
 
 ## Registration & discovery — [Discovery](discovery.md)

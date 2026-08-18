@@ -26,12 +26,8 @@ Both callers now import the one module. Names with users stay importable from he
 found — sixteen so far, ledger in the AGENTS broadcast mandate and the CHANGELOG.
 NEW code imports from the real home (``confluid.broadcast`` / ``confluid.state``).
 
-No lazy seam remains. The last — ``resolve()`` body-importing ``loader.load``
-for a str/Path convenience — went 2026-08-17 when the stop point moved onto
-``load(until="settled")``: this module now works on PREPARED data only
-(``settle`` = pass 7, ``materialize`` = passes 7–9). The one before it —
-``resolver`` body-importing this module to flow a Reference's cursor — went
-with the attribute references (record 19, phase 2).
+No lazy seam: this module works on PREPARED data only (``settle`` = pass 7,
+``materialize`` = passes 7–9) and imports nothing from ``loader``.
 
 (The loader's own compat re-export block was pruned 2026-08-08 — it had zero
 users; only its real ``materialize`` / ``settle`` dependency remains. New code
@@ -96,7 +92,6 @@ from confluid.fluid import (
     late_bare_keys_of,
 )
 from confluid.introspect import init_callable, init_setattr_names, slot_names, slots
-from confluid.merger import expand_dotted_keys
 from confluid.partial import partial_param_names
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
@@ -172,23 +167,12 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
     convention), just not solidified.
     """
     clear_pass_caches()
-    # ``${...}`` interpolation — the same Resolver pass ``load()`` runs
-    # (docs/interpolation.md promises it "at materialization"; measured, this
-    # entry point skipped it and the literal ``${...}`` rode into values
-    # silently — configure() resolves, so materialize() was the one odd path).
-    # Idempotent after load(): substituted strings carry no placeholders left,
-    # and a miss keeps the literal either way. Marker KWARGS interpolate too
-    # (in place, text-only — see Resolver._interpolate_fluid_kwargs).
-    interp_context = context if context is not None else (data if isinstance(data, dict) else None)
-    resolver = Resolver(context=interp_context or {})
-    resolved_data = resolver.resolve(data)
-    if context is data:
-        context = resolved_data  # keep the "context IS the document" identity
-    elif context is not None:
-        context = resolver.resolve(context)
-    data = resolved_data
-    if context:
-        context = expand_dotted_keys(context)
+    # Passes 5–6 (interpolation, dotted-key expansion) are NOT run here: ``load``
+    # runs them once, for ``data`` and for an explicit ``context``, before it hands
+    # the engine PREPARED data. The second walk this used to run cost 2.9 ms per
+    # 2,500-marker load (~1 %, measured 2026-08-17) — it went for ONE reason, not
+    # for speed: the pass has one home. ``_flow_bare_type`` reaches here with the
+    # ACTIVE context, which is a document ``load`` already prepared.
     report = _active_report()  # carry the ambient report through the fresh state
     if report is not None and isinstance(context, dict):
         _register_document_keys(report, context)
@@ -218,7 +202,8 @@ def settle(data: Any, *, context: Optional[Dict[str, Any]] = None) -> Any:
     reached twice), and returns the resulting ``Target`` / ``Partial`` markers
     with their broadcast siblings merged into ``.kwargs`` — WITHOUT constructing
     any live object. ``data`` is the pass-6 document (``load(x,
-    until="document")``); the public spelling is ``load(x, until="settled")``,
+    until="document")`` — interpolated and dotted-expanded, as is an explicit
+    ``context``; neither pass runs here); the public spelling is ``load(x, until="settled")``,
     which is what a graph editor's YAML→graph import and ``hydraide`` read.
     ``materialize(data, solidify=False)`` is the instantiate-but-cheap
     counterpart; prefer it unless you specifically need un-built markers.
@@ -230,8 +215,6 @@ def settle(data: Any, *, context: Optional[Dict[str, Any]] = None) -> Any:
     it still resolves it off ONE shared instance.
     """
     ctx = context if context is not None else (data if isinstance(data, dict) else None)
-    if ctx:
-        ctx = expand_dotted_keys(ctx)
     clear_pass_caches()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
     # untouched — settle() never managed that flag (it builds no objects).
