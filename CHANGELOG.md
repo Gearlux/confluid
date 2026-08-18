@@ -8,6 +8,17 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`default_scopes:` — the value a keyed dimension takes when the caller names none.** A
+  top-level `default_scopes: [framework=lightning]` fills the activation map per dimension
+  (a caller `scopes=` value for that dimension wins), goes through the declared-value check
+  (a typo'd default raises the same `ScopeError` a typo'd flag does), is keyed only (a boolean
+  scope or an alias is refused — nothing the caller passes could switch it off; `!notscope:` is
+  the spelling for "active while unset"), is read beside `scope_aliases:` before pass 4 (never
+  a `${...}` value) and is stripped from the result with it. `hydraide emit` with no `--scope`
+  emits the defaulted variant. `confluid.scopes.parse_default_scopes` /
+  `normalize_active(..., defaults=)`; `tests/test_scopes.py` (the `default_scopes` group);
+  `docs/scopes.md` → "Default scopes"; `docs/architecture.md` record 1.
+
 - **The `hydraide` command line** (`confluid/cli.py`, Click, the optional `confluid[cli]` extra,
   console script `hydraide`). `hydraide emit CONFIG [--scope DIM=VALUE]… [-o FILE]` prints or
   writes the resolved plain-YAML document; `hydraide check CONFIG` exits 1 with a unified diff

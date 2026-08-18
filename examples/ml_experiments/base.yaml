@@ -2,9 +2,15 @@
 #
 # Structure:
 #   * bare top-level keys  -> global knobs, broadcast tree-wide (implicit **.key)
-#   * !scope: / !notscope: -> "config groups": pick a model/optimizer per run
-#                             without editing any file (scopes=["model=cnn"])
+#   * default_scopes: + !scope: -> "config groups": pick a model/optimizer per
+#                             run without editing any file (scopes=["model=cnn"]);
+#                             default_scopes says which member a bare load() picks
 #   * !class: / !ref: / !partial: -> object wiring
+
+# --- config-group defaults: the member each dimension takes when the caller names none ---
+# Every member is a block below (so `scopes=["model=mlp"]` is a declared value, not an error);
+# a caller value wins per dimension. This is the Hydra `defaults:` list.
+default_scopes: [model=mlp, optimizer=sgd]
 
 # --- global knobs: bare keys reach EVERY component that accepts them ---
 seed: 7
@@ -18,17 +24,17 @@ base_lr: 0.5
 dataset: !class:SyntheticDataset
   n_records: 256
 
-# --- config group "model" (default: MLP; select others via scopes=["model=cnn"]) ---
-model_default: !notscope:model      # active while no model=... dimension is set
+# --- config group "model" (default_scopes picks mlp; select others via scopes=["model=cnn"]) ---
+model_mlp: !scope:model=mlp
   model: !class:MLP
     hidden: 32
 model_cnn: !scope:model=cnn
   model: !class:CNN
     channels: 8
 
-# --- config group "optimizer" (default: SGD; select via scopes=["optimizer=adam"]) ---
+# --- config group "optimizer" (default_scopes picks sgd; select via scopes=["optimizer=adam"]) ---
 # !partial: = deferred until the trainer flows it with params= at run time.
-optim_default: !notscope:optimizer
+optim_sgd: !scope:optimizer=sgd
   optimizer: !partial:SGD
     lr: !ref:base_lr
 optim_adam: !scope:optimizer=adam

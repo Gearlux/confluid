@@ -27,6 +27,10 @@ hydraide check resolved.yaml                                 # exit 1 + unified 
                                                              # is its own resolution — a CI gate
 ```
 
+With no `--scope` at all, a dimension the document defaults (a top-level
+`default_scopes: [framework=lightning]`, see [Scopes](scopes.md)) resolves to that
+default — `emit` runs `load()`, so it applies whatever `load()` applies.
+
 A relative path resolves through the same search tiers `load()` uses (CWD →
 `./config/` → XDG), so `hydraide emit experiment.yaml` finds `./config/experiment.yaml`.
 A malformed document is a located `ConfluidError` — one line on stderr

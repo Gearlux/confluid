@@ -1238,6 +1238,21 @@ EMPTY set — do NOT "fix" that.
 **Rule.** `discover_dimension_values` takes the RAW document, never a `load()` result (whose blocks
 are already spliced away).
 
+**Rule — `default_scopes:` is a STATIC, KEYED-ONLY load input (2026-08-18).** A top-level
+`default_scopes: [dim=value, …]` names the value a keyed dimension takes when the caller's
+`scopes=` carries no entry for it; `normalize_active(scopes, aliases, defaults)` fills it in per
+dimension AFTER the caller's list (a caller value always wins), and the loader reads it beside
+`scope_aliases:` at pass 4 (`parse_default_scopes`, `scopes.METADATA_KEYS` is the ONE strip list).
+Three properties are load-bearing: it goes through `_check_active_values_are_declared` unchanged
+(a typo'd default raises like a typo'd flag — never add a bypass); a bare name (a boolean scope,
+an alias) is REFUSED, because nothing the caller passes could switch such a default off, so it
+would be always-on — `!notscope:` is the spelling for "active while unset"; and it is never
+interpolated (a `${a.b}` may read a key an active block provides, so activation must settle
+first — do NOT move the read past pass 5). Do not add a second reader of the key.
+**Pins.** the `default_scopes` group in `tests/test_scopes.py` (fires when unset, caller wins,
+per-dimension fill, undeclared/boolean/alias/malformed refused, not interpolated, deactivates a
+`!notscope:`, intact at `until="raw"`, hydraide emits the defaulted variant).
+
 **Why.** `docs/architecture.md` record 1. **Docs.** `docs/scopes.md`.
 **Pins.** `tests/test_scopes.py` — the "active value must be declared" and "body shapes" groups,
 plus `::test_keyed_scope_inside_a_markers_own_kwargs_swaps_the_slot` and the four

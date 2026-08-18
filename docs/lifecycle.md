@@ -40,7 +40,7 @@ run in, what each one consumes, and what it decides **permanently**. Most
 | 1 | **Parse** | the YAML text | `_target_` / `_partial_` / `_ref_` / `_scope_` mappings become typed markers, each stamped with its source location | everything else stays raw |
 | 2 | **Import** | `import: pkg.mod` | the module is imported, so its `@configurable` classes are registered | a failed import warns, it does not raise |
 | 3 | **Include** | `include: other.yaml` | files merge into ONE document; the included document is **pasted at the `include:` line** | nothing is resolved yet |
-| 4 | **Scope** | `scopes=[...]` from the caller | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |
+| 4 | **Scope** | `scopes=[...]` from the caller, filled in per dimension from the document's static `default_scopes:` | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |
 | 5 | **Interpolate** | `${env:VAR}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `${ref:}` targets — pass 7 settles those, so an override merged into the document before then is what they see |
 | 6 | **Expand** | `trainer.lr: 0.1` | dotted keys nest, anchored where the dotted spelling was written | `'*'` / `'**'` — ordinary path segments here |
 | 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); every `${ref:}` is settled — a marker is shared by identity, a plain value is inlined; an unresolvable one is a located error | `PartialClass` markers — settled but not built |
@@ -78,8 +78,13 @@ reference to a marker is that marker, and one that resolves to nothing is an err
 naming its line.
 
 **"Why can't a `_scope_` block choose a `${...}` value?"** — Scopes (4) resolve
-before interpolation (5), so a block's activation cannot depend on a substituted
-value. Activation comes from the caller (`scopes=[...]`), never from the document.
+before interpolation (5), and the order is forced: a `${a.b}` may read a key that
+only an active block provides, so which blocks are active must be settled first.
+Activation therefore comes from the caller's `scopes=[...]` — expanded through the
+document's static `scope_aliases:`, and filled in per dimension from its static
+`default_scopes:` — never from a value the document computes. To
+pick a *class* by a document key, use the `@axis=$key` target selector instead; it
+is resolved at construction (8), after interpolation.
 
 **"Why did the included file win / lose?"** — Include merging (3) fixes the key
 order, and pass 7 reads that order as precedence. The included document is pasted
