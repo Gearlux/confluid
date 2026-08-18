@@ -1,10 +1,10 @@
-"""Tags & deferred initialization — the runnable companion to ``docs/tags.md``.
+"""Targets & deferred initialization — the runnable companion to ``docs/targets.md``.
 
-Covers the tag family end-to-end: ``!class:Name`` (deferred ``Target`` stub) vs
-``!class:Name(...)`` (eager ``Target``), ``!lazy:`` + ``flow()`` runtime injection
-(keyword AND positional), the Python-side ``Partial[T]`` annotation (typed with the
-interface the slot flows into), post-flow ``solidify()``, and ``!ref:`` (shared
-instance) vs a second marker (a second instance).
+Covers the marker family end-to-end: ``!class:Name`` (built at load) vs ``!partial:Name``
+(built only by an explicit ``flow()``), ``flow()`` runtime injection (keyword AND
+positional), the Python-side ``Partial[T]`` annotation (typed with the interface the slot
+flows into), post-flow ``solidify()``, and ``!ref:`` (shared instance) vs a second marker
+(a second instance).
 """
 
 from typing import Any, List, Optional
@@ -45,9 +45,8 @@ class Car:
 
 def main() -> None:
     # --- construction: `!partial:` is the whole difference ------------------------------
-    # The trailing `()` used to decide eager-vs-deferred and a bare `!class:` produced a
-    # stub whose fate depended on its parent. Both spellings build now; only
-    # `!partial:` (alias `!lazy:`, or `_partial_: true`) withholds construction.
+    # `!class:Name` and `!class:Name(...)` both build, wherever they sit; only
+    # `!partial:` (`_partial_: true` in the reserved-key form) withholds construction.
     doc = """
 car: !class:Car
   color: blue
@@ -66,13 +65,13 @@ ready_engine: !class:Engine(cylinders=8)
     assert isinstance(built, Engine) and built.cylinders == 4
     print(f"built target, re-flowed idempotently: {built.cylinders} cylinders")
 
-    # --- !lazy: runtime injection: kwargs merge, runtime wins ---------------------------
-    lazy_graph = load("factory: !lazy:Engine(cylinders=6)")
-    lazy_engine = lazy_graph["factory"]
-    injected = flow(lazy_engine, fuel="diesel")  # fuel only exists at runtime
+    # --- !partial: runtime injection: kwargs merge, runtime wins ------------------------
+    partial_graph = load("factory: !partial:Engine(cylinders=6)")
+    partial_engine = partial_graph["factory"]
+    injected = flow(partial_engine, fuel="diesel")  # fuel only exists at runtime
     assert isinstance(injected, Engine)
     assert (injected.cylinders, injected.fuel) == (6, "diesel")
-    print(f"!lazy: built with runtime kwarg: {injected.cylinders} cylinders on {injected.fuel}")
+    print(f"!partial: built with runtime kwarg: {injected.cylinders} cylinders on {injected.fuel}")
 
     # --- Partial[T] annotation: the slot is typed with the INTERFACE it flows into ---------
     # Partial[Engine] == Annotated[Union[Engine, Fluid], marker]: the Target(...) default

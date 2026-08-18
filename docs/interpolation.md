@@ -38,9 +38,6 @@ on a front-end re-implementing `os.path.expandvars` before handing the file to t
 - **Unset stays literal.** An unset variable leaves the `$name` text in place,
   mirroring `os.path.expandvars`. (An unresolved `${...}` literal is likewise
   untouched — the bare pattern cannot match a `${`.)
-- **Marker strings are exempt.** A string starting with `!` (the legacy
-  quoted-string spelling) keeps its `$` text for flow-time parsing — the
-  `@axis=$key` document-selector grammar also spells `$` in tag targets.
 - **Burn-in.** Like every interpolation, the substitution is a single load-time
   pass: a marker kwarg `"$DATA_ROOT/x"` carries the expanded value from then on
   (`dump()` emits it; a deferred slot flowed later sees it).

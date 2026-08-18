@@ -624,8 +624,6 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
         return _flow_reference(obj, context, runtime_args, runtime_kwargs)
     if isinstance(obj, Fluid):
         return _flow_generic_fluid(obj, runtime_args, runtime_kwargs)
-    if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
-        return _flow_string_tag(obj, context, runtime_args, runtime_kwargs)
     return obj
 
 
@@ -1445,7 +1443,7 @@ def _flow_reference(
             return dotted
     resolver = Resolver(context=context or {})
     resolved = resolver._resolve_ref(obj.target)
-    if resolved is not None and resolved != f"!ref:{obj.target}":
+    if resolved is not None:
         return flow(resolved, *runtime_args, **runtime_kwargs)
     raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
 
@@ -1466,24 +1464,6 @@ def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs:
             return resolved(*runtime_args, **base_kwargs)
         raise UnknownClassError(f"Class '{target}' not found in registry{_at_yaml_loc(obj)}.")
     return flow(target, *runtime_args, **{**obj.kwargs, **runtime_kwargs})
-
-
-def _flow_string_tag(
-    obj: str,
-    context: Optional[Dict[str, Any]],
-    runtime_args: Tuple[Any, ...],
-    runtime_kwargs: Dict[str, Any],
-) -> Any:
-    """String tags (``"!class:Name"`` / ``"!ref:path"``) — resolve then flow.
-
-    An unresolvable tag string is returned verbatim (deferred for a later
-    pass), mirroring the resolver's leave-the-literal convention.
-    """
-    resolver = Resolver(context=context)
-    resolved = resolver.resolve(obj)
-    if isinstance(resolved, str) and (resolved.startswith("!class:") or resolved.startswith("!ref:")):
-        return obj
-    return flow(resolved, *runtime_args, **runtime_kwargs)
 
 
 def cast(obj: Any, cls: Type[T], **runtime_kwargs: Any) -> T:

@@ -298,7 +298,7 @@ def test_collect_report_survives_materialize_and_active_context() -> None:
     with collect_report() as report:
         with active_context({"lr": 0.5}):
             assert _ENGINE_STATE.get().report is report  # fresh state carries it
-        load({"outer": {"_target_": None}} if False else {"lr": 0.9, "outer": "!class:Outer()"})
+        load({"lr": 0.9, "outer": {"_target_": "Outer"}})
         assert _ENGINE_STATE.get().report is report
     assert _ENGINE_STATE.get().report is None
 

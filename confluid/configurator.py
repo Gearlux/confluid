@@ -34,9 +34,9 @@ from typing import Any, Dict, Optional, Set, Union
 import yaml
 from loggair import get_logger
 
-from confluid.broadcast import clear_pass_caches, dict_at_slot_kind
+from confluid.broadcast import accepts_key, clear_pass_caches, dict_at_slot_kind
 from confluid.dumper import to_markers
-from confluid.engine import _ctor_params, _maybe_solidify, flow
+from confluid.engine import _ctor_params, _maybe_solidify, _resolve_target_callable, flow
 from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, Target
 from confluid.loader import ConfluidLoader, load
@@ -121,15 +121,24 @@ def configure(
         return report
 
     # 2. The config lands AFTER the objects' own keys — document order makes it win. A config
-    #    key that NAMES an object (`trainer: {...}`, or `trainer.model.lr` expanded to it) tunes
-    #    that object's marker where it stands — it must not re-anchor the object after the
-    #    other config keys, or a bare key written next to it would lose to the object's own
-    #    current values.
-    addressed = {k: v for k, v in config.items() if k in document}
-    rest = {k: v for k, v in config.items() if k not in document}
+    #    key that NAMES an object (`trainer: {...}`, `trainer: !class:Trainer {...}`, or
+    #    `trainer.model.lr`) tunes that object's marker where it stands — it must not re-anchor
+    #    the object after the other config keys, or a bare key written next to it would lose to
+    #    the object's own current values. Pass 7 then sees those keys as the marker's OWN and
+    #    delivers nothing, so the report is written HERE, in the scanner's vocabulary: the
+    #    naming key is used (as a matched class block is), and each key the overlay hands the
+    #    object is one applied record at that object — the leaf sets it causes on children are
+    #    not records, exactly as for a block delivery.
+    expanded = expand_dotted_keys(config)
+    addressed = {k: v for k, v in expanded.items() if k in document}
+    rest = {k: v for k, v in expanded.items() if k not in document}
     for k, v in addressed.items():
         document[k] = deep_merge({k: document[k]}, {k: v})[k]  # P1: an overlay mapping TUNES a marker
-    merged = expand_dotted_keys({**document, **rest})
+        _record_named_overlay(report, objects[k], k, v)
+    for raw_key in config:
+        if raw_key.split(".", 1)[0] in addressed:
+            report.mark_used(raw_key)
+    merged = {**document, **rest}
 
     # 3. Pass 7 settles the whole thing, recording into THIS report. configure() is an
     #    entry point exactly like load(): a class redefined since the
@@ -228,6 +237,13 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
             if live is not None and live is current:
                 _apply(live, settled, visited, report)  # a child object: recurse, no reassignment
                 continue
+            if _tunes_live_child(settled, current):
+                # A marker the CONFIG wrote at a slot holding a live child of the same class
+                # (`model: !class:Model {layers: 10}` over an existing Model): configure that
+                # child, keep its identity (user ruling 2026-08-18). A marker of another class
+                # is a request for another object and is built below.
+                _apply(current, settled, visited, report)
+                continue
             value: Any = settled if settled.partial else flow(settled)  # a marker the config introduced
         else:
             value = _materialize_value(settled, visited, report)
@@ -277,6 +293,41 @@ def _materialize_value(value: Any, visited: Dict[int, Any], report: Configuratio
     return value
 
 
+def _tunes_live_child(settled: Target, current: Any) -> bool:
+    """Does a settled non-partial marker at a slot holding a live ``@configurable`` child name the
+    child's own class? Then the marker's kwargs configure THAT object; a different class means
+    the config wants another object built."""
+    if settled.partial or dict_at_slot_kind(current) != "configurable":
+        return False
+    return _resolve_target_callable(settled) is type(current)
+
+
+def _record_named_overlay(report: ConfigurationReport, obj: Any, name: str, overlay: Any) -> None:
+    """The applied records for a config key that NAMES an object — the overlay's own keys, at
+    ``"Class 'name'"``, origin ``"addressed"``: what pass 7 would have written had it delivered
+    them. Only keys the object can take are records; a marker overlay contributes its kwargs, a
+    mapping its keys, anything else (a scalar naming an object) nothing."""
+    keys = overlay.kwargs.keys() if isinstance(overlay, Fluid) else overlay.keys() if isinstance(overlay, dict) else ()
+    cls = obj.__class__
+    label = f"{getattr(cls, '__confluid_name__', cls.__name__)} {name!r}"
+    for key in keys:
+        if accepts_key(cls, key):
+            report.record_applied(key, label, "addressed")
+
+
+def _recorded(report: ConfigurationReport, attr: str, label: str) -> Optional[int]:
+    """Index of the delivery record for ``attr`` on this receiver, if one was written.
+
+    A receiver is labelled ``"Trainer"`` or ``"Trainer 'name'"`` (the instance name it sat
+    under); ``_apply`` knows the class label only, so match the prefix.
+    """
+    for i in range(len(report.applied) - 1, -1, -1):
+        entry = report.applied[i]
+        if entry.key == attr and (entry.target == label or entry.target.startswith(label + " ")):
+            return i
+    return None
+
+
 def _same(new: Any, current: Any) -> bool:
     """``new`` is the value ``current`` already is — identity first, equality when it is a bool."""
     if new is current:
@@ -306,10 +357,7 @@ def _set(obj: Any, attr: str, value: Any, label: str, eager_params: Set[str], re
         report.record_failed(attr, label, "validation", detail)
     setattr(obj, attr, value)
     if note is not None:
-        # Pass 7 already recorded the override; the staleness note rides on THAT record
-        # (AppliedKey is frozen — replace the entry in place).
-        for i in range(len(report.applied) - 1, -1, -1):
-            entry = report.applied[i]
-            if entry.key == attr and entry.target == label:
-                report.applied[i] = replace(entry, note=note)
-                break
+        # The staleness note rides on the delivery record (AppliedKey is frozen — replace in place).
+        index = _recorded(report, attr, label)
+        if index is not None:
+            report.applied[index] = replace(report.applied[index], note=note)

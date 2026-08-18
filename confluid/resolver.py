@@ -21,9 +21,9 @@ Two things live here, and both exist exactly once:
   ``docs/interpolation.md``. :func:`parse_value` is the shared scalar-coercion
   policy (deliberately plain ``yaml.safe_load`` — never :class:`ConfluidLoader`).
 
-The quoted-string marker spelling (``"!class:..."``) is parsed here too — the
-third input grammar, kept only until 0.4.0; everything it cannot honour raises
-via ``_refuse_marker_string`` instead of degrading silently.
+A marker written as a quoted STRING (``"!class:..."``) is not a grammar: it is refused
+here via ``_refuse_marker_string``, naming the tag and reserved-key lines to write, so
+it never reaches a constructor as literal text.
 """
 
 import os
@@ -87,12 +87,11 @@ _MARKER_RESOLVERS: FrozenSet[str] = frozenset({"ref", "clone"})
 _TARGET_CALL_RE = re.compile(r"^([\w.@=/,~$-]+)\((.*)\)$")
 
 
-#: Marker prefixes the QUOTED-STRING spelling can be written with. Only the first
-#: two are ever honoured, and only outside a marker's own kwargs — the rest, and
-#: every one of them in the wrong position, used to reach the config as the literal
-#: TEXT with no error, no warning and no diagnostic. See :func:`_refuse_marker_string`.
-_STRING_MARKERS_PARSED: FrozenSet[str] = frozenset({"!class:", "!ref:"})
-_STRING_MARKERS_ALL: Tuple[str, ...] = ("!class:", "!lazy:", "!ref:", "!notscope:", "!scope:")
+#: The marker prefixes. A STRING value starting with one of these is a marker the author
+#: meant to write as a tag and quoted — confluid does not parse markers out of strings
+#: (a marker is a YAML TAG or a reserved-key mapping, nothing else), and it must not let
+#: the text through silently either: see :func:`_refuse_marker_string`.
+_STRING_MARKERS_ALL: Tuple[str, ...] = ("!class:", "!partial:", "!lazy:", "!ref:", "!notscope:", "!scope:")
 
 
 def _plain_yaml_for(value: str) -> str:
@@ -114,40 +113,31 @@ def _plain_yaml_for(value: str) -> str:
     call = _TARGET_CALL_RE.match(body)
     name = call.group(1) if call else body
     parts = [f"{TARGET_KEY}: {name or '<Target>'}"]
-    if prefix == "!lazy:":
+    if prefix in ("!partial:", "!lazy:"):
         parts.append(f"{PARTIAL_KEY}: true")
     parts.extend(f"{k}: {v}" for k, v in (_split_inline_pairs(call.group(2)) if call else []))
     return "{" + ", ".join(parts) + "}"
 
 
 def _refuse_marker_string(value: str, *, where: str) -> None:
-    """Raise when a quoted marker string cannot be honoured where it was written.
+    """Raise for a marker written as a quoted STRING (``optimizer: "!class:Adam(lr=0.1)"``).
 
-    The QUOTED-STRING spelling (``optimizer: "!class:Adam(lr=!ref:base)"``) is a
-    third input grammar beside the YAML tags and the reserved keys, and it exists
-    only to work around a limitation of the tags: YAML forbids two tags on one
-    node, so a nested ``!ref:`` had to be quoted. The reserved-key format has no
-    such limitation, and this spelling is deleted with the tags in 0.4.0.
-
-    Until then it must not fail SILENTLY, which is what it did in two whole
-    classes of position — ``!lazy:`` / ``!scope:`` anywhere, and
-    even ``!class:`` / ``!ref:`` inside a marker's own kwargs, the very position
-    ``docs/targets.md`` recommended it for. The value reached the constructor as
-    the literal text ``!lazy:Adam(lr=0.01)`` and nothing said so. That is exactly
-    the failure mode the plain-YAML format exists to end.
+    Confluid parses markers from two places only — a YAML tag on the node, or a mapping
+    carrying a reserved key. A quoted tag is neither: it is a string, and a string that
+    starts with a marker prefix can only be a mistake, so it is refused with the two lines
+    that work instead of reaching a constructor as literal text.
 
     No ``file:line`` here, and it is not an oversight: only Fluid MARKERS carry a
     location (``loader._stamp_loc``) — PyYAML discards per-key marks for ordinary
     scalars, so a bare string has none to report (tracked in ``TASKS.md``). The
     message therefore quotes the offending text verbatim, which is greppable, and
-    names the exact line to write instead.
+    names the exact lines to write instead.
     """
+    tag = value.split("(", 1)[0]
     raise ConfigurationError(
-        f"{value!r} is a marker written as a quoted STRING, which confluid cannot honour "
-        f"{where}. Write it as plain YAML instead:\n\n    {_plain_yaml_for(value)}\n\n"
-        f"(The quoted-string spelling is deprecated and is removed in confluid 0.4.0; only "
-        f'"!class:" and "!ref:" were ever parsed from a string, and only outside a marker\'s '
-        f"own kwargs.)"
+        f"{value!r} is a marker written as a quoted STRING, which confluid does not parse "
+        f"{where}. Write the tag unquoted — `{tag}` with a block body for nested values — "
+        f"or the reserved-key form:\n\n    {_plain_yaml_for(value)}\n"
     )
 
 
@@ -390,22 +380,10 @@ class Resolver:
                 # ``${a.b}``, say) is already final and falls straight through.
                 return self.resolve(value, local_context) if isinstance(value, Fluid) else value
 
-            if value.startswith("!ref:"):
-                ref_path = value[5:]
-                res = self._resolve_ref(ref_path, local_context)
-                # Recurse only if the resolved value is DIFFERENT from the input
-                if res != value and isinstance(res, (str, dict)):
-                    return self.resolve(res, local_context)
-                return res
-
-            if value.startswith("!class:"):
-                content = value[7:]
-                return self._parse_class_string(content, local_context)
-
-            # Every OTHER marker prefix is a marker attempt this path cannot honour.
-            # Narrow on purpose: only these exact prefixes, never a bare leading "!",
-            # because an ordinary config value may legitimately start with one.
-            if any(value.startswith(m) for m in _STRING_MARKERS_ALL if m not in _STRING_MARKERS_PARSED):
+            # A marker prefix in a STRING is a quoted tag — refused, never parsed. Narrow
+            # on purpose: only these exact prefixes, never a bare leading "!", because an
+            # ordinary config value may legitimately start with one.
+            if value.startswith(_STRING_MARKERS_ALL):
                 _refuse_marker_string(value, where="here")
 
             return value
@@ -425,10 +403,6 @@ class Resolver:
         if isinstance(value, Fluid):
             # A marker passes through WHOLE — its kwargs are the engine's to
             # consume — but its kwarg STRINGS get ``${...}`` substituted first.
-            # Before this, a placeholder written in a tag's mapping body stayed
-            # the literal string on every path (measured 2026-08-08), while the
-            # quoted-string spelling of the same target interpolated via
-            # ``_parse_class_string`` — two spellings, two answers.
             self._interpolate_fluid_kwargs(value)
             return value
 
@@ -479,12 +453,7 @@ class Resolver:
         from confluid.fluid import Fluid, Reference
 
         if isinstance(value, str):
-            # A marker string inside a marker's own kwargs is honoured by NOTHING —
-            # not here (this walk is text substitution only, deliberately, so that
-            # deferred values keep binding when they bind), and not downstream. It
-            # reached the constructor as literal text, which is the position
-            # ``docs/targets.md`` used to recommend the spelling for.
-            if any(value.startswith(m) for m in _STRING_MARKERS_ALL):
+            if value.startswith(_STRING_MARKERS_ALL):
                 _refuse_marker_string(value, where="inside a marker's own kwargs")
             return self._interpolate(value, local_context)
         if isinstance(value, Reference):
@@ -502,38 +471,6 @@ class Resolver:
             return value
         return value
 
-    def _parse_class_string(self, content: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
-        """Parse a string ``'ClassName(args)'`` / ``'ClassName'`` into a :class:`Target` marker.
-
-        Both spellings produce the SAME thing — the trailing ``()`` is inert. It
-        marked an eager ``Instance`` against a deferred ``Class`` until the two
-        collapsed into one ``Target`` carrying ``partial`` (2026-08-11); ``partial``
-        is now the only thing that withholds construction, and this string form has
-        no way to spell it. Kwargs are assigned post-construction so a kwarg
-        literally named ``target`` can't collide with the marker ctor's own
-        parameter.
-
-        Note this is the QUOTED-STRING spelling — a third input grammar beside the
-        YAML tags and the reserved keys, reached only through
-        :meth:`Resolver.resolve`. It resolves each inline value against the context
-        EAGERLY (see below), where ``_target_``'s ``${ref:...}`` stays late-bound, so
-        the two are not interchangeable for a slot flowed outside the document.
-        """
-        from confluid.fluid import Target
-
-        instant = _TARGET_CALL_RE.match(content)
-        if instant:
-            fluid = Target(instant.group(1))
-            for k, v in _split_inline_pairs(instant.group(2)):
-                # Resolve THEN parse — the quoted-string form's own coercion
-                # policy: ``${...}`` / ``!ref:`` values see the context first.
-                resolved_v = self.resolve(v, local_context)
-                if isinstance(resolved_v, str):
-                    resolved_v = self._parse_primitive(resolved_v)
-                fluid.kwargs[k] = resolved_v
-            return fluid
-        return Target(content)
-
     def _resolve_ref(
         self, ref_path: str, local_context: Optional[Dict[str, Any]] = None, *, exclude: Any = None
     ) -> Any:
@@ -547,7 +484,7 @@ class Resolver:
         # 1. Try Local Context First
         if local_context:
             val = self._lookup_path(ref_path, local_context)
-            if val is not None and val is not exclude and (not isinstance(val, str) or not val.startswith("!ref:")):
+            if val is not None and val is not exclude:
                 return val
 
         # 2. Try Global Context
@@ -561,7 +498,7 @@ class Resolver:
         # A ref that never resolves fails LOUDLY at flow() with a typed
         # ReferenceResolutionError, which is the actionable signal.
         logger.debug(f"Reference not resolvable at this stage (deferred to flow): {ref_path}")
-        return f"!ref:{ref_path}"
+        return None
 
     def _lookup_path(self, path: str, context: Dict[str, Any]) -> Any:
         """Drill into a dict / list via a dotted + bracketed path.
@@ -618,19 +555,11 @@ class Resolver:
         ENVIRONMENT variables (:meth:`_expand_bare_env`), so
         ``root: $DATA_ROOT/...`` behaves identically on every entry path
         instead of only through front-ends that re-implement
-        ``os.path.expandvars``. Marker strings (leading ``!``) are exempt from
-        the bare pass — see the guard below.
+        ``os.path.expandvars``. (A tag TARGET's ``@axis=$key`` selector is never
+        seen here — it lives on the marker, not in a string value.)
         """
-        # GUARD: a marker STRING ("!class:..." / "!lazy:..." / "!ref:...")
-        # keeps its bare-$ text for FLOW-time parsing — the ``@axis=$key``
-        # DOCUMENT-selector grammar also spells ``$`` in tag targets, and
-        # expanding here could burn an env var in over a document key.
-        # ``${...}`` still substitutes (``{`` is not a legal tag character, so
-        # the two grammars cannot collide).
-        expand_bare = not value.startswith("!")
-
         if "${" not in value:
-            return self._expand_bare_env(value) if expand_bare else value
+            return self._expand_bare_env(value)
 
         # Whole-string match — return the resolved value with its real type.
         whole = _INTERP_RE.fullmatch(value)
@@ -657,7 +586,7 @@ class Resolver:
             return match.group(0)  # miss / non-scalar → leave the literal ${...}
 
         result = _INTERP_RE.sub(replacer, value)
-        return self._expand_bare_env(result) if expand_bare else result
+        return self._expand_bare_env(result)
 
     def _expand_bare_env(self, value: str) -> str:
         """Expand bare ``$IDENTIFIER`` occurrences as environment variables.
@@ -743,8 +672,6 @@ class Resolver:
 
     def _parse_primitive(self, value: str) -> Any:
         """Convert string to appropriate Python primitive."""
-        if value.startswith("!ref:"):
-            return value
         return parse_value(value)
 
 

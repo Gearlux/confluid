@@ -41,7 +41,16 @@ configure_from_file(*instances, path=..., context=None, **named) -> Configuratio
 - **`**named`** — objects addressable by that name too:
   `configure(config={"trainer.model.lr": 0.7}, trainer=t)` reaches the nested
   model by attribute path (positional objects are reachable by class-name
-  blocks and bare keys only).
+  blocks and bare keys only). Naming is what lets you apply **the same document
+  `load()` builds from** to objects you already have:
+
+  ```python
+  trainer = Trainer(model=Model())
+  configure(trainer=trainer, config=load("experiment.yaml", until="raw"))
+  # experiment.yaml:  trainer: !class:Trainer {lr: 0.0001, model: !class:Model {layers: 10}}
+  #   -> trainer.lr == 0.0001, trainer.model.layers == 10, and trainer.model is the SAME object
+  #   -> report: 2 applied (lr, model — the keys the overlay handed "Trainer 'trainer'"), 0 unused
+  ```
 - **`config`** — a mapping, or YAML **text** (markers like `_target_` work — the
   text is parsed with confluid's own loader). A plain file *name* is not YAML
   text: it applies nothing, warns, and points you at `configure_from_file`,
@@ -138,9 +147,8 @@ trainer.optimizer.kwargs["lr"]      # 0.5 — configured ...
 opt = flow(trainer.optimizer, params=[...])   # ... and built later, by its owner
 ```
 
-A plain `Target(...)` slot behaves the same way. It used to be flowed into a
-throwaway object which was configured and then discarded — so the marker kept
-its defaults while the report said the key had been applied:
+A plain `Target(...)` slot behaves the same way — a recipe, not a deferred slot,
+is tuned in place too:
 
 ```python
 @configurable
@@ -156,8 +164,29 @@ flow(host.opt).lr          # 0.75   (was 0.0, built from the defaults)
 
 Live objects held **inside** a marker's kwargs (`Target(Stage, dep=widget)`) are
 still walked and configured — the marker is not a wall, only a value that is not
-built yet. `_ref_` and `_clone_` slots are not markers of this kind and keep
-resolving as before.
+built yet. `_ref_` slots are not markers of this kind and keep resolving as before.
+
+## A marker at a slot holding a live child tunes the child
+
+The mirror image: the config writes a **marker** (`model: !class:Model {layers: 10}`)
+at a slot that already holds a **live** `@configurable` object. That is not a
+request for a new object when the marker names the child's own class — the
+child is configured in place and keeps its identity:
+
+```python
+model = Model()
+trainer = Trainer(model=model)
+configure(trainer, config="Trainer:\n  model: !class:Model\n    layers: 10\n")
+trainer.model is model        # True — tuned, not rebuilt
+model.layers                  # 10
+```
+
+Three con cases, each pinned: a marker of a **different** class is a request for
+another object and is built (on an untyped slot; on a slot typed `Optional[Model]`
+validation refuses the replacement); a marker at an **empty** slot is built (there
+is nothing to tune); a marker at a slot holding a **marker** tunes that marker, as
+above. A *mapping* at the slot (`model: {layers: 10}`) tunes the child too — the
+two spellings now agree.
 
 The rationale — why deferral withholds construction but never configuration —
 is recorded in [Architecture Decisions](architecture.md) §5.

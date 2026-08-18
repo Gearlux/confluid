@@ -243,24 +243,6 @@ def test_class_form_unquoted_inline_kwargs_coerce_float_bool_none() -> None:
     assert data["m"].kwargs == {"a": 0.01, "b": True, "c": None}
 
 
-def test_class_form_quoted_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
-    """Quoted ``"!class:Model(layers=7)"`` is resolved through the resolver, which
-    coerces inline scalars to the declared type (``parse_value``: ``"7"`` → ``7``)."""
-    built = load('m: "!class:Model(layers=7)"\n')["m"]
-    assert isinstance(built, _GrammarModel)
-    assert built.layers == 7  # coerced str→int by the resolver path
-
-
-def test_class_form_quoted_inline_ref_is_resolved(_register_grammar_model: None) -> None:
-    """A nested ``!ref:`` works only in the QUOTED form (the Adam example in docs/tags.md).
-
-    YAML forbids two tags on one node, so ``!class:Model(layers=!ref:n)`` cannot be
-    written unquoted — the value must be a quoted string the resolver then parses.
-    """
-    built = load('n: 10\nm: "!class:Model(layers=!ref:n)"\n')["m"]
-    assert built.layers == 10
-
-
 def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None) -> None:
     """Inline ``(k=v)`` kwargs MERGE with a mapping body (no longer discarded).
 
@@ -301,29 +283,30 @@ def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> No
 @pytest.mark.parametrize(
     ("text", "replacement"),
     [
+        ('"!class:Model(layers=5)"', "{_target_: Model, layers: 5}"),
+        ('"!partial:Model(layers=5)"', "{_target_: Model, _partial_: true, layers: 5}"),
         ('"!lazy:Model(layers=5)"', "{_target_: Model, _partial_: true, layers: 5}"),
+        ('"!ref:other"', "{_ref_: other}"),
         ('"!scope:debug"', "{_scope_: {debug: }}"),
         ('"!notscope:debug"', "{_notscope_: {debug: }}"),
     ],
 )
-def test_a_quoted_marker_the_string_path_cannot_honour_is_REFUSED(
+def test_a_marker_written_as_a_quoted_STRING_is_refused(
     text: str, replacement: str, _register_grammar_model: None
 ) -> None:
-    """The quote-the-tag trick is ``!class:`` / ``!ref:`` only — and now it SAYS so.
+    """A marker is a YAML tag or a reserved-key mapping — a quoted tag is a string, and a
+    string starting with a marker prefix is refused, naming the two lines that work.
 
-    Until 2026-08-12 a quoted ``!lazy:`` stayed a plain string: no marker, no
-    error, no warning. A deferred optimizer written that way reached its
-    constructor as the literal text ``!lazy:Adam(lr=0.01)`` and nothing said so —
-    exactly the silent degradation the reserved-key format exists to end, which
-    this path was quietly exempt from. This test previously ASSERTED the silence.
+    Never let it through as text: a deferred optimizer written ``"!lazy:Adam(lr=0.01)"``
+    once reached its constructor as that literal string with no diagnostic anywhere.
     """
     with pytest.raises(ConfigurationError) as excinfo:
         load(f"other: 7\nm: {text}\n")
 
     message = str(excinfo.value)
     assert text.strip('"') in message, "quote the offending text — a scalar carries no file:line"
-    assert replacement in message, "and name the exact plain-YAML line to write instead"
-    assert "0.4.0" in message, "name the release that removes the spelling"
+    assert replacement in message, "and name the exact reserved-key line to write instead"
+    assert text.strip('"').split("(")[0] in message, "and the tag to write unquoted"
 
 
 def test_the_refusal_names_the_plain_yaml_line_to_write(_register_grammar_model: None) -> None:
@@ -340,13 +323,7 @@ def test_the_refusal_names_the_plain_yaml_line_to_write(_register_grammar_model:
 
 
 def test_a_quoted_marker_inside_a_markers_own_kwargs_is_REFUSED(_register_grammar_model: None) -> None:
-    """Even ``!class:`` / ``!ref:`` are honoured by NOTHING in that position.
-
-    Measured against the pre-change engine: both reached the constructor as
-    literal text. It is also the position ``docs/targets.md`` recommended the
-    spelling for ("for a nested ``!ref:``, quote the tag"), so the one documented
-    use case was the one that silently did nothing.
-    """
+    """The same refusal inside a marker's kwargs — the position a nested value goes in a block body."""
     for inner in ('"!class:Model(layers=7)"', '"!ref:other"'):
         with pytest.raises(ConfigurationError, match="marker's own kwargs"):
             load(f"other: 7\nm:\n  _target_: Model\n  extra: {inner}\n")
@@ -476,9 +453,9 @@ def test_interpolation_matches_across_marker_spellings(monkeypatch: pytest.Monke
 
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
     body = load('src: !class:_SpellSrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/files"\n')["src"]
-    quoted = load('src: "!class:_SpellSrc(input_dir=${CONFLUID_TEST_ROOT}/files)"')["src"]
+    plain = load('src: {_target_: _SpellSrc, input_dir: "${CONFLUID_TEST_ROOT}/files"}')["src"]
     root = load('!class:_SpellSrc()\ninput_dir: "${CONFLUID_TEST_ROOT}/files"')
-    assert body.input_dir == quoted.input_dir == root.input_dir == "/store/files"
+    assert body.input_dir == plain.input_dir == root.input_dir == "/store/files"
 
 
 def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch: pytest.MonkeyPatch) -> None:
