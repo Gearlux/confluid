@@ -20,8 +20,8 @@ if you are new to this codebase — most rules below are about one pass.
 
 **Feature-complete.** Confluid is the hierarchical configuration + dependency-injection engine:
 plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_clone_` / `_scope_` /
-`_notscope_`) materialized by
-`flow()` / `materialize()` / `resolve()`, scoped broadcasting, post-construction `configure()`,
+`_notscope_`) loaded through the ONE door `load(x, until=…)` (`"raw"` / `"document"` /
+`"settled"` / `"objects"`) and built node-wise by `flow()`, scoped broadcasting, post-construction `configure()`,
 recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` /
 `sanitize_schema`) that every AI- and GUI-facing consumer reads for tool schemas and form specs.
 
@@ -79,7 +79,7 @@ afterwards. Rules 1, 3 and 4 are REQUIREMENTS; rule 2 is a RECOMMENDATION.
    annotation; build a fresh `PartialClass(...)` per instance. (Requirement.)
 
 **Why.** The preferred shape is what makes "never require constructor-time injection" structural,
-and keeps `configure()` reconfiguration, cheap introspection (`resolve()` / `solidify=False`) and
+and keeps `configure()` reconfiguration, cheap introspection (`load(until="settled")` / `solidify=False`) and
 partial-arg GUI building possible. Rule 3 keeps derived state out of the config surface: confluid
 skips a setterless `property` in both accept-lists. Rule 4's body slots are surfaced by
 `to_pydantic` via the `introspect.slots` enumeration, so a GUI still enumerates them.
@@ -134,26 +134,55 @@ imports; extend the right module instead.
 | `fluid` | the marker DATA classes (`Fluid`/`Target`/`Partial`/`Reference`/`Clone`/`ScopeBlock`) + `format_yaml_loc`. A dependency LEAF — imports no other confluid module. |
 | `state` | `_EngineState` / `_ENGINE_STATE` (one `ContextVar`) + the public `active_context` / `collect_report`. Exists so `broadcast` can read the ambient report without importing the engine. |
 | `broadcast` | the ONE precedence rule and all its machinery — see "Precedence & broadcasting". Materializes NOTHING. |
-| `engine` | `flow`/`cast`, `materialize`/`resolve`, `_flow_recursive` (pass 7 — settle) / `instantiate` (pass 8 — build), and the two post-construction deliveries pass 7 cannot see (body-slot / ctor-default markers). |
-| `loader` | YAML parsing and composition ONLY (`ConfluidLoader`, `load`/`load_config`, includes/imports/scopes glue). |
+| `engine` | `flow`/`cast`, `materialize` (passes 7–9) / `settle` (pass 7) — the PREPARED-data entries `load()` calls, not public names — `_flow_recursive` (pass 7 — settle) / `instantiate` (pass 8 — build), and the two post-construction deliveries pass 7 cannot see (body-slot / ctor-default markers). |
+| `loader` | YAML parsing and composition ONLY (`ConfluidLoader`, includes/imports/scopes glue) — and `load`, the ONE public door, which stages every input through passes 1–6 and hands the engine PREPARED data. |
 | `introspect` | stdlib-only AST/signature scanning — the ONE `scan_init_body`, `init_callable`, `marked_param_names`. |
-| `configurator` | `configure` / `configure_from_file` — the objects → `dumper.to_markers` → merge → `resolve` → `_apply` back onto the objects; no walker of its own. |
+| `configurator` | `configure` / `configure_from_file` — the objects → `dumper.to_markers` → merge → `load(until="settled")` → `_apply` back onto the objects; no walker of its own. |
 | `dumper` | `dump()` and the ONE object→document reconstruction (`dumpable_kwargs`), plus `to_markers` (the in-memory document `configure()` resolves). |
 
 **Rule.** `broadcast` MUST NOT materialize anything — no `flow`, no `_flow_recursive`. Code that
 BUILDS an object belongs in `engine`. That prohibition is why the edge is one-directional.
 
-**Rule.** Exactly ONE lazy seam is sanctioned, documented at the site: `engine.resolve()`
-body-imports `loader.load`. (The second — `resolver._materialize_cursor` body-importing `engine` to
-FLOW a reference's cursor — went with the attribute references, record 19 phase 2; the resolver
-constructs nothing any more, so `broadcast → engine → loader` is the only direction left.)
+**Rule.** NO lazy seam remains — the engine imports nothing from `loader`, and
+`tests/test_load_stages.py::test_the_engine_no_longer_imports_the_loader` pins it. (The last one,
+`engine.resolve()` body-importing `loader.load` for a str/Path convenience, went 2026-08-17 when the
+stop point moved onto `load(until="settled")`; the one before — `resolver._materialize_cursor`
+body-importing `engine` to FLOW a reference's cursor — went with the attribute references, record 19
+phase 2. `broadcast → engine → loader` is the only direction.)
+
+### `load()` is the ONE door (2026-08-17)
+
+**Rule.** Every stop point on the document pipeline is `load(x, until=<stage>)`, with `Stage =
+Literal["raw", "document", "settled", "objects"]` (`loader.Stage`; `_STAGES = get_args(Stage)` is
+the ONE runtime tuple, an unknown value raises `ConfigurationError`, never defaults). `load` accepts
+a path, YAML text or already-parsed data (dict / list / marker) and runs the passes the input still
+needs — passes already applied are idempotent, so `load(load(x, until="document")) == load(x)`.
+`return_paths=True` returns `(result, paths)`, `paths` being every file read for that call in read
+order (a scope-spliced include included). Do NOT reintroduce a second entry name for a stage:
+`load_config` / `load_config_with_paths` / `materialize` / `resolve` / `load(flow=False)` were five
+names for four stop points, `materialize(parsed)` measured identical to `load(parsed)` on every
+input but a LIST root (which `load` handed back unbuilt — fixed), and `load_config` had no text
+form. `engine.materialize` (7–9) and `engine.settle` (7) remain as the engine's PREPARED-data
+functions behind `load` — importable, not exported.
+
+**Rule — a `Path`, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE.** A missing one
+raises `ConfigFileNotFoundError` (what `load_config` did); before the fold `load("missing.yaml")`
+parsed the NAME as YAML text and returned the string, so a typo'd path loaded as nothing. Any other
+`str` keeps the exists-under-the-search-tiers probe and otherwise parses as text
+(`loader._names_a_file`).
+
+**Pins.** `tests/test_load_stages.py` (the four stages on one document, the list-root pro/con, the
+fold idempotence, `return_paths` incl. the scope-spliced include and the stage that never opened it,
+the removed names, the seam, the missing-file rule and its con case).
+**Docs.** `docs/lifecycle.md` → "Where you can stop", `docs/api-index.md`,
+`docs/architecture.md` record 20.
 
 **Rule.** The engine state rides ONE `contextvars.ContextVar`, so it is inherited by asyncio tasks
 and `asyncio.to_thread` workers — NOT by a raw `Thread` / `run_in_executor`, which need
 `contextvars.copy_context().run(...)` or an `active_context` inside the worker. `active_context(ctx)`
 is the ONE sanctioned way for external code to activate a resolution context; downstream reach-ins
 into the engine state are PROHIBITED. Note it does NOT enable broadcasting — pass the document
-explicitly (`materialize(fluid, context=document)`) when a flat config's keys must reach the object.
+explicitly (`load(fluid, context=document)`) when a flat config's keys must reach the object.
 
 **Rule.** `flow()` is a DISPATCHER over `_flow_*` phase helpers. Keep new marker behaviour in a
 helper; never re-inline the mega-function.
@@ -243,7 +272,7 @@ the accept-lists, the three `accepts_*` predicates, the marker-name scans, and �
 **Rule.** Every per-pass introspection cache keys on `broadcast._cache_key(target)` — the target
 OBJECT — never on `f"{module}.{qualname}"`. Register a new one with
 `broadcast.register_pass_cache(...)` at its declaration; the ONE clear site is
-`broadcast.clear_pass_caches()`, fired by `materialize()`, `resolve()` AND `configure()`. Never add
+`broadcast.clear_pass_caches()`, fired by `engine.materialize()`, `engine.settle()` AND `configure()`. Never add
 a hand-rolled `.clear()` block. Cache ownership follows module ownership — a cache another module
 owns registers itself.
 
@@ -306,9 +335,9 @@ that no longer exists — reading `.train` off the object built at `split`, or c
 it — and is REFUSED by `resolver.refuse_attribute_reference` with the node's `file:line:col` and the
 rewrite (a selector parameter on the referent's class + `!ref:split`, or the marker written again
 with the selector set). The refusal fires in `_flow_recursive` AND `_flow_reference`, i.e. under
-`resolve()` as well as `load()` — that is how `hydraide` reports it (the same message; liquifai's CLI renders it, exit 1).
+`load(until="settled")` as well as `load()` — that is how `hydraide` reports it (the same message; liquifai's CLI renders it, exit 1).
 Nothing is constructed on behalf of a Reference any more, which is why `_EngineState.structural`
-(the flag that used to gate that construction off for `resolve()`) is gone. Two things did NOT
+(the flag that used to gate that construction off for the settled stage) is gone. Two things did NOT
 change and are pinned as CON cases: a PURELY structural resolution still returns `None` from the
 rich path (pass 7's `_settle_reference` walks it and INLINES the value — phase 3), and a
 document key literally named `a.b` still wins over the walk. Do NOT "extend" the walker into a
@@ -463,8 +492,8 @@ compares them byte-for-byte to what its serializer renders.
 no-op, and `convert_file`'s activation-gated write.
 
 **Rule — `hydraide` is the ONE emitter of the plain form, and it is a WRAPPER over passes 1–7.**
-`hydraide.emit(source, scopes=…)` is `dump(resolve(source))` plus named anchors; it adds NO pass and
-re-derives NO rule — if the emitted document is wrong, the defect is in `resolve()` or `dump()`,
+`hydraide.emit(source, scopes=…)` is `dump(load(source, until="settled"))` plus named anchors; it adds NO pass and
+re-derives NO rule — if the emitted document is wrong, the defect is in pass 7 (`engine.settle`) or `dump()`,
 never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`).
 **confluid ships FUNCTIONS only — `emit` / `check` (and `spelling.to_tags` / `convert_file`); the
 `hydraide` COMMAND is a `LiquifyApp` in liquifai (`liquifai/hydraide.py`, console script there),
@@ -474,7 +503,7 @@ flags, the search tiers and the failure contract.** Named anchors ride `dump(anc
 keyed on the shared value's SHORTEST path (`&preprocess_0`); the map is computed on the resolved
 tree, where identity already means what the document meant. Two engine facts are pinned in the
 tool's suite because the tool exposes them: identity is per MARKER, not per container
-(`resolve()` copies a list reached via `${ref:}` and shares its elements); and an anchor does NOT
+(`load(until="settled")` copies a list reached via `${ref:}` and shares its elements); and an anchor does NOT
 follow an include-overlay tune (P1's COPY at the key; alias sites keep the original — the earlier
 "measured correct" probe was seeing bare-key broadcast through a same-named parameter). Neither is
 phase-1's to change (`TASKS.md`, phase 1b).
@@ -580,7 +609,7 @@ re-inline it. Five of six inlined copies degraded a function OBJECT to `None`, s
 
 ### Deferred initialization — `_partial_: true` / `Partial[T]`
 
-**Rule.** A `Partial` is never AUTO-flowed — not by `materialize()`, not by external deep-flow
+**Rule.** A `Partial` is never AUTO-flowed — not by `load()`, not by external deep-flow
 walkers. **Deferral withholds CONSTRUCTION only: a `Partial` IS broadcast into, exactly like a
 `Class`.** Never re-add a blanket `isinstance(v, Partial)` early return in `_resolve_kwarg_value`.
 
@@ -652,7 +681,7 @@ validation wrapper's globals are confluid's own, which silently typed every body
 **Rule.** `flow()` calls any `solidify()` method on the object it returns — including on the
 IDEMPOTENCY return, so an object that arrived already built is finalized too. `solidify()` MUST be
 idempotent (build-once-and-cache) and take no arguments. `flow(obj, solidify=False)` /
-`materialize(..., solidify=False)` suppress it for the whole subtree.
+`load(..., solidify=False)` suppress it for the whole subtree.
 
 **Rule — the C3 / F1 / C4 rules of the LIVE WALKER are HISTORY (record 19, phase 4).** `configure()`
 has no walk of its own any more: the objects' DOCUMENT (declared slots — ctor params and
@@ -715,16 +744,16 @@ measurement identified — `engine._apply_post_init_attrs` (own kwargs) and `_Me
 cases).
 **Docs.** `docs/targets.md` → "Runtime injection that has no keyword".
 
-### Introspection without cost — `resolve()` and `solidify=False`
+### Introspection without cost — `load(until="settled")` and `solidify=False`
 
-**Rule.** `resolve(data)` = `materialize` MINUS `instantiate`: broadcasting and `!ref:` applied,
-markers returned, NOTHING constructed. `flow(obj, solidify=False)` constructs but suppresses the
-finalize. Neither changes default behaviour.
+**Rule.** `load(x, until="settled")` = pass 7 (`engine.settle`) with NO `instantiate`: broadcasting
+and `!ref:` applied, markers returned, NOTHING constructed. `flow(obj, solidify=False)` constructs
+but suppresses the finalize. Neither changes default behaviour.
 
-**Detail.** `resolve()` constructs NOTHING — and since record 19 phase 2 no Reference can make
+**Detail.** The settled stage constructs NOTHING — and since record 19 phase 2 no Reference can make
 it: a structural dotted `!ref:a.b` stays a `Reference` just as a plain `!ref:name` does, an
 attribute reference is REFUSED on this path exactly as under `load()`, and the
-`_EngineState.structural` flag that used to gate a construction off for `resolve()` alone is
+`_EngineState.structural` flag that used to gate a construction off for this stage alone is
 deleted (there is nothing left to gate).
 
 **Why.** Until 2026-08-11 reading `split.train` BUILT `split` on this path too, so the
@@ -732,7 +761,7 @@ deleted (there is nothing left to gate).
 archives, for a call documented as constructing nothing. Two consumers already claimed behaviour
 they were not getting (a visual editor's YAML importer — "no instantiation, every node is a Fluid
 marker"; a flow-graph builder — "step markers stay UNbuilt"), and two projects' shipped-config
-suites hand-rolled a tag-stubbing parser because `resolve()` "is not an escape either".
+suites hand-rolled a tag-stubbing parser because the settled stage "is not an escape either".
 Steady-state cost is now 10ms.
 
 **Pins.** `tests/test_resolve.py::test_resolve_refuses_a_dotted_ATTRIBUTE_ref_exactly_as_load_does`
@@ -815,7 +844,7 @@ rule-level pin that two orderings of one spelling must DISAGREE, and
 **Rule.** `configure(*objs, config=…, **named)` = `dumper.to_markers(objs)` (the objects as a
 marker document — the SAME reconstruction rule `dump()` uses, `dumpable_kwargs`) → the config
 merged after it (a key naming an object tunes that object's marker IN PLACE — P1's `deep_merge`
-— so a bare key beside it still competes on position; other keys append) → `resolve()` (pass 7,
+— so a bare key beside it still competes on position; other keys append) → `load(until="settled")` (pass 7,
 recording into the call's report) → `_apply`: a settled plain value is set (validated under the
 init policy; the eager-class note rides the pass-7 record); a settled marker at a slot holding a
 MARKER is tuned in place (`kwargs.update`, identity kept, markers inside it stay markers); a
@@ -855,7 +884,7 @@ its con case — a LATER rider wins; the old pin passed only because of F10),
 
 ### The rule runs ONCE — pass 7 settles, pass 8 builds (record 19, phase 3, 2026-08-17)
 
-**Rule.** `materialize()` = `_flow_recursive` (pass 7: the ONE broadcast/reference pass — what
+**Rule.** `load()` ends in `engine.materialize()` = `_flow_recursive` (pass 7: the ONE broadcast/reference pass — what
 `hydraide` emits) → `instantiate` (pass 8: build every `Target` at ANY depth from its SETTLED
 kwargs). Construction does NOT re-run the cascade into a marker's own kwargs: `_flow_target` feeds
 `_resolve_kwarg_value` the marker's own glob blocks only. The active context's bare keys are read
@@ -872,8 +901,8 @@ forever, F6; the self-hit is skipped on both the pass-5 marker-aliasing probe an
 to a MARKER shares it (identity via `flow_memo`); a reference to a plain VALUE is INLINED — after
 `load()` nothing is a late-bound `Reference` any more (F5); a walk that leaves structure is refused
 (phase 2); anything else is an import path; a miss raises a located `ReferenceResolutionError` on
-`resolve()` and `load()` alike, so hydraide reports it instead of emitting `_ref_`. The CLI-override
-contract is therefore `load(flow=False)` → merge into the DOCUMENT → `materialize` (what the app
+`until="settled"` and `"objects"` alike, so hydraide reports it instead of emitting `_ref_`. The CLI-override
+contract is therefore `load(until="document")` → merge into the DOCUMENT → `load(document)` (what the app
 framework does), never "materialize a Reference the caller kept". F4 is settled by construction:
 `instantiate` recurses through plain dicts and lists (`_deep_flow` descended one level).
 **Pins.** `tests/test_instantiate.py` (the `load(emit(x)) == load(x)` contract, the closed
@@ -908,7 +937,7 @@ on keys or scopes — a new rule goes behind a `_Receiver` predicate, added to B
 (`_receiver_for_target` / `_receiver_for_instance`) with a pin per path.
 
 **Rule.** Glob keys are routing metadata: they never reach ctor kwargs, post-init setattrs,
-`__confluid_kwargs__`, or `resolve()` marker kwargs.
+`__confluid_kwargs__`, or `load(until="settled")` marker kwargs.
 
 **Detail — configure().** Since phase 4 there is nothing to keep in parity: `configure()` runs the
 document through the SAME scanner (see "`configure()` runs THROUGH the document"). A present
@@ -978,7 +1007,7 @@ workspace configs / 412 markers.
 `::test_the_two_paths_now_report_the_same_failure_for_the_same_typo` and the three exemptions.
 
 **Detail.** `configure()` RETURNS a report; `collect_report()` (in `state`) installs one on the
-engine state for the load path. `materialize()`/`active_context()` MUST carry an ambient report into
+engine state for the load path. `engine.materialize()`/`active_context()` MUST carry an ambient report into
 their fresh states. A nested `configure()` adopts the ambient report; the owner alone logs the
 unused summary, at DEBUG. "Failed" is deliberately configure()-path-only — engine-side ctor
 validation fires below the engine in the layering and already raises located errors. A LEAF marked

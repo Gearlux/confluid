@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from confluid import load_config, load_config_with_paths
+from confluid import load
 
 
 def test_file_includes(tmp_path: Path) -> None:
@@ -12,7 +12,7 @@ def test_file_includes(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("include: common.yaml\nmain_val: 2\nshared: False")
 
-    data = load_config(main)
+    data = load(main, until="raw")
     assert data["base_val"] == 1
     assert data["main_val"] == 2
     # main should override common
@@ -27,7 +27,7 @@ def test_circular_include_error(tmp_path: Path) -> None:
     b.write_text("include: a.yaml")
 
     with pytest.raises(ValueError, match="Circular include"):
-        load_config(a)
+        load(a, until="raw")
 
 
 def test_load_config_with_paths_single_file(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_load_config_with_paths_single_file(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("foo: 1\nbar: 2")
 
-    data, paths = load_config_with_paths(main)
+    data, paths = load(main, until="raw", return_paths=True)
     assert data == {"foo": 1, "bar": 2}
     assert paths == [main.resolve()]
 
@@ -51,7 +51,7 @@ def test_load_config_with_paths_returns_full_tree(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("include:\n  - common.yaml\n  - extra.yaml\nmain_val: 2")
 
-    data, paths = load_config_with_paths(main)
+    data, paths = load(main, until="raw", return_paths=True)
     assert data["base_val"] == 1
     assert data["extra_val"] == 9
     assert data["main_val"] == 2
@@ -73,8 +73,8 @@ def test_load_config_with_paths_threadlocal_isolation(tmp_path: Path) -> None:
     main_b = tmp_path / "b.yaml"
     main_b.write_text("b: 2")
 
-    _, paths_a = load_config_with_paths(main_a)
-    _, paths_b = load_config_with_paths(main_b)
+    _, paths_a = load(main_a, until="raw", return_paths=True)
+    _, paths_b = load(main_b, until="raw", return_paths=True)
 
     assert paths_a == [main_a.resolve()]
     assert paths_b == [main_b.resolve()]
@@ -91,7 +91,7 @@ def test_load_config_with_paths_circular_error(tmp_path: Path) -> None:
     b.write_text("include: a.yaml")
 
     with pytest.raises(ValueError, match="Circular include"):
-        load_config_with_paths(a)
+        load(a, until="raw", return_paths=True)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_an_overridden_key_takes_the_including_files_position(tmp_path: Path) ->
     main = tmp_path / "main.yaml"
     main.write_text("include: base.yaml\nlr: 0.3\nextra: 9\n")
 
-    assert list(load_config(main)) == ["Stage", "kept", "lr", "extra"]
+    assert list(load(main, until="raw")) == ["Stage", "kept", "lr", "extra"]
 
 
 def test_an_override_written_after_an_include_beats_the_includes_addressed_block(tmp_path: Path) -> None:
@@ -133,7 +133,7 @@ def test_an_override_written_after_an_include_beats_the_includes_addressed_block
     main = tmp_path / "main.yaml"
     main.write_text("include: base.yaml\nlr: 0.3\ns: !class:IncludeOrderStage()\n")
 
-    via_include = load(load_config(main))["s"].lr
+    via_include = load(main)["s"].lr
     flat = load("IncludeOrderStage:\n  lr: 0.2\nlr: 0.3\ns: !class:IncludeOrderStage()\n")["s"].lr
 
     assert via_include == flat == 0.3
@@ -148,7 +148,7 @@ def test_an_include_still_wins_over_an_earlier_include(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("include:\n  - first.yaml\n  - second.yaml\nmine: z\n")
 
-    data = load_config(main)
+    data = load(main, until="raw")
     assert data["shared"] == 2
     assert list(data) == ["only_first", "shared", "only_second", "mine"]
 
@@ -172,11 +172,11 @@ def test_an_include_splices_at_the_position_it_was_written(tmp_path: Path) -> No
     last = tmp_path / "last.yaml"
     last.write_text("a: from_main\ninclude: base.yaml\n")
 
-    assert load_config(first)["a"] == "from_main"  # my line is later → mine wins
-    assert load_config(last)["a"] == "from_base"  # the paste is later → base wins
+    assert load(first, until="raw")["a"] == "from_main"  # my line is later → mine wins
+    assert load(last, until="raw")["a"] == "from_base"  # the paste is later → base wins
     # A key written on ONE side only keeps the position of the side that has it.
-    assert list(load_config(first)) == ["b", "a"]
-    assert list(load_config(last)) == ["a", "b"]
+    assert list(load(first, until="raw")) == ["b", "a"]
+    assert list(load(last, until="raw")) == ["a", "b"]
 
 
 def test_an_include_in_the_middle_splits_the_document(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ def test_an_include_in_the_middle_splits_the_document(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("x: above\ninclude: base.yaml\ny: below\n")
 
-    data = load_config(main)
+    data = load(main, until="raw")
     assert data["x"] == "from_base"  # written above the paste → the paste wins
     assert data["y"] == "below"  # written below the paste → mine wins
 
@@ -208,7 +208,7 @@ def test_an_include_at_the_bottom_makes_the_document_a_set_of_fallbacks(tmp_path
     main = tmp_path / "main.yaml"
     main.write_text("lr: 0.3\ns: !class:FallbackStage()\ninclude: base.yaml\n")
 
-    cfg = load_config(main)
+    cfg = load(main, until="raw")
     assert list(cfg) == ["s", "lr", "FallbackStage"]
     assert cfg["lr"] == 0.1  # one `lr`, at the paste's later position, base's value
     assert load(cfg)["s"].lr == 0.2  # the addressed block is the last spec
@@ -220,7 +220,7 @@ def test_a_positional_include_still_deep_merges_a_nested_block(tmp_path: Path) -
     main = tmp_path / "main.yaml"
     main.write_text("include: base.yaml\nTrainer:\n  lr: 0.9\n")
 
-    assert load_config(main)["Trainer"] == {"lr": 0.9, "epochs": 5}
+    assert load(main, until="raw")["Trainer"] == {"lr": 0.9, "epochs": 5}
 
 
 def test_two_includes_paste_in_the_order_they_are_listed(tmp_path: Path) -> None:
@@ -229,7 +229,7 @@ def test_two_includes_paste_in_the_order_they_are_listed(tmp_path: Path) -> None
     main = tmp_path / "main.yaml"
     main.write_text("shared: 0\ninclude:\n  - first.yaml\n  - second.yaml\n")
 
-    data = load_config(main)
+    data = load(main, until="raw")
     assert data["shared"] == 2  # both pastes sit after my line; the later paste wins
     assert list(data) == ["only_first", "shared", "only_second"]
 
@@ -249,7 +249,7 @@ def test_two_includes_paste_in_the_order_they_are_listed(tmp_path: Path) -> None
 # activates that framework.
 # ---------------------------------------------------------------------------
 
-from confluid import ConfigurationError, configurable, load  # noqa: E402
+from confluid import ConfigurationError, configurable  # noqa: E402
 from confluid.fluid import Target  # noqa: E402
 
 
@@ -264,7 +264,7 @@ def test_include_inside_a_markers_kwargs_splices(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("m:\n  _target_: Widget\n  include: frag.yaml\n")
 
-    marker = load(str(main), flow=False)["m"]
+    marker = load(str(main), until="document")["m"]
 
     assert isinstance(marker, Target)
     assert marker.kwargs == {"size": 7, "label": "from-frag"}
@@ -277,7 +277,7 @@ def test_include_inside_an_ACTIVE_scope_block_splices(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("lr: 0.1\npost_include:\n  _notscope_: { default: }\n  include: b.yaml\n")
 
-    assert load(str(main), flow=False) == {"lr": 0.9, "from_b": 2}
+    assert load(str(main), until="document") == {"lr": 0.9, "from_b": 2}
 
 
 def test_include_inside_an_INACTIVE_scope_block_is_never_opened(tmp_path: Path) -> None:
@@ -289,7 +289,7 @@ def test_include_inside_an_INACTIVE_scope_block_is_never_opened(tmp_path: Path) 
     main = tmp_path / "main.yaml"
     main.write_text("lr: 0.1\npost_include:\n  _scope_: { framework: torch }\n  include: does_not_exist.yaml\n")
 
-    assert load(str(main), flow=False) == {"lr": 0.1}
+    assert load(str(main), until="document") == {"lr": 0.1}
 
 
 def test_an_included_file_may_itself_carry_a_scoped_include(tmp_path: Path) -> None:
@@ -302,7 +302,7 @@ def test_an_included_file_may_itself_carry_a_scoped_include(tmp_path: Path) -> N
     main = tmp_path / "main.yaml"
     main.write_text("top:\n  _notscope_: { default: }\n  include: outer.yaml\n")
 
-    assert load(str(main), flow=False) == {"depth": 2}
+    assert load(str(main), until="document") == {"depth": 2}
 
 
 def test_keys_after_a_scoped_include_still_override_it(tmp_path: Path) -> None:
@@ -311,7 +311,7 @@ def test_keys_after_a_scoped_include_still_override_it(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("w:\n  _notscope_: { default: }\n  include: b.yaml\n  lr: 0.5\n")
 
-    assert load(str(main), flow=False) == {"lr": 0.5}
+    assert load(str(main), until="document") == {"lr": 0.5}
 
 
 def test_a_scoped_include_cycle_is_bounded(tmp_path: Path) -> None:
@@ -326,7 +326,7 @@ def test_a_scoped_include_cycle_is_bounded(tmp_path: Path) -> None:
     main.write_text("start:\n  _notscope_: { default: }\n  include: a.yaml\n")
 
     with pytest.raises(ConfigurationError, match="include|circular|passes"):
-        load(str(main), flow=False)
+        load(str(main), until="document")
 
 
 def test_include_with_a_mapping_value_is_refused(tmp_path: Path) -> None:
@@ -336,7 +336,7 @@ def test_include_with_a_mapping_value_is_refused(tmp_path: Path) -> None:
     main.write_text("a: 1\ninclude: {path: frag.yaml}\n")
 
     with pytest.raises(ConfigurationError, match="include"):
-        load(str(main), flow=False)
+        load(str(main), until="document")
 
 
 def test_a_non_string_include_entry_is_refused(tmp_path: Path) -> None:
@@ -346,7 +346,7 @@ def test_a_non_string_include_entry_is_refused(tmp_path: Path) -> None:
     main.write_text("a: 1\ninclude: [frag.yaml, 42]\n")
 
     with pytest.raises(ConfigurationError, match="include"):
-        load(str(main), flow=False)
+        load(str(main), until="document")
 
 
 # --- the con cases: every position that already worked must be untouched -----
@@ -357,7 +357,7 @@ def test_a_plain_dict_include_is_unchanged(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("a: 1\ninclude: frag.yaml\n")
 
-    assert load(str(main), flow=False) == {"a": 1, "size": 7, "label": "from-frag"}
+    assert load(str(main), until="document") == {"a": 1, "size": 7, "label": "from-frag"}
 
 
 def test_a_nested_dict_include_is_unchanged(tmp_path: Path) -> None:
@@ -365,7 +365,7 @@ def test_a_nested_dict_include_is_unchanged(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("outer:\n  inner:\n    include: frag.yaml\n    keep: me\n")
 
-    assert load(str(main), flow=False) == {"outer": {"inner": {"size": 7, "keep": "me"}}}
+    assert load(str(main), until="document") == {"outer": {"inner": {"size": 7, "keep": "me"}}}
 
 
 def test_a_list_item_include_is_unchanged(tmp_path: Path) -> None:
@@ -373,7 +373,7 @@ def test_a_list_item_include_is_unchanged(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("items:\n  - include: frag.yaml\n    x: 1\n")
 
-    assert load(str(main), flow=False) == {"items": [{"size": 7, "x": 1}]}
+    assert load(str(main), until="document") == {"items": [{"size": 7, "x": 1}]}
 
 
 def test_a_list_of_include_paths_is_unchanged(tmp_path: Path) -> None:
@@ -382,11 +382,11 @@ def test_a_list_of_include_paths_is_unchanged(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("x: 1\ninclude: [a.yaml, b.yaml]\n")
 
-    assert load(str(main), flow=False) == {"x": 1, "from_a": 1, "from_b": 2}
+    assert load(str(main), until="document") == {"x": 1, "from_a": 1, "from_b": 2}
 
 
 def test_a_scope_block_without_an_include_is_unchanged(tmp_path: Path) -> None:
     main = tmp_path / "main.yaml"
     main.write_text("lr: 0.1\npost_block:\n  _notscope_: { default: }\n  lr: 0.9\n  from_b: 2\n")
 
-    assert load(str(main), flow=False) == {"lr": 0.9, "from_b": 2}
+    assert load(str(main), until="document") == {"lr": 0.9, "from_b": 2}

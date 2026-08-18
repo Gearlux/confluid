@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from confluid import PartialClass, Reference, Target, configurable, flow, get_registry, load, materialize
+from confluid import PartialClass, Reference, Target, configurable, flow, get_registry, load
 
 
 def _inst(target: str, /, **kwargs: Any) -> Target:
@@ -64,7 +64,7 @@ def test_class_citizen_captures_broadcasting() -> None:
         "power": 777,
     }
 
-    car = materialize(config["car"], context=config)
+    car = load(config["car"], context=config)
 
     assert isinstance(car.engine, Engine)
     assert car.engine.power == 777
@@ -78,7 +78,7 @@ def test_reference_citizen() -> None:
         "car": _inst("Car", engine=Reference("engine_template")),
     }
 
-    car = materialize(config["car"], context=config)
+    car = load(config["car"], context=config)
 
     # Reference should be resolved → Engine instance
     assert isinstance(car.engine, Engine)
@@ -109,7 +109,7 @@ def test_ordered_broadcasting_from_root() -> None:
         "power": 999,  # Root broadcast — appears AFTER car in document order
     }
 
-    car = materialize(config["car"], context=config)
+    car = load(config["car"], context=config)
 
     # Top-level power=999 appears later in doc order than the nested 200 → wins.
     assert car.engine.power == 999
@@ -120,7 +120,7 @@ def test_ordered_broadcasting_from_root() -> None:
         "car": _inst("Car", color="blue", engine=_inst("Engine")),
         "power": 999,
     }
-    car2 = materialize(config2["car"], context=config2)
+    car2 = load(config2["car"], context=config2)
     assert car2.engine.power == 999
 
 
@@ -193,7 +193,7 @@ def test_broadcast_reaches_body_assigned_LAZY_attribute() -> None:
     get_registry().register_class(BodyAssignedLazy, name="BodyAssignedLazy")
     config = {"obj": _inst("BodyAssignedLazy"), "power": 321}
 
-    obj = materialize(config["obj"], context=config)
+    obj = load(config["obj"], context=config)
 
     assert isinstance(obj.nested, PartialClass)  # still deferred — NOT built
     assert obj.nested.kwargs.get("power") == 321  # ... and configured
@@ -208,7 +208,7 @@ def test_a_lazy_body_slot_is_never_built_by_materialization() -> None:
     """
     get_registry().register_class(BodyAssignedLazy, name="BodyAssignedLazy")
     config = {"obj": _inst("BodyAssignedLazy"), "power": 321}
-    obj = materialize(config["obj"], context=config)
+    obj = load(config["obj"], context=config)
     assert type(obj.nested) is PartialClass and not isinstance(obj.nested, Engine)
 
 
@@ -224,7 +224,7 @@ def test_a_mapping_addressed_at_a_deferred_slot_tunes_it_rather_than_replacing_i
     marker = _inst("BodyAssignedLazy")
     marker.kwargs["nested"] = {"power": 42}
 
-    obj = materialize(marker, context={"obj": marker})
+    obj = load(marker, context={"obj": marker})
 
     assert isinstance(obj.nested, PartialClass)  # not a dict
     assert obj.nested.kwargs["power"] == 42  # the addressed key landed
@@ -243,7 +243,7 @@ def test_a_bare_key_overrides_a_marker_kwarg_that_was_set_in_CODE() -> None:
     get_registry().register_class(BodyAssignedLazy, name="BodyAssignedLazy")
     config = {"obj": _inst("BodyAssignedLazy"), "type": "electric"}
 
-    obj = materialize(config["obj"], context=config)
+    obj = load(config["obj"], context=config)
 
     assert obj.nested.kwargs["type"] == "electric"  # the document beat the code default
     assert flow(obj.nested).type == "electric"
@@ -277,7 +277,7 @@ def test_broadcast_reaches_body_assigned_class_attribute() -> None:
         "power": 321,  # Should reach BodyAssigned.nested (= Target(Engine))
     }
 
-    obj = materialize(config["obj"], context=config)
+    obj = load(config["obj"], context=config)
 
     # Target stays deferred but its kwargs are populated with broadcast scalars
     # A plain ``Target(...)`` body slot is BUILT (only ``partial`` defers), and the

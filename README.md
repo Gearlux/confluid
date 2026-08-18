@@ -34,7 +34,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |
 | [Closing the Config Surface](https://github.com/Gearlux/confluid/blob/main/docs/strict-attrs.md) | `strict_attrs=True` — refuse an addressed key the class declares nowhere (the permissive default warns and applies it); what stays untouched: bare keys, `**kwargs` targets, declared slots; `register(..., strict_attrs=True)` for classes you don't own | `strict_attrs.py` |
-| [Configuration Reports](https://github.com/Gearlux/confluid/blob/main/docs/report.md) | `ConfigurationReport` — applied/failed/unused override keys; `configure()`'s return value, the `collect_report()` context manager for `load()`/`materialize()`/`flow()` | `report.py` |
+| [Configuration Reports](https://github.com/Gearlux/confluid/blob/main/docs/report.md) | `ConfigurationReport` — applied/failed/unused override keys; `configure()`'s return value, the `collect_report()` context manager for `load()`/`load()`/`flow()` | `report.py` |
 | [Interpolation & Config Files](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md) | `${ENV}` + `${config.key}` interpolation, capturing the `include:` tree | `interpolation_includes.py` |
 | [Config-File Search Paths](https://github.com/Gearlux/confluid/blob/main/docs/search-paths.md) | XDG-last resolution of relative paths and `include:` entries (CWD → `./config/` → XDG base dirs), `set_app_name` namespacing, `resolve_config_path` | `search_paths.py` |
 | [Class Design](https://github.com/Gearlux/confluid/blob/main/docs/class-design.md) | Lazy init & zero-arg construction — the four-rule convention for reconfigurable classes | `ml_pipeline.py`, `basic_registration.py` |
@@ -46,7 +46,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | [Extending the Discovery Surface](https://github.com/Gearlux/confluid/blob/main/docs/extending-discovery.md) | The end-to-end contract a tagged class must satisfy to surface automatically in an MCP tool server and a visual node editor: the `task` × `role` taxonomy, entry-point registration, signature-to-widget/schema mapping, and the common failure modes | `discovery.py` |
 | [Error Handling](https://github.com/Gearlux/confluid/blob/main/docs/errors.md) | The typed exception hierarchy (each also inherits the builtin it replaces) | `error_handling.py` |
 | [Scopes](https://github.com/Gearlux/confluid/blob/main/docs/scopes.md) | `_scope_` / `_notscope_` conditional overlays, their activation, and `discover_dimension_values` — what a document offers, and the error when you ask for something else | `scopes.py` |
-| [Introspection](https://github.com/Gearlux/confluid/blob/main/docs/introspection.md) | `cast()` for type checkers, `resolve()` markers, `solidify=False`, dump/reconstruct | `introspection.py` |
+| [Introspection](https://github.com/Gearlux/confluid/blob/main/docs/introspection.md) | `cast()` for type checkers, `load(until="settled")` markers, `solidify=False`, dump/reconstruct | `introspection.py` |
 | [Serialization](https://github.com/Gearlux/confluid/blob/main/docs/serialization.md) | `dump()` and the round trip: per-param reconstruction (live attr, captured kwargs), what a dump omits and why, registry-handle class names, burned-in interpolation | `reproducible_experiment.py` |
 | [Threads & Async](https://github.com/Gearlux/confluid/blob/main/docs/concurrency.md) | ContextVar propagation, `active_context`, worker-thread recipes | `concurrency.py` |
 | [Architecture Decisions](https://github.com/Gearlux/confluid/blob/main/docs/architecture.md) | The *why* behind non-obvious behaviour — decision records, backfilled as the questions come up | — |
@@ -84,7 +84,7 @@ Python, no ML dependencies — run them as-is):
 ### Dependency Injection
 - **Automatic Hydration:** Support `@configurable` decorator for automatic class registration and instantiation.
 - **Fluid-Solid Protocol:** Implement a two-stage lifecycle where objects are defined ("Fluid") and then materialized ("Solid").
-- **Materialize API:** Provide an explicit `materialize()` function to instantiate objects from already-resolved configuration.
+- **Materialize API:** Provide an explicit `load()` function to instantiate objects from already-resolved configuration.
 
 ### Robustness
 - **IR-Aware Merging:** `deep_merge` and `expand_dotted_keys` must traverse into Fluid marker kwargs.
@@ -128,14 +128,14 @@ Trainer:
 
 ### 3. Load and Apply
 ```python
-from confluid import load_config, configure
+from confluid import load, configure
 
 # Instantiate with defaults
 model = Model()
 trainer = Trainer(model=model)
 
 # Apply configuration — returns a ConfigurationReport (applied/failed/unused keys)
-config = load_config("experiment.yaml")
+config = load("experiment.yaml", until="raw")
 report = configure(trainer, config=config)
 
 print(trainer.lr) # 0.0001
@@ -150,11 +150,11 @@ print(report.summary()) # "2 applied, 0 failed, 1 unused"
 ```python
 from confluid import configure_from_file
 
-# Equivalent to configure(trainer, config=load_config("experiment.yaml"))
+# Equivalent to configure(trainer, config=load("experiment.yaml", until="raw"))
 configure_from_file(trainer, path="experiment.yaml")
 ```
 
-It reads the file via `load_config` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
+It reads the file via `load(path, until="raw")` (so `include:` / `import:` directives and `!class:` / `!ref:` markers are honoured) and then applies it exactly as `configure` does. A missing path raises `ConfigFileNotFoundError`. Matching follows the one rule described in the [Broadcasting guide](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md): document order, last write wins.
 
 ### 4. Dump and Reconstruct
 ```python

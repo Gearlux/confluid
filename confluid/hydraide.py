@@ -18,7 +18,7 @@ cfg.yaml``) is one app of the CLI framework built on confluid, which already
 provides config promotion, ``--scope`` / dimension flags, the search tiers and
 the failure contract — nothing a second argument parser here would add.
 
-Architecture record 19. Phase 1: this module is a WRAPPER — ``resolve()`` is
+Architecture record 19. Phase 1: this module is a WRAPPER — ``load(until="settled")`` is
 passes 1–7 and ``dump()`` is the serializer; both existed. Nothing about the
 engine changes here. The two invariants the tool rests on are pinned in
 ``tests/test_hydraide.py``: the two spellings of one document emit byte-identical
@@ -32,8 +32,8 @@ from typing import Any, Dict, List, Optional, Union
 from loggair import get_logger
 
 from confluid.dumper import dump
-from confluid.engine import resolve
 from confluid.fluid import Fluid
+from confluid.loader import load
 
 logger = get_logger("confluid.hydraide")
 
@@ -49,7 +49,7 @@ def _anchor_names(tree: Any) -> Dict[int, str]:
     common single-occurrence case costs nothing at emit time.
 
     The walk is over the RESOLVED tree, where identity already means what the
-    document meant: ``resolve()`` shares a marker reached through ``${ref:}``
+    document meant: ``load(until="settled")`` shares a marker reached through ``${ref:}``
     and copies containers, so a list is copied while its elements are shared.
     """
     paths: Dict[int, List[str]] = {}
@@ -90,7 +90,7 @@ def emit(source: Union[str, Path], *, scopes: Optional[List[str]] = None) -> str
     Raises the same located ``ConfigurationError`` a ``load()`` would for a
     malformed document — a preprocessor must not degrade what the loader refuses.
     """
-    tree = resolve(source, scopes=scopes)
+    tree = load(source, until="settled", scopes=scopes)
     return dump(tree, anchor_names=_anchor_names(tree))
 
 

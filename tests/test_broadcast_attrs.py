@@ -26,7 +26,7 @@ from typing import Any, Dict, List
 import pytest
 
 import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
-from confluid import configurable, flow, load, materialize
+from confluid import configurable, flow, load
 from confluid.broadcast import _get_acceptable_keys
 from confluid.introspect import body_slot_names, init_source_available
 
@@ -180,8 +180,8 @@ def test_sourceless_undeclared_warns_exactly_once_across_two_passes(monkeypatch:
     # Two materialize passes: each clears the per-pass attr caches, so
     # the body-slot scan recomputes — but the warned-set is NOT cleared,
     # so the diagnostic fires exactly once.
-    materialize(dict(config), context=dict(config))
-    materialize(dict(config), context=dict(config))
+    load(dict(config), context=dict(config))
+    load(dict(config), context=dict(config))
 
     mine = [msg for msg in warnings_seen if "_SourcelessUndeclaredWarns" in msg]
     assert len(mine) == 1
@@ -191,7 +191,7 @@ def test_sourceless_undeclared_warns_exactly_once_across_two_passes(monkeypatch:
     # And the invisible slot indeed did NOT receive the broadcast (the
     # divergence the warning is about). The no-paren ``!class:`` marker stays
     # a deferred Class through materialize — flow it explicitly to inspect.
-    result = materialize(dict(config), context=dict(config))
+    result = load(dict(config), context=dict(config))
     trainer: Any = flow(result["trainer"])
     assert trainer.loss_fn == "default_loss"
     assert isinstance(trainer, cls)

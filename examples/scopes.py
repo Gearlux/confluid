@@ -108,12 +108,12 @@ def main() -> None:
 
     # A scope nested in a marker's own kwargs swaps ONE slot. No activation keeps
     # the default; `model=convnet` splices the alternative over it.
-    default_slot = load(SLOT_DOC, flow=False)["runnable"]
+    default_slot = load(SLOT_DOC, until="document")["runnable"]
     assert default_slot.kwargs["model"].target == "TimmModel"
     assert "alt" not in default_slot.kwargs  # the inactive wrapper is dropped
     print(f"{'slot: scopes=[]':<28} model={default_slot.kwargs['model'].target}")
 
-    swapped = load(SLOT_DOC, flow=False, scopes=["model=convnet"])["runnable"]
+    swapped = load(SLOT_DOC, until="document", scopes=["model=convnet"])["runnable"]
     assert swapped.kwargs["model"].target == "ConvNet"
     print(f"{'slot: model=convnet':<28} model={swapped.kwargs['model'].target}")
 

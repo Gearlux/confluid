@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 
 import confluid
-from confluid import Target, configurable, flow, get_registry, load, materialize
+from confluid import Target, configurable, flow, get_registry, load
 
 
 def _inst(target: str, /, **kwargs: Any) -> Target:
@@ -52,10 +52,10 @@ def test_load_hierarchy() -> None:
 
     # raw load keeps the plain hierarchy untouched
     data = {"Model": {"layers": 15}}
-    config_data = load(data, flow=False)
+    config_data = load(data, until="document")
 
     # Explicit materialize of an Target marker built from the block
-    instance = materialize(_inst("Model", **config_data["Model"]))
+    instance = load(_inst("Model", **config_data["Model"]))
     assert isinstance(instance, Model)
     assert instance.layers == 15
 
@@ -67,7 +67,7 @@ def test_materialize_shorthand() -> None:
             self.val = val
 
     # materialize accepts Target markers
-    obj = materialize(_inst("Simple", val=42))
+    obj = load(_inst("Simple", val=42))
     assert obj.val == 42
 
 
@@ -91,7 +91,7 @@ def test_flow_auto_solidify_called() -> None:
 
 
 def test_flow_auto_solidify_via_materialize() -> None:
-    """Auto-solidification also fires on the materialize() marker path."""
+    """Auto-solidification also fires on the load() marker path."""
 
     @configurable
     class Backbone:
@@ -102,7 +102,7 @@ def test_flow_auto_solidify_via_materialize() -> None:
         def solidify(self) -> None:
             self.solidified = True
 
-    instance = materialize(_inst("Backbone", width=5))
+    instance = load(_inst("Backbone", width=5))
     assert instance.solidified is True
 
 

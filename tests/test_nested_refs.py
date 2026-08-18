@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from confluid import configurable, load, materialize
+from confluid import configurable, load
 
 
 @configurable
@@ -45,8 +45,8 @@ comp: !class:MockComponent
     os.chdir(tmp_path)
     try:
         # Load returns a dict containing our instances
-        result = load("main.yaml", flow=False)
-        instance = materialize(result["comp"], context=result)
+        result = load("main.yaml", until="document")
+        instance = load(result["comp"], context=result)
 
         assert instance.settings["base_val"] == 50
         assert instance.settings["value"] == 50

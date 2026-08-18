@@ -8,7 +8,7 @@ second implementation of it over live objects:
    reconstruction rule ``dump()`` uses, so an object's document is one thing;
 2. the config is merged AFTER it (``deep_merge`` + dotted-key expansion) — document order, last
    spec wins, exactly as an experiment overlay lands on a base file;
-3. pass 7 settles the merged document (:func:`confluid.engine.resolve` — the pass ``hydraide``
+3. pass 7 settles the merged document (``load(until="settled")`` — the pass ``hydraide``
    emits): bare keys, class-name blocks, ``Cls.inst.attr`` forms, ``'*'`` / ``'**'`` riders,
    dict-at-slot tunes, references — one scanner, the report recorded as it goes;
 4. the settled values are applied back onto the live objects — a plain value is set (validated
@@ -36,10 +36,10 @@ from loggair import get_logger
 
 from confluid.broadcast import clear_pass_caches, dict_at_slot_kind
 from confluid.dumper import to_markers
-from confluid.engine import _ctor_params, _maybe_solidify, flow, resolve
+from confluid.engine import _ctor_params, _maybe_solidify, flow
 from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, Target
-from confluid.loader import ConfluidLoader, load_config
+from confluid.loader import ConfluidLoader, load
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, parse_value
@@ -132,12 +132,12 @@ def configure(
     merged = expand_dotted_keys({**document, **rest})
 
     # 3. Pass 7 settles the whole thing, recording into THIS report. configure() is an
-    #    entry point exactly like materialize()/resolve(): a class redefined since the
+    #    entry point exactly like load(): a class redefined since the
     #    last pass must not be served its previous accept-list.
     clear_pass_caches()
     token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), report=report))
     try:
-        settled = resolve(merged)
+        settled = load(merged, until="settled")
     finally:
         _ENGINE_STATE.reset(token)
 
@@ -160,12 +160,12 @@ def configure_from_file(
 ) -> ConfigurationReport:
     """Load a YAML config file and apply it to existing instances in one call.
 
-    A convenience for the ``load_config`` + :func:`configure` two-step, so
+    A convenience for the ``load(path, until="raw")`` + :func:`configure` two-step, so
 
     >>> configure_from_file(trainer, path="experiment.yaml")   # doctest: +SKIP
 
-    is equivalent to ``configure(trainer, config=load_config("experiment.yaml"))``.
-    The file is read via :func:`confluid.load_config`, so recursive ``include:``
+    is equivalent to ``configure(trainer, config=load("experiment.yaml", until="raw"))``.
+    The file is read via :func:`confluid.load`, so recursive ``include:``
     / ``import:`` directives and ``_target_`` / reference markers are honoured. This is
     a wrapper only — it adds no behaviour beyond loading.
 
@@ -178,7 +178,7 @@ def configure_from_file(
     Raises:
         confluid.ConfigFileNotFoundError: If ``path`` does not exist.
     """
-    return configure(*instances, config=load_config(path), context=context, **named)
+    return configure(*instances, config=load(path, until="raw"), context=context, **named)
 
 
 # --------------------------------------------------------------------------- #

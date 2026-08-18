@@ -8,7 +8,7 @@ scoped-broadcasting machinery (the ``_View`` context wrappers threading
 Print-only by design: CI executes every example, so this script never asserts
 on timings — runner variance would make that flaky. It exists as a baseline to
 eyeball across engine changes; set ``CONFLUID_BENCH_PROFILE=1`` to add a
-cProfile breakdown of one ``materialize`` pass.
+cProfile breakdown of one ``load`` pass.
 """
 
 import cProfile
@@ -19,7 +19,7 @@ from typing import Any, Callable, List
 
 import yaml
 
-from confluid import configurable, configure, materialize, resolve
+from confluid import configurable, configure, load
 from confluid.loader import ConfluidLoader
 
 GROUPS = 10
@@ -98,10 +98,10 @@ def main() -> None:
     # Each phase re-parses: flow() memoizes Target markers, so a re-used parse
     # would measure the memo hit, not the engine.
     timed("parse", markers, lambda: yaml.load(text, Loader=ConfluidLoader))
-    timed("materialize", markers, lambda: materialize(yaml.load(text, Loader=ConfluidLoader)))
-    timed("resolve", markers, lambda: resolve(yaml.load(text, Loader=ConfluidLoader)))
+    timed("load", markers, lambda: load(yaml.load(text, Loader=ConfluidLoader)))
+    timed("load(settled)", markers, lambda: load(yaml.load(text, Loader=ConfluidLoader), until="settled"))
 
-    tree = materialize(yaml.load(text, Loader=ConfluidLoader))
+    tree = load(yaml.load(text, Loader=ConfluidLoader))
     reconf = {"lr": 0.002, "Stage": {"momentum": 0.7}, "**": {"tag": "reconf"}}
     timed("configure", markers, lambda: configure(tree, config=reconf))
 
@@ -109,7 +109,7 @@ def main() -> None:
         parsed = yaml.load(text, Loader=ConfluidLoader)
         profiler = cProfile.Profile()
         profiler.enable()
-        materialize(parsed)
+        load(parsed)
         profiler.disable()
         pstats.Stats(profiler).sort_stats("cumulative").print_stats(25)
 

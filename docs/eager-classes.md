@@ -121,7 +121,7 @@ are **reconfigured after construction** or **built incrementally by tools**:
 
 - `configure()` / `configure_from_file()` — post-construction reconfiguration can only recompute
   derived state that lives behind a read-only `@property`; work done once in `__init__` goes stale.
-- Cheap structural introspection — `resolve()` and `flow(solidify=False)` assume construction is
+- Cheap structural introspection — `load(until="settled")` and `flow(solidify=False)` assume construction is
   side-effect-free, so a tool can build a config graph without paying for it.
 - Interactive builders — a visual editor or discovery service that instantiates classes with
   partial (or zero) arguments to preview them needs every parameter defaulted.

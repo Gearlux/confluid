@@ -4,7 +4,7 @@ A ``!ref:`` whose FIRST segment is a document key walks STRUCTURE only — dict 
 indices. Reading an ATTRIBUTE of the object built at that key (``!ref:split.train``) or calling
 a METHOD on it (``!ref:obj.build()``) is refused with a located error naming the rewrite: give
 the referent's class a selector parameter and reference the whole object, or write the marker
-again with the selector set. The refusal fires on BOTH paths — ``load()`` and ``resolve()`` —
+again with the selector set. The refusal fires on BOTH paths — ``load()`` and ``load(until="settled")`` —
 which is how ``hydraide`` reports it (exit 2, the same message).
 
 Everything else a dotted ``!ref:`` did keeps working, and every one of those cases is pinned
@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 import yaml
 
-from confluid import ConfigurationError, configurable, dump, load, resolve
+from confluid import ConfigurationError, configurable, dump, load
 from confluid.hydraide import emit
 
 
@@ -83,16 +83,16 @@ def test_an_attribute_ref_is_refused_by_load_naming_the_line_and_the_rewrite() -
 
 
 def test_the_same_document_is_refused_by_resolve_with_the_same_message() -> None:
-    """``resolve()`` is passes 1–7 — hydraide. Refusing there is how the tool REPORTS the ref."""
+    """``load(until="settled")`` is passes 1–7 — hydraide. Refusing there is how the tool REPORTS the ref."""
     with pytest.raises(ConfigurationError) as via_load:
         load(ATTRIBUTE_REF)
     with pytest.raises(ConfigurationError) as via_resolve:
-        resolve(ATTRIBUTE_REF)
+        load(ATTRIBUTE_REF, until="settled")
     assert str(via_resolve.value) == str(via_load.value)
 
 
 def test_hydraide_emit_reports_it_as_the_same_located_error(tmp_path: Path) -> None:
-    """`emit` IS `resolve()` + the serializer, so the tool refuses exactly as `load()` does — the
+    """`emit` IS `load(until="settled")` + the serializer, so the tool refuses exactly as `load()` does — the
     file:line:col of the `!ref:` node in the message (the CLI framework renders it, exit 1)."""
     (tmp_path / "cfg.yaml").write_text(ATTRIBUTE_REF)
     with pytest.raises(ConfigurationError) as exc:

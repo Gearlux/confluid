@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from confluid import ConfigurationError, PartialClass, Reference, Target, configurable, flow, load, materialize, resolve
+from confluid import ConfigurationError, PartialClass, Reference, Target, configurable, flow, load
 
 
 def test_resolve_returns_markers_without_instantiating() -> None:
@@ -23,7 +23,7 @@ def test_resolve_returns_markers_without_instantiating() -> None:
             self.name = name
 
     doc = {"a": Target(_R1, name="x")}
-    out = resolve(doc)
+    out = load(doc, until="settled")
     assert isinstance(out["a"], Target)
     assert out["a"].kwargs["name"] == "x"
     assert built == []  # never constructed
@@ -54,7 +54,7 @@ def test_resolve_merges_broadcast_into_kwargs() -> None:
         "inner": Target(_R2Inner, k=3),
         "n": 9,
     }
-    out = resolve(doc)
+    out = load(doc, until="settled")
     trainer = out["trainer"]
     assert isinstance(trainer, (Target, Target))
     # `n` (scalar) and `inner` (Fluid) both broadcast into the trainer's accept-list.
@@ -80,7 +80,7 @@ def test_resolve_shares_ref_by_identity_for_fanout() -> None:
         "node": Target(_R3, src=Reference("shared"), alt=Reference("shared")),
         "shared": Target(_R3Src, p="z"),
     }
-    out = resolve(doc)
+    out = load(doc, until="settled")
     assert out["node"].kwargs["src"] is out["node"].kwargs["alt"]
     assert out["node"].kwargs["src"] is out["shared"]
 
@@ -99,12 +99,12 @@ def test_resolve_preserves_lazy_markers() -> None:
             self.lr = lr
 
     doc = {"node": Target(_R4, opt=PartialClass(_R4Opt, lr=0.1))}
-    out = resolve(doc)
+    out = load(doc, until="settled")
     assert isinstance(out["node"].kwargs["opt"], PartialClass)
 
 
 def test_materialize_solidify_false_builds_but_skips_solidify() -> None:
-    """``materialize(solidify=False)`` constructs objects but never solidifies."""
+    """``load(solidify=False)`` constructs objects but never solidifies."""
     calls: list[str] = []
 
     @configurable
@@ -119,13 +119,13 @@ def test_materialize_solidify_false_builds_but_skips_solidify() -> None:
 
     doc = {"m": Target(_R5, name="h")}
 
-    g = materialize(doc, solidify=False)
+    g = load(doc, solidify=False)
     assert isinstance(g["m"], _R5)  # constructed
     assert g["m"].built is False
     assert calls == []
 
     calls.clear()
-    g2 = materialize(doc)  # default: solidify fires
+    g2 = load(doc)  # default: solidify fires
     assert g2["m"].built is True
     assert calls == ["h"]
 
@@ -162,14 +162,14 @@ def test_flow_solidify_false_skips_nested_solidify() -> None:
 
 
 def test_resolve_refuses_a_dotted_ATTRIBUTE_ref_exactly_as_load_does() -> None:
-    """``resolve()`` constructs nothing — and since record 19 phase 2 an attribute reference
+    """``load(until="settled")`` constructs nothing — and since record 19 phase 2 an attribute reference
     (``${ref:s.train}``, reading a property of the object built at ``s``) is REFUSED on both
     paths with one message, instead of being deferred here and built there.
 
     History: reading ``split.train`` used to mean BUILDING ``split`` — the one place a Reference
     triggered construction — and it ran on this path too, so the "introspection without cost" API
     walked a dataset (measured 3.91s on a real config). A ``structural`` engine flag then gated it
-    off for ``resolve()`` alone. Both the construction and the flag are gone: the resolver never
+    off for ``load(until="settled")`` alone. Both the construction and the flag are gone: the resolver never
     builds a cursor any more, so the two paths cannot disagree.
     """
     built: list[str] = []
@@ -186,7 +186,7 @@ def test_resolve_refuses_a_dotted_ATTRIBUTE_ref_exactly_as_load_does() -> None:
 
     doc = "s: {_target_: _Split, source: disk}\nuse: {_target_: _Split, source: '${ref:s.train}'}"
     with pytest.raises(ConfigurationError) as via_resolve:
-        resolve(doc)
+        load(doc, until="settled")
     with pytest.raises(ConfigurationError) as via_load:
         load(doc)
     assert str(via_resolve.value) == str(via_load.value)

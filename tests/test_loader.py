@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 import pytest
 import yaml
 
-from confluid import ConfigurationError, configurable, get_registry, load, load_config
+from confluid import ConfigurationError, configurable, get_registry, load
 from confluid.fluid import Target
 from confluid.loader import ConfluidLoader
 
@@ -13,7 +13,7 @@ def test_load_config_valid(tmp_path: Path) -> None:
     yaml_file = tmp_path / "config.yaml"
     yaml_file.write_text("Model:\n  layers: 10")
 
-    data = load_config(yaml_file)
+    data = load(yaml_file, until="raw")
     assert data["Model"]["layers"] == 10
 
 
@@ -21,13 +21,13 @@ def test_load_config_empty(tmp_path: Path) -> None:
     yaml_file = tmp_path / "empty.yaml"
     yaml_file.write_text("")
 
-    data = load_config(yaml_file)
+    data = load(yaml_file, until="raw")
     assert data == {}
 
 
 def test_load_config_not_found() -> None:
     with pytest.raises(FileNotFoundError):
-        load_config("non_existent.yaml")
+        load("non_existent.yaml", until="raw")
 
 
 def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> None:
@@ -84,7 +84,7 @@ def test_load_config_with_import() -> None:
         path = f.name
 
     try:
-        data = load_config(path)
+        data = load(path, until="raw")
         assert data == {}  # import is popped
     finally:
         import os
@@ -98,7 +98,7 @@ def test_load_with_custom_tags(tmp_path: Path) -> None:
     config_file = tmp_path / "tags.yaml"
     config_file.write_text("model: !class:Model\n  layers: 10\nref: !ref:base_lr")
 
-    data = load_config(config_file)
+    data = load(config_file, until="raw")
     # Tags produce Target/Reference objects
     assert isinstance(data["model"], Target)
     assert data["model"].target == "Model"
@@ -120,7 +120,7 @@ def test_load_config_root_level_class(tmp_path: Path) -> None:
     config_file = tmp_path / "root_class.yaml"
     config_file.write_text("!class:Model\nlayers: 10\nactivation: relu\n")
 
-    data = load_config(config_file)
+    data = load(config_file, until="raw")
     assert isinstance(data, Target)
     assert data.target == "Model"
     assert data.kwargs["layers"] == 10
@@ -377,7 +377,7 @@ def test_import_key_warns_on_missing_module(tmp_path: Path, monkeypatch: pytest.
 
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text("import: [definitely_not_a_module_xyz]\nval: 1\n")
-    data = load_config(cfg)
+    data = load(cfg, until="raw")
     assert data == {"val": 1}
     assert any("definitely_not_a_module_xyz" in msg for msg in warnings_seen)
 
@@ -398,7 +398,7 @@ def test_global_safe_loader_stays_clean() -> None:
     # ...while confluid's own entry point parses them fine.
     from confluid.fluid import Target
 
-    assert isinstance(load("m: !class:Model\n", flow=False)["m"], Target)
+    assert isinstance(load("m: !class:Model\n", until="document")["m"], Target)
 
 
 def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -410,32 +410,30 @@ def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) ->
         "  version: v3\n"
         'data_dir: "${CONFLUID_TEST_ROOT}/${train.dataset}/${train.version}/data"\n'
     )
-    result = load(doc, flow=False)
+    result = load(doc, until="document")
     assert result["data_dir"] == "/store/RFUAV/v3/data"
 
 
 def test_materialize_interpolates_config_keys_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``materialize()`` runs the same Resolver pass ``load()`` runs.
+    """``load()`` runs the same Resolver pass ``load()`` runs.
 
     docs/interpolation.md promises interpolation "at materialization" naming
-    ``load()`` / ``materialize()`` / ``resolve()``; measured, ``materialize()``
+    ``load()`` (every stage) — measured, the old ``materialize()`` entry
     skipped it and the literal ``${...}`` rode into values silently while the
     other two (and ``configure()``) resolved. Idempotent on the load() path,
     which has already substituted.
     """
-    from confluid import materialize
 
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
-    out = materialize({"run": {"name": "exp42"}, "output_dir": "${CONFLUID_TEST_ROOT}/runs/${run.name}"})
+    out = load({"run": {"name": "exp42"}, "output_dir": "${CONFLUID_TEST_ROOT}/runs/${run.name}"})
     assert out["output_dir"] == "/store/runs/exp42"
 
 
 def test_materialize_resolves_against_a_separate_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """A distinct ``context=`` dict is the interpolation source, and is itself resolved."""
-    from confluid import materialize
 
     monkeypatch.delenv("db", raising=False)
-    out = materialize({"port_str": "port=${db.port}"}, context={"db": {"port": 5432}})
+    out = load({"port_str": "port=${db.port}"}, context={"db": {"port": 5432}})
     assert out["port_str"] == "port=5432"
 
 

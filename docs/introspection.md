@@ -1,4 +1,4 @@
-# Introspection: `cast`, `resolve()` & `solidify=False`
+# Introspection: `cast`, `load(until="settled")` & `solidify=False`
 
 ## Typed materialization for static checkers (`cast`)
 
@@ -23,21 +23,21 @@ When a tool needs a config's **structure** (its nodes + wiring) but not its expe
 backbones — use one of:
 
 ```python
-from confluid import resolve, materialize, load
+from confluid import load
 
-# (a) resolve(): broadcast-resolved Fluid MARKERS, nothing instantiated. ${ref:} targets are shared
+# (a) load(until="settled"): broadcast-resolved Fluid MARKERS, nothing instantiated. ${ref:} targets are shared
 #     by identity (a fan-out is one object reached twice); an unresolved reference stays a Reference.
-markers = resolve("config.yaml")        # {key: Target / Partial / Reference marker, ...}
+markers = load("config.yaml", until="settled")        # {key: Target / Partial / Reference marker, ...}
 
 # (b) solidify=False: live-but-inert objects — constructed (cheap, per zero-arg / lazy-init) but the
 #     expensive post-flow solidify() (e.g. building a model backbone) is suppressed for the subtree.
-graph = materialize(data, solidify=False)   # also load(..., solidify=False) / flow(obj, solidify=False)
+graph = load(data, solidify=False)   # also load(..., solidify=False) / flow(obj, solidify=False)
 ```
 
 Both leave `Partial` (`_partial_: true`) slots deferred and default behaviour unchanged (`solidify=True`).
 
-**`resolve()` constructs NOTHING — and no reference can make it.** A structural dotted
-reference (`${ref:cfg.lr}`) stays a `Reference` under `resolve()`, exactly as a plain
+**`load(until="settled")` constructs NOTHING — and no reference can make it.** A structural dotted
+reference (`${ref:cfg.lr}`) stays a `Reference` under `load(until="settled")`, exactly as a plain
 whole-object `${ref:split}` does. An *attribute* reference (`${ref:split.train}` — reading a
 property of the object built at `split`) is refused on this path exactly as it is under
 `load()`; the spelling was removed (see [Targets](targets.md#ref--shared-instance)) because
@@ -61,6 +61,6 @@ new_trainer = load(state_yaml) # recreate the exact same hierarchy
 ## Runnable example
 
 [`examples/introspection.py`](../examples/introspection.py) contrasts
-`resolve()` markers with `solidify=False` inert objects (using a class whose
+`load(until="settled")` markers with `solidify=False` inert objects (using a class whose
 `solidify()` is expensive), narrows a node with `cast`, and closes with a
 `dump` → `load` round-trip.

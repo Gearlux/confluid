@@ -11,7 +11,7 @@ propagation rules:
   worker starts with a clean context.
 
 To make a bare `flow()` resolve `${ref:}`/broadcasts outside a
-`materialize()` pass — including on another thread — activate a context
+`load()` pass — including on another thread — activate a context
 explicitly with the public `active_context`:
 
 ```python
@@ -38,7 +38,7 @@ threading.Thread(target=lambda: ctx.run(work)).start()   # inherits the context
 and installs fresh instance-sharing memos, so dotted refs inside the block
 share one materialized instance. The mapping is used verbatim when it has
 no dotted keys (live objects keep their identity); dotted keys are expanded
-like `materialize` does.
+like `load` does.
 
 ## Runnable example
 

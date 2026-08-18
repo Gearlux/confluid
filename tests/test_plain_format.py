@@ -15,7 +15,7 @@ from typing import Any, Optional
 import pytest
 import yaml
 
-from confluid import configurable, dump, flow, load, load_config
+from confluid import configurable, dump, flow, load
 from confluid.exceptions import ConfigurationError, ScopeError
 from confluid.fluid import Partial, Target
 from confluid.loader import ConfluidLoader
@@ -358,7 +358,7 @@ def test_a_block_that_never_activates_still_raises() -> None:
 
 def test_partial_beside_target_is_untouched() -> None:
     """The control: the one pairing that always worked, and must keep working."""
-    marker = load("opt: {_target_: Opt, _partial_: true, lr: 0.5}", flow=False)["opt"]
+    marker = load("opt: {_target_: Opt, _partial_: true, lr: 0.5}", until="document")["opt"]
     assert isinstance(marker, Partial)
     assert marker.kwargs["lr"] == 0.5
 
@@ -368,7 +368,7 @@ def test_the_working_spelling_for_a_deferred_referent() -> None:
 
     Nothing is unexpressible — this is the spelling the error message names.
     """
-    graph = load("proto: {_target_: Opt, _partial_: true, lr: 0.5}\nopt: {_ref_: proto}", flow=False)
+    graph = load("proto: {_target_: Opt, _partial_: true, lr: 0.5}\nopt: {_ref_: proto}", until="document")
     assert isinstance(graph["opt"], Partial)
     assert graph["opt"].kwargs["lr"] == 0.5
 
@@ -376,8 +376,8 @@ def test_the_working_spelling_for_a_deferred_referent() -> None:
 def test_a_scope_block_without_the_modifier_is_untouched() -> None:
     """The con case: the refusal must not fire on an ordinary scope block."""
     doc = "x:\n  _scope_: {mode: fast}\n  a: 1\n"
-    assert load(doc, scopes=["mode=fast"], flow=False) == {"a": 1}
-    assert load(doc, flow=False) == {}
+    assert load(doc, scopes=["mode=fast"], until="document") == {"a": 1}
+    assert load(doc, until="document") == {}
 
 
 def test_the_error_names_the_yaml_location() -> None:
@@ -435,8 +435,10 @@ def test_a_merge_key_delivering_target_converts_like_the_literal_spelling() -> N
     ``_target_`` key, which ``flow()`` did not rescue either — it came out of
     the pipeline as ``{'_target_': 'collections.Counter'}``.
     """
-    merged = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n", flow=False)
-    literal = load("base:\n  _target_: collections.Counter\nderived:\n  _target_: collections.Counter\n", flow=False)
+    merged = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n", until="document")
+    literal = load(
+        "base:\n  _target_: collections.Counter\nderived:\n  _target_: collections.Counter\n", until="document"
+    )
 
     assert isinstance(merged["derived"], Target)
     assert type(merged["derived"]) is type(literal["derived"])
@@ -462,7 +464,7 @@ def test_a_chained_merge_key_converts() -> None:
     """The anchor is itself built from a merge key — the walk has to recurse."""
     graph = load(
         "root: &r\n  _target_: collections.Counter\nmid: &m\n  <<: *r\nderived:\n  <<: *m\n",
-        flow=False,
+        until="document",
     )
     assert isinstance(graph["derived"], Target)
 
@@ -480,7 +482,7 @@ def test_a_merge_key_plus_a_literal_reserved_key_still_converts() -> None:
     and the anchor's ``_target_`` was then picked up correctly — the measurement
     that proved the conversion machinery itself was never the problem.
     """
-    graph = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n  _partial_: true\n", flow=False)
+    graph = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n  _partial_: true\n", until="document")
     assert isinstance(graph["derived"], Partial)
     assert graph["derived"].target == "collections.Counter"
 
@@ -492,7 +494,7 @@ def test_a_quoted_merge_key_is_ordinary_data() -> None:
     data, so the gate must not treat its value as a node to look inside.
     """
     doc = 'base: &b\n  _target_: collections.Counter\nderived:\n  "<<": plain\n'
-    assert load(doc, flow=False)["derived"] == {"<<": "plain"}
+    assert load(doc, until="document")["derived"] == {"<<": "plain"}
     assert yaml.safe_load(doc)["derived"] == {"<<": "plain"}
 
 
@@ -503,14 +505,14 @@ def test_an_ordinary_merge_key_is_untouched() -> None:
     match stock ``safe_load`` exactly.
     """
     doc = "defaults: &d\n  batch_size: 32\n  workers: 4\ntrain:\n  <<: *d\n  workers: 8\n"
-    assert load(doc, flow=False)["train"] == {"batch_size": 32, "workers": 8}
-    assert load(doc, flow=False)["train"] == yaml.safe_load(doc)["train"]
+    assert load(doc, until="document")["train"] == {"batch_size": 32, "workers": 8}
+    assert load(doc, until="document")["train"] == yaml.safe_load(doc)["train"]
 
 
 def test_a_self_referential_merge_key_terminates() -> None:
     """A node whose merge key aliases ITSELF composes fine in PyYAML, so the
     gate's walk needs a cycle guard or it recurses forever."""
-    assert load("a: &x\n  <<: *x\n  k: 1\n", flow=False)["a"] == {"k": 1}
+    assert load("a: &x\n  <<: *x\n  k: 1\n", until="document")["a"] == {"k": 1}
 
 
 # --------------------------------------------------------------------------- #
@@ -605,7 +607,7 @@ def test_neither_spelling_warns(doc: str, tmp_path: Path) -> None:
     path.write_text(doc + "\n")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        load_config(str(path))
+        load(str(path), until="raw")
     assert caught == []
 
 
@@ -635,7 +637,7 @@ def test_neither_spelling_warns(doc: str, tmp_path: Path) -> None:
 def test_a_dotted_reserved_key_is_refused(doc: str, shape: str) -> None:
     """Each of these produced an inert value with a literal reserved key in it."""
     with pytest.raises(ConfigurationError, match="reserved key"):
-        load(doc, flow=False)
+        load(doc, until="document")
 
 
 def test_the_refusal_names_the_nested_spelling_and_the_location() -> None:
@@ -657,7 +659,7 @@ def test_the_dotted_refusal_binds_the_TAG_spelling_too() -> None:
 
 
 def test_an_ordinary_dotted_key_still_expands() -> None:
-    assert load("model.size: 3\nmodel.label: dotted", flow=False)["model"] == {"size": 3, "label": "dotted"}
+    assert load("model.size: 3\nmodel.label: dotted", until="document")["model"] == {"size": 3, "label": "dotted"}
 
 
 def test_a_dotted_kwarg_still_merges_into_an_existing_marker() -> None:
@@ -670,8 +672,8 @@ def test_a_dotted_kwarg_still_merges_into_an_existing_marker() -> None:
 
 def test_a_non_reserved_underscore_wrapped_key_is_untouched() -> None:
     """The false-positive guard: only the six reserved names are special."""
-    assert load("model._custom_: 3", flow=False)["model"] == {"_custom_": 3}
+    assert load("model._custom_: 3", until="document")["model"] == {"_custom_": 3}
 
 
 def test_a_plain_reserved_key_is_untouched() -> None:
-    assert isinstance(load("model:\n  _target_: Box", flow=False)["model"], Target)
+    assert isinstance(load("model:\n  _target_: Box", until="document")["model"], Target)

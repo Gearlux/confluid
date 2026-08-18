@@ -22,7 +22,7 @@ import os
 import re
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union, cast
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple, Union, cast, get_args, overload
 
 import yaml
 from loggair import get_logger
@@ -44,7 +44,7 @@ logger = get_logger("confluid.loader")
 # key is a plain identifier, not a class target.
 
 # Per-context include accumulator (a YAML-side concern — deliberately NOT on
-# the engine's _ENGINE_STATE): populated only inside load_config_with_paths.
+# the engine's _ENGINE_STATE): populated only inside ``load(..., return_paths=True)``.
 _INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
 
 
@@ -131,9 +131,10 @@ def resolve_config_path(path: Union[str, Path], *, base_dir: Optional[Path] = No
 def _record_loaded_path(path: Path) -> None:
     """Append ``path`` to the active include-accumulator, if any.
 
-    Populated by :func:`load_config_with_paths` for the duration of one
+    Populated by ``load(..., return_paths=True)`` for the duration of one
     load so callers can recover the ordered list of every YAML file
-    transitively read (entrypoint + recursive ``include:`` targets). The
+    transitively read (entrypoint + recursive ``include:`` targets, the
+    ones an activated scope block splices included). The
     accumulator rides a ContextVar so re-entrant loads on different
     threads/tasks do not collide.
     """
@@ -715,13 +716,15 @@ def _register_constructors() -> None:
 _register_constructors()
 
 
-def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
-    """Load raw YAML with markers and recursive includes.
+def _load_config_file(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
+    """Read ONE YAML file: parse (markers), ``import:``, recursive ``include:`` — passes 1–3.
 
-    A relative ``path`` is resolved through the config search tiers (CWD →
-    ``CWD/config`` → XDG base dirs — see :func:`resolve_config_path`) BEFORE
-    canonicalization, so circular-include detection and the include
-    accumulator operate on the real file.
+    The file-reading half of ``load(path, until="raw")``, and what every
+    ``include:`` directive calls for its target. A relative ``path`` is
+    resolved through the config search tiers (CWD → ``CWD/config`` → XDG base
+    dirs — see :func:`resolve_config_path`) BEFORE canonicalization, so
+    circular-include detection and the include accumulator operate on the
+    real file.
     """
     requested = Path(path)
     path = resolve_config_path(path).resolve()
@@ -741,42 +744,21 @@ def load_config(path: Union[str, Path], _included: Optional[Set[Path]] = None) -
     with open(path, "r") as f:
         data = yaml.load(f, Loader=ConfluidLoader) or {}
 
-    # Root-level !class: documents parse to a Fluid. Imports/includes are
-    # dict-only constructs, so skip them and just walk the Fluid's kwargs
-    # for nested includes — keeps load_config symmetric with load(text).
-    from confluid.fluid import Fluid
-
-    if isinstance(data, Fluid):
-        return cast(Dict[str, Any], _process_includes_recursive(data, path, _included))
-
-    data = _process_imports(data)
-    data = cast(Dict[str, Any], _process_includes_recursive(data, path, _included))
-    return data
+    return cast(Dict[str, Any], _import_and_include(data, path, _included))
 
 
-def load_config_with_paths(path: Union[str, Path]) -> tuple[Dict[str, Any], List[Path]]:
-    """Load a YAML config and return ``(data, ordered_paths)``.
+def _import_and_include(data: Any, base_path: Path, _included: Set[Path]) -> Any:
+    """Passes 2–3 on a PARSED root: ``import:`` then ``include:`` splicing.
 
-    ``ordered_paths`` is the entrypoint followed by every transitively
-    ``include:``-d file in load order, deduplicated. Use this when a caller
-    needs to capture the full tree of YAML files that contributed to the
-    flowed config (e.g. logging the run's configuration as a reproducible
-    artifact). The thin wrapper preserves :func:`load_config`'s existing
-    public signature so callers that do not need the tree are unaffected.
+    Root-level ``!class:`` documents parse to a Fluid. Imports/includes are
+    dict-only constructs, so a Fluid root skips the import step and only has
+    its kwargs walked for nested includes — the same for a file, a text and
+    an in-memory dict, which is what makes ``until="raw"`` one stage
+    whatever the input shape.
     """
-    accum: List[Path] = []
-    token = _INCLUDE_ACCUMULATOR.set(accum)
-    try:
-        data = load_config(path)
-    finally:
-        _INCLUDE_ACCUMULATOR.reset(token)
-    seen: Set[Path] = set()
-    ordered: List[Path] = []
-    for p in accum:
-        if p not in seen:
-            seen.add(p)
-            ordered.append(p)
-    return data, ordered
+    if isinstance(data, dict):
+        data = _process_imports(data)
+    return _process_includes_recursive(data, base_path, _included)
 
 
 def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -935,7 +917,7 @@ def _splice_includes(
                 f"include: entries must be paths, got {inc_path!r} in {includes!r} (in {current_path})"
             )
         target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
-        included.append(load_config(target_path, _included=set(_included)))
+        included.append(_load_config_file(target_path, _included=set(_included)))
         if spliced is not None:
             spliced.append(target_path)
 
@@ -958,44 +940,141 @@ def _splice_includes(
     return merged
 
 
+#: Where ``load()`` stops. Named after the STATE it hands back, not the pass that
+#: produced it (``docs/lifecycle.md`` → "Where you can stop"):
+#: ``"raw"`` — passes 1–3 (parsed, imported, includes spliced; scope blocks still
+#: in the document, which is what scope DISCOVERY needs to see); ``"document"`` —
+#: 1–6 (scopes applied, interpolated, dotted keys expanded: the document a CLI
+#: merges its overrides into, BEFORE pass 7 inlines ``!ref:`` values); ``"settled"``
+#: — 1–7 (every marker carries its final kwargs, nothing built: what a graph
+#: editor imports and what ``hydraide`` emits); ``"objects"`` — 1–9 (live objects,
+#: the default). ``_STAGES`` is derived from the Literal, never restated.
+Stage = Literal["raw", "document", "settled", "objects"]
+_STAGES: Tuple[str, ...] = get_args(Stage)
+
+
+@overload
 def load(
     data: Any,
     *,
-    flow: bool = True,
+    until: Stage = ...,
+    context: Optional[Dict[str, Any]] = ...,
+    scopes: Optional[List[str]] = ...,
+    solidify: bool = ...,
+    return_paths: Literal[False] = ...,
+) -> Any: ...
+
+
+@overload
+def load(
+    data: Any,
+    *,
+    until: Stage = ...,
+    context: Optional[Dict[str, Any]] = ...,
+    scopes: Optional[List[str]] = ...,
+    solidify: bool = ...,
+    return_paths: Literal[True],
+) -> Tuple[Any, List[Path]]: ...
+
+
+def load(
+    data: Any,
+    *,
+    until: Stage = "objects",
     context: Optional[Dict[str, Any]] = None,
     scopes: Optional[List[str]] = None,
     solidify: bool = True,
+    return_paths: bool = False,
 ) -> Any:
-    """Load and (optionally) materialize a config.
+    """Load a config — from a path, YAML text or already-parsed data — up to a stage.
 
-    ``scopes`` is a list of activation strings forwarded from the CLI layer
-    (typically a CLI framework). Each entry is either a bare boolean name
-    (``"debug"``) or a ``"key=value"`` pair (``"task=classification"``). Scope
-    blocks (``_scope_:`` / ``_notscope_:``) in the YAML are resolved against
-    this set before flow runs. See :mod:`confluid.scopes`.
+    ``load`` is the ONE door onto the pipeline (``docs/lifecycle.md``). It accepts
+    every input shape (a path, YAML text, a parsed dict / list / marker) and runs the
+    passes the input still needs; passes already applied to the data are idempotent,
+    so ``load(load(x, until="document"))`` is ``load(x)``.
+
+    ``until`` names the state handed back — see :data:`Stage`. ``scopes`` is a
+    list of activation strings forwarded from the CLI layer, each a bare boolean
+    name (``"debug"``) or a ``"key=value"`` pair; scope blocks are resolved
+    against it in pass 4 (:mod:`confluid.scopes`). ``context`` is the document
+    whose keys broadcast into ``data`` when ``data`` is a fragment of it (a
+    marker built by a DI framework: ``load(node, context=document)``); it
+    defaults to ``data`` itself. ``solidify=False`` builds objects but
+    suppresses the post-flow ``solidify()`` finalize.
+
+    ``return_paths=True`` returns ``(result, paths)``: ``paths`` is every file
+    read for this call, in read order, deduplicated — the entry file and every
+    ``include:`` it pulled in, including one spliced by an activated scope
+    block. It is empty when nothing was read from disk.
     """
+    if until not in _STAGES:
+        raise ConfigurationError(f"load(until={until!r}): must be one of {', '.join(repr(s) for s in _STAGES)}")
+    if not return_paths:
+        return _load(data, until=until, context=context, scopes=scopes, solidify=solidify)
+    accum: List[Path] = []
+    token = _INCLUDE_ACCUMULATOR.set(accum)
+    try:
+        result = _load(data, until=until, context=context, scopes=scopes, solidify=solidify)
+    finally:
+        _INCLUDE_ACCUMULATOR.reset(token)
+    seen: Set[Path] = set()
+    ordered: List[Path] = []
+    for p in accum:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return result, ordered
+
+
+_CONFIG_SUFFIXES = (".yaml", ".yml")
+
+
+def _names_a_file(data: Union[str, Path]) -> bool:
+    """Is this str/Path a config-file NAME (read it) rather than YAML text (parse it)?
+
+    A ``Path`` always is — there is no other reading of the type. A ``str`` is one
+    when it is a single short line with no ``:`` (a mapping would have one) that
+    either EXISTS under the search tiers or carries a config-file suffix. The
+    suffix rule is what makes a MISSING ``"experiment.yaml"`` raise
+    ``ConfigFileNotFoundError`` instead of parsing to the scalar string
+    ``"experiment.yaml"`` and loading silently as nothing.
+    """
+    if isinstance(data, Path):
+        return True
+    if "\n" in data or ":" in data or len(data) >= 255:
+        return False
+    return data.endswith(_CONFIG_SUFFIXES) or resolve_config_path(data).exists()
+
+
+def _load(
+    data: Any,
+    *,
+    until: Stage,
+    context: Optional[Dict[str, Any]],
+    scopes: Optional[List[str]],
+    solidify: bool,
+) -> Any:
+    # ---- passes 1–3: parse, import, include --------------------------------------
     # The base path for a RELATIVE include, and for the post-scope settle below.
     base_path = Path.cwd() / "string.yaml"
     if isinstance(data, (str, Path)):
-        str_data = str(data)
-        if (
-            "\n" not in str_data
-            and ":" not in str_data
-            and len(str_data) < 255
-            and resolve_config_path(str_data).exists()
-        ):
-            base_path = resolve_config_path(str_data)
-            data = load_config(data)
+        if _names_a_file(data):
+            base_path = resolve_config_path(data)
+            data = _load_config_file(data)  # a missing file raises ConfigFileNotFoundError
         else:
-            data = cast(Dict[str, Any], yaml.load(str_data, Loader=ConfluidLoader) or {})
-            data = _process_includes_recursive(data, base_path, set())
+            data = yaml.load(str(data), Loader=ConfluidLoader) or {}
+            data = _import_and_include(data, base_path, set())
+    else:
+        data = _import_and_include(data, base_path, set())
+    if until == "raw":
+        return data
 
-    # Resolve scope blocks before anything else — they only carry until this
-    # point. Aliases live at the top level of the loaded dict; pull them out
-    # before normalizing the activation map. Scope resolution and include
-    # splicing then alternate until they settle: an activated block's own
-    # `include:` is still unspliced at this point, because processing it earlier
-    # would open a file the block may be about to discard.
+    # ---- pass 4: scopes (alternating with the includes they expose) --------------
+    # Aliases live at the top level of the loaded dict; pull them out before
+    # normalizing the activation map. Scope resolution and include splicing then
+    # alternate until they settle: an activated block's own `include:` is still
+    # unspliced at this point, because processing it earlier would open a file
+    # the block may be about to discard.
     if isinstance(data, dict):
         aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
         data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases))
@@ -1004,36 +1083,27 @@ def load(
         # metadata, but a ScopeBlock could still sit at the top level.
         data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes, None))
 
-    # Handle root-level Fluid objects (e.g., YAML starting with !class:)
-    from confluid.fluid import Fluid
-
-    if isinstance(data, Fluid):
-        if flow:
-            # Route through materialize() so inner !ref: targets (dotted imports
-            # like `posixpath.join`, cross-kwarg references) get resolved
-            # against the Fluid's own kwargs. A raw instantiate skips that pass.
-            return materialize(data, context=context, solidify=solidify)
-        return data
-
-    if not isinstance(data, dict):
-        return data
-
-    data = cast(Dict[str, Any], _process_imports(data))
-
-    resolver = Resolver(context=context or data)
+    # ---- passes 5–6: interpolate, expand -----------------------------------------
+    if isinstance(data, dict):
+        data = cast(Dict[str, Any], _process_imports(data))  # an `import:` a scope block spliced in
+    interp_context = context if context is not None else (data if isinstance(data, dict) else None)
+    resolver = Resolver(context=interp_context or {})
     data = resolver.resolve(data)
-    data = expand_dotted_keys(data)
-
-    if not flow:
+    if isinstance(data, dict):
+        data = expand_dotted_keys(data)
+    if until == "document":
         return data
 
-    return materialize(data, context=context or data, solidify=solidify)
+    # ---- passes 7–9: settle, build, solidify — the engine ------------------------
+    ctx = context if context is not None else (data if isinstance(data, dict) else None)
+    if until == "settled":
+        return settle(data, context=ctx)
+    return materialize(data, context=ctx, solidify=solidify)
 
 
-# ``materialize`` is a REAL dependency of ``load()`` above, imported after the
-# defs because the engine's ``resolve()`` body-imports ``load`` (the sanctioned
-# lazy seam) — a top placement would still work, but this keeps the seam's two
-# ends visually paired. The old blanket compat re-export block that rode here
-# was pruned 2026-08-08: zero users remained workspace-wide (tests were
-# retargeted to the real homes).
-from confluid.engine import materialize  # noqa: E402
+# The engine's two entries are REAL dependencies of ``load()`` above (passes 7–9
+# and pass 7 alone). Imported after the defs to keep the loader's own parse
+# machinery readable first; the layering is one-directional (loader → engine —
+# the engine imports nothing from here since 2026-08-17, when ``resolve()``'s
+# str/Path convenience moved onto ``load(until="settled")``).
+from confluid.engine import materialize, settle  # noqa: E402

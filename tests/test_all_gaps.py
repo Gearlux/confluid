@@ -16,8 +16,6 @@ from confluid import (
     get_hierarchy,
     get_registry,
     load,
-    load_config,
-    materialize,
 )
 from confluid.configurator import configure
 from confluid.resolver import Resolver
@@ -171,7 +169,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
 
     # 89-90, 94: smart fallback
     with pytest.raises(FileNotFoundError):
-        load_config("missing_xyz.yaml")
+        load("missing_xyz.yaml", until="raw")
 
     # 110, 114-115: process imports
     _process_imports({"import": None})
@@ -186,15 +184,15 @@ def test_loader_coverage(tmp_path: Path) -> None:
     # tests/test_includes.py::test_a_non_string_include_entry_is_refused.
     main.write_text("include: [ 123 ]")
     with pytest.raises(ConfigurationError, match="include"):
-        load_config(main)
+        load(main, until="raw")
     main.write_text(f"include: [ {inc.name} ]")
-    assert load_config(main)["v"] == 1
+    assert load(main, until="raw")["v"] == 1
 
     # 168, 200: load fallbacks
     assert load(42) == 42
 
     # 224: flow_recursive ref
-    assert materialize(Reference("v"), context={"v": 10}) == 10
+    assert load(Reference("v"), context={"v": 10}) == 10
 
     # 218-219: global_settings not dict
     @configurable
@@ -202,7 +200,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
         def __init__(self, x: int = 1):
             self.x = x
 
-    assert materialize(Target("G"), context={"G": 42}).x == 1
+    assert load(Target("G"), context={"G": 42}).x == 1
 
 
 # --- 6. parser.py ---

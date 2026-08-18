@@ -19,7 +19,7 @@ import yaml
 
 # `PartialClass` is the MARKER class (what `!partial:` parses to); `confluid.Partial`
 # is the annotation alias that declares a deferred SLOT — different things, easy to mix up.
-from confluid import Fluid, PartialClass, configurable, dump, flow, load, load_config, resolve
+from confluid import Fluid, PartialClass, configurable, dump, flow, load
 from confluid.loader import ConfluidLoader
 
 BASE_YAML = """
@@ -111,13 +111,13 @@ def _walk_the_passes(path: Path) -> None:
     assert "${env:LIFECYCLE_ROOT}" in raw["run_root"]  # nothing is interpolated yet
 
     print("\n=== 2-3. IMPORT + INCLUDE — one document, includer read LAST ===")
-    merged = load_config(str(path))
+    merged = load(str(path), until="raw")
     print(f"merged key order: {list(merged)}")
     assert "Encoder" in merged  # came from base.yaml
     assert list(merged).index("dropout") < list(merged).index("width")
 
-    print("\n=== 4-6. SCOPE, INTERPOLATE, EXPAND (load(flow=False)) ===")
-    ir = cast(Dict[str, Any], load(str(path), flow=False, scopes=["mode=fast"]))
+    print("\n=== 4-6. SCOPE, INTERPOLATE, EXPAND (load(until='document')) ===")
+    ir = cast(Dict[str, Any], load(str(path), until="document", scopes=["mode=fast"]))
     print(f"scope spliced its contents:  dropout = {ir['dropout']}")
     print(f"interpolation burned in:     run_root = {ir['run_root']!r}")
     print(f"dotted key nested:           head kwargs = {ir['head'].kwargs}")
@@ -126,15 +126,15 @@ def _walk_the_passes(path: Path) -> None:
     assert ir["head"].kwargs["units"] == 128
     assert isinstance(ir["encoder"], Fluid)  # still a marker — nothing is built yet
 
-    print("\n=== 7. BROADCAST — document order, last spec wins (resolve()) ===")
-    markers = cast(Dict[str, Any], resolve(str(path), scopes=["mode=fast"]))
+    print("\n=== 7. BROADCAST — document order, last spec wins (load(until='settled')) ===")
+    markers = cast(Dict[str, Any], load(str(path), scopes=["mode=fast"], until="settled"))
     print(f"encoder marker kwargs:   {markers['encoder'].kwargs}")
     print(f"optimizer marker kwargs: {markers['optimizer'].kwargs}")
     # `width: 32` is bare and sits after the `Encoder:` block from base.yaml, so
     # it wins; `dropout: 0.0` reaches BOTH nodes, deferred slot included.
     assert markers["encoder"].kwargs["width"] == 32
     assert markers["optimizer"].kwargs["lr"] == 0.01  # the marker's own kwarg, untouched
-    assert isinstance(markers["optimizer"], PartialClass)  # resolve() builds nothing
+    assert isinstance(markers["optimizer"], PartialClass)  # load(until="settled") builds nothing
 
     print("\n=== 8-9. FLOW + SOLIDIFY — live objects, finalized post-order ===")
     built = cast(Dict[str, Any], load(str(path), scopes=["mode=fast"]))

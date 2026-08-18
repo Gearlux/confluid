@@ -9,17 +9,14 @@ start from [The Lifecycle](lifecycle.md), which shows where each of these names
 plugs into the passes, and from the eight names most configs need:
 `configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Partial`, `dump`.
 
-## Loading & materialization — [Targets & Deferred Initialization](targets.md)
+## Loading — [The Lifecycle](lifecycle.md) → "Where you can stop"
 
 | Name | One line |
 |---|---|
-| `load` | Parse + resolve + materialize YAML (text, path, or parsed data) into live objects |
-| `load_config` | Read and parse a YAML file (search-tier resolution, `include:` composition) — no materialization |
-| `load_config_with_paths` | `load_config` plus the list of every file the `include:` tree pulled in |
-| `materialize` | Resolve and instantiate already-parsed config data |
-| `resolve` | Materialization *minus* construction — returns broadcast-merged markers ([Introspection](introspection.md)) |
+| `load` | The ONE door: text, path or parsed data → `until="raw"` (1–3) / `"document"` (1–6) / `"settled"` (1–7) / `"objects"` (1–9, default); `return_paths=True` adds the list of every file read |
 | `flow` | Build one node now — with runtime args/kwargs for deferred slots |
 | `cast` | `flow` that also narrows the static type for checkers ([Introspection](introspection.md)) |
+| ~~`load_config` / `load_config_with_paths` / `materialize` / `resolve` / `load(flow=False)`~~ | **Folded into `load(until=…)` 2026-08-17.** `load_config(p)` → `load(p, until="raw")`; `load_config_with_paths(p)` → `load(p, until="raw", return_paths=True)`; `load(x, flow=False)` → `load(x, until="document")`; `resolve(x)` → `load(x, until="settled")`; `materialize(x)` → `load(x)` |
 
 ## The marker family — [Targets & Deferred Initialization](targets.md)
 
@@ -54,7 +51,7 @@ plugs into the passes, and from the eight names most configs need:
 | Name | One line |
 |---|---|
 | `ConfigurationReport` | Applied / failed / unused keys for one pass; `.explain(key)` shows why a key has its value |
-| `collect_report` | Context manager collecting a report across `load`/`materialize`/`flow` |
+| `collect_report` | Context manager collecting a report across `load`/`flow` |
 
 ## Settability & broadcasting — [Broadcasting & Ordered Matching](broadcasting.md)
 

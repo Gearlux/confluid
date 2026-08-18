@@ -97,7 +97,7 @@ def test_config_content_errors_are_configuration_errors(exc_cls: Type[Exception]
 
 def test_load_config_missing_file_raises_config_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(ConfigFileNotFoundError) as ei:
-        confluid.load_config(tmp_path / "missing.yaml")
+        confluid.load(tmp_path / "missing.yaml", until="raw")
     assert isinstance(ei.value, FileNotFoundError)
 
 
@@ -105,7 +105,7 @@ def test_circular_include_raises_circular_include_error(tmp_path: Path) -> None:
     cfg = tmp_path / "a.yaml"
     cfg.write_text("include: a.yaml\nkey: 1\n")
     with pytest.raises(CircularIncludeError) as ei:
-        confluid.load_config(cfg)
+        confluid.load(cfg, until="raw")
     assert isinstance(ei.value, ValueError)
 
 

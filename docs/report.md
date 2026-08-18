@@ -34,7 +34,7 @@ this".
 
 ## `collect_report()` — the YAML materialization path
 
-`load()` / `materialize()` / `flow()` return the constructed objects, so
+`load()` / `flow()` return the constructed objects, so
 their report is exposed by a context manager instead. It installs an ambient
 report; everything inside the block — including any nested `configure()`,
 which adopts and returns the same report — aggregates into it:

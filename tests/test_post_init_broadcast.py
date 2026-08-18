@@ -11,7 +11,7 @@ class's block.
 
 import pytest
 
-from confluid import Target, configurable, flow, load, materialize
+from confluid import Target, configurable, flow, load
 from confluid.broadcast import _get_acceptable_keys
 from confluid.introspect import body_slot_names
 
@@ -148,7 +148,7 @@ def test_post_init_broadcast_via_materialize() -> None:
         "loss_fn": "custom_loss",
         "trainer": trainer_marker,
     }
-    result = materialize(config, context=config)
+    result = load(config, context=config)
     trainer = result["trainer"]
     assert trainer.loss_fn == "custom_loss"
 

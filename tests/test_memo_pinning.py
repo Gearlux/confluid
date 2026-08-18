@@ -22,7 +22,7 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import Target, configurable, configure, flow, get_registry, load, materialize
+from confluid import Target, configurable, configure, flow, get_registry, load
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +143,7 @@ def test_a_ctor_local_flow_never_hands_an_object_anothers_dependency() -> None:
     served the PREVIOUS maker's widget (measured: maker8 got 'tag7')."""
     _register()
     for attempt in range(1, 21):
-        built = materialize({f"maker{i}": Target(Maker, tag=f"tag{i}") for i in range(100)})
+        built = load({f"maker{i}": Target(Maker, tag=f"tag{i}") for i in range(100)})
         wrong = [
             (i, built[f"maker{i}"].tag, built[f"maker{i}"].made.label)
             for i in range(100)

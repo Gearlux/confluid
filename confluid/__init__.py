@@ -21,7 +21,7 @@ from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key, 
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, output, register
 from confluid.dumper import dump
-from confluid.engine import cast, flow, get_configurable_attrs, materialize, resolve
+from confluid.engine import cast, flow, get_configurable_attrs
 from confluid.exceptions import (
     AmbiguousClassError,
     CircularIncludeError,
@@ -41,7 +41,7 @@ from confluid.fluid import Fluid
 from confluid.fluid import Partial as PartialClass
 from confluid.fluid import Reference, Target, format_yaml_loc
 from confluid.llm_schema import sanitize_schema
-from confluid.loader import get_app_name, load, load_config, load_config_with_paths, resolve_config_path, set_app_name
+from confluid.loader import get_app_name, load, resolve_config_path, set_app_name
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
@@ -92,13 +92,9 @@ __all__ = [
     "Marks",
     "marks",
     "load",
-    "load_config",
-    "load_config_with_paths",
     "resolve_config_path",
     "set_app_name",
     "get_app_name",
-    "materialize",
-    "resolve",
     "active_context",
     "deep_merge",
     "expand_dotted_keys",

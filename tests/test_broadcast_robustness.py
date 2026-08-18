@@ -11,7 +11,7 @@ setattr).
 
 from typing import Annotated, Any, Dict, List, Mapping, Optional, Sequence
 
-from confluid import Target, configurable, flow, materialize, register
+from confluid import Target, configurable, flow, load, register
 from confluid.broadcast import _get_acceptable_keys, _get_param_kinds
 from confluid.introspect import body_slot_names
 
@@ -81,7 +81,7 @@ def test_dict_value_broadcasts_when_annotated_dict() -> None:
 
     context = {"extras": {"a": 1, "b": 2}}
     data = _inst("WithDictParam")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, WithDictParam)
     assert result.extras == {"a": 1, "b": 2}
@@ -97,7 +97,7 @@ def test_list_value_broadcasts_when_annotated_sequence() -> None:
 
     context = {"callbacks": ["a", "b"]}
     data = _inst("WithListParam")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, WithListParam)
     assert result.callbacks == ["a", "b"]
@@ -121,7 +121,7 @@ def test_dict_value_does_NOT_broadcast_when_param_is_scalar() -> None:
     # (which has no class marker → effectively ignored).
     context = {"name": {"oops": "this is a dict"}}
     data = _inst("WithScalarParam")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, WithScalarParam)
     assert result.name == "default"  # default preserved
@@ -143,7 +143,7 @@ def test_optional_dict_annotation_still_classifies_as_dict() -> None:
 
     context = {"extras": {"k": 9}}
     data = _inst("WithOptionalDict")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
     assert isinstance(result, WithOptionalDict)
     assert result.extras == {"k": 9}
 
@@ -227,7 +227,7 @@ def test_post_init_ast_scan_detects_literal_setattr() -> None:
     # And it actually broadcasts:
     context = {"extra_attr": 99}
     data = _inst("WithLiteralSetattr")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
     assert isinstance(result, WithLiteralSetattr)
     assert getattr(result, "extra_attr") == 99
 
@@ -283,7 +283,7 @@ def test_lazy_stays_deferred_through_materialize() -> None:
     register(_Adam)
 
     lazy = PartialClass(_Adam, lr=0.005)
-    result = materialize(lazy)
+    result = load(lazy)
     # ``materialize`` may copy the Fluid while running the broadcast pass;
     # the contract is "still deferred", not Python identity. The result
     # must remain a PartialClass with the original kwargs intact.
@@ -314,7 +314,7 @@ def test_lazy_inside_a_class_attribute_is_left_deferred() -> None:
     register(TrainerLike)
 
     data = _inst("TrainerLike", optimizer=PartialClass(_Optim, lr=0.001))
-    result = materialize(data)
+    result = load(data)
     assert isinstance(result, TrainerLike)
     assert isinstance(result.optimizer, PartialClass)
 
@@ -333,7 +333,7 @@ def test_lazy_receives_broadcast_kwargs_like_class() -> None:
     register(_Adam)
 
     context = {"lr": 0.5, "optimizer": PartialClass(_Adam)}
-    result = materialize(context, context=context)
+    result = load(context, context=context)
     assert isinstance(result["optimizer"], PartialClass)
     # Broadcast pulled `lr` into the Partial's kwargs.
     assert result["optimizer"].kwargs.get("lr") == 0.5
@@ -352,7 +352,7 @@ def test_lazy_yaml_tag_round_trip() -> None:
     register(_Adam)
 
     yaml_text = "optimizer: !lazy:tests.test_broadcast_robustness._Adam\n  lr: 0.001\n"
-    loaded = load(yaml_text, flow=False)
+    loaded = load(yaml_text, until="document")
     assert isinstance(loaded["optimizer"], PartialClass)
     assert loaded["optimizer"].kwargs == {"lr": 0.001}
 
@@ -361,7 +361,7 @@ def test_lazy_yaml_tag_round_trip() -> None:
     assert "_partial_: true" in rendered
     assert "!class:" not in rendered
 
-    reloaded = load(rendered, flow=False)
+    reloaded = load(rendered, until="document")
     assert isinstance(reloaded["optimizer"], PartialClass)
 
 
@@ -375,7 +375,7 @@ def test_lazy_inline_kwargs_form() -> None:
 
     register(_Adam)
     yaml_text = "opt: !lazy:tests.test_broadcast_robustness._Adam(lr=0.001)\n"
-    loaded = load(yaml_text, flow=False)
+    loaded = load(yaml_text, until="document")
     assert isinstance(loaded["opt"], PartialClass)
     assert loaded["opt"].kwargs == {"lr": 0.001}  # inline scalars are coerced (parse_value)
 

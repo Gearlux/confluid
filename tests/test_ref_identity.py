@@ -186,7 +186,7 @@ def test_ref_inside_list_shares_instance() -> None:
     Note: _deep_flow only materializes Target markers at the top dict level;
     markers buried inside plain lists remain as Target markers. The identity
     invariant we care about (``!ref: == same object``) is tested on the raw
-    markers via ``flow=False``.
+    markers via ``until="document"``.
     """
 
     @configurable
@@ -201,7 +201,7 @@ roster:
   - !ref:node
   - !ref:node
 """
-    result: Any = load(yaml_str, flow=False)
+    result: Any = load(yaml_str, until="document")
 
     assert result["roster"][0] is result["node"]
     assert result["roster"][1] is result["node"]
@@ -219,7 +219,7 @@ aliased: !ref:numbers
 
 
 def test_ref_preserves_identity_without_flow() -> None:
-    """load(..., flow=False) must also preserve Fluid identity for !ref:."""
+    """load(..., until="document") must also preserve Fluid identity for !ref:."""
 
     @configurable
     class Thing:
@@ -232,7 +232,7 @@ def test_ref_preserves_identity_without_flow() -> None:
 thing: !class:Thing()
 alias: !ref:thing
 """
-    result: Any = load(yaml_str, flow=False)
+    result: Any = load(yaml_str, until="document")
     # Post-resolver, both should point at the SAME Target marker
     assert isinstance(result["thing"], Target)
     assert result["alias"] is result["thing"]

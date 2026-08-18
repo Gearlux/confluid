@@ -5,24 +5,29 @@ run in, what each one consumes, and what it decides **permanently**. Most
 "why did my value do that?" questions are answered by the order alone.
 
 ```
-   ┌─ load(path | text, scopes=[...]) ────────────────────────────────────────┐
+   ┌─ load(path | text | data, until=..., scopes=[...]) ─────────────────────┐
    │                                                                          │
    │  1  PARSE        yaml.load(ConfluidLoader)   tags -> Fluid markers       │
    │  2  IMPORT       import:                     modules imported            │
    │  3  INCLUDE      include:                    files merged (deep_merge)   │
+   │                                                                          │
+   │     ── until="raw" stops here: the raw document, scope blocks intact ──  │
+   │                                                                          │
    │  4  SCOPE        _scope_ / _notscope_        blocks spliced or dropped   │
    │  5  INTERPOLATE  ${...} and $VAR             substituted — BURNS IN      │
    │  6  EXPAND       a.b.c: v                    nested at the written slot  │
    │                                                                          │
-   │     ── flow=False stops here: the Fluid IR ──                            │
+   │     ── until="document" stops here: the Fluid IR ──                      │
    │                                                                          │
    │  7  BROADCAST    document order, last wins   keys merged into kwargs     │
    │                  ${ref:} resolution          shared by identity          │
    │                                                                          │
-   │     ── resolve() stops here: markers, no objects ──                      │
+   │     ── until="settled" stops here: markers, no objects ──                │
    │                                                                          │
    │  8  FLOW         target(**kwargs)            live objects; validation    │
    │  9  SOLIDIFY     obj.solidify()              post-order finalize         │
+   │                                                                          │
+   │     ── until="objects" (the default): live objects ──                    │
    └──────────────────────────────────────────────────────────────────────────┘
 
    configure(obj, config=...) re-enters at 5 → 6 → 7 → 9 over LIVE objects.
@@ -44,14 +49,20 @@ run in, what each one consumes, and what it decides **permanently**. Most
 
 ## Where you can stop
 
+`load` is the ONE door. It takes a path, YAML text or already-parsed data, runs
+the passes the input still needs, and stops where `until=` says (a closed
+Literal — a typo raises rather than defaulting). Passes already applied to the
+data are idempotent, so `load(load(x, until="document"))` is `load(x)`.
+
 | Call | Runs | Gives you | Use when |
 |---|---|---|---|
-| `load_config(path)` | 1–3 | the raw merged document, markers unresolved | you want the document, not the objects |
-| `load(x, flow=False)` | 1–6 | the Fluid IR, scopes applied | you want to inspect or re-merge before anything is built |
-| `resolve(x)` | 1–7 | markers with their final kwargs, no objects | structural introspection (a YAML→graph import) |
+| `load(x, until="raw")` | 1–3 | the raw merged document, scope blocks intact, markers unresolved | scope discovery (`discover_dimensions` needs the blocks), or "the document, not the objects" |
+| `load(x, until="document")` | 1–6 | the Fluid IR, scopes applied | you want to inspect or re-merge before anything is built (a CLI merges its overrides here) |
+| `load(x, until="settled")` | 1–7 | markers with their final kwargs, no objects | structural introspection (a YAML→graph import) |
 | `hydraide.emit(x)` | 1–7 | the same, written as ONE plain-YAML file | "what did my config resolve to?" — see [hydraide](hydraide.md) |
-| `load(x)` / `materialize(x)` | 1–9 | live objects | the normal path |
+| `load(x)` (`until="objects"`) | 1–9 | live objects | the normal path |
 | `load(x, solidify=False)` | 1–8 | live but unfinalized objects | you want objects without paying for the expensive finalize |
+| `load(x, …, return_paths=True)` | as above | `(result, [every file read])` | logging the include tree as a run artifact |
 | `configure(obj, config=…)` | 5–7, 9 | the same document applied to objects that already exist | post-construction configuration |
 
 ## What the order answers
@@ -61,7 +72,7 @@ built (8), and it is a single pass. The value it produced is what the marker
 carries from then on; `dump()` emits it and a deferred slot flowed an hour later
 still sees it. For a value that must follow a LATER override, use `${ref:}` — it is
 settled in pass 7, so an override merged into the document before pass 7 (what a
-CLI does between `load(flow=False)` and `materialize`) is the value it takes. After
+CLI does between `load(until="document")` and `load(document)`) is the value it takes. After
 pass 7 nothing is late-bound: a reference to a plain value is the value, a
 reference to a marker is that marker, and one that resolves to nothing is an error
 naming its line.
@@ -95,8 +106,8 @@ every key that matched nothing; see [Configuration reports](report.md).
 - The **scope activation map** is a local of `load()`. Nothing after pass 4 can
   ask which scopes were active — a scope block that declares its own dimension as
   a plain key (`framework: keras`) is how a later pass sees the choice.
-- The **include tree** is flattened by pass 3. Use `load_config_with_paths` if you
-  need the list of files that contributed.
+- The **include tree** is flattened by pass 3. Use `load(x, return_paths=True)` if
+  you need the list of files that contributed.
 - **`_yaml_loc`** (the source location stamped in pass 1) is carried on markers for
   error messages only. It is never a precedence input.
 

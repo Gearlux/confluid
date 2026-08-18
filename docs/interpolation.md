@@ -22,9 +22,9 @@ A whole-string match (`"${train.epochs}"`) returns the value with its real type;
 
 Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps meaning an environment variable — only names containing a `.` or `[` hit the config tree.
 
-> **When it runs:** interpolation is applied at **materialization** — `load()`,
-> `materialize()`, or `resolve()`. The raw parse returned by `load_config` /
-> `load_config_with_paths` still carries the literal `${...}` placeholders.
+> **When it runs:** interpolation is pass 5 — applied by `load()` at every stage
+> from `until="document"` on. The raw parse (`load(x, until="raw")`) still carries
+> the literal `${...}` placeholders.
 
 ## Bare `$VAR` — environment variables only
 
@@ -184,27 +184,28 @@ rather than hung on.
 
 ## Capturing the YAML include tree
 
-`load_config_with_paths(path)` returns both the loaded dict AND the ordered
+`load(path, until="raw", return_paths=True)` returns both the loaded dict AND the ordered
 list of every YAML file that contributed to it — entrypoint first, then
 each transitively `include:`-d file in load order, deduplicated. Useful for
 CLI bootstraps and experiment trackers that log every config file as a
 reproducible run artifact.
 
 ```python
-from confluid import load_config_with_paths
+from confluid import load
 
-data, paths = load_config_with_paths("experiment.yaml")
-# data:  the same dict load_config would return
+data, paths = load("experiment.yaml", until="raw", return_paths=True)
+# data:  the raw document (passes 1–3)
 # paths: [PosixPath('.../experiment.yaml'), PosixPath('.../common.yaml'), ...]
 ```
 
-Plain `load_config(path)` keeps its single-Dict return, so callers that
-don't care about the tree are unaffected.
+`return_paths=True` works at every stage — `load("experiment.yaml", return_paths=True)`
+returns `(objects, paths)` — and lists a file an activated scope block spliced in
+as well. Without it `load` returns the result alone.
 
 ## Runnable example
 
 [`examples/interpolation_includes.py`](../examples/interpolation_includes.py)
 writes a small include tree to a temp directory, then demonstrates env-var and
-config-key interpolation plus `load_config_with_paths`. The
+config-key interpolation plus `return_paths=True`. The
 [`examples/modular_includes/`](../examples/modular_includes/) directory holds a
 standalone include-tree demo as well.

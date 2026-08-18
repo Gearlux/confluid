@@ -1,7 +1,7 @@
 # Config-File Search Paths (XDG)
 
 Confluid resolves every relative config-file path — the path handed to
-`load()` / `load_config()` AND each `include:` entry — through an ordered
+`load()` at any stage — AND each `include:` entry — through an ordered
 list of locations. Local files always win; the XDG base directories are the
 last resort. An **absolute path bypasses the search entirely** and is used
 verbatim.
@@ -21,8 +21,10 @@ For a relative path `name.yaml`, the first existing candidate wins:
    is treated as unset, per the
    [XDG Base Directory spec](https://specifications.freedesktop.org/basedir-spec/latest/).
 
-On a total miss, `load_config` raises `ConfigFileNotFoundError` listing every
-location that was searched.
+On a total miss, `load(path)` raises `ConfigFileNotFoundError` listing every
+location that was searched. (A `Path`, or a one-line string ending in `.yaml` /
+`.yml`, always names a FILE — a missing one raises rather than parsing as YAML
+text.)
 
 ## Namespacing with an app name
 
@@ -69,7 +71,7 @@ include: common.yaml    # not found locally -> resolves to ~/.config/my-app/comm
 lr: 0.001
 ```
 
-`load_config_with_paths` records the **resolved** locations, so run-artifact
+`load(path, return_paths=True)` records the **resolved** locations, so run-artifact
 logging always names the actual files that contributed.
 
 ## Runnable example

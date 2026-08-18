@@ -17,7 +17,7 @@ from typing import Any, Dict, cast
 import pytest
 
 import confluid
-from confluid import configurable, discover_dimension_values, discover_dimensions, get_registry, load, load_config
+from confluid import configurable, discover_dimension_values, discover_dimensions, get_registry, load
 from confluid.exceptions import ScopeError
 from confluid.fluid import ScopeBlock
 from confluid.scopes import normalize_active, parse_scope_arg, resolve_scopes
@@ -53,8 +53,8 @@ if_task: !scope:task(classification)
 """
     )
 
-    raw_assign = load_config(assign_path)
-    raw_paren = load_config(paren_path)
+    raw_assign = load(assign_path, until="raw")
+    raw_paren = load(paren_path, until="raw")
 
     sb_a = raw_assign["if_task"]
     sb_p = raw_paren["if_task"]
@@ -62,8 +62,8 @@ if_task: !scope:task(classification)
     assert (sb_a.dims, sb_a.negate) == ({"task": "classification"}, False)
     assert (sb_p.dims, sb_p.negate) == ({"task": "classification"}, False)
 
-    out_a = load(raw_assign, flow=False, scopes=["task=classification"])
-    out_p = load(raw_paren, flow=False, scopes=["task=classification"])
+    out_a = load(raw_assign, until="document", scopes=["task=classification"])
+    out_p = load(raw_paren, until="document", scopes=["task=classification"])
     assert out_a == out_p == {"val": 1, "model": "ClassifierModel"}
 
 
@@ -73,7 +73,7 @@ base: 1
 if_debug: !scope:debug
   v: 2
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     assert out == {"base": 1, "v": 2}
 
 
@@ -95,7 +95,7 @@ val: 1
 if_debug: !scope:debug
   val: 2
 """
-    out = load(yaml_text, flow=False)
+    out = load(yaml_text, until="document")
     assert out == {"val": 1}
 
 
@@ -108,7 +108,7 @@ if_seg: !scope:task=segmentation
   model: segmentation
 """
     # No --task passed → both keyed blocks drop, base value survives.
-    assert load(yaml_text, flow=False) == {"model": "base"}
+    assert load(yaml_text, until="document") == {"model": "base"}
 
 
 def test_keyed_scope_selects_correct_block() -> None:
@@ -119,8 +119,8 @@ if_cls: !scope:task=classification
 if_seg: !scope:task=segmentation
   model: segmenter
 """
-    assert load(yaml_text, flow=False, scopes=["task=classification"])["model"] == "classifier"
-    assert load(yaml_text, flow=False, scopes=["task=segmentation"])["model"] == "segmenter"
+    assert load(yaml_text, until="document", scopes=["task=classification"])["model"] == "classifier"
+    assert load(yaml_text, until="document", scopes=["task=segmentation"])["model"] == "segmenter"
 
 
 def test_splice_preserves_position() -> None:
@@ -131,7 +131,7 @@ if_debug: !scope:debug
   b: 2
 c: 3
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     assert list(out.items()) == [("a", 1), ("b", 2), ("c", 3)]
 
 
@@ -142,7 +142,7 @@ val: 1
 if_debug: !scope:debug
   val: 10
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     assert out == {"val": 10}
     assert list(out.keys()) == ["val"]
 
@@ -158,7 +158,7 @@ lr: 0.001
 unless_debug: !notscope:debug
   lr: 0.0001
 """
-    out = load(yaml_text, flow=False)
+    out = load(yaml_text, until="document")
     assert out == {"lr": 0.0001}
 
 
@@ -170,7 +170,7 @@ unless_debug: !notscope:debug
 if_debug: !scope:debug
   lr: 0.1
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     assert out == {"lr": 0.1}
 
 
@@ -181,7 +181,7 @@ postproc: base
 unless_seg: !notscope:task=segmentation
   postproc: default
 """
-    assert load(yaml_text, flow=False)["postproc"] == "default"
+    assert load(yaml_text, until="document")["postproc"] == "default"
 
 
 def test_notscope_keyed_active_when_value_differs() -> None:
@@ -191,7 +191,7 @@ unless_seg: !notscope:task=segmentation
   postproc: default
 """
     # Different value → notscope fires.
-    assert load(yaml_text, flow=False, scopes=["task=classification"])["postproc"] == "default"
+    assert load(yaml_text, until="document", scopes=["task=classification"])["postproc"] == "default"
 
 
 def test_notscope_keyed_dropped_when_value_matches() -> None:
@@ -200,7 +200,7 @@ postproc: base
 unless_seg: !notscope:task=segmentation
   postproc: default
 """
-    assert load(yaml_text, flow=False, scopes=["task=segmentation"])["postproc"] == "base"
+    assert load(yaml_text, until="document", scopes=["task=segmentation"])["postproc"] == "base"
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ if_debug: !scope:debug
 if_local: !scope:local
   db: sqlite
 """
-    out = load(yaml_text, flow=False, scopes=["dev"])
+    out = load(yaml_text, until="document", scopes=["dev"])
     assert out == {"lr": 0.1, "db": "sqlite"}
 
 
@@ -230,7 +230,7 @@ if_a: !scope:a
   v: 1
 """
     with pytest.raises(ValueError, match="Circular scope alias"):
-        load(yaml_text, flow=False, scopes=["a"])
+        load(yaml_text, until="document", scopes=["a"])
 
 
 def test_hierarchical_boolean_scopes() -> None:
@@ -242,7 +242,7 @@ if_prod: !scope:prod
 if_prod_gpu: !scope:prod.gpu
   gpu: true
 """
-    out = load(yaml_text, flow=False, scopes=["prod.gpu"])
+    out = load(yaml_text, until="document", scopes=["prod.gpu"])
     assert out == {"val": 100, "gpu": True}
 
 
@@ -255,7 +255,7 @@ scopes: [debug]
 if_debug: !scope:debug
   val: 2
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     assert out == {"val": 2}
     assert "scope_aliases" not in out
     assert "scopes" not in out
@@ -278,7 +278,7 @@ if_env: !scope:env(prod)
   e: 1
 """
     )
-    raw = load_config(yaml_path)
+    raw = load(yaml_path, until="raw")
     assert discover_dimensions(raw) == {"task", "env"}
 
 
@@ -295,7 +295,7 @@ list_section:
       y: 2
 """
     )
-    raw = load_config(yaml_path)
+    raw = load(yaml_path, until="raw")
     assert discover_dimensions(raw) == {"size", "flavor"}
 
 
@@ -311,10 +311,10 @@ outer:
   if_debug: !scope:debug
     extra: 2
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     assert out == {"outer": {"base": 1, "extra": 2}}
 
-    out_off = load(yaml_text, flow=False)
+    out_off = load(yaml_text, until="document")
     assert out_off == {"outer": {"base": 1}}
 
 
@@ -326,12 +326,12 @@ items:
       keep: true
   - b
 """
-    out = load(yaml_text, flow=False, scopes=["debug"])
+    out = load(yaml_text, until="document", scopes=["debug"])
     # Active scope → the wrapper key `if_debug` is replaced by its contents
     # at that slot inside the list-item dict.
     assert out == {"items": ["a", {"keep": True}, "b"]}
 
-    out_off = load(yaml_text, flow=False)
+    out_off = load(yaml_text, until="document")
     # Inactive scope under a list-item dict → the wrapper key is dropped,
     # leaving an empty dict.
     assert out_off == {"items": ["a", {}, "b"]}
@@ -357,8 +357,8 @@ unless_debug: !notscope:debug
     )
     base.write_text("include: ext.yaml\nhost: localhost\n")
 
-    assert cast(Dict[str, Any], load(base, flow=False, scopes=["debug"]))["port"] == 2000
-    assert cast(Dict[str, Any], load(base, flow=False))["port"] == 3000
+    assert cast(Dict[str, Any], load(base, until="document", scopes=["debug"]))["port"] == 2000
+    assert cast(Dict[str, Any], load(base, until="document"))["port"] == 3000
 
 
 def test_the_includer_overrides_an_included_scope_block(tmp_path: Path) -> None:
@@ -389,8 +389,8 @@ unless_debug: !notscope:debug
     )
     base.write_text("include: ext.yaml\nport: 80\n")
 
-    assert cast(Dict[str, Any], load(base, flow=False, scopes=["debug"]))["port"] == 80
-    assert cast(Dict[str, Any], load(base, flow=False))["port"] == 80
+    assert cast(Dict[str, Any], load(base, until="document", scopes=["debug"]))["port"] == 80
+    assert cast(Dict[str, Any], load(base, until="document"))["port"] == 80
 
 
 # ---------------------------------------------------------------------------
@@ -416,11 +416,11 @@ if_heavy: !scope:variant=heavy
   Trainer.model: !class:ComplexModel
 """
     # Default (no scope active) keeps SimpleModel.
-    base = cast(Dict[str, Any], load(yaml_text, flow=False))
+    base = cast(Dict[str, Any], load(yaml_text, until="document"))
     assert getattr(base["Trainer"]["model"], "target", None) == "SimpleModel"
 
     # `variant=heavy` swaps in ComplexModel via the dotted-key override.
-    heavy = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["variant=heavy"]))
+    heavy = cast(Dict[str, Any], load(yaml_text, until="document", scopes=["variant=heavy"]))
     assert getattr(heavy["Trainer"]["model"], "target", None) == "ComplexModel"
 
 
@@ -465,12 +465,12 @@ runnable: !class:Trainer
   alt: !scope:model=complex
     model: !class:ComplexModel()
 """
-    base = cast(Dict[str, Any], load(yaml_text, flow=False))
+    base = cast(Dict[str, Any], load(yaml_text, until="document"))
     assert getattr(base["runnable"].kwargs["model"], "target", None) == "SimpleModel"
     # The inactive wrapper is dropped outright — it never reaches the constructor.
     assert "alt" not in base["runnable"].kwargs
 
-    active = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["model=complex"]))
+    active = cast(Dict[str, Any], load(yaml_text, until="document", scopes=["model=complex"]))
     assert getattr(active["runnable"].kwargs["model"], "target", None) == "ComplexModel"
     assert "alt" not in active["runnable"].kwargs
 
@@ -496,10 +496,10 @@ root: !class:Knob
     if_large: !scope:size=large
       base: 99
 """
-    small = cast(Dict[str, Any], load(yaml_text, flow=False))
+    small = cast(Dict[str, Any], load(yaml_text, until="document"))
     assert small["root"].kwargs["inner"] == {"base": 1}
 
-    large = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["size=large"]))
+    large = cast(Dict[str, Any], load(yaml_text, until="document", scopes=["size=large"]))
     assert large["root"].kwargs["inner"] == {"base": 99}
 
 
@@ -517,7 +517,7 @@ slot: !lazy:Knob
   if_big: !scope:size=big
     n: 42
 """
-    resolved = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["size=big"]))
+    resolved = cast(Dict[str, Any], load(yaml_text, until="document", scopes=["size=big"]))
     assert resolved["slot"].kwargs["n"] == 42
     assert "if_big" not in resolved["slot"].kwargs
 
@@ -545,10 +545,10 @@ chain: !class:Chain
       - {op: b3}
     - {op: c}
 """
-    plain = cast(Dict[str, Any], load(yaml_text, flow=False))
+    plain = cast(Dict[str, Any], load(yaml_text, until="document"))
     assert plain["chain"].kwargs["steps"] == [{"op": "a"}, {"op": "c"}]
 
-    extra = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["extra=yes"]))
+    extra = cast(Dict[str, Any], load(yaml_text, until="document", scopes=["extra=yes"]))
     assert extra["chain"].kwargs["steps"] == [
         {"op": "a"},
         {"op": "b"},
@@ -571,10 +571,10 @@ slot: !class:Knob
   unless_big: !notscope:size=big
     n: 7
 """
-    unset = cast(Dict[str, Any], load(yaml_text, flow=False))
+    unset = cast(Dict[str, Any], load(yaml_text, until="document"))
     assert unset["slot"].kwargs["n"] == 7
 
-    matched = cast(Dict[str, Any], load(yaml_text, flow=False, scopes=["size=big"]))
+    matched = cast(Dict[str, Any], load(yaml_text, until="document", scopes=["size=big"]))
     assert "n" not in matched["slot"].kwargs
     assert "unless_big" not in matched["slot"].kwargs
 
@@ -823,7 +823,7 @@ root: !class:Knob
       x: 1
 """
     )
-    raw = load_config(yaml_path)
+    raw = load(yaml_path, until="raw")
     assert "size" in discover_dimensions(raw)
 
 
@@ -885,13 +885,13 @@ def test_a_negated_block_declares_the_dimension_but_no_selectable_value() -> Non
 def test_a_negation_makes_every_value_meaningful_so_nothing_is_rejected() -> None:
     """The check must not fire where a negation is what the value is read against."""
     text = "postproc: base\nunless_seg: !notscope:task=segmentation\n  postproc: default\n"
-    assert cast(Dict[str, Any], load(text, flow=False, scopes=["task=classification"]))["postproc"] == "default"
-    assert cast(Dict[str, Any], load(text, flow=False, scopes=["task=segmentation"]))["postproc"] == "base"
+    assert cast(Dict[str, Any], load(text, until="document", scopes=["task=classification"]))["postproc"] == "default"
+    assert cast(Dict[str, Any], load(text, until="document", scopes=["task=segmentation"]))["postproc"] == "base"
 
 
 def test_an_undeclared_value_on_a_declared_dimension_raises() -> None:
     with pytest.raises(ScopeError) as ei:
-        load(_TWO_VARIANTS, flow=False, scopes=["framework=kears"])
+        load(_TWO_VARIANTS, until="document", scopes=["framework=kears"])
 
     message = str(ei.value)
     assert "framework='kears'" in message
@@ -900,17 +900,17 @@ def test_an_undeclared_value_on_a_declared_dimension_raises() -> None:
 
 def test_an_undeclared_DIMENSION_stays_an_inert_no_op() -> None:
     """The narrow rule: a CLI may pass a dimension a config has not grown into yet."""
-    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS, flow=False, scopes=["hardware=gpu"]))
+    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS, until="document", scopes=["hardware=gpu"]))
     assert loaded["runnable"] == "default"
 
 
 def test_a_declared_value_resolves_as_before() -> None:
-    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS, flow=False, scopes=["framework=keras"]))
+    loaded = cast(Dict[str, Any], load(_TWO_VARIANTS, until="document", scopes=["framework=keras"]))
     assert loaded["runnable"] == "keras"
 
 
 def test_no_scopes_at_all_resolves_to_the_documents_own_keys() -> None:
-    assert cast(Dict[str, Any], load(_TWO_VARIANTS, flow=False))["runnable"] == "default"
+    assert cast(Dict[str, Any], load(_TWO_VARIANTS, until="document"))["runnable"] == "default"
 
 
 def test_a_boolean_activation_is_never_value_checked() -> None:
@@ -923,7 +923,7 @@ def test_the_check_reaches_a_dimension_declared_inside_a_markers_kwargs() -> Non
     """The value walker and the resolver agree on node kinds — including Fluid kwargs."""
     text = "root: !class:Knob\n  model: a\n  alt: !scope:model=convnet\n    model: b\n"
     with pytest.raises(ScopeError, match="convnet"):
-        load(text, flow=False, scopes=["model=resnet"])
+        load(text, until="document", scopes=["model=resnet"])
 
 
 def test_repr_format() -> None:
