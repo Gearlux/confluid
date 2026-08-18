@@ -17,7 +17,7 @@ import yaml
 
 from confluid import configurable, dump, flow, load
 from confluid.exceptions import ConfigurationError, ScopeError
-from confluid.fluid import Partial, Target
+from confluid.fluid import PartialClass, Target
 from confluid.loader import ConfluidLoader
 
 
@@ -84,7 +84,7 @@ def test_target_builds_eagerly() -> None:
 
 def test_partial_true_stays_deferred_and_flows_with_runtime_args() -> None:
     graph = load("opt: {_target_: Opt, _partial_: true, lr: 0.5}")
-    assert isinstance(graph["opt"], Partial)
+    assert isinstance(graph["opt"], PartialClass)
     built = flow(graph["opt"], params="MODEL_PARAMS")
     assert (built.params, built.lr) == ("MODEL_PARAMS", 0.5)
 
@@ -359,7 +359,7 @@ def test_a_block_that_never_activates_still_raises() -> None:
 def test_partial_beside_target_is_untouched() -> None:
     """The control: the one pairing that always worked, and must keep working."""
     marker = load("opt: {_target_: Opt, _partial_: true, lr: 0.5}", until="document")["opt"]
-    assert isinstance(marker, Partial)
+    assert isinstance(marker, PartialClass)
     assert marker.kwargs["lr"] == 0.5
 
 
@@ -369,7 +369,7 @@ def test_the_working_spelling_for_a_deferred_referent() -> None:
     Nothing is unexpressible — this is the spelling the error message names.
     """
     graph = load("proto: {_target_: Opt, _partial_: true, lr: 0.5}\nopt: {_ref_: proto}", until="document")
-    assert isinstance(graph["opt"], Partial)
+    assert isinstance(graph["opt"], PartialClass)
     assert graph["opt"].kwargs["lr"] == 0.5
 
 
@@ -483,7 +483,7 @@ def test_a_merge_key_plus_a_literal_reserved_key_still_converts() -> None:
     that proved the conversion machinery itself was never the problem.
     """
     graph = load("base: &b\n  _target_: collections.Counter\nderived:\n  <<: *b\n  _partial_: true\n", until="document")
-    assert isinstance(graph["derived"], Partial)
+    assert isinstance(graph["derived"], PartialClass)
     assert graph["derived"].target == "collections.Counter"
 
 
@@ -526,7 +526,7 @@ def _shape(value: Any) -> Any:
     Two separate ``load()`` calls necessarily produce distinct objects, so the
     graphs are compared by TYPE and attribute shape rather than by identity.
     """
-    if isinstance(value, (Target, Partial)):
+    if isinstance(value, (Target, PartialClass)):
         return (type(value).__name__, value.target, {k: _shape(v) for k, v in value.kwargs.items()})
     if isinstance(value, dict):
         return {k: _shape(v) for k, v in value.items()}

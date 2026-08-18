@@ -8,6 +8,15 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **The `hydraide` command line** (`confluid/cli.py`, Click, the optional `confluid[cli]` extra,
+  console script `hydraide`). `hydraide emit CONFIG [--scope DIM=VALUE]… [-o FILE]` prints or
+  writes the resolved plain-YAML document; `hydraide check CONFIG` exits 1 with a unified diff
+  unless the file is its own resolution; `hydraide completion bash|zsh|fish` prints the shell
+  activation script (`eval "$(hydraide completion zsh)"`). Verbs and options complete, CONFIG
+  completes file names, and `--scope` completes `dimension=value` from what the named document
+  declares. A relative CONFIG resolves through the loader's search tiers; a located
+  `ConfluidError` is one line on stderr, exit 1; a usage error exits 2. `tests/test_cli.py`.
+
 - **`confluid.spelling.to_tags` / `convert_file` — the reserved-key spelling → the tag spelling**
   (record 19, phase 1b). The inverse of the 2026-08-11 codemod, and line-based for the same
   reason: it puts the tag on the KEY line, deletes the `_target_:` / `_partial_:` / `_scope_:`
@@ -54,6 +63,12 @@ All notable changes to confluid are documented here. The format follows
   dotted-key expansion) run once, in `load`, for the data and for an explicit `context` — so
   runtime kwargs handed to `flow()` from code keep their text, for a bare type exactly as for a
   code-built marker. The engine imports nothing from the loader. `tests/test_load_stages.py`.
+
+- **`PartialClass` is the marker class's name in source too** (`confluid.fluid.PartialClass`,
+  2026-08-17) — the class (defers a VALUE) and the `Partial[T]` annotation (defers a SLOT) no
+  longer share a name across modules; `docs/targets.md` → "Deferred initialization" states the
+  three-way split with `partial_param_names` (the reader a live-object walker asks). The
+  `confluid.fluid` module-level `__getattr__` is gone; `flow` is imported from `confluid`.
 
 - **Tags are the preferred AUTHORING form; the reserved keys are the MACHINE form; neither
   warns** (user ruling 2026-08-15, record 19). This REVERSES the tag deprecation announced in

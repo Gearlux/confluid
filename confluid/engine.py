@@ -81,7 +81,7 @@ from confluid.exceptions import (
 )
 from confluid.fluid import (
     Fluid,
-    Partial,
+    PartialClass,
     Reference,
     T,
     Target,
@@ -199,7 +199,7 @@ def settle(data: Any, *, context: Optional[Dict[str, Any]] = None) -> Any:
     Like :func:`materialize`, but stops before ``instantiate``: it applies
     broadcasting and reference resolution (sharing referenced markers by
     identity via ``flow_memo`` — so a fan-out ``${ref:...}`` is one object
-    reached twice), and returns the resulting ``Target`` / ``Partial`` markers
+    reached twice), and returns the resulting ``Target`` / ``PartialClass`` markers
     with their broadcast siblings merged into ``.kwargs`` — WITHOUT constructing
     any live object. ``data`` is the pass-6 document (``load(x,
     until="document")`` — interpolated and dotted-expanded, as is an explicit
@@ -240,7 +240,7 @@ def instantiate(data: Any) -> Any:
     every marker carries its final kwargs, every reference is resolved. So this walk is
     plain: a ``Target`` is built (its nested markers are built by ``flow`` from their own
     settled kwargs, a marker reached twice — a YAML alias, a shared reference — builds once
-    through the instance memo); a ``Partial`` stays deferred (a runtime-injection point,
+    through the instance memo); a ``PartialClass`` stays deferred (a runtime-injection point,
     built later by ``flow(partial, **runtime)`` with its nested markers); dicts and lists
     are walked recursively, so a marker inside a plain mapping or list is built too — it
     used to descend ONE level and hand back an unbuilt marker (F4).
@@ -588,15 +588,15 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
         _maybe_solidify(obj)
         return obj
 
-    # An EXPLICIT ``flow(lazy)`` call builds the Partial — even with no runtime
-    # kwargs. A ``Partial`` defers construction past the AUTO-flow walkers
+    # An EXPLICIT ``flow(lazy)`` call builds the PartialClass — even with no runtime
+    # kwargs. A ``PartialClass`` defers construction past the AUTO-flow walkers
     # (``instantiate`` and ``materialize``'s recursive descent, which both skip it
     # without calling ``flow()``); a deliberate ``flow()`` by domain code is a
     # "build this now" request. The runtime-injection case still works because
     # the missing args are passed as ``runtime_kwargs`` (e.g.
     # ``flow(self.optimizer, params=model.parameters())``); a slot needing no
     # runtime args (e.g. a deferred ``lightning`` Trainer) is built by a bare
-    # ``flow(self.lightning)``. So there is NO Partial early-return — a ``Partial`` (a
+    # ``flow(self.lightning)``. So there is NO PartialClass early-return — a ``PartialClass`` (a
     # ``Class`` subclass) falls through to the Class instantiation path.
 
     context = get_active_context()
@@ -636,7 +636,7 @@ def _flow_target(
     runtime_args: Tuple[Any, ...],
     runtime_kwargs: Dict[str, Any],
 ) -> Any:
-    """Materialize a ``Class`` / ``Instance`` / ``Partial`` marker into a live object.
+    """Materialize a ``Class`` / ``Instance`` / ``PartialClass`` marker into a live object.
 
     The phase sequence: resolve the target callable → merge + resolve kwargs →
     split constructor kwargs from post-init attrs → construct (under the YAML
@@ -726,7 +726,7 @@ def _flow_target(
     # transformed a param instead of storing it verbatim (eager classes).
     # This overwrites any capture the @configurable validation wrap stamped
     # during __init__ — deliberately: the resolved ctor dict is the richer
-    # value (live children, Partial markers). A capture=False class
+    # value (live children, PartialClass markers). A capture=False class
     # (__confluid_no_capture__) skips BOTH attrs together — they exist only
     # for the dump round-trip, and __confluid_class__ without
     # __confluid_kwargs__ would break the dumper's non-configurable branch.
@@ -798,7 +798,7 @@ def _resolve_kwarg_value(
 ) -> Any:
     """Resolve ONE kwarg value for a target under materialization.
 
-    A ``Partial`` (a ``Class`` subclass) is a runtime-injection point: keep it
+    A ``PartialClass`` (a ``Class`` subclass) is a runtime-injection point: keep it
     deferred through materialization regardless of ``eager_classes`` — an
     explicit ``flow()`` by domain code builds it later; the auto-flow walkers
     here must never instantiate it. **It still receives broadcasting**, though,
@@ -806,7 +806,7 @@ def _resolve_kwarg_value(
     statements and only the first is what deferral means: merging broadcast
     keys into a marker's ``kwargs`` constructs nothing, which is exactly why the
     ``Class`` branch below can do it and still hand back a deferred stub. A
-    ``Partial`` therefore takes that same branch (it IS a ``Class``) and only the
+    ``PartialClass`` therefore takes that same branch (it IS a ``Class``) and only the
     terminal ``eager_classes`` flow is withheld from it.
 
     This was a real gap until 2026-08-03: an early ``return v`` here meant a
@@ -880,13 +880,13 @@ def _resolve_kwarg_value(
             keepalive.append(v_copy)
         v_copy.kwargs = broadcasted
         v_copy._yaml_loc = getattr(v, "_yaml_loc", None)
-        # `partial` is the ONLY thing that withholds construction. A Partial is
+        # `partial` is the ONLY thing that withholds construction. A PartialClass is
         # configured like any other marker but never built here — the point is
         # that domain code supplies the missing runtime argument later
         # (`flow(self.optimizer, params=...)`).
         if v_copy.partial or slot_is_partial:
             # A slot the receiver declared deferred keeps its marker unbuilt. The
-            # value is NOT rewritten to a Partial here — the ONE promotion site is
+            # value is NOT rewritten to a PartialClass here — the ONE promotion site is
             # the post-init guard in `_apply_post_init_attrs`, which also warns.
             return v_copy
         built = flow(v_copy)
@@ -1103,10 +1103,10 @@ def _apply_post_init_attrs(
     materialized now: unlike constructor args, post-init attrs have no
     runtime-kwarg injection channel, so a deferred marker would just pollute a
     slot typed as the real dependency (``nn.Module.__setattr__`` would even
-    reject it). EXCEPTION — a ``Partial`` (``!lazy:``) stays deferred: it is a
+    reject it). EXCEPTION — a ``PartialClass`` (``!lazy:``) stays deferred: it is a
     deliberate runtime-injection point the owning class flows when ready.
 
-    Misconfiguration guard: if the slot's OWN default is a ``Partial`` (a deferred
+    Misconfiguration guard: if the slot's OWN default is a ``PartialClass`` (a deferred
     runtime-injection body slot, e.g. ``self.optimizer = PartialClass(...)``), a
     supplied deferred ``Class`` (``!class:`` no-parens) would be eagerly built
     here and break the slot (an optimizer built with no ``params``). The slot's
@@ -1149,14 +1149,14 @@ def _apply_post_init_attrs(
             # wrote, which points at the engine instead of at their config.
             existing = getattr(instance, "__dict__", {}).get(k)
             if isinstance(v, Fluid) and not getattr(v, "partial", False):
-                if isinstance(v, Target) and isinstance(existing, Partial):
+                if isinstance(v, Target) and isinstance(existing, PartialClass):
                     logger.warning(
                         f"Config slot {k!r} on {getattr(target, '__name__', target)} received an "
                         "eager '_target_:' value but the slot is a deferred runtime-injection "
                         "slot; deferring it. Add '_partial_: true' to the marker to make the "
                         "intent explicit and silence this."
                     )
-                    v = Partial(v.target, **v.kwargs)
+                    v = PartialClass(v.target, **v.kwargs)
                 else:
                     v = flow(v)
             elif isinstance(v, dict) and dict_at_slot_kind(existing) == "configurable":
@@ -1236,7 +1236,7 @@ def _apply_mapping_onto_live(child: Any, mapping: Dict[str, Any], node: Any) -> 
     ONE ``dict_at_slot_kind`` classifier — a marker is tuned, a nested live
     configurable child recurses, plain data is assigned, and an opaque live object
     refuses with a located error. Values are treated as the sibling paths treat
-    them: a non-partial ``Target`` value is built, a ``Partial`` stays deferred,
+    them: a non-partial ``Target`` value is built, a ``PartialClass`` stays deferred,
     and unknown names warn (or are refused under ``strict_attrs``) exactly as the
     host's own-kwarg path warns.
 

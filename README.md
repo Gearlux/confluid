@@ -29,8 +29,8 @@ Each topic has its own guide, and every guide except the architecture notes has 
 |---|---|---|
 | [**The Lifecycle**](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md) — *start here* | How a document becomes objects: the nine passes in order (parse → import → include → scope → interpolate → expand → broadcast → flow → solidify), what each one decides permanently, and where you can stop | `lifecycle.py` |
 | [**The Plain-YAML Format**](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md) | Writing configs as ordinary YAML that `yaml.safe_load` and `yq` read: `_target_` / `_partial_` construction, `_ref_` and its `${ref:…}` shorthand, `${env:…}`, anchors and `<<:` merge keys, `_scope_` blocks | `plain_format.py` |
-| [**hydraide — the preprocessor**](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) | Resolve a config (either spelling) to ONE plain-YAML document: includes spliced, scopes applied, dotted keys expanded, broadcasting settled, shared markers anchored — `emit(cfg, scopes=[...])` / `check(path)`; the `hydraide` command line ships with the CLI framework built on confluid | `hydraide.py` |
-| [Targets & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) | The marker family and the Fluid→Solid lifecycle: `Target` vs `Partial`, `flow()` runtime injection, reference identity, and the legacy tag spelling of each | `tags_deferred.py` |
+| [**hydraide — the preprocessor**](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) | Resolve a config (either spelling) to ONE plain-YAML document: includes spliced, scopes applied, dotted keys expanded, broadcasting settled, shared markers anchored — `emit(cfg, scopes=[...])` / `check(path)`, and the `hydraide emit` / `check` command (`confluid[cli]`, shell completion incl. `--scope` values from the document) | `hydraide.py` |
+| [Targets & Deferred Initialization](https://github.com/Gearlux/confluid/blob/main/docs/targets.md) | The marker family and the Fluid→Solid lifecycle: `Target` vs `PartialClass`, `flow()` runtime injection, reference identity, and the legacy tag spelling of each | `tags_deferred.py` |
 | [Broadcasting & Ordered Matching](https://github.com/Gearlux/confluid/blob/main/docs/broadcasting.md) | Bare/addressed/glob scoping (`*` / `**`), document-order/last-write-wins matching, `NoBroadcast` / `broadcast=False` opt-outs, the frozen-deployment bake step | `broadcasting.py` |
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |
 | [Closing the Config Surface](https://github.com/Gearlux/confluid/blob/main/docs/strict-attrs.md) | `strict_attrs=True` — refuse an addressed key the class declares nowhere (the permissive default warns and applies it); what stays untouched: bare keys, `**kwargs` targets, declared slots; `register(..., strict_attrs=True)` for classes you don't own | `strict_attrs.py` |
@@ -79,7 +79,7 @@ Python, no ML dependencies — run them as-is):
 ### Configuration Engine
 - **Dotted-Key Resolution:** Allow flat overrides to target nested attributes (e.g. `model.layers: 10`).
 - **Two Spellings, One IR:** a marker is a YAML tag (`!class:` / `!partial:` / `!ref:` / `!scope:` — the authoring form) or an ordinary mapping carrying a reserved key (`_target_`, `_partial_`, `_ref_`, `_scope_` — the machine form `hydraide` emits, readable by any YAML parser). Both parse to the same markers.
-- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `Partial`, `Reference`) for internal resolution.
+- **Object-Based Internal Representation:** Use the typed Fluid marker family (`Target`, `PartialClass`, `Reference`) for internal resolution.
 
 ### Dependency Injection
 - **Automatic Hydration:** Support `@configurable` decorator for automatic class registration and instantiation.
@@ -171,6 +171,7 @@ new_trainer = load(state_yaml)
 ```bash
 pip install confluid                     # from PyPI
 pip install "confluid[pydantic]"    # + pydantic-powered schema export & validation
+pip install "confluid[cli]"         # + the `hydraide` command (Click; `eval "$(hydraide completion zsh)"`)
 ```
 
 Or straight from GitHub:

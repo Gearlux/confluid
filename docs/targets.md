@@ -20,7 +20,7 @@ first-class input, may be mixed in one file, and produce the SAME markers.
 |---|---|---|---|
 | `_ref_: path` (or `${ref:path}`) | `!ref:path` | Late-bound reference to another node (shared instance) | `Reference` |
 | `_target_: Name` | `!class:Name` / `!class:Name(...)` | The callable to build — built at load | `Target` |
-| `_target_: Name` + `_partial_: true` | `!partial:Name(...)` (`!lazy:` is an alias) | Built by nobody until an explicit `flow()` (runtime injection) | `Partial` |
+| `_target_: Name` + `_partial_: true` | `!partial:Name(...)` (`!lazy:` is an alias) | Built by nobody until an explicit `flow()` (runtime injection) | `PartialClass` |
 | `_scope_: {KEY: VAL}` / `_notscope_: …` | `!scope:KEY[=VAL]` / `!notscope:…` | Conditional overlay (see [Scopes](scopes.md)) | `ScopeBlock` |
 
 The tag column is the one you will mostly write; the reserved-key column is
@@ -30,7 +30,7 @@ what you will mostly *read* — in a `hydraide` artefact, a `dump()`, or a diff.
 
 | State | What it is | Tag types |
 |---|---|---|
-| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Target`, `Partial`, `Reference` |
+| **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Target`, `PartialClass`, `Reference` |
 | **Solid** (live) | The actual Python instance your code uses. | — |
 
 `load(text)` (≡ `load(text, until="objects")`) walks the tree and turns
@@ -50,13 +50,13 @@ changes whether a marker is built.
 |---|---|---|---|
 | `m: {_target_: Model}` | `Target` | a live `Model` | **Yes** |
 | `m: {_target_: Model, layers: 10}` | `Target` (+ kwargs) | a live `Model(layers=10)` | **Yes** |
-| `m: {_target_: Model, _partial_: true}` | `Partial` | a deferred stub | **No** |
+| `m: {_target_: Model, _partial_: true}` | `PartialClass` | a deferred stub | **No** |
 
-A `Partial` is never auto-flowed — only an explicit `flow(marker, **runtime)`
+A `PartialClass` is never auto-flowed — only an explicit `flow(marker, **runtime)`
 builds it, which is the point: the receiving code supplies an argument that does
 not exist at config time (`params=model.parameters()`).
 
-> **Deferral withholds CONSTRUCTION only.** A `Partial` is broadcast into and
+> **Deferral withholds CONSTRUCTION only.** A `PartialClass` is broadcast into and
 > configured exactly like a built target — merging keys into its kwargs
 > constructs nothing — so a bare `lr: 0.001` still tunes a deferred optimizer.
 
@@ -152,6 +152,22 @@ Four grammar notes (all pinned by the test suite):
 > but supports scalars only, not a block body. Prefer the `!class:` form.
 
 ## Deferred initialization: `_partial_`, declared slots, and `flow()`
+
+Three names, three different things — keep them apart:
+
+| Name | What it is | Where it appears | What it defers |
+|---|---|---|---|
+| `PartialClass` | the deferred **marker** — a `Target` with `partial=True` | in YAML `_partial_: true` / `!partial:`; in code `PartialClass(Adam, lr=1e-3)` | a **value**: *this recipe* is built only by an explicit `flow(marker, params=…)` |
+| `Partial[T]` | the slot **annotation** — `Annotated[Union[T, Fluid], marker]` | on a constructor param or an `__init__`-body attribute: `optimizer: Partial[Optimizer]` | a **slot**: *whatever lands here* — a plain `!class:` too — stays an unbuilt marker until the class flows it. `T` is the type the slot flows into |
+| `partial_param_names(cls)` | the **reader** of the declaration | in code that walks a live object and builds its markers | nothing — it answers "which slots of this class are deferred?" so a walker knows which attributes NOT to build |
+
+Why the reader exists: after `load()`, a plain `!class:SGD` written into an
+`optimizer: Partial[Optimizer]` slot is kept as a plain `Target` — the engine does
+not rewrite the value — so `isinstance(value, PartialClass)` cannot tell that
+attribute from one the class meant to be built. Any code that flows a live
+object's remaining markers must ask the class, and `partial_param_names` is the
+one place that question is answered (it reads the annotation AND the
+`PartialClass(...)` body values, through the same slot scan everything else uses).
 
 A deferred node is built later by calling **`flow(node, **runtime_kwargs)`** —
 idempotent (live objects pass through unchanged), with runtime kwargs winning

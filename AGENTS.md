@@ -27,7 +27,7 @@ recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` 
 
 The TAG spelling (`!class:` / `!partial:` (alias `!lazy:`) / `!ref:` / `!scope:`) is the
 PREFERRED AUTHORING form; the reserved-key spelling is the MACHINE form that the `hydraide`
-preprocessor EMITS (`confluid.hydraide.emit(cfg, scopes=[...])`; the `hydraide` COMMAND lives in liquifai — confluid ships functions only, user instruction 2026-08-17). Both are first-class input,
+preprocessor EMITS (`confluid.hydraide.emit(cfg, scopes=[...])`; the `hydraide` COMMAND is `confluid/cli.py`, Click, the `confluid[cli]` extra — user instruction 2026-08-17). Both are first-class input,
 neither warns (user ruling 2026-08-15, architecture record 19 — phase 1 landed). Clone is removed
 (record 18). Phases 2–4 of record 19 (attribute refs out, the runtime consuming hydraide output,
 `configure()` via the document) are in `TASKS.md`.
@@ -131,7 +131,7 @@ imports; extend the right module instead.
 
 | Module | Owns |
 |---|---|
-| `fluid` | the marker DATA classes (`Fluid`/`Target`/`Partial`/`Reference`/`Clone`/`ScopeBlock`) + `format_yaml_loc`. A dependency LEAF — imports no other confluid module. |
+| `fluid` | the marker DATA classes (`Fluid`/`Target`/`PartialClass`/`Reference`/`ScopeBlock`) + `format_yaml_loc`. A dependency LEAF — imports no other confluid module. |
 | `state` | `_EngineState` / `_ENGINE_STATE` (one `ContextVar`) + the public `active_context` / `collect_report`. Exists so `broadcast` can read the ambient report without importing the engine. |
 | `broadcast` | the ONE precedence rule and all its machinery — see "Precedence & broadcasting". Materializes NOTHING. |
 | `engine` | `flow`/`cast`, `materialize` (passes 7–9) / `settle` (pass 7) — the PREPARED-data entries `load()` calls, not public names — `_flow_recursive` (pass 7 — settle) / `instantiate` (pass 8 — build), and the two post-construction deliveries pass 7 cannot see (body-slot / ctor-default markers). |
@@ -333,7 +333,7 @@ that no longer exists — reading `.train` off the object built at `split`, or c
 it — and is REFUSED by `resolver.refuse_attribute_reference` with the node's `file:line:col` and the
 rewrite (a selector parameter on the referent's class + `!ref:split`, or the marker written again
 with the selector set). The refusal fires in `_flow_recursive` AND `_flow_reference`, i.e. under
-`load(until="settled")` as well as `load()` — that is how `hydraide` reports it (the same message; liquifai's CLI renders it, exit 1).
+`load(until="settled")` as well as `load()` — that is how `hydraide` reports it (the same message; the `hydraide` command renders it as one line, exit 1).
 Nothing is constructed on behalf of a Reference any more, which is why `_EngineState.structural`
 (the flag that used to gate that construction off for the settled stage) is gone. Two things did NOT
 change and are pinned as CON cases: a PURELY structural resolution still returns `None` from the
@@ -493,11 +493,18 @@ no-op, and `convert_file`'s activation-gated write.
 `hydraide.emit(source, scopes=…)` is `dump(load(source, until="settled"))` plus named anchors; it adds NO pass and
 re-derives NO rule — if the emitted document is wrong, the defect is in pass 7 (`engine.settle`) or `dump()`,
 never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`).
-**confluid ships FUNCTIONS only — `emit` / `check` (and `spelling.to_tags` / `convert_file`); the
-`hydraide` COMMAND is a `LiquifyApp` in liquifai (`liquifai/hydraide.py`, console script there),
-user instruction 2026-08-17 (repeated). Never add an argparse `main()` or a `[project.scripts]`
-entry for a tool to confluid: liquifai already provides config promotion, `--scope` / dimension
-flags, the search tiers and the failure contract.** Named anchors ride `dump(anchor_names=…)` — a `generate_anchor` hook
+**The `hydraide` COMMAND is `confluid/cli.py` — Click, the OPTIONAL `confluid[cli]` extra,
+console script `hydraide = confluid.cli:main` (user instruction 2026-08-17, superseding the
+earlier "functions only" ruling).** Three verbs — `emit CONFIG [--scope DIM=VALUE]… [-o FILE]`,
+`check CONFIG`, `completion bash|zsh|fish` — and the contract: a located `ConfluidError` is ONE
+line on stderr + exit 1 (`click.ClickException`), a usage error exits 2, a stale `check` exits 1
+with the diff on stdout; a relative CONFIG resolves through `resolve_config_path` (the loader's
+tiers) BEFORE the exists check. **Completion is part of the contract**: `--scope` completes
+`dim=value` from `discover_dimension_values(load(config, until="raw"))`; because Click's resilient
+parse aborts on a dangling `--scope` BEFORE binding the positional CONFIG, the completer falls
+back to the shell's `COMP_WORDS` (exported by all three of Click's scripts) — never re-derive the
+config from anywhere else. Click is imported by `confluid.cli` ONLY (guarded `ImportError` naming
+the extra); the engine never imports it. Named anchors ride `dump(anchor_names=…)` — a `generate_anchor` hook
 keyed on the shared value's SHORTEST path (`&preprocess_0`); the map is computed on the resolved
 tree, where identity already means what the document meant. Two engine facts are pinned in the
 tool's suite because the tool exposes them: identity is per MARKER, not per container
@@ -506,8 +513,10 @@ follow an include-overlay tune (P1's COPY at the key; alias sites keep the origi
 "measured correct" probe was seeing bare-key broadcast through a same-named parameter). Neither is
 phase-1's to change (`TASKS.md`, phase 1b).
 **Pins.** `tests/test_hydraide.py` — byte-identical output for both spellings, idempotence
-(`emit(emit(x)) == emit(x)`, what `--check` rests on), the CLI's three exit codes, no-warning for
-either spelling, `!partial:` == `!lazy:`, and the two identity pins.
+(`emit(emit(x)) == emit(x)`, what `check` rests on), no-warning for either spelling,
+`!partial:` == `!lazy:`, and the two identity pins; `tests/test_cli.py` — the verbs, the three
+exit codes, the one-line failure contract, the search tiers, `completion` for each shell, and
+`--scope` completing from the document (incl. the no-config con case).
 **Docs.** `docs/hydraide.md`. **Example.** `examples/hydraide.py`.
 
 **Why.** `docs/architecture.md` records 11 and 19. The tag format is not YAML anything else can
@@ -524,14 +533,14 @@ group, `::test_a_full_document_is_readable_by_plain_yaml`, `::test_neither_spell
 
 **Rule.** `partial` decides whether a marker is built, and NOTHING else does — not the parent's
 configurability, not the nesting depth, not document position. `Target` is built by
-materialization; `Partial` never is. `!class:Foo` and `!class:Foo()` are the SAME thing now (the
+materialization; `PartialClass` never is. `!class:Foo` and `!class:Foo()` are the SAME thing now (the
 trailing `()` is inert); `!lazy:` / `_partial_: true` is the only spelling that defers.
 
 **Rule.** A slot the RECEIVING class declared deferred (`Partial[T]`, or a body slot holding
 `PartialClass(...)`) keeps its value unbuilt whatever the value says — the receiver's declared
 contract, read via `partial_param_names(target)` in `_flow_target`. That is a slot declaration, not
 parent-context guessing: static, local to the class, and readable. The ONE promotion site (marker →
-`Partial`, with the warning) stays `_apply_post_init_attrs`.
+`PartialClass`, with the warning) stays `_apply_post_init_attrs`.
 
 **Rule.** Never reintroduce a third mode or a context-dependent build rule. The deleted middle state
 (`Class`) was justified as "so broadcasting can still reach it", which is not a reason: broadcasting
@@ -585,7 +594,7 @@ constructor is unregistered, so the tag fails at parse.
 
 ### A target may be ANY callable
 
-**Rule.** `!class:`/`!lazy:` targets, `Class`/`Partial`/`Instance`/`flow()` targets, AND the
+**Rule.** `!class:`/`!lazy:` targets, `Target`/`PartialClass`/`flow()` targets, AND the
 `@configurable` / `register` decorators all accept any callable — a class OR a builder function.
 Introspect the target's OWN signature (see `init_callable`).
 
@@ -607,9 +616,9 @@ re-inline it. Five of six inlined copies degraded a function OBJECT to `None`, s
 
 ### Deferred initialization — `_partial_: true` / `Partial[T]`
 
-**Rule.** A `Partial` is never AUTO-flowed — not by `load()`, not by external deep-flow
-walkers. **Deferral withholds CONSTRUCTION only: a `Partial` IS broadcast into, exactly like a
-`Class`.** Never re-add a blanket `isinstance(v, Partial)` early return in `_resolve_kwarg_value`.
+**Rule.** A `PartialClass` is never AUTO-flowed — not by `load()`, not by external deep-flow
+walkers. **Deferral withholds CONSTRUCTION only: a `PartialClass` IS broadcast into, exactly like a
+`Target`.** Never re-add a blanket `isinstance(v, PartialClass)` early return in `_resolve_kwarg_value`.
 
 **Rule.** An EXPLICIT `flow(node)` builds it, even with no runtime kwargs. A mapping addressed at a
 slot already holding a deferred marker TUNES it, never replaces it. A marker kwarg set in CODE is a
@@ -952,19 +961,20 @@ parity files (`test_basic_parity` / `test_names_parity` / `test_parity` / `test_
 
 ### Configuration reports
 
-**Rule — naming.** The marker, the annotation and the YAML key are ONE word: `Partial` /
-`PartialClass` / `partial_param_names` / `_partial_`. The deprecation aliases `Class` / `Instance` /
-`Lazy` / `LazyClass` / `lazy_param_names` and the `confluid.lazy` shim module are DELETED
-(2026-08-11) — importing one now fails loudly, which is the point. `Class` and `Instance` had
-become the SAME class, so code discriminating with `isinstance(x, Instance)` reads `x.partial`.
+**Rule — naming.** The marker, the annotation and the YAML key are ONE word: `PartialClass` (the
+marker CLASS — `fluid.PartialClass`, the same name in source and at the top level, 2026-08-17) /
+`Partial[T]` (the slot ANNOTATION — `partial.Partial`) / `partial_param_names` / `_partial_`. Never
+give the class and the alias one name again: two `Partial`s in two modules made every reader of
+`fluid.py` meet the wrong one first. Built-vs-deferred is discriminated by `marker.partial`, never
+by an isinstance ladder.
 
 **Rule.** `introspect._PARTIAL_CALL_NAMES` is the pinned list of call names that mark a body slot
 deferred, and it matches on the NAME IN THE SOURCE — a name missing from it does not raise, the
 slot is simply BUILT and a runtime-injection target reaches its constructor without its argument.
 Adding a spelling means adding it there in the same change.
 
-**Pins.** `tests/test_partial.py` (`::test_the_deprecated_aliases_are_removed`,
-`::test_the_body_slot_scan_matches_the_canonical_call_names_only`).
+**Pins.** `tests/test_partial.py::test_one_marker_type_two_modes` /
+`::test_the_body_slot_scan_matches_the_canonical_call_names_only`.
 
 **Rule.** `confluid/report.py` is a dependency LEAF (stdlib + loggair). Only `ConfigurationReport` and
 `collect_report` are top-level exports. Every instrumentation site is `if report is not None`-guarded
@@ -1444,8 +1454,9 @@ location sits one frame up in `_flow_target`. When you add or touch such a helpe
 ### Dependencies
 
 **Rule.** Confluid's runtime dependencies are `pyyaml`, `loggair`, `typing-extensions` — nothing
-else. Pydantic (`confluid[pydantic]`) and python-dotenv (`confluid[env]`) are OPTIONAL extras,
-imported lazily with an `ImportError` naming the extra. A new hard dependency needs a reason that
+else. Pydantic (`confluid[pydantic]`), python-dotenv (`confluid[env]`) and Click (`confluid[cli]`,
+the `hydraide` command only) are OPTIONAL extras, imported lazily with an `ImportError` naming
+the extra. A new hard dependency needs a reason that
 holds for a consumer who uses only the configuration engine.
 
 ### Type safety

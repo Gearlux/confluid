@@ -16,11 +16,87 @@ text = emit("experiment.yaml", scopes=["framework=torch"])   # the resolved docu
 diff = check("resolved.yaml")                                 # None, or a unified diff
 ```
 
-Confluid ships these **functions**; the `hydraide` *command* (`hydraide emit
-experiment.yaml --scope framework=torch --output resolved.yaml`, `hydraide check
-resolved.yaml`) is one app of the CLI framework built on confluid, which already
-provides config promotion, `--scope` / dimension flags, the search tiers and the
-one-line failure contract — nothing a second argument parser here would add.
+## The command line
+
+The same two operations as a command — `pip install 'confluid[cli]'` (Click):
+
+```bash
+hydraide emit experiment.yaml --scope framework=torch        # the resolved document, on stdout
+hydraide emit experiment.yaml -o resolved.yaml               # … or written to a file
+hydraide check resolved.yaml                                 # exit 1 + unified diff unless the file
+                                                             # is its own resolution — a CI gate
+```
+
+A relative path resolves through the same search tiers `load()` uses (CWD →
+`./config/` → XDG), so `hydraide emit experiment.yaml` finds `./config/experiment.yaml`.
+A malformed document is a located `ConfluidError` — one line on stderr
+(`file:line:col`), exit 1, no traceback; a usage error exits 2.
+
+### Shell completion
+
+`hydraide completion SHELL` prints the activation script for `bash`, `zsh` or
+`fish`. Once it is loaded, verbs and options complete, `CONFIG` completes file
+names, and `--scope` completes **from the document you named**:
+
+```
+$ hydraide emit experiment.yaml --scope fram<TAB>
+framework=keras   framework=torch                            # what experiment.yaml declares
+```
+
+(the values come from `discover_dimension_values(load(path, until="raw"))` — a
+boolean dimension is offered bare).
+
+**Bash, in a custom rc file.** Put these lines in the file your shell sources at
+start-up — `~/.bashrc`, or a project rc you `source` yourself — *after* the line
+that puts `hydraide` on `PATH` (activating the virtualenv, for instance): the
+completion function calls the `hydraide` executable, so it must be findable when
+the rc runs.
+
+```bash
+# in your rc file — AFTER the venv is activated / PATH is set
+source /path/to/.venv/bin/activate
+eval "$(hydraide completion bash)"
+```
+
+That runs `hydraide` once per shell start (~0.1 s). If you would rather not pay
+that on every prompt, generate the script once into a file and source the file —
+regenerate it when confluid is upgraded:
+
+```bash
+hydraide completion bash > ~/.hydraide-complete.bash          # once (and after an upgrade)
+```
+
+```bash
+# in your rc file
+source /path/to/.venv/bin/activate
+source ~/.hydraide-complete.bash
+```
+
+Reload the shell (`exec bash`, or open a new terminal) and check:
+
+```bash
+$ type _hydraide_completion | head -1
+_hydraide_completion is a function
+$ hydraide em<TAB>                          # → emit
+$ hydraide emit experiment.yaml --scope <TAB>
+```
+
+Two things to know:
+
+- **Bash 4.4 or newer.** The script uses `complete -o nosort`; macOS's stock
+  `/bin/bash` is 3.2 and prints `complete: nosort: invalid option name`. Use the
+  Homebrew bash (`/opt/homebrew/bin/bash`, 5.x) or Linux's default.
+- **`--scope` completion reads the file you typed** — it opens the config through
+  the same search tiers as `load()`, so a relative name resolves against the CWD,
+  `./config/`, then XDG. No file typed yet, or an unreadable one → no candidates
+  (never an error in the shell).
+
+**Zsh / fish** are the same one-liner with the shell name:
+
+```bash
+eval "$(hydraide completion zsh)"       # ~/.zshrc  (or: hydraide completion zsh > ~/.zfunc/_hydraide, with ~/.zfunc on fpath)
+hydraide completion fish | source       # ~/.config/fish/config.fish
+```
 
 ## Two spellings in, one spelling out
 

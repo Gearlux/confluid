@@ -7,7 +7,7 @@ row here fails a test.
 New to confluid? The surface is wide because the engine has several audiences —
 start from [The Lifecycle](lifecycle.md), which shows where each of these names
 plugs into the passes, and from the eight names most configs need:
-`configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Partial`, `dump`.
+`configurable`, `register`, `load`, `configure`, `flow`, `cast`, `Partial[T]`, `dump`.
 
 ## Loading — [The Lifecycle](lifecycle.md) → "Where you can stop"
 
@@ -23,8 +23,8 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|
 | `Fluid` | Base class of every marker |
 | `Target` | A callable + its kwargs (`_target_:`) — built at load, shared by identity |
-| `Partial` / `PartialClass` | A runtime-injection slot (`_partial_: true`) — never auto-built; `PartialClass` is the Python spelling |
-| `partial_param_names` | Every slot of a class declared `Partial[...]` — ctor params and body slots |
+| `PartialClass` | The deferred marker — a `Target` that materialization never builds (`_partial_: true` in YAML, `PartialClass(Adam, lr=1e-3)` in code). It defers a **value**: this recipe waits for an explicit `flow(marker, params=…)` |
+| `Partial` | The slot **annotation**, written `Partial[T]` — `optimizer: Partial[Optimizer]` on a constructor param or body attribute. It defers a **slot**: whatever value lands there (a plain `!class:` too) stays an unbuilt marker until the class flows it. `T` is the type the slot flows INTO |
 | `Reference` | A `${ref:}` / `_ref_` — the same object reached twice |
 
 ## Registration & discovery — [Discovery](discovery.md)
@@ -88,7 +88,7 @@ plugs into the passes, and from the eight names most configs need:
 | `InputSpec` / `OutputSpec` | The record types those return |
 | `Mandatory` | Annotation: required-in-spirit even when defaulted for zero-arg construction |
 | `mandatory_param_names` | The `Mandatory`-marked parameter names of a target |
-| `partial_param_names` | The deferred (lazy) slot names of a target — params and body slots |
+| `partial_param_names` | Which slots of a class are deferred (declared `Partial[T]`, or holding a `PartialClass(...)` body value) — what a walker asks before flowing a live object's markers, because a plain `!class:` in a `Partial[T]` slot stays a plain `Target` ([Targets](targets.md) → "Deferred initialization") |
 
 ## Serialization — [Serialization](serialization.md)
 
@@ -159,7 +159,7 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|---|
 | `emit(source, *, scopes=None)` | The resolved document for a path or YAML text, as plain YAML — passes 1–7 + the serializer | [hydraide](hydraide.md) |
 | `check(path, *, scopes=None)` | `None` when the file is its own resolution, else a unified diff | [hydraide](hydraide.md) |
-| *(no script here)* | The `hydraide` command line (`emit` / `check` verbs) ships with the CLI framework built on confluid; this module is functions only | [hydraide](hydraide.md) |
+| `hydraide` (console script, `confluid[cli]`) | `hydraide emit CONFIG [--scope DIM=VALUE]… [-o FILE]` / `hydraide check CONFIG` / `hydraide completion bash\|zsh\|fish` — Click, `confluid/cli.py`; `--scope` completes from the document | [hydraide](hydraide.md) → "The command line" |
 
 ## `confluid.spelling` — the reserved-key spelling → the tag spelling
 
