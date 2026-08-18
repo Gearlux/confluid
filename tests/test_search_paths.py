@@ -197,7 +197,7 @@ def test_load_bare_name_resolves_via_xdg(_isolated_env: Path) -> None:
     assert load("exp.yaml", until="document") == {"val": 12}
 
 
-def test_load_config_with_paths_records_xdg_resolved_path(_isolated_env: Path) -> None:
+def test_return_paths_records_xdg_resolved_path(_isolated_env: Path) -> None:
     xdg_file = _write(_isolated_env / "common.yaml", "base: 1")
     main = _write(Path.cwd() / "main.yaml", "include: common.yaml\nlocal: 2")
 

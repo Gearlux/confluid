@@ -95,7 +95,7 @@ def test_config_content_errors_are_configuration_errors(exc_cls: Type[Exception]
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_missing_file_raises_config_file_not_found(tmp_path: Path) -> None:
+def test_load_missing_file_raises_config_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(ConfigFileNotFoundError) as ei:
         confluid.load(tmp_path / "missing.yaml", until="raw")
     assert isinstance(ei.value, FileNotFoundError)

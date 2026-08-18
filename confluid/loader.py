@@ -1084,6 +1084,10 @@ def _load(
         data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes, None))
 
     # ---- passes 5–6: interpolate, expand -----------------------------------------
+    # Run ONCE, here, for ``data`` AND for an explicit ``context`` (a fragment's
+    # document, resolved against itself) — the engine takes both as PREPARED and
+    # runs neither pass again. Marker KWARGS interpolate in place, text-only
+    # (``Resolver._interpolate_fluid_kwargs``); a miss keeps the literal.
     if isinstance(data, dict):
         data = cast(Dict[str, Any], _process_imports(data))  # an `import:` a scope block spliced in
     interp_context = context if context is not None else (data if isinstance(data, dict) else None)
@@ -1091,6 +1095,8 @@ def _load(
     data = resolver.resolve(data)
     if isinstance(data, dict):
         data = expand_dotted_keys(data)
+    if context is not None:
+        context = expand_dotted_keys(resolver.resolve(context))
     if until == "document":
         return data
 
@@ -1104,6 +1110,5 @@ def _load(
 # The engine's two entries are REAL dependencies of ``load()`` above (passes 7–9
 # and pass 7 alone). Imported after the defs to keep the loader's own parse
 # machinery readable first; the layering is one-directional (loader → engine —
-# the engine imports nothing from here since 2026-08-17, when ``resolve()``'s
-# str/Path convenience moved onto ``load(until="settled")``).
+# the engine imports nothing from here).
 from confluid.engine import materialize, settle  # noqa: E402

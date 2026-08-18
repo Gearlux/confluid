@@ -1,11 +1,10 @@
-"""``load()`` is the ONE door — every stop point is ``until=<stage>`` (2026-08-17).
+"""``load()`` is the ONE door — every stop point is ``until=<stage>``.
 
-Before this change the pipeline had five entry names for four stop points:
-``load_config`` (passes 1–3, path only), ``load(flow=False)`` (1–6), ``resolve``
-(1–7), ``load`` / ``materialize`` (1–9), plus ``load_config_with_paths``. Measured,
-``materialize(parsed) == load(parsed)`` on every input but a LIST root (which
-``load`` handed back unbuilt), and ``load_config`` had no text form. These tests
-pin the unified surface: one function, a closed ``until`` Literal, ``return_paths``.
+One function, a closed ``until`` Literal (``raw`` / ``document`` / ``settled`` / ``objects``),
+every input shape at every stage, ``return_paths``. Pins: the four stages on one document, the
+idempotence (``load(load(x, until=<earlier>)) == load(x)``), the list-root pro/con, ``raw`` from
+text/dict/path, ``return_paths`` incl. a scope-spliced include, the exact signature, the
+engine→loader direction, and the missing-file rule with its con case.
 """
 
 import inspect
@@ -71,7 +70,7 @@ def test_an_unknown_stage_is_refused_not_silently_defaulted() -> None:
 
 
 def test_load_on_already_loaded_data_is_the_same_as_loading_once() -> None:
-    """The ``materialize`` fold: ``load(load(x, until=<earlier>))`` == ``load(x)``."""
+    """``load(load(x, until=<earlier>))`` == ``load(x)`` — passes already applied are idempotent."""
     once = load(_DOC)["model"]
     for stage in ("raw", "document", "settled"):
         twice = load(load(_DOC, until=stage))["model"]  # type: ignore[arg-type]
@@ -80,7 +79,7 @@ def test_load_on_already_loaded_data_is_the_same_as_loading_once() -> None:
 
 
 def test_a_fluid_root_with_an_explicit_document_context_broadcasts() -> None:
-    """The DI shape ``materialize(node, context=document)`` is now ``load(node, context=document)``."""
+    """The DI shape: a marker built against the document it came from — ``load(node, context=document)``."""
     document = load(_DOC, until="document")
     built = load(document["model"], context=document)
     assert isinstance(built, _Box)
@@ -88,7 +87,7 @@ def test_a_fluid_root_with_an_explicit_document_context_broadcasts() -> None:
 
 
 def test_a_LIST_root_builds() -> None:
-    """PRO: ``load`` used to hand a list root back UNBUILT (``if not isinstance(data, dict): return data``)."""
+    """PRO: a list root is data like any other — its markers build."""
     built = load("- !class:_Box {size: 3}\n- !class:_Box {size: 4}")
     assert [type(x) for x in built] == [_Box, _Box]
     assert [x.size for x in built] == [3, 4]
@@ -109,7 +108,7 @@ def test_a_scalar_root_passes_through_at_every_stage() -> None:
 
 
 def test_raw_processes_includes_from_a_path_a_text_and_a_dict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``load_config`` took a PATH only; ``until='raw'`` reads includes from every input shape."""
+    """``until='raw'`` reads includes from every input shape — a path, YAML text, a dict."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "base.yaml").write_text("lr: 0.1\n")
     entry = tmp_path / "entry.yaml"
@@ -154,8 +153,7 @@ def test_return_paths_lists_every_file_read_in_order(tmp_path: Path) -> None:
 
 
 def test_return_paths_includes_a_scope_spliced_include(tmp_path: Path) -> None:
-    """PRO: ``load_config_with_paths`` wrapped only the pre-scope read, so an include
-    inside an activated scope block was READ but never listed."""
+    """PRO: an include inside an ACTIVATED scope block is read — so it is listed."""
     entry = _write_tree(tmp_path)
     document, paths = load(entry, until="document", scopes=["extra"], return_paths=True)
     assert document["wd"] == 0.01  # the overlay was spliced …
@@ -192,14 +190,12 @@ def test_return_paths_is_per_call(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- the surface
 
 
-def test_the_folded_names_are_gone() -> None:
-    """One door: the four folded entry points and the ``flow=`` kwarg no longer exist."""
-    for name in ("materialize", "resolve", "load_config", "load_config_with_paths"):
-        assert name not in confluid.__all__, name
-        assert not hasattr(confluid, name), name
+def test_the_signature_is_exactly_the_one_door() -> None:
+    """One door: ``load`` carries exactly these keywords, and no sibling entry point exists beside it."""
     params = inspect.signature(load).parameters
-    assert "flow" not in params
     assert set(params) == {"data", "until", "context", "scopes", "solidify", "return_paths"}
+    loading_names = {n for n in confluid.__all__ if n.startswith("load")}
+    assert loading_names == {"load", "load_configurables"}
 
 
 def test_cast_stays() -> None:
@@ -252,8 +248,8 @@ def test_return_paths_typing_shape() -> None:
 
 
 def test_a_missing_file_raises_for_a_Path_and_for_a_yaml_named_str(tmp_path: Path) -> None:
-    """``load_config`` raised on a missing file; the fold keeps that. Before, ``load("missing.yaml")``
-    parsed the NAME as YAML text and returned the string ``"missing.yaml"`` — a config that loads as nothing."""
+    """A name that ends in a config suffix is a FILE: a missing one raises instead of parsing the
+    name as YAML text and loading as nothing."""
     from confluid import ConfigFileNotFoundError
 
     with pytest.raises(ConfigFileNotFoundError):
@@ -268,3 +264,51 @@ def test_a_bare_word_without_a_config_suffix_is_still_yaml_text() -> None:
     """CON: the suffix rule is narrow — a plain scalar document still parses as text."""
     assert load("hello") == "hello"
     assert load("42") == 42
+
+
+# --------------------------------------------------------------------------- passes 5–6 run ONCE
+
+
+def test_a_document_placeholder_is_substituted_at_every_stage_past_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PRO: ``${VAR}`` in the DOCUMENT is pass 5 — substituted from ``until="document"`` on, once."""
+    monkeypatch.setenv("CONFLUID_STAGE_TEST", "/store")
+    doc = "root: ${CONFLUID_STAGE_TEST}/runs\nmodel: !class:_Box\n  tag: ${CONFLUID_STAGE_TEST}\n"
+    assert load(doc, until="raw")["root"] == "${CONFLUID_STAGE_TEST}/runs"  # not yet
+    for stage in ("document", "settled"):
+        out = load(doc, until=stage)  # type: ignore[arg-type]
+        assert out["root"] == "/store/runs", stage
+        assert out["model"].kwargs["tag"] == "/store", stage  # marker kwargs interpolate too
+    built = load(doc)
+    assert (built["root"], built["model"].tag) == ("/store/runs", "/store")
+
+
+def test_an_explicit_context_is_interpolated_once_in_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller-supplied ``context=`` gets pass 5 too — in ``load``, so a placeholder in a context
+    key still reaches the node with its substituted value (the engine no longer re-runs the pass)."""
+    monkeypatch.setenv("CONFLUID_STAGE_SIZE", "9")
+    document = load(_DOC, until="document")
+    ctx = {"size": "${CONFLUID_STAGE_SIZE}"}
+    built = load({"model": document["model"]}, context=ctx)["model"]
+    assert built.size == 9
+
+
+def test_runtime_kwargs_of_a_bare_type_are_code_not_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CON: interpolation is a DOCUMENT pass. Runtime kwargs handed to ``flow()`` from code keep
+    their text — for a bare type exactly as for a marker built in code (the two agreed only for
+    the marker before)."""
+    from confluid import flow
+
+    monkeypatch.setenv("CONFLUID_STAGE_TAG", "env")
+    assert flow(_Box, tag="${CONFLUID_STAGE_TAG}").tag == "${CONFLUID_STAGE_TAG}"
+    assert flow(Target(_Box, tag="${CONFLUID_STAGE_TAG}")).tag == "${CONFLUID_STAGE_TAG}"
+
+
+def test_the_engine_entries_run_neither_pass_5_nor_pass_6() -> None:
+    """Structural: passes 5–6 live in ``loader._load`` alone. The engine still uses the
+    resolver for ``!ref:`` LOOKUP, so the pin is on the two entries' own bodies."""
+    import confluid.engine as engine
+
+    for entry in (engine.materialize, engine.settle):
+        body = inspect.getsource(entry)
+        assert "Resolver(" not in body and ".resolve(" not in body, entry.__name__
+        assert "expand_dotted_keys(" not in body, entry.__name__

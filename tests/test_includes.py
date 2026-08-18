@@ -30,7 +30,7 @@ def test_circular_include_error(tmp_path: Path) -> None:
         load(a, until="raw")
 
 
-def test_load_config_with_paths_single_file(tmp_path: Path) -> None:
+def test_return_paths_single_file(tmp_path: Path) -> None:
     """Single-file load returns the entrypoint as the only path."""
     main = tmp_path / "main.yaml"
     main.write_text("foo: 1\nbar: 2")
@@ -40,7 +40,7 @@ def test_load_config_with_paths_single_file(tmp_path: Path) -> None:
     assert paths == [main.resolve()]
 
 
-def test_load_config_with_paths_returns_full_tree(tmp_path: Path) -> None:
+def test_return_paths_returns_full_tree(tmp_path: Path) -> None:
     """Nested includes appear in load order, deduplicated, with the entrypoint first."""
     common = tmp_path / "common.yaml"
     common.write_text("base_val: 1")
@@ -64,10 +64,9 @@ def test_load_config_with_paths_returns_full_tree(tmp_path: Path) -> None:
     assert len(resolved) == len(set(resolved))
 
 
-def test_load_config_with_paths_threadlocal_isolation(tmp_path: Path) -> None:
-    """A bare ``load_config`` call inside a ``load_config_with_paths`` block does
-    not pollute outer-scope accumulators, and successive calls each get a
-    fresh list (no leakage between invocations)."""
+def test_return_paths_threadlocal_isolation(tmp_path: Path) -> None:
+    """A bare ``load(until="raw")`` inside a ``return_paths=True`` call does not
+    pollute the outer accumulator, and successive calls each get a fresh list."""
     main_a = tmp_path / "a.yaml"
     main_a.write_text("a: 1")
     main_b = tmp_path / "b.yaml"
@@ -83,8 +82,8 @@ def test_load_config_with_paths_threadlocal_isolation(tmp_path: Path) -> None:
     assert main_a.resolve() not in paths_b
 
 
-def test_load_config_with_paths_circular_error(tmp_path: Path) -> None:
-    """Circular includes still raise even when going through ``load_config_with_paths``."""
+def test_return_paths_circular_error(tmp_path: Path) -> None:
+    """Circular includes still raise under ``return_paths=True``."""
     a = tmp_path / "a.yaml"
     b = tmp_path / "b.yaml"
     a.write_text("include: b.yaml")
