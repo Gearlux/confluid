@@ -6,7 +6,7 @@ engine (YAML materialization) and the configurator (post-construction
 
 One :class:`ConfigurationReport` spans one configuration pass — a whole
 ``configure(*instances, ...)`` call, or everything inside a
-``confluid.collect_report()`` block (``load()`` / ``materialize()`` /
+``confluid.collect_report()`` block (``load()`` /
 ``flow()`` plus any nested ``configure()``, which adopts the ambient report).
 Three buckets:
 

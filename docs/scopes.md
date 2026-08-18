@@ -144,14 +144,14 @@ To ask a document which values it offers, use `discover_dimension_values` — th
 same walk the check runs, useful for building a picker or validating a form:
 
 ```python
-from confluid import discover_dimension_values, load_config
+from confluid import discover_dimension_values, load
 
-discover_dimension_values(load_config("experiment.yaml"))
+discover_dimension_values(load("experiment.yaml", until="raw"))
 # {"task": {"classification", "segmentation"}, "model": {"convnet"}}
 ```
 
-Note it takes the **raw** document (`load_config`), not a `load()` result — by
-the time `load()` returns, the blocks have already been spliced away. A dimension
+Note it takes the **raw** document (`load(path, until="raw")`), not a full `load()`
+result — by the time pass 4 has run, the blocks have already been spliced away. A dimension
 declared only by negated blocks maps to an empty set: it is a real dimension a
 CLI must bind, but it offers nothing to *select*.
 

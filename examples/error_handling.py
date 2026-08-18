@@ -11,7 +11,7 @@ import confluid
 def main() -> None:
     # 1. Missing config file -> ConfigFileNotFoundError, also a FileNotFoundError.
     try:
-        confluid.load_config("/nonexistent/experiment.yaml")
+        confluid.load("/nonexistent/experiment.yaml", until="raw")
     except confluid.ConfigFileNotFoundError as exc:
         assert isinstance(exc, FileNotFoundError), "dual-inherits the builtin"
         print(f"missing file -> {type(exc).__name__} (also FileNotFoundError)")

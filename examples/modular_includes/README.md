@@ -17,7 +17,7 @@ python examples/modular_includes/run.py
 ## What it shows
 
 **Composition.** `include:` merges the included file first, then the including
-file on top. `load_config` returns one dict; nothing downstream can tell it came
+file on top. `load(path, until="raw")` returns one dict; nothing downstream can tell it came
 from two files.
 
 **Order.** Confluid has one precedence rule — document order, last spec wins —

@@ -95,7 +95,7 @@ def test_yaml_lazy_function_target_materializes_and_flows() -> None:
     """``!lazy:<function path>`` resolves, stays deferred through load, then flows."""
     doc = confluid.load(
         f"widget: !lazy:{_make_widget.__module__}.{_make_widget.__qualname__}\n  size: 7\n",
-        flow=False,
+        until="document",
     )
     built = flow(doc["widget"], color="green")
     assert built == {"size": 7, "color": "green", "extra": {}}
@@ -210,7 +210,7 @@ def test_configurable_function_yaml_materialization_validates(clean_registry: An
     # !lazy: resolves the registered WRAPPER; flow swaps init→yaml mode (strict),
     # so a type-invalid stored kwarg fails validation — proving the wrapper is
     # what got registered. flow() wraps the pydantic error as ConstructionError.
-    doc = load("x: !lazy:build_thing\n  size: not-a-number\n", flow=False)
+    doc = load("x: !lazy:build_thing\n  size: not-a-number\n", until="document")
     with pytest.raises(confluid.ConstructionError):
         flow(doc["x"])
 
@@ -236,7 +236,7 @@ def test_configurable_function_round_trips(clean_registry: Any) -> None:
 
     # A real config references the target by NAME (a string), as authored YAML does.
     marker = PartialClass("rt_builder", size=5, color="blue")
-    reloaded = load(dump(marker), flow=False)  # !lazy:rt_builder → resolved via registry
+    reloaded = load(dump(marker), until="document")  # !lazy:rt_builder → resolved via registry
     assert flow(reloaded) == flow(marker) == {"size": 5, "color": "blue"}
 
 

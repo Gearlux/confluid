@@ -24,7 +24,6 @@ from confluid import (
     dump,
     get_registry,
     load,
-    materialize,
     reset_policy,
     set_policy,
 )
@@ -299,7 +298,7 @@ def test_collect_report_survives_materialize_and_active_context() -> None:
     with collect_report() as report:
         with active_context({"lr": 0.5}):
             assert _ENGINE_STATE.get().report is report  # fresh state carries it
-        materialize({"outer": {"_target_": None}} if False else {"lr": 0.9, "outer": "!class:Outer()"})
+        load({"outer": {"_target_": None}} if False else {"lr": 0.9, "outer": "!class:Outer()"})
         assert _ENGINE_STATE.get().report is report
     assert _ENGINE_STATE.get().report is None
 

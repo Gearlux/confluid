@@ -14,7 +14,7 @@ through to the late-bound ``Reference`` flow, which is where the user's
 
 from typing import Any, Dict
 
-from confluid import configurable, load, materialize
+from confluid import configurable, load
 from confluid.resolver import Resolver, _parse_path_segments
 
 # ---------- Tokenizer ------------------------------------------------------
@@ -138,7 +138,7 @@ def test_lookup_literal_full_key_still_wins() -> None:
     assert _lookup(ctx, "weird.key[name]") == "literal"
 
 
-# ---------- End-to-end through load() / materialize() ---------------------
+# ---------- End-to-end through load() / load() ---------------------
 
 
 def test_e2e_drone_labels_index_pattern(tmp_path: Any) -> None:
@@ -148,7 +148,7 @@ def test_e2e_drone_labels_index_pattern(tmp_path: Any) -> None:
     Since record 19 phase 3 the reference is settled in pass 7 and ``load()`` hands back
     the VALUE (it used to hand back a late-bound ``Reference`` for the caller to
     materialize). The CLI-override contract lives where the app framework actually
-    applies it: overrides land in the ``load(flow=False)`` document, BEFORE pass 7, and
+    applies it: overrides land in the ``load(until="document")`` document, BEFORE pass 7, and
     ``materialize`` of that document re-resolves the reference against the merged keys.
     """
     cfg = tmp_path / "main.yaml"
@@ -165,9 +165,9 @@ drone: !ref:drone_labels[drone_index]
     )
     assert load(str(cfg))["drone"] == "DJI MINI3"
 
-    document = load(str(cfg), flow=False)  # markers, references still unsettled
+    document = load(str(cfg), until="document")  # markers, references still unsettled
     document["drone_index"] = 3  # a CLI's ``--drone_index 3``, merged into the document
-    assert materialize(document)["drone"] == "DJI FPV COMBO"
+    assert load(document)["drone"] == "DJI FPV COMBO"
 
 
 def test_e2e_index_ref_inside_class_kwargs(tmp_path: Any) -> None:
@@ -195,8 +195,8 @@ chosen: !class:_Pick
   name: !ref:labels[idx]
 """
     )
-    raw = load(str(cfg), flow=False)
-    chosen = materialize(raw["chosen"], context=raw)
+    raw = load(str(cfg), until="document")
+    chosen = load(raw["chosen"], context=raw)
     assert isinstance(chosen, _Pick)
     assert chosen.name == "bravo"
 
@@ -216,8 +216,8 @@ selected_fft: !ref:packs[which].fft
 """
     )
     result = load(str(cfg))
-    assert materialize(result["selected_name"], context=result) == "second"
-    assert materialize(result["selected_fft"], context=result) == 512
+    assert load(result["selected_name"], context=result) == "second"
+    assert load(result["selected_fft"], context=result) == 512
 
 
 def test_e2e_negative_index(tmp_path: Any) -> None:
@@ -229,7 +229,7 @@ last: !ref:items[-1]
 """
     )
     result = load(str(cfg))
-    assert materialize(result["last"], context=result) == "c"
+    assert load(result["last"], context=result) == "c"
 
 
 # ---------- Regression: top-level ``!ref:`` to whole list still works ------

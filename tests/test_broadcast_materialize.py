@@ -1,6 +1,6 @@
 from typing import Any
 
-from confluid import Target, configurable, materialize, register
+from confluid import Target, configurable, load, register
 
 
 def _inst(target: str, /, **kwargs: Any) -> Target:
@@ -43,7 +43,7 @@ def test_broadcast_materialize() -> None:
     # Data to materialize (a Branch containing a Leaf)
     data = _inst("Branch", leaf=_inst("Leaf"))
 
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, Branch)
     assert result.branch_val == 100
@@ -62,13 +62,13 @@ def test_broadcast_priority() -> None:
 
     # 1. Scoped > Broadcast
     data_scoped = _inst("Leaf")
-    res1 = materialize(data_scoped, context=context)
+    res1 = load(data_scoped, context=context)
     assert not isinstance(res1, dict)
     assert res1.value == 20
 
     # 2. Explicit > Scoped > Broadcast
     data_explicit = _inst("Leaf", value=30)
-    res2 = materialize(data_explicit, context=context)
+    res2 = load(data_explicit, context=context)
     assert not isinstance(res2, dict)
     assert res2.value == 30
 
@@ -96,7 +96,7 @@ def test_deep_broadcast_propagation() -> None:
     config = {"max_epochs": 10}
     data = _inst("Outer", inner=_inst("Inner"))
 
-    result = materialize(data, context=config)
+    result = load(data, context=config)
     assert isinstance(result, Outer)
     assert isinstance(result.inner, Inner)
     assert result.inner.max_epochs == 10
@@ -112,7 +112,7 @@ def test_deep_broadcast_propagation() -> None:
 
     config2 = {"max_epochs": 10}
     data2 = _inst("OuterDeferred")
-    result2 = materialize(data2, context=config2)
+    result2 = load(data2, context=config2)
     assert isinstance(result2, OuterDeferred)
     # inner is deferred — flow it to materialize
     inner = result2.inner
@@ -150,7 +150,7 @@ def test_parameter_aware_broadcast_filtering() -> None:
         "optimizer": _inst("OptimizerLike"),
     }
 
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     # TrainerLike gets max_epochs but NOT experiment_name or lr
     assert isinstance(result["trainer"], TrainerLike)
@@ -195,7 +195,7 @@ def test_unregistered_class_broadcast_filtering() -> None:
 
     config = {"max_epochs": 10, "batch_size": 64, "experiment_name": "mnist"}
     data = _inst("Pipeline")
-    result = materialize(data, context=config)
+    result = load(data, context=config)
 
     assert isinstance(result, Pipeline)
     assert result.experiment_name == "mnist"
@@ -243,7 +243,7 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
 
     config = {"max_epochs": 7, "batch_size": 16}
     data = _inst("OuterCfg")
-    result = materialize(data, context=config)
+    result = load(data, context=config)
 
     assert isinstance(result, OuterCfg)
     # A body slot holding a plain ``Target(...)`` is BUILT — ``partial`` is the only
@@ -255,7 +255,7 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
     assert inner.batch_size == 16
 
     # Idempotency: materializing the same config again produces the same result.
-    result2 = materialize(data, context=config)
+    result2 = load(data, context=config)
     inner2 = flow(result2.inner)
     assert inner2.max_epochs == 7
     assert inner2.batch_size == 16
@@ -268,7 +268,7 @@ def test_dotted_broadcast_materialize() -> None:
     context = {"leaf.value": 99}
     data = _inst("Branch", name="root", leaf=_inst("Leaf", name="leaf"))
 
-    result = materialize(data, context=context)
+    result = load(data, context=context)
     # result.leaf.value should be 99
     assert not isinstance(result, dict)
     assert result.leaf.value == 99

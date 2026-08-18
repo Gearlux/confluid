@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from confluid import ConfigFileNotFoundError, configurable, configure, configure_from_file, get_registry, load_config
+from confluid import ConfigFileNotFoundError, configurable, configure, configure_from_file, get_registry, load
 
 
 @pytest.fixture(autouse=True)
@@ -153,7 +153,7 @@ def test_configure_from_file_equivalent_to_load_config_plus_configure(tmp_path: 
 
     a, b = Model(), Model()
     configure_from_file(a, path=cfg)
-    configure(b, config=load_config(cfg))
+    configure(b, config=load(cfg, until="raw"))
     assert a.val == b.val == 42
 
 

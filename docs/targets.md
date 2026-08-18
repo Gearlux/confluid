@@ -4,7 +4,7 @@
 
 A Confluid config is built from six marker forms — reserved keys in ordinary
 YAML ([the plain format](plain-format.md)). Each parses into a typed
-**Fluid** — a deferred *recipe* — that `load()` / `materialize()` resolves into
+**Fluid** — a deferred *recipe* — that `load()` resolves into
 a live **Solid** object. This two-stage lifecycle is what lets Confluid
 broadcast values into a node *before* it is built and inject runtime arguments
 *as* it is built.
@@ -33,10 +33,12 @@ what you will mostly *read* — in a `hydraide` artefact, a `dump()`, or a diff.
 | **Fluid** (deferred) | A recipe, not yet built. Still receives broadcast kwargs. | `Target`, `Partial`, `Reference` |
 | **Solid** (live) | The actual Python instance your code uses. | — |
 
-`load(text)` (≡ `load(text, flow=True)`) and `materialize(data)` walk the tree
-and turn Fluids Solid — but **not all of them**, by design (see the flow table
-further down). `load(text, flow=False)` stops at the Fluid layer so you can
-inspect or re-merge the IR before anything is constructed.
+`load(text)` (≡ `load(text, until="objects")`) walks the tree and turns
+Fluids Solid — but **not all of them**, by design (see the flow table further
+down). `load(text, until="document")` stops at the Fluid layer so you can inspect
+or re-merge the IR before anything is constructed; `until="settled"` goes one pass
+further (broadcast applied, still markers). See [The Lifecycle](lifecycle.md) →
+"Where you can stop".
 
 ## `_target_` vs `_partial_` — the only thing that defers
 
@@ -196,7 +198,7 @@ build. That is the whole rule.
 Some objects need an argument that does not exist at config time — the textbook
 case is an optimizer that needs `params=model.parameters()`. Add `_partial_: true`
 beside the `_target_` and the marker is **never** auto-flowed — not by
-`materialize()`, not by an external deep-flow walker:
+`load()`, not by an external deep-flow walker:
 
 ```yaml
 optimizer: !partial:torch.optim.Adam
@@ -393,7 +395,7 @@ b: !ref:proto
 c: !class:Box(size=3)   # a SECOND marker — a second, independent instance
 ```
 
-Within one `materialize()` pass, a marker reached directly or through any number
+Within one `load()` pass, a marker reached directly or through any number
 of `!ref:` resolves to **one** live instance (so `a is b`). A dotted `!ref:` is
 decided by its **first segment**: a document key walks *structure* only — dict
 keys and list indices (`!ref:cfg.lr`, `!ref:packs[1].name`); anything else is an

@@ -71,14 +71,14 @@ def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
     """Activate ``context`` for bare ``flow()`` calls inside the block.
 
     The public way to make reference resolution work for ``flow()`` calls made
-    OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a deferred
+    OUTSIDE a ``load()`` pass (e.g. domain code flowing a deferred
     ``Partial`` slot later, on another thread).
 
     **It does NOT enable broadcasting.** A ``flow()`` inside this block builds
     the target in isolation — the context's top-level keys are NOT injected into
     same-named constructor parameters, and the object comes back on its
-    defaults. Broadcasting happens only in a ``materialize()`` pass, so pass the
-    document explicitly (``materialize(fluid, context=document)``) when a flat
+    defaults. Broadcasting happens only in a ``load()`` pass, so pass the
+    document explicitly (``load(fluid, context=document)``) when a flat
     config's keys must reach the object. (This paragraph exists because the
     omission is invisible: the object builds fine, just unconfigured.)
 
@@ -120,7 +120,7 @@ def collect_report() -> Iterator[ConfigurationReport]:
     """Collect a :class:`ConfigurationReport` for everything inside the block.
 
     The engine-side counterpart of the report :func:`confluid.configure`
-    returns: ``load()`` / ``materialize()`` / ``flow()`` calls inside the
+    returns: ``load()`` / ``flow()`` calls inside the
     block record their applied broadcasts and document keys into the yielded
     report, and a nested ``configure()`` adopts (and returns) the same
     ambient report — so one report spans a load-then-configure pass::

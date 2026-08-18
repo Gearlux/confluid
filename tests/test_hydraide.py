@@ -1,6 +1,6 @@
 """hydraide — the preprocessor (architecture record 19, phase 1).
 
-``hydraide.emit(source)`` = ``dump(resolve(source))``: passes 1–7 followed by the
+``hydraide.emit(source)`` = ``dump(load(source, until="settled"))``: passes 1–7 followed by the
 serializer, producing ONE plain-YAML document in which every marker carries its
 final kwargs, every contest is settled, shared markers are anchors and deferral is
 ``_partial_: true``. The engine is untouched in this phase — these tests pin the
@@ -159,7 +159,7 @@ def test_a_shared_marker_is_emitted_as_a_NAMED_anchor(tmp_path: Path) -> None:
 
 
 def test_identity_is_per_MARKER_not_per_container(tmp_path: Path) -> None:
-    """Pinned as-is: `resolve()` copies containers and keeps markers, so a list
+    """Pinned as-is: `load(until="settled")` copies containers and keeps markers, so a list
     reached through `${ref:}` is emitted twice with its ELEMENT anchored, and the
     re-resolved document holds two lists sharing ONE marker.
 
@@ -168,10 +168,9 @@ def test_identity_is_per_MARKER_not_per_container(tmp_path: Path) -> None:
     stays unbuilt (BUGS-2026-08-13 F4, settled by phase 3's recursive
     instantiate, not here).
     """
-    from confluid.engine import resolve
     from confluid.hydraide import emit
 
-    tree = resolve(emit(_write_pair(tmp_path, PLAIN_BASE, "base.yaml")))
+    tree = load(emit(_write_pair(tmp_path, PLAIN_BASE, "base.yaml")), until="settled")
     assert tree["train_set"].kwargs["ops"] is not tree["preprocess"]
     assert tree["train_set"].kwargs["ops"][0] is tree["preprocess"][0]
 
@@ -220,18 +219,18 @@ def test_a_tagged_document_no_longer_warns() -> None:
 
 
 def test_partial_tag_parses_to_a_Partial() -> None:
-    marker = load("opt: !partial:HAdam(lr=0.5)", flow=False)["opt"]
+    marker = load("opt: !partial:HAdam(lr=0.5)", until="document")["opt"]
     assert isinstance(marker, Partial)
     assert marker.kwargs == {"lr": 0.5}
 
 
 def test_lazy_tag_still_parses_as_the_alias() -> None:
-    assert isinstance(load("opt: !lazy:HAdam", flow=False)["opt"], Partial)
+    assert isinstance(load("opt: !lazy:HAdam", until="document")["opt"], Partial)
 
 
 def test_partial_and_lazy_are_the_same_marker() -> None:
-    a = load("opt: !partial:HAdam(lr=0.5)", flow=False)["opt"]
-    b = load("opt: !lazy:HAdam(lr=0.5)", flow=False)["opt"]
+    a = load("opt: !partial:HAdam(lr=0.5)", until="document")["opt"]
+    b = load("opt: !lazy:HAdam(lr=0.5)", until="document")["opt"]
     assert (type(a), a.target, a.kwargs) == (type(b), b.target, b.kwargs)
 
 

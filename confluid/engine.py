@@ -15,7 +15,7 @@ cycle. The layering is now one-directional:
         ↑
     ``engine`` (this module: flow/cast, materialize/resolve, _flow_recursive)
         ↑
-    ``loader`` (YAML parsing: ConfluidLoader, load/load_config, includes,
+    ``loader`` (YAML parsing: ConfluidLoader, load, includes,
                 imports, scopes glue)
 
 ``state`` and ``broadcast`` came out of this module (2026-08-03): the ordered-merge
@@ -26,20 +26,22 @@ Both callers now import the one module. Names with users stay importable from he
 found — sixteen so far, ledger in the AGENTS broadcast mandate and the CHANGELOG.
 NEW code imports from the real home (``confluid.broadcast`` / ``confluid.state``).
 
-ONE deliberate lazy seam remains (documented at the site): ``resolve()``
-body-imports ``loader.load`` (str/Path convenience). The second — ``resolver``
-body-importing this module to flow a Reference's cursor — went with the attribute
-references (record 19, phase 2): the resolver constructs nothing any more.
+No lazy seam remains. The last — ``resolve()`` body-importing ``loader.load``
+for a str/Path convenience — went 2026-08-17 when the stop point moved onto
+``load(until="settled")``: this module now works on PREPARED data only
+(``settle`` = pass 7, ``materialize`` = passes 7–9). The one before it —
+``resolver`` body-importing this module to flow a Reference's cursor — went
+with the attribute references (record 19, phase 2).
 
-(``confluid.loader``'s own compat re-export block was pruned 2026-08-08 — it
-had zero users; only its real ``materialize`` dependency remains. New code
+(The loader's own compat re-export block was pruned 2026-08-08 — it had zero
+users; only its real ``materialize`` / ``settle`` dependency remains. New code
 imports engine names from ``confluid.engine`` or, better, the real home
 modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
 from copy import copy
 from dataclasses import replace
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Type
+from typing import Any, Dict, FrozenSet, Optional, Set, Tuple, Type
 
 from loggair import get_logger
 
@@ -150,7 +152,12 @@ def _is_definition_shaped(value: Any) -> bool:
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
-    """Resolve config data and instantiate all ``Target`` markers recursively.
+    """Passes 7–9 on PREPARED data: settle, build every ``Target``, solidify.
+
+    The engine's entry — NOT a public name: the public spelling is ``load(x)``
+    (``load`` runs the passes an input still needs and ends here). Kept as the
+    engine's own function because a bare registry-configurable TYPE flowed
+    directly (:func:`_flow_bare_type`) also enters here.
 
     Within a single materialize pass, identical raw markers (reached directly
     or via ``${ref:...}``) flow to a single marker object, which is
@@ -202,45 +209,32 @@ def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: b
         _ENGINE_STATE.reset(token)
 
 
-def resolve(
-    data: Any,
-    *,
-    context: Optional[Dict[str, Any]] = None,
-    scopes: Optional[List[str]] = None,
-) -> Any:
-    """Broadcast-resolve a config to a Fluid marker graph WITHOUT instantiating.
+def settle(data: Any, *, context: Optional[Dict[str, Any]] = None) -> Any:
+    """Pass 7 alone — broadcast-resolve a PREPARED document to its settled marker graph.
 
-    Like :func:`materialize`, but stops before ``instantiate``: it parses,
-    resolves scopes/includes, applies broadcasting and reference resolution
-    (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
-    ``${ref:...}`` is one object reached twice), and returns the resulting
-    ``Target`` / ``Partial`` markers with their broadcast siblings merged into
-    ``.kwargs`` — WITHOUT constructing any live object.
-
-    Use for static structural introspection of a config (a visual editor's
-    YAML→graph import, a flow-graph builder) when even side-effect-free
-    construction is undesirable. ``materialize(data, solidify=False)`` is the
-    instantiate-but-cheap counterpart; prefer it unless you specifically need
-    un-built markers.
+    Like :func:`materialize`, but stops before ``instantiate``: it applies
+    broadcasting and reference resolution (sharing referenced markers by
+    identity via ``flow_memo`` — so a fan-out ``${ref:...}`` is one object
+    reached twice), and returns the resulting ``Target`` / ``Partial`` markers
+    with their broadcast siblings merged into ``.kwargs`` — WITHOUT constructing
+    any live object. ``data`` is the pass-6 document (``load(x,
+    until="document")``); the public spelling is ``load(x, until="settled")``,
+    which is what a graph editor's YAML→graph import and ``hydraide`` read.
+    ``materialize(data, solidify=False)`` is the instantiate-but-cheap
+    counterpart; prefer it unless you specifically need un-built markers.
 
     A *dotted* reference (``${ref:a.b}`` — attribute/method access) stays a
     ``Reference`` here, exactly as a plain whole-object ``${ref:name}`` does:
     reading ``split.train`` would mean BUILDING ``split``, and this function
-    constructs nothing. Use ``materialize()`` / ``load()`` when you want the
-    attribute's value — those still resolve it off ONE shared instance.
+    constructs nothing. Use ``load()`` when you want the attribute's value —
+    it still resolves it off ONE shared instance.
     """
-    # The ONE deliberate engine->YAML seam: resolve() accepts a str/Path for
-    # convenience, which needs the YAML loader. Partial import keeps the module
-    # graph one-directional (loader imports engine at top level, not vice versa).
-    from confluid.loader import load
-
-    prepared = load(data, flow=False, context=context, scopes=scopes)
-    ctx = context if context is not None else (prepared if isinstance(prepared, dict) else None)
+    ctx = context if context is not None else (data if isinstance(data, dict) else None)
     if ctx:
         ctx = expand_dotted_keys(ctx)
     clear_pass_caches()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
-    # untouched — resolve() never managed that flag (it builds no objects).
+    # untouched — settle() never managed that flag (it builds no objects).
     token = _ENGINE_STATE.set(
         replace(
             _ENGINE_STATE.get(),
@@ -251,7 +245,7 @@ def resolve(
         )
     )
     try:
-        return _flow_recursive(prepared, parent_context=ctx)
+        return _flow_recursive(data, parent_context=ctx)
     finally:
         _ENGINE_STATE.reset(token)
 
@@ -421,7 +415,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, 
         child_ctx = _splice_kwargs_at_slot(parent_context or {}, self_key, merged_kwargs, receiver_cls=data.target)
         # Routing entries ('**'/'*' glob blocks, STRICT sub-blocks) are
         # addressing metadata: they ride in child_ctx only, never into the
-        # marker's kwargs (→ ctor / post-init / dump / resolve() output).
+        # marker's kwargs (→ ctor / post-init / dump / settled output).
         # A slot a BLOCK delivered was arbitrated at the block's position (C2): the bare
         # keys the block out-positioned must not reach the marker nested at that slot
         # through the child view — where the slot sits at THIS marker's earlier position
@@ -452,7 +446,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, 
         res_obj.kwargs = resolved_kwargs
         # Keep the ADDRESSED/BARE split the pass above computed. `resolved_kwargs`
         # is a plain dict on purpose (a `_View` would leak a dict SUBCLASS into
-        # `resolve()` output, `dump()` and anything that pickles a marker), so the
+        # settled output, `dump()` and anything that pickles a marker), so the
         # provenance rides as a frozenset of names instead. Its one reader routes a
         # `**kwargs` constructor's arguments — see `_flow_target`.
         res_obj._addressed_keys = frozenset(
@@ -488,7 +482,7 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, 
     #    a reference to a plain VALUE is inlined now rather than left as a late-bound
     #    marker for a consumer to materialize later (F5). The result: hydraide's
     #    document is CLOSED — no `_ref_` survives — and construction never resolves a
-    #    reference. Unresolvable → a located error, on `resolve()` and `load()` alike.
+    #    reference. Unresolvable → a located error, at `until="settled"` and `"objects"` alike.
     if isinstance(data, Reference):
         return _settle_reference(data, parent_context)
 

@@ -164,7 +164,7 @@ def test_round_trip_of_marked_class() -> None:
 
     marker = Target("MarkedParam")
     marker.kwargs.update({"name": "kept", "strength": 4.0})
-    reloaded = load(dump(flow(marker)), flow=False)
+    reloaded = load(dump(flow(marker)), until="document")
     rebuilt = flow(reloaded)
     assert rebuilt.name == "kept" and rebuilt.strength == 4.0
 

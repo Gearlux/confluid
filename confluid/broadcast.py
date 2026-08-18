@@ -70,7 +70,7 @@ class _Clearable(Protocol):
 _ClearableT = TypeVar("_ClearableT", bound=_Clearable)
 
 #: Every per-pass introspection cache, cleared together at each entry point
-#: (``materialize()`` / ``resolve()`` / ``configure()``) via
+#: (``load()`` — every stage — and ``configure()``) via
 #: :func:`clear_pass_caches`. A module OWNING such a cache registers it at
 #: import time (``engine._parent_blacklist_cache`` does) — ownership stays with
 #: the owning module, the clear happens in ONE place. The five-line clear block
@@ -237,7 +237,7 @@ def _dotted_name(target: Any) -> str:
 #: until 2026-08-11. It is asked once per (view entry × marker) — 113,000 times
 #: for a 2,500-marker tree, 50,002 of which reached ``resolve_class`` — and it is
 #: a pure function of its two arguments within a pass. Measured: 9.5 % of
-#: ``materialize()`` on ``examples/performance.py``.
+#: ``load()`` on ``examples/performance.py``.
 _same_target_cache: Dict[Any, bool] = register_pass_cache({})
 
 

@@ -1,13 +1,13 @@
 """Introspection without cost — companion to ``docs/introspection.md``.
 
-Contrasts ``resolve()`` (pure Fluid markers, nothing constructed) with
-``materialize(..., solidify=False)`` (live-but-inert objects), narrows a node
+Contrasts ``load(until="settled")`` (pure Fluid markers, nothing constructed) with
+``load(..., solidify=False)`` (live-but-inert objects), narrows a node
 with ``cast``, and closes with a ``dump`` -> ``load`` round-trip.
 """
 
 from typing import Optional
 
-from confluid import Target, cast, configurable, dump, load, materialize, resolve
+from confluid import Target, cast, configurable, dump, load
 
 
 @configurable
@@ -33,13 +33,13 @@ backbone: !class:Backbone
 
 
 def main() -> None:
-    # (a) resolve(): broadcast-resolved MARKERS — nothing is instantiated.
-    markers = resolve(load_config_text(DOC))
+    # (a) load(until="settled"): broadcast-resolved MARKERS — nothing is instantiated.
+    markers = load(load_config_text(DOC), until="settled")
     assert isinstance(markers["backbone"], Target), "still a Fluid marker, not a live object"
-    print(f"resolve(): backbone stays a {type(markers['backbone']).__name__} marker")
+    print(f"load(until='settled'): backbone stays a {type(markers['backbone']).__name__} marker")
 
     # (b) solidify=False: constructed (cheap) but the expensive solidify() is suppressed.
-    inert = materialize(load_config_text(DOC), solidify=False)
+    inert = load(load_config_text(DOC), solidify=False)
     assert isinstance(inert["backbone"], Backbone) and inert["backbone"].built is None
     print(f"solidify=False: live Backbone, built={inert['backbone'].built}")
 
@@ -60,7 +60,7 @@ def main() -> None:
 
 
 def load_config_text(text: str) -> dict:
-    """Parse the YAML into the dict form ``resolve``/``materialize`` consume."""
+    """Parse the YAML into the dict form ``load`` consumes."""
     import yaml
 
     from confluid.loader import ConfluidLoader

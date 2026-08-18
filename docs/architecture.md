@@ -72,7 +72,7 @@ started raising (pinned by `tests/test_scopes.py::test_notscope_keyed_active_whe
   drifting apart — `discover_dimensions` once traversed `Fluid.kwargs` while `_resolve_value`
   did not, so a CLI advertised a dimension flag whose block resolution then ignored it.
 - **Discovery reads the RAW document.** By the time `load()` returns, the blocks have been
-  spliced away and there is nothing left to discover. Callers pass `load_config(...)` or
+  spliced away and there is nothing left to discover. Callers pass `load(..., until="raw")` or
   `yaml.load(..., Loader=ConfluidLoader)`.
 - **Breaking for a config relying on fall-through.** A "default" variant a consumer names
   unconditionally must now be *declared* — typically a block that restates what the unscoped
@@ -84,7 +84,7 @@ started raising (pinned by `tests/test_scopes.py::test_notscope_keyed_active_whe
 ```python
 from confluid import ScopeError, discover_dimension_values, load, load_config
 
-raw = load_config("experiment.yaml")
+raw = load("experiment.yaml", until="raw")
 discover_dimension_values(raw)          # {"task": {"classification", "segmentation"}}
 
 load(raw, scopes=["task=classifcation"])
@@ -130,7 +130,7 @@ config. The deferral mechanism failed on a signature shape, not on a semantic di
 
 1. The idempotency return calls `_maybe_solidify(obj)` before handing the object back, so the
    hook fires whichever way the object arrived. It still honours the `suppress_solidify` flag,
-   so `flow(obj, solidify=False)` / `materialize(..., solidify=False)` leave a live object inert
+   so `flow(obj, solidify=False)` / `load(..., solidify=False)` leave a live object inert
    exactly as they leave a constructed one.
 2. `flow(obj, *runtime_args, solidify=True, **runtime_kwargs)` threads positional args to the
    call: `target(*runtime_args, **merged_kwargs)`. They are runtime-only — never stored on a
@@ -636,7 +636,7 @@ Three alternatives were rejected, each for a stated reason:
   depend on *when* a deferred slot is built (an environment change between load and
   `configure_optimizers` changes the run), and duplicate a channel that exists: `!ref:` to a
   plain key is the late-binding mechanism, and stays it.
-- *A full `resolve()` walk of the kwargs* — that would also parse `"!ref:"`/`"!class:"` strings
+- *A full `load(until="settled")` walk of the kwargs* — that would also parse `"!ref:"`/`"!class:"` strings
   and eagerly resolve `Reference` fluids, changing when deferred values bind. Only text
   substitution happens; strings keep their prefixes for flow-time parsing, matching the
   top-level order (interpolate first, parse later).
@@ -646,7 +646,7 @@ Three alternatives were rejected, each for a stated reason:
 
 **Consequences.** `dump()` emits the substituted value, so a reload in a different environment
 reproduces this run — reproducibility over freshness, by design. A deferred `!lazy:` slot flowed
-later sees the load-time value. A hand-built marker passed through `materialize()` gets its
+later sees the load-time value. A hand-built marker passed through `load()` gets its
 kwargs rewritten in place; a template reused across environments would keep the first
 environment's values (accepted as exotic; see below).
 
@@ -661,7 +661,7 @@ opt: !lazy:Sink()
 `dump()` of the loaded marker emits `/store/exp42` — changing `DATA_ROOT` and reloading the dump
 reproduces the original run.
 
-**What you may change.** Not to a full `resolve()` of kwargs (it changes when deferred values
+**What you may change.** Not to a full `load(until="settled")` of kwargs (it changes when deferred values
 bind), and not to flow-time substitution (it re-opens the two-answers problem as a
 *when*-you-flow dependence). A memoized-copy variant — one copy per marker per pass, preserving
 aliasing — is an acceptable refinement if in-place mutation of hand-built templates ever bites
@@ -1408,7 +1408,7 @@ YAML anchors, and deferral is `_partial_: true`. The runtime consumes that docum
 construction of every `_target_` (Hydra's `instantiate` shape), anchors sharing one instance via
 the id-memo, `_partial_` deferring. `configure()` reuses the same rule by way of the document —
 `dump()` the object graph, resolve overrides against it with hydraide, apply the resulting explicit
-paths — so the rule exists once and no path re-derives it. Most of this exists: `resolve()` IS
+paths — so the rule exists once and no path re-derives it. Most of this exists: `load(until="settled")` IS
 passes 1–7, `dump()` IS a serializer, and `confluid-migrate` carried the tag line-grammar; hydraide
 replaces `confluid-migrate` outright.
 
@@ -1497,7 +1497,7 @@ The FIRST segment of a dotted `!ref:` decides what it is: a document key walks S
 document key and whose structural walk misses — `!ref:split.train` reading a property of the
 built object, `!ref:obj.build()` calling a method — is REFUSED by
 `resolver.refuse_attribute_reference` with the node's `file:line:col` and the rewrite, on both
-paths: `load()` and `resolve()`, so hydraide reports it (the same located message) instead of
+paths: `load()` and `load(until="settled")`, so hydraide reports it (the same located message) instead of
 emitting `_ref_: split.train` unresolved as it did. The object policy is DELETED (the
 `getattr_fallback` walker arm, `_materialize_cursor` and its lazy seam into `engine`, the trailing
 `()` grammar, `_EngineState.structural`); the resolver constructs nothing any more, so the two
@@ -1522,7 +1522,7 @@ kwargs resolves; and a plain mapping whose key references a same-named outer key
 (`r: {val_fraction: !ref:val_fraction}`) recurses forever in `Resolver.resolve` — the reason the
 recipe is anchored on a marker, not on a plain mapping.
 
-*Phase 3 landed 2026-08-17 — the runtime consumes the settled document.* `materialize()` is now
+*Phase 3 landed 2026-08-17 — the runtime consumes the settled document.* `load()` is now
 `_flow_recursive` (pass 7, the ONE broadcast/reference pass — what `emit` serializes) followed by
 `instantiate` (pass 8), which builds every `Target` at any depth from its settled kwargs; the
 second cascade into a marker's own kwargs at construction is gone (`_flow_target` feeds the
@@ -1531,7 +1531,7 @@ runs at the same wall time the non-constructing one did. References are settled 
 (`_settle_reference`): a reference to a marker shares it, a reference to a plain value is
 INLINED, a miss is a located error — so the emitted document is CLOSED (no `_ref_`) and F4, F5
 and F6 close by construction (F4: `instantiate` recurses through plain containers; F5: nothing is
-late-bound after `load()`, the CLI-override contract is `load(flow=False)` → merge → `materialize`,
+late-bound after `load()`, the CLI-override contract is `load(until="document")` → merge → `load(document)`,
 which is what the app framework already did; F6: a scope never answers a reference with the
 reference itself — the self-hit is skipped on the pass-5 marker-aliasing probe and in pass 7).
 **Two things the plan expected to leave the engine did NOT, and the reason is measured, not
@@ -1552,7 +1552,7 @@ Hydra-parseable either way because it carries no references at all.
 **named)` is now `dumper.to_markers(objs)` (the objects as a marker document — the SAME
 reconstruction rule `dump()` uses, factored into `dumpable_kwargs`) → the config merged after it
 (a key naming an object tunes its marker in place, so a bare key beside it still competes on
-position) → `resolve()` (pass 7, recording into the call's report) → `_apply`, which writes the
+position) → `load(until="settled")` (pass 7, recording into the call's report) → `_apply`, which writes the
 settled values back: a plain value is set under the init policy, a marker at a slot holding a
 marker is tuned in place (identity kept, markers inside it stay markers), a marker standing for a
 live child recurses, a marker the config introduced is built or kept deferred, a mapping at a slot
@@ -1579,3 +1579,69 @@ The mechanism for F10/F11 is the slot KEY threaded through pass 7 (`_flow_recurs
 first fix cost 15 % of a resolve. And the C2 verdict is applied inside pass 7 (`_view_for(slot)`
 pops the beaten bare keys — and a rider's — for the descent into a block-delivered slot), which is
 what makes the settled document the answer `configure()` can apply.
+
+## 20. `load()` is the ONE door — every stop point is a stage, not a name
+
+*2026-08-17.*
+
+**Context.** The document pipeline has four places a caller may want to stop (see [The
+Lifecycle](lifecycle.md) → "Where you can stop"): after the raw read (scope discovery must see the
+`_scope_` blocks before pass 4 splices them away), after the Fluid IR (a CLI merges its overrides
+here, BEFORE pass 7 inlines `${ref:}` values), after pass 7 (a graph editor's YAML→graph import,
+`hydraide`), and after construction. Those four stops were reachable through FIVE public names —
+`load_config(path)`, `load(x, flow=False)`, `resolve(x)`, `load(x)` / `materialize(parsed)` — plus
+`load_config_with_paths(path)` for the include tree, and the names were not even parallel:
+`load_config` took a path only (no text form of the raw stage), `resolve` was a separate function
+where the pass-6 stop was a flag on `load`, and `materialize` — measured against `load` on the same
+inputs — gave the identical result on a dict, on a marker with a `context=`, and on a fragment,
+differing on exactly one input: a LIST root, which `load` handed back unbuilt (`if not
+isinstance(data, dict): return data`) while `materialize` built. That difference was a wart in
+`load`, not a reason for a second name. The census the fold rested on: `materialize` had 13
+workspace callers, every one expressible as `load(...)`; `resolve` had 2; `load_config` 3 (two of
+which needed the raw document, one of which did not); `load_config_with_paths` 1. One consumer
+called `materialize` on raw YAML TEXT — which `materialize` never parsed — and got the string back.
+
+**Decision.** `load(data, *, until: Stage = "objects", context, scopes, solidify, return_paths)`
+is the one door. `Stage = Literal["raw", "document", "settled", "objects"]` names the STATE handed
+back (`_STAGES = get_args(Stage)` is the runtime tuple; an unknown value raises `ConfigurationError`
+rather than defaulting to objects). `load` accepts a path, YAML text or already-parsed data of any
+shape and runs the passes the input still needs; passes already applied are idempotent, so
+`load(load(x, until="document")) == load(x)`. `return_paths=True` returns `(result, paths)` —
+every file read for that call, in order, deduplicated. The four folded names and the `flow=` kwarg
+are REMOVED (deleted, not aliased — the same treatment `Class` / `Instance` / `Lazy` got in
+2026-08-11: a name that keeps working is a name nobody migrates off). Inside the engine,
+`materialize` (passes 7–9) and `settle` (pass 7, formerly `resolve` minus its str/Path
+convenience) remain as the PREPARED-data functions `load` calls — importable from
+`confluid.engine`, not exported.
+
+**Consequences.** One name to learn, one signature to document, one row in the API index. The
+raw stage gains a TEXT and a DICT form for free (`load("include: base.yaml", until="raw")`), so
+scope discovery no longer needs a file. A list root builds. `return_paths` now also lists a file an
+ACTIVATED SCOPE BLOCK spliced in — the old wrapper wrapped only the pre-scope read, so those files
+were read but never listed. The engine's last lazy seam (`engine.resolve` body-importing
+`loader.load`) is gone: `broadcast → engine → loader` is the only direction, and the engine works
+on prepared data only. Two behaviour changes rode along, each pinned with its con case: a `Path`
+instance, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE and a missing one raises
+`ConfigFileNotFoundError` — folding `load_config` (which raised) into `load` (which parsed
+`"missing.yaml"` as YAML text and returned the string) required choosing, and the raise is the
+answer that does not let a typo'd path load as nothing; a bare word (`load("hello")`) still parses
+as text. Cost: a `load()` on already-loaded data re-runs passes 4–6 (idempotent, microseconds on
+a real document) — accepted for one door.
+
+**Example.**
+
+```python
+from confluid import load, discover_dimensions
+
+raw = load("experiment.yaml", until="raw")               # passes 1–3: scope blocks intact
+dims = discover_dimensions(raw)                          # what a CLI binds as --flags
+document = load(raw, until="document", scopes=["framework=torch"])   # 1–6: merge overrides here
+document["lr"] = 0.3
+settled = load(document, until="settled")                # 1–7: markers with final kwargs, nothing built
+objects = load(document)                                 # 1–9: live objects
+objects, paths = load("experiment.yaml", return_paths=True)          # + every file read
+```
+
+**What you may change.** The stage NAMES (they are a Literal, one place). Not the shape: do not add
+a second entry function for a stage, do not re-add `flow=`, and do not make a stage reachable
+only for one input shape — the raw stage's path-only history is exactly what this record closes.

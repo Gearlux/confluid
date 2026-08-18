@@ -136,7 +136,7 @@ For a structured, assertable version of the same information — every applied
 key with its receiver and origin, plus failed and unused keys — see
 [Configuration Reports](report.md): `configure()` returns a
 `ConfigurationReport`, and `collect_report()` collects one across a
-`load()` / `materialize()` pass.
+`load()` pass.
 
 ## Classes with `**kwargs` constructors
 

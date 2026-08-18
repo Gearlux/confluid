@@ -46,7 +46,7 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import Target, configurable, get_registry, materialize
+from confluid import Target, configurable, get_registry, load
 
 
 def _inst(target: str, /, **kwargs: Any) -> Target:
@@ -114,7 +114,7 @@ def test_own_kwargs_do_not_cascade_through_wrapper() -> None:
         ops=["heavy_a", "heavy_b"],
         source=_inst("_Wrapper", children=[_inst("_Outer"), _inst("_Outer")]),
     )
-    root = materialize(config)
+    root = load(config)
     assert isinstance(root, _Outer)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert isinstance(root.source, _Wrapper)
@@ -138,7 +138,7 @@ def test_glob_restores_the_old_cascade_deliberately() -> None:
         source=_inst("_Wrapper", children=[_inst("_Outer"), _inst("_Outer")]),
         **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
-    root = materialize(config)
+    root = load(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == ["heavy_a", "heavy_b"]
     assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
@@ -167,7 +167,7 @@ def test_inner_overrides_beat_an_EARLIER_glob_cascade() -> None:
             ],
         ),
     )
-    root = materialize(config)
+    root = load(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == ["heavy_a", "heavy_b"]
@@ -181,7 +181,7 @@ def test_a_LATER_glob_cascade_beats_an_inner_own_value() -> None:
         source=_inst("_Wrapper", children=[_inst("_Outer", ops=[]), _inst("_Outer")]),
         **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
-    root = materialize(config)
+    root = load(config)
     assert root.source.children[0].ops == ["heavy_a", "heavy_b"]
 
 
@@ -212,7 +212,7 @@ def test_override_at_wrapper_shields_inner_classes() -> None:
         ),
         **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
-    root = materialize(config)
+    root = load(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == []

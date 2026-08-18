@@ -5,7 +5,7 @@ Every `@configurable` class has its `__init__` wrapped at decoration time to val
 | Point | When it runs | Policy field | Env var |
 |---|---|---|---|
 | Constructor | Every direct Python instantiation | `policy.init` | `CONFLUID_VALIDATE_INIT` |
-| YAML materialization | `confluid.flow()` / `materialize()` / `load()` instantiating a `_target_` marker | `policy.yaml` | `CONFLUID_VALIDATE_YAML` |
+| YAML materialization | `confluid.flow()` / `load()` instantiating a `_target_` marker | `policy.yaml` | `CONFLUID_VALIDATE_YAML` |
 | Tool entry | An MCP/agent tool server validating a config payload before dispatching a run | `policy.tool` | `CONFLUID_VALIDATE_TOOL` |
 
 All three default to `"strict"` — pydantic `ValidationError` is raised. `"warn"` logs the error to `confluid.validation` and lets the call proceed. `"off"` skips validation entirely.

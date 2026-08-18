@@ -1,6 +1,6 @@
 """Phase 3 of record 19 — the runtime consumes hydraide's document.
 
-The precedence rule runs ONCE, in pass 7 (``resolve()`` — what ``hydraide`` emits). Construction
+The precedence rule runs ONCE, in pass 7 (``load(until="settled")`` — what ``hydraide`` emits). Construction
 is ``instantiate``: it walks the settled tree and builds every ``Target`` recursively — no second
 broadcast into a marker's own kwargs, no late-bound top-level ``Reference``. Consequences pinned
 here, each as a before/after the docstrings name:
@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 import yaml
 
-from confluid import ConfigurationError, Partial, PartialClass, configurable, flow, load, materialize
+from confluid import ConfigurationError, Partial, PartialClass, configurable, flow, load
 from confluid.fluid import Reference, Target
 from confluid.hydraide import emit
 
@@ -140,10 +140,10 @@ def test_a_top_level_list_index_reference_is_the_value_after_load() -> None:
 def test_the_cli_override_contract_is_load_flow_false_then_materialize() -> None:
     """A CLI merges overrides into the DOCUMENT and materializes it — the shape the app framework
     uses; the reference is re-resolved against the merged document, no late-bound marker needed."""
-    doc = load("labels: [a, b, c]\nidx: 2\npick: !ref:labels[idx]\n", flow=False)
-    assert materialize(doc)["pick"] == "c"
+    doc = load("labels: [a, b, c]\nidx: 2\npick: !ref:labels[idx]\n", until="document")
+    assert load(doc)["pick"] == "c"
     doc["idx"] = 0  # the override lands in the document, before pass 7
-    assert materialize(doc)["pick"] == "a"
+    assert load(doc)["pick"] == "a"
 
 
 # --------------------------------------------------------------------------- #
@@ -222,10 +222,9 @@ def test_a_body_slot_marker_created_in_init_still_receives_the_documents_bare_ke
 def test_construction_does_not_rerun_the_precedence_rule() -> None:
     """A marker whose kwargs pass 7 settled is built from those kwargs alone: handing `flow()` a
     context with a DIFFERENT bare value changes nothing, because the contest was settled once."""
-    settled = load("m: !class:IM(hidden=4)\nlr: 0.9\n", flow=False)  # markers, unsettled
-    from confluid import resolve
+    settled = load("m: !class:IM(hidden=4)\nlr: 0.9\n", until="document")  # markers, unsettled
 
-    marker = resolve(settled)["m"]
+    marker = load(settled, until="settled")["m"]
     assert marker.kwargs["lr"] == 0.9
     assert flow(marker).lr == 0.9
-    assert materialize(marker, context={"lr": 0.1}).lr == 0.9  # a second broadcast would say 0.1
+    assert load(marker, context={"lr": 0.1}).lr == 0.9  # a second broadcast would say 0.1

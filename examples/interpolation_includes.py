@@ -2,16 +2,16 @@
 
 Writes a two-file include tree to a temp directory, then shows env-var
 interpolation (``${VAR}``), config-key interpolation (``${dotted.path}``, native
-type preserved on a whole-string match), and ``load_config_with_paths`` returning
+type preserved on a whole-string match), and ``load(..., return_paths=True)`` returning
 every contributing YAML file. Note interpolation is applied at MATERIALIZATION
-(``load`` / ``materialize`` / ``resolve``) — ``load_config`` returns the raw parse.
+(``load`` from ``until="document"`` on) — ``load(until="raw")`` returns the raw parse.
 """
 
 import os
 import tempfile
 from pathlib import Path
 
-from confluid import configurable, load, load_config_with_paths
+from confluid import configurable, load
 
 
 @configurable
@@ -54,7 +54,7 @@ port: "${env:EXAMPLE_MISSING_PORT,8080}"
         )
 
         # The include tree: entrypoint first, then each transitively include:-d file.
-        raw, paths = load_config_with_paths(experiment)
+        raw, paths = load(experiment, until="raw", return_paths=True)
         assert "${env:EXAMPLE_DATA_ROOT}" in raw["data_dir"], "load_config returns the RAW parse"
 
         # Interpolation happens at materialization — load() the same file.

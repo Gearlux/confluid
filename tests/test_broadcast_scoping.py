@@ -15,7 +15,7 @@ The ONE rule, restated:
 * ``*``/``**``-delivered keys are cascade keys and honour the NoBroadcast
   opt-outs like bare keys; exact addressed keys bypass them like blocks.
 
-Every scenario is pinned through BOTH paths: ``materialize()`` (the engine)
+Every scenario is pinned through BOTH paths: ``load()`` (the engine)
 and ``configure()`` (post-construction, live objects) — the ONE-rule parity
 mandate.
 """
@@ -24,7 +24,7 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import NoBroadcast, configurable, configure, get_registry, load, materialize, resolve
+from confluid import NoBroadcast, configurable, configure, get_registry, load
 from confluid.dumper import dump
 from confluid.fluid import Target
 
@@ -135,7 +135,7 @@ def test_nested_block_is_exact_configure() -> None:
 def test_own_kwargs_do_not_cascade_materialize() -> None:
     """A marker's own kwargs configure that marker only (same rule as blocks)."""
     config = _inst("_Node", name="root", lr=0.5, child=_inst("_Node", name="mid"))
-    root = materialize(config)
+    root = load(config)
     assert root.lr == 0.5
     assert root.child.lr == 0.0
 
@@ -309,7 +309,7 @@ def test_glob_then_later_exact_exact_wins_configure() -> None:
 
 def test_glob_keys_never_reach_instances_or_dump() -> None:
     config = _inst("_Node", name="root", child=_inst("_Node", name="mid"), **{"**": {"lr": 0.5}})
-    root = materialize(config)
+    root = load(config)
     assert root.lr == 0.5
     assert root.child.lr == 0.5
     assert not hasattr(root, "**")
@@ -321,7 +321,7 @@ def test_glob_keys_never_reach_instances_or_dump() -> None:
 
 def test_resolve_strips_glob_routing_from_marker_kwargs() -> None:
     config = {"root": _inst("_Node", name="root", child=_inst("_Node", name="mid"), **{"**": {"lr": 0.5}})}
-    markers = resolve(config)
+    markers = load(config, until="settled")
     root_marker = markers["root"]
     assert "**" not in root_marker.kwargs
     assert root_marker.kwargs["lr"] == 0.5  # applied to the introducing node
