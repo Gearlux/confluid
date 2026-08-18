@@ -279,11 +279,11 @@ def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None)
 
 def test_lazy_tag_stays_deferred_with_any_grammar(_register_grammar_model: None) -> None:
     """``!lazy:`` always produces a deferred ``Partial`` — parens or not, block or not."""
-    from confluid.fluid import Partial
+    from confluid.fluid import PartialClass
 
-    assert isinstance(load("m: !lazy:Model\n")["m"], Partial)
-    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], Partial)
-    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], Partial)
+    assert isinstance(load("m: !lazy:Model\n")["m"], PartialClass)
+    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], PartialClass)
+    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], PartialClass)
 
 
 def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
@@ -489,7 +489,7 @@ def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch:
     stay late-bound uses ``!ref:`` instead.
     """
     from confluid import configurable, dump, load
-    from confluid.fluid import Partial
+    from confluid.fluid import PartialClass
 
     @configurable
     class _LazySrc:
@@ -498,7 +498,7 @@ def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch:
 
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
     marker = load('opt: !lazy:_LazySrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/opt"\n')["opt"]
-    assert isinstance(marker, Partial)  # construction still deferred
+    assert isinstance(marker, PartialClass)  # construction still deferred
     assert marker.kwargs["input_dir"] == "/store/opt"
     dumped = dump({"opt": marker})
     assert "/store/opt" in dumped and "${" not in dumped

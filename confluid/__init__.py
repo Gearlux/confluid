@@ -37,9 +37,7 @@ from confluid.exceptions import (
     ValidationModeError,
     WorkspaceEnvError,
 )
-from confluid.fluid import Fluid
-from confluid.fluid import Partial as PartialClass
-from confluid.fluid import Reference, Target, format_yaml_loc
+from confluid.fluid import Fluid, PartialClass, Reference, Target, format_yaml_loc
 from confluid.llm_schema import sanitize_schema
 from confluid.loader import get_app_name, load, resolve_config_path, set_app_name
 from confluid.mandatory import Mandatory, mandatory_param_names

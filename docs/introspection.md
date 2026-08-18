@@ -34,7 +34,7 @@ markers = load("config.yaml", until="settled")        # {key: Target / Partial /
 graph = load(data, solidify=False)   # also load(..., solidify=False) / flow(obj, solidify=False)
 ```
 
-Both leave `Partial` (`_partial_: true`) slots deferred and default behaviour unchanged (`solidify=True`).
+Both leave `PartialClass` (`_partial_: true`) slots deferred and default behaviour unchanged (`solidify=True`).
 
 **`load(until="settled")` constructs NOTHING — and no reference can make it.** A structural dotted
 reference (`${ref:cfg.lr}`) stays a `Reference` under `load(until="settled")`, exactly as a plain

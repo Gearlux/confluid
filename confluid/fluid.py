@@ -141,12 +141,12 @@ class Target(Fluid):
     regardless of what surrounds it.
 
     There are exactly TWO construction modes, and :attr:`partial` is the whole
-    difference: ``False`` here, ``True`` on :class:`Partial`. Nothing about the
+    difference: ``False`` here, ``True`` on :class:`PartialClass`. Nothing about the
     parent, the nesting depth or the document position changes whether a marker
     is built.
 
     Until 2026-08-11 there were three modes: ``Instance`` (built), ``Class``
-    (built only when its parent was NOT ``@configurable``) and ``Partial`` (never
+    (built only when its parent was NOT ``@configurable``) and ``PartialClass`` (never
     built). The middle one was unnecessary — its documented purpose was to let
     broadcasting reach a node before construction, but broadcasting is pass 7
     and construction is pass 8, so a BUILT node already receives every cascading
@@ -208,7 +208,7 @@ class ScopeBlock:
         return f"{marker}: {{{spec}}} {self.contents!r}"
 
 
-class Partial(Target, Generic[T]):
+class PartialClass(Target, Generic[T]):
     """A :class:`Target` that materialization NEVER builds.
 
     Written ``_partial_: true`` in YAML (the deprecated tag spelling parses to the
@@ -219,13 +219,13 @@ class Partial(Target, Generic[T]):
     case is an optimizer needing ``params=model.parameters()``; a model needing
     ``num_classes`` from the dataset is the same shape.
 
-    **Deferral withholds CONSTRUCTION only.** A ``Partial`` is broadcast into and
+    **Deferral withholds CONSTRUCTION only.** A ``PartialClass`` is broadcast into and
     configured exactly like a built target — merging keys into ``kwargs``
     constructs nothing — so ``lr: 0.001`` still tunes a deferred optimizer.
 
-    Optionally parameterized as ``Partial[T]`` (e.g. ``PartialClass[Metric]``) to
+    Optionally parameterized as ``PartialClass[T]`` (e.g. ``PartialClass[Metric]``) to
     document the type it builds once flowed. ``T`` is a *phantom* parameter, never
-    bound from ``target``, so ``PartialClass(Adam)`` stays ``Partial[Any]`` and the
+    bound from ``target``, so ``PartialClass(Adam)`` stays ``PartialClass[Any]`` and the
     subscript is purely an intent annotation. Mirrors the Python-side
     ``confluid.Partial[T]`` *annotation* alias at the fluid layer: the tag defers a
     VALUE, the annotation defers a SLOT.
@@ -235,19 +235,3 @@ class Partial(Target, Generic[T]):
 
     def __init__(self, target: Union[Callable[..., Any], str], **kwargs: Any) -> None:
         super().__init__(target, **kwargs)
-
-
-def __getattr__(name: str) -> Any:
-    """Compat: ``flow`` moved to ``confluid.engine`` (2026-07).
-
-    Served lazily so ``from confluid.fluid import flow`` keeps working for
-    downstream code without reintroducing a fluid→engine import cycle at
-    module-load time (engine imports fluid's markers at its top level).
-    The ``cast`` arm was pruned 2026-08-08 — zero users workspace-wide;
-    import it from ``confluid`` (public) or ``confluid.engine``.
-    """
-    if name == "flow":
-        from confluid import engine
-
-        return engine.flow
-    raise AttributeError(f"module 'confluid.fluid' has no attribute {name!r}")

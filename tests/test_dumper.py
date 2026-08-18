@@ -161,7 +161,7 @@ def test_a_stored_variadic_bundle_is_not_dumped() -> None:
 
 def test_dump_non_configurable_with_confluid_origin() -> None:
     """Objects created via Target/flow() retain origin metadata for dump."""
-    from confluid.fluid import Target, flow
+    from confluid import Target, flow
 
     class Metric:
         def __init__(self, num_classes: int = 10) -> None:
@@ -177,7 +177,7 @@ def test_dump_non_configurable_with_confluid_origin() -> None:
 
 def test_dump_non_configurable_in_configurable_parent() -> None:
     """Non-configurable objects nested inside configurable ones serialize correctly."""
-    from confluid.fluid import Target, flow
+    from confluid import Target, flow
 
     class Metric:
         def __init__(self, average: str = "macro") -> None:
@@ -199,7 +199,7 @@ def test_dump_non_configurable_in_configurable_parent() -> None:
 
 def test_dump_non_configurable_round_trip() -> None:
     """Dump/load round-trip for non-configurable objects preserves kwargs."""
-    from confluid.fluid import Target, flow
+    from confluid import Target, flow
 
     class Widget:
         def __init__(self, size: int = 3, color: str = "red") -> None:

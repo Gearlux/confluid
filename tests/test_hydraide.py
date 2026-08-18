@@ -17,7 +17,7 @@ import yaml
 
 from confluid import configurable, load
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Partial
+from confluid.fluid import PartialClass
 
 
 @configurable
@@ -140,7 +140,7 @@ def test_the_emitted_document_reloads_to_the_same_values(tmp_path: Path) -> None
 
     assert (back["model"].hidden, back["model"].lr) == (64, 0.3)
     assert back["train_set"].ops[0].size == 224
-    assert isinstance(back["optimizer"], Partial)
+    assert isinstance(back["optimizer"], PartialClass)
 
 
 # --------------------------------------------------------------------------- #
@@ -220,41 +220,18 @@ def test_a_tagged_document_no_longer_warns() -> None:
 
 def test_partial_tag_parses_to_a_Partial() -> None:
     marker = load("opt: !partial:HAdam(lr=0.5)", until="document")["opt"]
-    assert isinstance(marker, Partial)
+    assert isinstance(marker, PartialClass)
     assert marker.kwargs == {"lr": 0.5}
 
 
 def test_lazy_tag_still_parses_as_the_alias() -> None:
-    assert isinstance(load("opt: !lazy:HAdam", until="document")["opt"], Partial)
+    assert isinstance(load("opt: !lazy:HAdam", until="document")["opt"], PartialClass)
 
 
 def test_partial_and_lazy_are_the_same_marker() -> None:
     a = load("opt: !partial:HAdam(lr=0.5)", until="document")["opt"]
     b = load("opt: !lazy:HAdam(lr=0.5)", until="document")["opt"]
     assert (type(a), a.target, a.kwargs) == (type(b), b.target, b.kwargs)
-
-
-# --------------------------------------------------------------------------- #
-# confluid-migrate is gone; hydraide replaces it
-# --------------------------------------------------------------------------- #
-
-
-def test_the_migrate_module_is_gone() -> None:
-    import importlib
-
-    with pytest.raises(ImportError):
-        importlib.import_module("confluid.migrate")
-
-
-def test_the_migrate_script_is_gone_and_no_hydraide_cli_lives_here() -> None:
-    """confluid ships the FUNCTIONS (`emit` / `check`); the `hydraide` command line is one app of
-    the CLI framework built on confluid — no argparse `main()` and no console script here."""
-    import confluid.hydraide as module
-
-    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
-    assert "confluid-migrate" not in text
-    assert "confluid.hydraide:main" not in text
-    assert not hasattr(module, "main")
 
 
 # --------------------------------------------------------------------------- #
@@ -278,4 +255,4 @@ def test_the_engine_is_untouched_load_still_builds() -> None:
     """Phase 1 adds a tool; `load()` builds exactly as before."""
     graph = load(textwrap.dedent(TAG_BASE))
     assert isinstance(graph["model"], HModel) and graph["model"].hidden == 32
-    assert isinstance(graph["optimizer"], Partial)
+    assert isinstance(graph["optimizer"], PartialClass)

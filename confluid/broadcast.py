@@ -11,7 +11,7 @@ settability predicates.
 Split out of ``engine`` because the rule had been implemented TWICE — here and,
 over live objects, in ``configurator`` — and the two copies diverged four
 separate ways in a single day (which spellings deliver to a deferred slot,
-whether a ``Partial`` is eagerly flowed, whether a bare key reaches a deferred slot
+whether a ``PartialClass`` is eagerly flowed, whether a bare key reaches a deferred slot
 at all, and whether any of it was ordered). Three of those four failed silently.
 One module both callers import is what stops the fifth.
 
@@ -667,7 +667,7 @@ def dict_at_slot_kind(existing: Any) -> Literal["marker", "configurable", "assig
     Both paths dispatch on this (BUGS-2026-08-13, C1/C1b — the load path used to have
     only two of the four arms and assigned the raw dict over live children):
 
-    * ``"marker"``       — a ``Target`` (``Partial`` included): TUNE it (``tune_marker``);
+    * ``"marker"``       — a ``Target`` (``PartialClass`` included): TUNE it (``tune_marker``);
     * ``"configurable"`` — a live ``@configurable`` instance: walk INTO it and set fields;
     * ``"assign"``       — plain data (dict/list/scalar) or nothing: the mapping IS the value;
     * ``"opaque"``       — any other live object (a non-configurable instance, an

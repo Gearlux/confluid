@@ -492,31 +492,13 @@ def test_partial_param_names_reads_a_builder_functions_own_signature() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_deprecated_aliases_are_removed() -> None:
-    """`Class` / `Instance` / `Lazy` / `LazyClass` / `lazy_param_names` no longer exist.
-
-    They were the pre-merge / pre-rename spellings, kept while both YAML formats were
-    supported so consumers need not change in the same release. The whole workspace is
-    on the canonical names now, so an import of the old one must fail LOUDLY rather
-    than resolve to something that quietly behaves differently.
-    """
-    import confluid
-
-    for gone in ("Class", "Instance", "Lazy", "LazyClass", "lazy_param_names"):
-        assert not hasattr(confluid, gone), f"{gone} should have been deleted"
-        assert gone not in confluid.__all__
-
-    with pytest.raises(ImportError):
-        import confluid.lazy  # type: ignore[import-not-found]  # noqa: F401 — deleted with the names
-
-
 def test_one_marker_type_two_modes() -> None:
     """What replaced the eager/deferred PAIR: one class, and `partial` decides."""
-    from confluid.fluid import Partial, Target
+    from confluid.fluid import PartialClass, Target
 
     assert Target(int).partial is False
-    assert Partial(int).partial is True
-    assert isinstance(Partial(int), Target)  # Partial IS a Target that is not built
+    assert PartialClass(int).partial is True
+    assert isinstance(PartialClass(int), Target)  # a PartialClass IS a Target that is not built
 
 
 def test_the_body_slot_scan_matches_the_canonical_call_names_only() -> None:

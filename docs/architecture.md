@@ -214,7 +214,7 @@ silent:
 | | engine | configurator |
 |---|---|---|
 | a mapping at a *declared* key | value (own kwargs) / routing (named block) — inconsistent with **itself** | recursed *into* the marker |
-| a `Partial` in the eager-flow branch | excluded | **included** — deferred slots built eagerly |
+| a `PartialClass` in the eager-flow branch | excluded | **included** — deferred slots built eagerly |
 | a bare key → a deferred slot | merged into the marker's kwargs | applied to a throwaway, discarded |
 | ordering | positional | none — the bare key won either way |
 
@@ -442,7 +442,7 @@ build.
 
 Three rules follow, and they are load-bearing together:
 
-1. **Nothing auto-builds a `Partial`.** Not the recursive descent of a materialization pass, not the
+1. **Nothing auto-builds a `PartialClass`.** Not the recursive descent of a materialization pass, not the
    post-init attribute step, not an external deep-flow walker. A bare `Class` stub in the same
    position *is* built eagerly — that difference is the whole distinction between the two markers,
    and it is why a slot needing a runtime argument must be `!lazy:` and not `!class:`.
@@ -492,14 +492,14 @@ The third and fourth lines are the record in miniature: the same marker is fully
 still unbuildable, and only the caller that holds `params` can finish it.
 
 **What you may change.** Not rule 1, and specifically not by re-adding an early return for
-`Partial` in the kwarg-resolution path. That is the shape the original bug had: it read as "leave
+`PartialClass` in the kwarg-resolution path. That is the shape the original bug had: it read as "leave
 deferred values alone", which is right about building and wrong about configuring, and the
 result was that an identical marker behaved differently depending on whether it was written in a
 document or created in code. If a future change needs a value left entirely untouched, that is a
 *different* marker with a different name — do not overload this one.
 
 Rule 2's asymmetry with rule 1 is deliberate and worth keeping explicit: automatic walkers skip a
-`Partial`, a direct `flow()` does not. Making `flow()` also skip it would leave no way to build the
+`PartialClass`, a direct `flow()` does not. Making `flow()` also skip it would leave no way to build the
 object at all.
 
 ---

@@ -232,7 +232,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     space in ``!class:Model(a=1, b=2)`` produced a mangled target with both kwargs
     dropped and no error at all).
     """
-    from confluid.fluid import Partial, Reference, ScopeBlock, Target
+    from confluid.fluid import PartialClass, Reference, ScopeBlock, Target
 
     if _REMOVED_CLONE_KEY in mapping:
         raise ConfigurationError(
@@ -319,7 +319,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
         raise ConfigurationError(f"{PARTIAL_KEY} must be true or false (got {partial!r})")
     # ``kwargs`` assigned POST-construction: a config kwarg literally named
     # ``target`` collides with the marker ctor's own first parameter when splatted.
-    target = Partial(path.strip()) if partial else Target(path.strip())
+    target = PartialClass(path.strip()) if partial else Target(path.strip())
     target.kwargs.update(body)
     return target
 
@@ -487,7 +487,7 @@ def _register_constructors() -> None:
 
     Invoked exactly once at module import (see the call below the definition).
     """
-    from confluid.fluid import Partial, Reference, ScopeBlock, Target
+    from confluid.fluid import PartialClass, Reference, ScopeBlock, Target
 
     def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
         """Parse inline ``key=value`` pairs from a ``Name(...)`` tag suffix.
@@ -550,12 +550,12 @@ def _register_constructors() -> None:
 
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
-            return _stamp(_make_fluid(Partial, name, {**inline, **mapping}), loader, node)
+            return _stamp(_make_fluid(PartialClass, name, {**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
-            return _stamp(_make_fluid(Partial, name, inline), loader, node)
+            return _stamp(_make_fluid(PartialClass, name, inline), loader, node)
 
-        return _stamp(Partial(tag_suffix), loader, node)
+        return _stamp(PartialClass(tag_suffix), loader, node)
 
     def _build_scope(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node, *, negate: bool) -> Any:
         """Construct a ``ScopeBlock`` from any of the three YAML body shapes.

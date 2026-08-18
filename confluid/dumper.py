@@ -305,11 +305,11 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
     # fixed, small set of Fluid shapes, and the traversal below can only register
     # what it has seen. Doing it here closes the gap where a nested marker inside
     # another marker's kwargs would miss out and fall through to
-    # `represent_undefined`. PyYAML dispatches on EXACT type, so `Partial` needs
+    # `represent_undefined`. PyYAML dispatches on EXACT type, so `PartialClass` needs
     # its own entry even though it is a `Target` subclass.
-    from confluid.fluid import Partial, Reference, Target
+    from confluid.fluid import PartialClass, Reference, Target
 
-    for _fluid_cls in (Target, Partial, Reference):
+    for _fluid_cls in (Target, PartialClass, Reference):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
 
     # Catch-all fallback for opaque non-@configurable objects. PyYAML

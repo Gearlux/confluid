@@ -255,7 +255,7 @@ def _materialize_value(value: Any, visited: Dict[int, Any], report: Configuratio
     standing for a live MARKER (a deferred slot found inside a container) is tuned in place;
     a marker the config introduced is built — unless ``build`` is False, which is the case
     INSIDE a deferred marker's kwargs, where a marker stays a marker until the owner flows it
-    (exactly what the load path does with a bare marker delivered into a `Partial`).
+    (exactly what the load path does with a bare marker delivered into a `PartialClass`).
     """
     if isinstance(value, Target):
         live = _live_of(value)
