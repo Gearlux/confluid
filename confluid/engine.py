@@ -457,6 +457,16 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, 
         res_obj._late_bare_keys = late
         if flow_memo is not None:
             flow_memo[raw_id] = res_obj
+            # The memo keys on id(data). Until the pass-7 dict-at-slot tune landed
+            # (C1, 2026-08-14) every marker flowed here was owned by the document and
+            # outlived the pass, so this write needed no pin; ``_MergeSink.dict_at_slot``
+            # now feeds it ``tune_marker`` COPIES that die with ``merged_kwargs``, and a
+            # recycled address read as a HIT handed one trainer ANOTHER trainer's
+            # optimizer (BUGS-2026-08-19 BC1: 22 of 300, measured). Pin what the memo
+            # keys on, like every other id()-keyed store (architecture record 16).
+            keepalive = _ENGINE_STATE.get().memo_keepalive
+            if keepalive is not None:
+                keepalive.append(data)
         return res_obj
 
     # 3. Reference — resolved against the DOCUMENT ROOT, once, here (record 19, phase 3).
