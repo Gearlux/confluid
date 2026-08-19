@@ -304,6 +304,17 @@ def test_an_included_file_may_itself_carry_a_scoped_include(tmp_path: Path) -> N
     assert load(str(main), until="document") == {"depth": 2}
 
 
+def test_the_same_wrapper_key_in_an_included_and_the_including_file_merges(tmp_path: Path) -> None:
+    """BUGS-2026-08-19 PA4, end to end: both blocks condition on the same
+    dimension, so the activated result carries both files' keys."""
+    (tmp_path / "base.yaml").write_text("torch: !scope:framework=torch\n  lr: 0.1\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: base.yaml\ntorch: !scope:framework=torch\n  epochs: 5\n")
+
+    assert load(str(main), scopes=["framework=torch"], until="document") == {"lr": 0.1, "epochs": 5}
+    assert load(str(main), until="document") == {}
+
+
 def test_keys_after_a_scoped_include_still_override_it(tmp_path: Path) -> None:
     """Position semantics survive the extra pass: the block's own later key wins."""
     (tmp_path / "b.yaml").write_text("lr: 0.9\n")

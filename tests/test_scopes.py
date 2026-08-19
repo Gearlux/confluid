@@ -135,8 +135,8 @@ c: 3
     assert list(out.items()) == [("a", 1), ("b", 2), ("c", 3)]
 
 
-def test_splice_collision_keeps_original_position() -> None:
-    """When the unwrapped value's key already exists, the value wins but slot stays."""
+def test_splice_collision_last_value_wins() -> None:
+    """When the unwrapped value's key already exists, the block's value wins."""
     yaml_text = """
 val: 1
 if_debug: !scope:debug
@@ -145,6 +145,134 @@ if_debug: !scope:debug
     out = load(yaml_text, until="document", scopes=["debug"])
     assert out == {"val": 10}
     assert list(out.keys()) == ["val"]
+
+
+# ---------------------------------------------------------------------------
+# The splice follows the include-paste rule (BUGS-2026-08-19 SR1 / SR2 / PA2 /
+# PA3): a block's keys land at the WRAPPER's slot through the same per-key merge
+# `deep_merge` applies to an included file — a mapping over a marker TUNES it, a
+# nested block deep-merges, a restated key is RE-ANCHORED at the later position
+# — and so does a plain key written after a block. Plain assignment did none of
+# that: an active block deleted a marker, a nested block lost its other keys,
+# and a spliced key kept the EARLIER writer's position, so whether a later bare
+# key won flipped with the activation.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _Model:
+    def __init__(self, name: str = "a", depth: int = 1) -> None:
+        self.name = name
+        self.depth = depth
+
+
+@configurable
+class _Holder:
+    def __init__(self, model: Any = None) -> None:
+        self.model = model
+
+
+@configurable
+class _Stage:
+    def __init__(self, lr: float = 0.0, epochs: int = 1) -> None:
+        self.lr = lr
+        self.epochs = epochs
+
+
+def _register_splice_fixtures() -> None:
+    # the autouse fixture clears the registry before every test
+    for cls in (_Model, _Holder, _Stage):
+        confluid.register(cls)
+
+
+def test_a_block_mapping_at_a_marker_slot_TUNES_the_marker() -> None:
+    """SR1 — the activated mapping lands on the marker's kwargs; the marker is kept."""
+    _register_splice_fixtures()
+    text = """
+runnable: !class:_Holder
+  model: !class:_Model {name: a, depth: 3}
+  alt: !scope:big
+    model: {name: b}
+"""
+    inactive = load(text)["runnable"].model
+    assert (inactive.name, inactive.depth) == ("a", 3)
+    active = load(text, scopes=["big"])["runnable"].model
+    assert isinstance(active, _Model), f"the marker was replaced by {active!r}"
+    assert (active.name, active.depth) == ("b", 3)
+
+
+def test_a_block_mapping_at_a_nested_block_deep_merges() -> None:
+    """SR1 — the other keys of the nested block survive the activated override."""
+    text = "Trainer: {lr: 0.1, epochs: 5}\nif_x: !scope:x\n  Trainer: {lr: 0.9}\n"
+    assert load(text, scopes=["x"], until="document") == {"Trainer": {"epochs": 5, "lr": 0.9}}
+
+
+def test_a_block_re_stating_a_SCALAR_still_replaces_it() -> None:
+    """The con case: a scalar has nothing to merge — last value wins, as before."""
+    assert load("lr: 0.1\nif_x: !scope:x\n  lr: 0.9\n", scopes=["x"], until="document") == {"lr": 0.9}
+
+
+def test_a_spliced_key_lands_at_the_WRAPPERS_position() -> None:
+    """SR2 — the block's value is spliced at the wrapper's slot, so it beats a
+    bare key written BETWEEN the first writer and the wrapper (the same document
+    written flat, or through an include, already answered 0.5)."""
+    _register_splice_fixtures()
+    text = """
+_Stage: {lr: 0.2}
+lr: 0.1
+if_x: !scope:x
+  _Stage: {lr: 0.5}
+s: !class:_Stage
+"""
+    doc = load(text, scopes=["x"], until="document")
+    assert list(doc) == ["lr", "_Stage", "s"], f"spliced key kept the earlier position: {list(doc)}"
+    assert load(text, scopes=["x"])["s"].lr == 0.5
+    assert load("lr: 0.1\n_Stage: {lr: 0.5}\ns: !class:_Stage\n")["s"].lr == 0.5  # the flat spelling agrees
+
+
+def test_a_plain_key_written_AFTER_a_block_lands_at_its_own_position() -> None:
+    """PA3 — activating a block that only supplies a default must not flip which
+    of two LATER lines wins: `lr: 2` is written after `_Stage: {lr: 7}` either way."""
+    _register_splice_fixtures()
+    text = """
+defaults: !scope:x
+  lr: 1
+_Stage: {lr: 7}
+lr: 2
+s: !class:_Stage
+"""
+    assert load(text)["s"].lr == 2
+    assert load(text, scopes=["x"])["s"].lr == 2
+
+
+def test_a_plain_key_written_AFTER_a_block_merges_with_what_the_block_spliced() -> None:
+    """The later plain key is the overlay: a nested block deep-merges (its own
+    keys win), a marker written later REPLACES a block-spliced mapping (a marker
+    is a new node — the same rule `deep_merge` applies to an included file)."""
+    merged = load("if_x: !scope:x\n  _Stage: {lr: 0.9, epochs: 3}\n_Stage: {lr: 0.1}\n", scopes=["x"], until="document")
+    assert merged == {"_Stage": {"epochs": 3, "lr": 0.1}}
+    replaced = load("if_x: !scope:x\n  s: {lr: 0.9}\ns: !class:_Stage {epochs: 2}\n", scopes=["x"], until="document")
+    assert replaced["s"].kwargs == {"epochs": 2}
+
+
+def test_two_active_blocks_on_one_key_the_second_tunes_the_firsts_marker() -> None:
+    _register_splice_fixtures()
+    text = "a: !scope:x\n  s: !class:_Stage {lr: 0.9}\nb: !scope:y\n  s: {epochs: 4}\n"
+    s = load(text, scopes=["x", "y"])["s"]
+    assert (s.lr, s.epochs) == (0.9, 4)
+
+
+def test_two_active_blocks_each_carrying_an_include_read_BOTH_files(tmp_path: Path) -> None:
+    """PA2 — the second block's `include:` used to overwrite the first's, so one
+    file was never read (the P11 loss, through scopes). Colliding includes
+    combine into a list; `include:` already takes one."""
+    (tmp_path / "a.yaml").write_text("from_a: 1\nlr: 0.1\n")
+    (tmp_path / "b.yaml").write_text("from_b: 2\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("a_blk: !scope:x\n  include: a.yaml\nb_blk: !scope:y\n  include: b.yaml\n")
+    result, paths = load(str(main), scopes=["x", "y"], until="document", return_paths=True)
+    assert result == {"from_a": 1, "lr": 0.1, "from_b": 2}
+    assert [p.name for p in paths] == ["main.yaml", "a.yaml", "b.yaml"]
 
 
 # ---------------------------------------------------------------------------

@@ -112,6 +112,37 @@ def test_two_plain_dicts_still_deep_merge() -> None:
     assert merged["a"] == {"x": 1, "y": 9}
 
 
+def test_two_scope_blocks_with_the_SAME_dims_merge_their_contents() -> None:
+    """BUGS-2026-08-19 PA4 — the same wrapper key in an included file and the
+    including file, same dimension: the base file's block was silently
+    REPLACED (a ScopeBlock is neither a dict nor a Target). Written flat in one
+    file the duplicate key is refused; through an include it must merge."""
+    from confluid.fluid import ScopeBlock
+    from confluid.merger import deep_merge
+
+    base = {"torch": ScopeBlock({"framework": "torch"}, False, {"lr": 0.1})}
+    overlay = {"torch": ScopeBlock({"framework": "torch"}, False, {"epochs": 5})}
+    merged = deep_merge(base, overlay)["torch"]
+    assert isinstance(merged, ScopeBlock)
+    assert (merged.dims, merged.negate) == ({"framework": "torch"}, False)
+    assert merged.contents == {"lr": 0.1, "epochs": 5}
+    assert base["torch"].contents == {"lr": 0.1}, "the base block must be untouched"
+
+
+def test_two_scope_blocks_with_DIFFERENT_dims_still_replace() -> None:
+    """The con case: a different condition is a different block — last spec wins."""
+    from confluid.fluid import ScopeBlock
+    from confluid.merger import deep_merge
+
+    base = {"w": ScopeBlock({"framework": "torch"}, False, {"lr": 0.1})}
+    overlay = {"w": ScopeBlock({"framework": "keras"}, False, {"epochs": 5})}
+    merged = deep_merge(base, overlay)["w"]
+    assert merged.dims == {"framework": "keras"}
+    assert merged.contents == {"epochs": 5}
+    negated = deep_merge(base, {"w": ScopeBlock({"framework": "torch"}, True, {"epochs": 5})})["w"]
+    assert negated.negate is True and negated.contents == {"epochs": 5}
+
+
 # ---------------------------------------------------------------------------
 # A dotted key competes on POSITION, like every other spelling
 # (BUGS-2026-08-13 P7)

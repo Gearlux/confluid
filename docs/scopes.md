@@ -61,6 +61,28 @@ An inactive wrapper is dropped entirely — the key never reaches the constructo
 Which slot a block replaces is decided by its **contents**, not by its key — the
 wrapper key (`alt`, `if_debug`, …) is inert scaffolding.
 
+**"Spliced at the wrapper's slot" is the include-paste rule**, key for key — the
+same merge an included file gets (see [Interpolation & config files](interpolation.md)
+→ "`include:` and document order"):
+
+- a mapping the block writes at a slot holding a **marker** tunes that marker
+  (the marker is kept; the mapping lands on its kwargs):
+
+  ```yaml
+  runnable: !class:Trainer
+    model: !class:Model {name: a, depth: 3}
+    alt: !scope:big
+      model: {name: b}          # --scope big -> Model(name=b, depth=3), not {'name': 'b'}
+  ```
+- a **nested block** deep-merges: `if_x: !scope:x {Trainer: {lr: 0.9}}` over
+  `Trainer: {lr: 0.1, epochs: 5}` yields `{lr: 0.9, epochs: 5}`;
+- a **scalar** is replaced — last value wins;
+- a key the block re-states moves to the **wrapper's position**, and a plain key
+  written *after* the block lands at its own, later, position — so whether a later
+  bare key wins never depends on whether the block is active;
+- two active blocks that each carry an `include:` combine them into a list
+  (`include:` accepts one) — both files are read, in document order.
+
 ## What a block's body may be
 
 Three shapes plus the empty placeholder, and the shape decides what "splice" means:

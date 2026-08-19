@@ -139,6 +139,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A scope block splices by the include-paste rule** (BUGS-2026-08-19 SR1/SR2/PA2/PA3/PA4,
+  2026-08-19). `scopes._resolve_dict` landed a block's keys — and a plain key written after a
+  block — by plain assignment, while `docs/lifecycle.md` and `_splice_includes` said scopes follow
+  the include paste. Measured: an active block re-stating a marker slot with a mapping DELETED the
+  marker (`Model(name=a, depth=3)` → `{'name': 'b'}`); a nested block lost its other keys
+  (`{lr: 0.1, epochs: 5}` → `{lr: 0.9}`); a spliced key kept the EARLIER writer's position, so
+  `s.lr` was 0.1 with the scope active and 0.5 written flat, and a later `lr: 2` lost to an
+  earlier `Stage: {lr: 7}` ONLY when a scope supplying a default was active; two active blocks
+  each carrying `include:` read only the second file. Now every key goes through
+  `scopes._splice_key` → `merger.deep_merge` per key (tune a marker, deep-merge a nested block,
+  replace a scalar, re-anchor at the later position), and colliding `include:` values combine into
+  a list. `deep_merge` also merges two `ScopeBlock`s under one key with identical `dims`/`negate`
+  (the same wrapper on both sides of an include kept only the including file's keys); a different
+  condition still replaces. Pinned: the splice group in `tests/test_scopes.py`,
+  `tests/test_merger.py`, `tests/test_includes.py`.
+
 - **The pass-7 `flow_memo` pins the marker it keys on** (BUGS-2026-08-19 BC1, 2026-08-19). The
   memo keyed on `id()` of the marker `_flow_recursive` was handed; since the pass-7 dict-at-slot
   tune (C1, 2026-08-14) that marker is often a `tune_marker` COPY that dies with the enclosing

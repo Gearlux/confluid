@@ -122,6 +122,13 @@ keys above it are overridden by the paste, keys below it override the paste.
 - **A nested block still deep-merges.** Splicing decides *where* a block lands,
   not whether blocks combine: `Trainer: {lr: 0.9}` over an included
   `Trainer: {lr: 0.1, epochs: 5}` yields `{lr: 0.9, epochs: 5}`.
+- **A scope block splices by the same rule.** An active `!scope:` block's keys
+  land at the wrapper's slot through this merge — tune a marker, deep-merge a
+  nested block, replace a scalar, re-anchor a restated key — and two blocks that
+  both carry `include:` combine them into a list. Written on both sides of an
+  include under the same wrapper key and the same condition, two blocks merge
+  their contents (a different condition is a different block and replaces). See
+  [Scopes](scopes.md).
 
 > **Changed 2026-08-11.** Previously the directive was lifted out and the whole
 > including file was merged over the result, so its position made no difference

@@ -1,7 +1,7 @@
 from copy import copy, deepcopy
 from typing import Any, Callable, Dict, cast
 
-from confluid.fluid import Fluid, Target
+from confluid.fluid import Fluid, ScopeBlock, Target
 
 
 def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,6 +72,32 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
             # other consumer of it.
             tuned.kwargs = deep_merge(existing.kwargs, value)
             merged = tuned
+        elif (
+            isinstance(existing, ScopeBlock)
+            and isinstance(value, ScopeBlock)
+            and existing.dims == value.dims
+            and existing.negate == value.negate
+        ):
+            # The SAME wrapper key, the SAME condition, on both sides of an include
+            # (``base.yaml`` declares ``torch: !scope:framework=torch {lr}``, the
+            # including file adds ``torch: !scope:framework=torch {epochs}``): written
+            # flat in one file the duplicate key is refused, so through an include
+            # the author means ONE block — merge the contents (BUGS-2026-08-19 PA4).
+            # A ``ScopeBlock`` is neither a dict nor a ``Target``, so it fell to the
+            # replace arm below and the base file's keys vanished silently. A
+            # DIFFERENT condition is a different block and still replaces. The
+            # merged block carries the overlay's location (the later writer).
+            both_mappings = isinstance(existing.contents, dict) and isinstance(value.contents, dict)
+            merged = ScopeBlock(
+                dict(value.dims),
+                value.negate,
+                (
+                    deep_merge(existing.contents, value.contents)
+                    if both_mappings
+                    else _preserve_identity_copy(value.contents)
+                ),
+            )
+            merged._yaml_loc = value._yaml_loc
         else:
             merged = _preserve_identity_copy(value)
         # Re-anchor: delete before re-inserting so the key lands at the overlay's

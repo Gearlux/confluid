@@ -36,6 +36,7 @@ from loggair import get_logger
 
 from confluid.exceptions import ScopeError
 from confluid.fluid import Fluid, ScopeBlock, _at_yaml_loc
+from confluid.merger import deep_merge
 
 logger = get_logger("confluid.scopes")
 
@@ -353,11 +354,54 @@ def _resolve_dict(d: Dict[str, Any], active: Dict[str, Optional[str]]) -> Dict[s
                     )
                 resolved_contents = _resolve_dict(v.contents, active) if v.contents else {}
                 for bk, bv in resolved_contents.items():
-                    out[bk] = bv
+                    _splice_key(out, bk, bv)
             # else: drop the wrapper entirely
             continue
-        out[k] = _resolve_value(v, active)
+        _splice_key(out, k, _resolve_value(v, active))
     return out
+
+
+def _splice_key(out: Dict[str, Any], key: str, value: Any) -> None:
+    """Land ``key`` in ``out`` by the include-paste rule — the ONE splice semantics.
+
+    A scope block's contents are "spliced at the wrapper's slot", which
+    ``docs/lifecycle.md`` and ``loader._splice_includes`` describe as the rule an
+    included file follows — and an included file goes through ``merger.deep_merge``:
+    a mapping over a marker TUNES it (a copy; anchors keep the original), a nested
+    block deep-merges, anything else replaces, and a restated key is RE-ANCHORED at
+    the later position. Plain assignment (``out[key] = value``) did none of that
+    (BUGS-2026-08-19 SR1/SR2/PA2/PA3): an active block DELETED the marker it
+    re-stated with a mapping, a nested block lost its other keys, and a key the
+    block re-stated kept the EARLIER writer's position — so whether a later bare
+    key won flipped with the activation. The plain-key arm of ``_resolve_dict`` goes
+    through here too, because a plain key written AFTER a block is the overlay of
+    what the block spliced (a literal duplicate is refused at parse, so a collision
+    on that arm can only come from a block).
+
+    The merge is per KEY (``deep_merge`` of the one colliding entry), not of the
+    whole accumulated mapping — a fresh key is assigned as before, so the common
+    no-collision case copies nothing.
+
+    ``include:`` is the one key with a special rule: two active blocks each carrying
+    one must BOTH be read, and ``include:`` already accepts a list, so the values
+    combine in document order instead of the second dropping the first (P11's loss,
+    through scopes). The combined directive sits at the LATER block's position; the
+    settle loop (``loader._settle_scopes_and_includes``) splices it there.
+    """
+    if key not in out:
+        out[key] = value
+        return
+    existing = out[key]
+    merged: Any
+    if key == "include":
+        as_list = [*(existing if isinstance(existing, list) else [existing])]
+        as_list.extend(value if isinstance(value, list) else [value])
+        merged = as_list
+    else:
+        merged = deep_merge({key: existing}, {key: value})[key]
+    # Re-anchor: the later writer's position is the one the precedence rule reads.
+    out.pop(key)
+    out[key] = merged
 
 
 def _resolve_list(items: List[Any], active: Dict[str, Optional[str]]) -> List[Any]:
