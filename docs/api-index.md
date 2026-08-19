@@ -102,6 +102,7 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|
 | `discover_dimensions` | The scope dimensions a raw document declares |
 | `discover_dimension_values` | The values each dimension offers |
+| `default_scopes` | The `{dimension: value}` a raw document's `default_scopes:` declares — what a bare load picks |
 | `ScopeError` | Raised for an undeclared activation value or a circular alias |
 
 ## Hierarchy introspection — [Class Design](class-design.md)

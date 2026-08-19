@@ -30,7 +30,7 @@ from loggair import get_logger
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, parse_value
-from confluid.scopes import normalize_active, parse_default_scopes, parse_scope_arg, resolve_scopes
+from confluid.scopes import default_scopes, normalize_active, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
@@ -1080,7 +1080,7 @@ def _load(
     # about to discard.
     if isinstance(data, dict):
         aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
-        defaults = parse_default_scopes(data.get("default_scopes"))
+        defaults = default_scopes(data)
         data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases, defaults))
     elif scopes:
         # Non-dict roots (e.g. a document whose root is a marker) carry no

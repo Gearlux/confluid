@@ -1264,13 +1264,16 @@ are already spliced away).
 `default_scopes: [dim=value, …]` names the value a keyed dimension takes when the caller's
 `scopes=` carries no entry for it; `normalize_active(scopes, aliases, defaults)` fills it in per
 dimension AFTER the caller's list (a caller value always wins), and the loader reads it beside
-`scope_aliases:` at pass 4 (`parse_default_scopes`, `scopes.METADATA_KEYS` is the ONE strip list).
+`scope_aliases:` at pass 4 through `scopes.default_scopes(raw)` — the ONE reader, public (a CLI shows
+the default beside `discover_dimension_values`), validated by `parse_default_scopes`;
+`scopes.METADATA_KEYS` is the ONE strip list).
 Three properties are load-bearing: it goes through `_check_active_values_are_declared` unchanged
 (a typo'd default raises like a typo'd flag — never add a bypass); a bare name (a boolean scope,
 an alias) is REFUSED, because nothing the caller passes could switch such a default off, so it
 would be always-on — `!notscope:` is the spelling for "active while unset"; and it is never
 interpolated (a `${a.b}` may read a key an active block provides, so activation must settle
-first — do NOT move the read past pass 5). Do not add a second reader of the key.
+first — do NOT move the read past pass 5). Do not add a second reader of the key beside
+`default_scopes()`.
 **Pins.** the `default_scopes` group in `tests/test_scopes.py` (fires when unset, caller wins,
 per-dimension fill, undeclared/boolean/alias/malformed refused, not interpolated, deactivates a
 `!notscope:`, intact at `until="raw"`, hydraide emits the defaulted variant).
@@ -1431,8 +1434,8 @@ and a `None` value is omitted ONLY when the param's default is also `None` — a
 
 **Rule.** `confluid/__init__.py` re-exports ONLY the consumer-facing API. Internal machinery stays
 importable from its home module but is NOT top-level: validation plumbing (`confluid.validation`),
-scope resolution (`confluid.scopes` — only `discover_dimensions` / `discover_dimension_values` are
-public), annotation predicates (`confluid.partial` / `confluid.mandatory` / `confluid.pydantic_export`),
+scope resolution (`confluid.scopes` — only `discover_dimensions` / `discover_dimension_values` /
+`default_scopes` are public), annotation predicates (`confluid.partial` / `confluid.mandatory` / `confluid.pydantic_export`),
 marker internals (`ScopeBlock` → `confluid.fluid`), and `load_workspace_env` (`confluid.env`).
 
 **Rule.** Before adding a name to `__all__`, ask which consumer reads it. Do not re-grow the surface

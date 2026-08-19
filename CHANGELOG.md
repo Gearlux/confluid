@@ -15,7 +15,8 @@ All notable changes to confluid are documented here. The format follows
   scope or an alias is refused — nothing the caller passes could switch it off; `!notscope:` is
   the spelling for "active while unset"), is read beside `scope_aliases:` before pass 4 (never
   a `${...}` value) and is stripped from the result with it. `hydraide emit` with no `--scope`
-  emits the defaulted variant. `confluid.scopes.parse_default_scopes` /
+  emits the defaulted variant. `confluid.default_scopes(raw)` is the public reader (what a CLI
+  shows beside `discover_dimension_values`); `confluid.scopes.parse_default_scopes` /
   `normalize_active(..., defaults=)`; `tests/test_scopes.py` (the `default_scopes` group);
   `docs/scopes.md` → "Default scopes"; `docs/architecture.md` record 1.
 

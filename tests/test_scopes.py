@@ -1024,3 +1024,18 @@ def test_hydraide_emits_the_defaulted_variant_when_no_scope_is_given(tmp_path: P
     path.write_text(_DEFAULTED)
     assert "LightningX" in hydraide.emit(path)
     assert "KerasX" in hydraide.emit(path, scopes=["framework=keras"])
+
+
+def test_default_scopes_reads_the_raw_documents_defaults() -> None:
+    """`confluid.default_scopes(raw)` — the public reader a CLI uses to SHOW the default beside a
+    dimension's values. It takes the RAW document like `discover_dimension_values`, answers `{}` for
+    a document without the key (or a non-dict root), and refuses a malformed key the same way `load()` does."""
+    from confluid import default_scopes
+
+    raw = load(_DEFAULTED, until="raw")
+    assert default_scopes(raw) == {"framework": "lightning"}
+    assert discover_dimension_values(raw) == {"framework": {"lightning", "keras"}}
+    assert default_scopes(load("x: 1\n", until="raw")) == {}
+    assert default_scopes([1, 2]) == {}
+    with pytest.raises(ScopeError, match="default_scopes"):
+        default_scopes({"default_scopes": [42]})

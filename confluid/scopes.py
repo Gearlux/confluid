@@ -87,6 +87,20 @@ def parse_default_scopes(value: Any) -> Dict[str, str]:
     return defaults
 
 
+def default_scopes(config: Any) -> Dict[str, str]:
+    """The ``{dimension: value}`` map a RAW document's ``default_scopes:`` declares.
+
+    The public reader — what a CLI shows beside a dimension's offered values
+    (:func:`discover_dimension_values`), and what the loader applies. Takes the RAW
+    document (``load(path, until="raw")``): by the time pass 4 has run the key is
+    stripped. A non-dict root, or a document without the key, answers ``{}``; a
+    malformed key raises the same :class:`ScopeError` ``load()`` raises.
+    """
+    if not isinstance(config, dict):
+        return {}
+    return parse_default_scopes(config.get("default_scopes"))
+
+
 def normalize_active(
     scopes: List[str],
     aliases: Optional[Dict[str, Any]] = None,
