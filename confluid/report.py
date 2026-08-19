@@ -15,9 +15,8 @@ Three buckets:
   addressed recursion, nested-class broadcast). Last-write-wins collapses to
   ONE record per attribute per object — the final effective assignment.
 * **failed** — deliberately small. An ADDRESSED key naming nothing the target
-  declares records ``"unknown-attribute"`` on BOTH paths (B1, 2026-08-12 —
-  ``engine._warn_undeclared`` and ``_MergeSink.unknown`` on the load path,
-  ``_LiveSink.unknown`` under ``configure()``; the own-kwarg form still
+  declares records ``"unknown-attribute"`` (B1, 2026-08-12 —
+  ``engine._warn_undeclared`` and ``_MergeSink.unknown``; the own-kwarg form still
   APPLIES the value, warning as it does). Per-field validation failures
   (``"validation"``) stay ``configure()``-only: on the load path
   ``validate_kwargs`` fires inside the wrapped ``__init__`` (below the engine

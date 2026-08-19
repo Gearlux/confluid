@@ -47,7 +47,7 @@ configure     2500 markers   best    188.4 ms   mean    190.5 ms      13268 mark
 ```
 
 Recorded 2026-08-17, after the runtime started consuming the settled document
-([Architecture Decisions](architecture.md) record 19, phase 3). Two things moved
+([Architecture Decisions](architecture.md) record 19). Two things moved
 and both are the SAME cause: the benchmark's 2,500 markers sit under plain
 mappings (`groups.g0.s0.m0`), and construction used to descend one level only,
 so `load` built **none** of them and `configure` then walked a tree of
@@ -57,7 +57,7 @@ same wall time as before — the second broadcast into each marker's own kwargs 
 construction is gone, which is what paid for it — and `configure` walks 2,500
 live objects (`162 ms`) — the number it always claimed to measure.
 
-Since `configure()` runs through the document (record 19, phase 4) it costs
+Since `configure()` runs through the document (record 19) it costs
 `188 ms` on the same tree: the objects become a marker document, the FULL
 resolution pass runs over it, and the settled values are written back — the
 price of not having a second implementation of the rule. `load` /

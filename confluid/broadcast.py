@@ -1600,8 +1600,7 @@ class _MergeSink:
         self.contest: Dict[str, List[Tuple[str, Any, int]]] = {}
 
         #: Per slot, the cascade keys the DELIVERING BLOCK out-positioned —
-        #: the scanner's verdict, at the block's own position (C2). Mirrors
-        #: ``configurator._LiveSink.beaten_per_slot``.
+        #: the scanner's verdict, at the block's own position (C2).
         self.beaten_per_slot: Dict[str, FrozenSet[str]] = {}
 
     def _mark_used(self, k: str, origin: str) -> None:

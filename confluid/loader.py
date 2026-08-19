@@ -169,7 +169,7 @@ class ConfluidLoader(yaml.SafeLoader):
 TARGET_KEY = "_target_"
 PARTIAL_KEY = "_partial_"
 REF_KEY = "_ref_"
-#: REMOVED 2026-08-15 (zero users; architecture records 9/10 superseded). Kept in
+#: REMOVED 2026-08-15 (zero users; architecture record 18). Kept in
 #: RESERVED_KEYS on purpose: a mapping carrying it must still reach the marker gate
 #: so it can be REFUSED with a location, instead of loading silently as plain data
 #: with a literal ``_clone_`` key — the degradation this format exists to end.
@@ -470,9 +470,9 @@ def _str_keyed_mapping(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) ->
 
     The ONE site for the TAG constructors, which have no shared entry point of
     their own — four of them repeated this expression, so a check added to the
-    plain path alone would have left the deprecated spelling silently losing a
+    plain path alone would have left the tag spelling silently losing a
     duplicated key. A behaviour reachable from only one spelling is a bug in that
-    spelling, deprecated or not.
+    spelling.
 
     ``map_constructor`` does NOT come through here: it must refuse BEFORE its
     reserved-key gate, because an ordinary mapping takes the fast path straight
@@ -620,13 +620,11 @@ def _register_constructors() -> None:
 
     # ---- the tag spelling is the PREFERRED AUTHORING form (ruling 2026-08-15) ------
     #
-    # Until 2026-08-15 every tag constructor announced a FutureWarning naming
-    # `confluid-migrate` and a 0.4.0 removal. Architecture record 19 reversed that:
-    # tags are what a human writes, the reserved-key form is what the `hydraide`
-    # preprocessor EMITS, and both are first-class INPUT. So: no warning, no
-    # migration tool, and `!partial:` joins `!lazy:` as the tag for a deferred
-    # marker — the same name as the key it emits (`_partial_: true`). `!lazy:`
-    # stays as an alias; whether it is ever removed is a later ruling.
+    # Tags are what a human writes, the reserved-key form is what the `hydraide`
+    # preprocessor EMITS, and both are first-class INPUT (architecture record 19):
+    # neither warns. `!partial:` is the tag for a deferred marker — the same name as
+    # the key it emits (`_partial_: true`); `!lazy:` is an alias, and whether it is
+    # ever removed is a later ruling.
     for _tag, _ctor in (
         ("!ref:", ref_constructor),
         ("!class:", class_constructor),

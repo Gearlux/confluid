@@ -19,7 +19,7 @@ if you are new to this codebase — most rules below are about one pass.
 ## Current state
 
 **Feature-complete.** Confluid is the hierarchical configuration + dependency-injection engine:
-plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_clone_` / `_scope_` /
+plain-YAML reserved-key markers (`_target_` / `_partial_` / `_ref_` / `_scope_` /
 `_notscope_`) loaded through the ONE door `load(x, until=…)` (`"raw"` / `"document"` /
 `"settled"` / `"objects"`) and built node-wise by `flow()`, scoped broadcasting, post-construction `configure()`,
 recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` /
@@ -28,9 +28,9 @@ recursive DI, and the introspection surface (`to_pydantic` / `parse_param_docs` 
 The TAG spelling (`!class:` / `!partial:` (alias `!lazy:`) / `!ref:` / `!scope:`) is the
 PREFERRED AUTHORING form; the reserved-key spelling is the MACHINE form that the `hydraide`
 preprocessor EMITS (`confluid.hydraide.emit(cfg, scopes=[...])`; the `hydraide` COMMAND is `confluid/cli.py`, Click, the `confluid[cli]` extra — user instruction 2026-08-17). Both are first-class input,
-neither warns (user ruling 2026-08-15, architecture record 19 — phase 1 landed). Clone is removed
-(record 18). Phases 2–4 of record 19 (attribute refs out, the runtime consuming hydraide output,
-`configure()` via the document) are in `TASKS.md`.
+neither warns (user ruling 2026-08-15, architecture record 19). Attribute references are gone, the
+runtime consumes the settled document, and `configure()` runs through it (record 19); there is no
+copy marker (record 18).
 
 **Published on PyPI — v0.1.0 and v0.2.0. v0.3.0 is prepared and DELIBERATELY HELD** (user
 instruction 2026-08-04): do not tag it until confluid's functionality is verified complete against
@@ -322,7 +322,7 @@ a developer's real `~/.config` must never leak into a run.
 candidates — is tokenized by `resolver._parse_path_segments` and walked by `_walk_path_segments`.
 Extend the shared walker; never add a fourth grammar — and never re-add a second POLICY.
 
-**Rule — attribute references are REMOVED (record 19 phase 2, user ruling 1b, 2026-08-17).** The
+**Rule — attribute references are REMOVED (record 19, user ruling 1b, 2026-08-17).** The
 walker is STRUCTURAL: a `key` segment steps into a dict, an `idx` segment into a list, and
 anything else — a marker, a live object, a scalar — ends the walk. What a dotted `!ref:` MEANS is
 decided by its FIRST segment: a DOCUMENT KEY walks structure only (`!ref:cfg.lr`,
@@ -334,10 +334,9 @@ it — and is REFUSED by `resolver.refuse_attribute_reference` with the node's `
 rewrite (a selector parameter on the referent's class + `!ref:split`, or the marker written again
 with the selector set). The refusal fires in `_flow_recursive` AND `_flow_reference`, i.e. under
 `load(until="settled")` as well as `load()` — that is how `hydraide` reports it (the same message; the `hydraide` command renders it as one line, exit 1).
-Nothing is constructed on behalf of a Reference any more, which is why `_EngineState.structural`
-(the flag that used to gate that construction off for the settled stage) is gone. Two things did NOT
+Nothing is constructed on behalf of a Reference. Two things did NOT
 change and are pinned as CON cases: a PURELY structural resolution still returns `None` from the
-rich path (pass 7's `_settle_reference` walks it and INLINES the value — phase 3), and a
+rich path (pass 7's `_settle_reference` walks it and INLINES the value), and a
 document key literally named `a.b` still wins over the walk. Do NOT "extend" the walker into a
 marker's kwargs (`!ref:model.hidden`) — census 2026-08-17: zero uses; it is refused like an
 attribute, not silently invented.
@@ -348,9 +347,9 @@ method-call refusal, every CON row, the deletion pin, the OmegaConf-parseability
 
 ### Two spellings, ONE intermediate representation
 
-**Rule.** Confluid reads a document written with YAML TAGS (`!class:` / `!lazy:` / `!ref:` /
-`!clone:` / `!scope:`) or with RESERVED KEYS (`_target_` / `_partial_` / `_ref_` / `_clone_` /
-`_scope_` / `_notscope_`). Both MUST produce the SAME Fluid markers. A behaviour reachable from
+**Rule.** Confluid reads a document written with YAML TAGS (`!class:` / `!partial:` (alias
+`!lazy:`) / `!ref:` / `!scope:` / `!notscope:`) or with RESERVED KEYS (`_target_` / `_partial_` /
+`_ref_` / `_scope_` / `_notscope_`). Both MUST produce the SAME Fluid markers. A behaviour reachable from
 only one spelling is a BUG in that spelling — never a feature of it. The ONE deliberate asymmetry:
 `_scope_` takes a MAPPING and can therefore carry several dimensions, which a tag suffix (a string)
 cannot.
@@ -426,7 +425,7 @@ comprehension.
 `::test_the_refusal_binds_the_TAG_spelling_too`.
 
 **Rule — `_partial_` pairs with `_target_` and NOTHING else, refused at ONE site.** It modifies
-CONSTRUCTION and `_target_` is the only key that constructs, so beside `_ref_` / `_clone_` /
+CONSTRUCTION and `_target_` is the only key that constructs, so beside `_ref_` /
 `_scope_` / `_notscope_` it raises a located `ConfigurationError` naming the working spelling
 (put the modifier on the node being constructed, then reference it). The check sits in
 `_reserved_to_marker` immediately after `key = present[0]` — BEFORE the per-discriminator
@@ -465,17 +464,16 @@ prefix) / `::test_a_quoted_marker_inside_a_markers_own_kwargs_is_REFUSED` /
 `tests/test_fluid.py::test_flow_of_a_string_is_a_pass_through`.
 
 **Rule — tags are the PREFERRED AUTHORING form; the reserved keys are the MACHINE form; NEITHER
-warns** (user ruling 2026-08-15, architecture record 19 — this REVERSED the deprecation that stood
-here). Both spellings are first-class input and may be mixed in one file. `!partial:` is the tag
-for a deferred marker (the same name as the key it emits); `!lazy:` is an alias — whether it is
-ever removed is a later ruling, not a standing plan. Do not reintroduce a tag warning, a
-tag→plain migration tool, or a "no tags in examples" scan: `tests/test_canonical_spelling.py`
-enforced the opposite of this ruling and was deleted with it. The two-spellings-one-IR invariant
+warns** (user ruling 2026-08-15, architecture record 19). Both spellings are first-class input
+and may be mixed in one file. `!partial:` is the tag for a deferred marker (the same name as the
+key it emits); `!lazy:` is an alias — whether it is ever removed is a later ruling, not a
+standing plan. Do not add a tag warning, a tag→plain migration tool, or a "no tags in
+examples" scan. The two-spellings-one-IR invariant
 is unchanged and has a THIRD witness now — `hydraide` emits byte-identical output whichever
 spelling produced the document.
 
-**Rule — the ONE codemod runs plain → tags, and it is `confluid.spelling.to_tags`** (record 19,
-phase 1b). It converts a file a human wants to EDIT again (a committed hydraide artefact, a config
+**Rule — the ONE codemod runs plain → tags, and it is `confluid.spelling.to_tags`** (record 19).
+It converts a file a human wants to EDIT again (a committed hydraide artefact, a config
 written before the ruling) and it edits LINES — tag on the key line, reserved-key line deleted,
 every other byte kept — because these files are mostly comments and a parse-and-rewrite would
 reformat them. Three properties are load-bearing: (1) what the grammar cannot convert is
@@ -496,8 +494,7 @@ no-op, and `convert_file`'s activation-gated write.
 re-derives NO rule — if the emitted document is wrong, the defect is in pass 7 (`engine.settle`) or `dump()`,
 never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`).
 **The `hydraide` COMMAND is `confluid/cli.py` — Click, the OPTIONAL `confluid[cli]` extra,
-console script `hydraide = confluid.cli:main` (user instruction 2026-08-17, superseding the
-earlier "functions only" ruling).** Three verbs — `emit CONFIG [--scope DIM=VALUE]… [-o FILE]`,
+console script `hydraide = confluid.cli:main` (user instruction 2026-08-17).** Three verbs — `emit CONFIG [--scope DIM=VALUE]… [-o FILE]`,
 `check CONFIG`, `completion bash|zsh|fish` — and the contract: a located `ConfluidError` is ONE
 line on stderr + exit 1 (`click.ClickException`), a usage error exits 2, a stale `check` exits 1
 with the diff on stdout; a relative CONFIG resolves through `resolve_config_path` (the loader's
@@ -512,8 +509,7 @@ tree, where identity already means what the document meant. Two engine facts are
 tool's suite because the tool exposes them: identity is per MARKER, not per container
 (`load(until="settled")` copies a list reached via `${ref:}` and shares its elements); and an anchor does NOT
 follow an include-overlay tune (P1's COPY at the key; alias sites keep the original — the earlier
-"measured correct" probe was seeing bare-key broadcast through a same-named parameter). Neither is
-phase-1's to change (`TASKS.md`, phase 1b).
+"measured correct" probe was seeing bare-key broadcast through a same-named parameter).
 **Pins.** `tests/test_hydraide.py` — byte-identical output for both spellings, idempotence
 (`emit(emit(x)) == emit(x)`, what `check` rests on), no-warning for either spelling,
 `!partial:` == `!lazy:`, and the two identity pins; `tests/test_cli.py` — the verbs, the three
@@ -552,12 +548,14 @@ its constructor runs.
 **Rule — EVERY id()-keyed store pins the object whose address keys it.** An `id()` is unique
 only while the object is ALIVE; CPython reuses freed addresses, so an unpinned entry answers for
 the OLD object when a NEW one lands on the address. The rule binds every such store, each with
-its own pin mechanism (2026-08-13 — four unpinned stores were measured serving wrong answers,
-BUGS-2026-08-13 X1/X3/E1/E2/I7):
+its own pin mechanism (2026-08-13 — four unpinned stores were measured serving wrong answers;
+X1/X3/E1/E2/I7 in the CHANGELOG):
 
-- engine memos (`flow_memo` / `instance_memo`) — pin in `_EngineState.memo_keepalive`; the THREE
-  write sites all pin (the public-`flow()` write and the nested-build write included — an
-  unpinned ctor-local marker handed one maker ANOTHER maker's widget);
+- engine memos (`flow_memo` / `instance_memo`) — pin in `_EngineState.memo_keepalive`; all FOUR
+  write sites pin: the three `instance_memo` writes (the public-`flow()` write and the nested-build
+  write included — an unpinned ctor-local marker handed one maker ANOTHER maker's widget) AND the
+  pass-7 `flow_memo` write in `_flow_recursive` (2026-08-19: it keyed on a `tune_marker` copy that
+  died with its `merged_kwargs`; 22 of 300 trainers got another trainer's optimizer — BC1);
 - `configure()`'s visited store — a `Dict[int, Any]` whose VALUE is the object (recording an id
   IS the pin); a plain `Set[int]` silently skipped 450 of 512 objects under DEFAULT gc;
 - `introspect._slots_cache` — the value is `(target, slots)`; the first element pins an
@@ -581,9 +579,7 @@ A kwarg literally named `target` is legal (the loader assigns kwargs post-constr
 **Rule.** There is no copy marker. `Clone` / `_clone_` / `${clone:}` / the `!clone:` tag are gone;
 independence has ONE spelling — write the marker again (`<<:` an anchored base into each site if
 the recipe is long). `_ref_` / `${ref:}` remain the ONE sharing spelling. Do NOT reintroduce a
-copy marker: architecture records 9 and 10 kept it as an "escape hatch" on a zero-user census, and
-this ruling supersedes both — the same census, a different decision, recorded so the next audit
-stops here.
+copy marker (architecture record 18 — a zero-user census, ruled).
 
 **Rule — the removal is LOUD, in every spelling.** `_clone_` stays in `loader.RESERVED_KEYS`
 purely so a mapping carrying it still reaches the marker gate and is REFUSED with a location,
@@ -642,7 +638,7 @@ BOTH sides were dicts, and a `Fluid` is not a dict — so an overlay mapping REP
 marker: the commonest composition in the system (a base file defines the model, an experiment file
 overrides one knob) silently produced a plain dict with no target and no error, while the DOTTED
 spelling of the same override tuned it correctly. It now tunes, restricted to `Target` to mirror
-the classifier's marker arm — a `Reference` / `Clone` base keeps the replace behaviour, since the
+the classifier's marker arm — a `Reference` base keeps the replace behaviour, since the
 classifier calls those opaque. It does NOT call `tune_marker`: that helper is single-level by
 design and lives above this module anyway (`broadcast` imports `merger`, so the reverse is a
 cycle), while composition must RECURSE — the dotted and class-block spellings both reach a marker
@@ -692,16 +688,13 @@ IDEMPOTENCY return, so an object that arrived already built is finalized too. `s
 idempotent (build-once-and-cache) and take no arguments. `flow(obj, solidify=False)` /
 `load(..., solidify=False)` suppress it for the whole subtree.
 
-**Rule — the C3 / F1 / C4 rules of the LIVE WALKER are HISTORY (record 19, phase 4).** `configure()`
-has no walk of its own any more: the objects' DOCUMENT (declared slots — ctor params and
-`__init__`-body attributes, `dumpable_kwargs`) is what pass 7 sees and `_apply` writes back.
-What those three rules protected is now structural: a class attribute is not a slot (never
-walked into — C3); a marker held as an attribute is TUNED in place, never flowed into a
-throwaway (C4 — pinned by the phase-4 suite); the ctor-kwargs capture is the DUMP FALLBACK for
-an eager class's transformed param, not a thing that gets configured (F1's "the walk reaches
-`__confluid_kwargs__`" ruling is superseded with the walk — a discarded ctor argument is not in
-the object's document, so it is not configured). Do not reintroduce a walker to restore any of
-them.
+**Rule — `configure()` has no walk of its own (record 19).** The objects' DOCUMENT (declared
+slots — ctor params and `__init__`-body attributes, `dumpable_kwargs`) is what pass 7 sees and
+`_apply` writes back. Three things are therefore structural, not rules: a class attribute is
+not a slot (never walked into — C3); a marker held as an attribute is TUNED in place, never
+flowed into a throwaway (C4); the ctor-kwargs capture is the DUMP FALLBACK for an eager class's
+transformed param, not a thing that gets configured (a discarded ctor argument is not in the
+object's document, so it is not configured). Do not add a walker to change any of them.
 **Pins.** `tests/test_configure_via_document.py`, the C3/C4 groups in `tests/test_configurator.py`
 (they pass by construction), `tests/test_memo_pinning.py::test_configure_reaches_every_object_even_when_gc_recycles_walk_temporaries`
 (markers in a DECLARED list slot — a dynamically set attribute is not part of any document).
@@ -759,11 +752,9 @@ cases).
 and `!ref:` applied, markers returned, NOTHING constructed. `flow(obj, solidify=False)` constructs
 but suppresses the finalize. Neither changes default behaviour.
 
-**Detail.** The settled stage constructs NOTHING — and since record 19 phase 2 no Reference can make
-it: a structural dotted `!ref:a.b` stays a `Reference` just as a plain `!ref:name` does, an
-attribute reference is REFUSED on this path exactly as under `load()`, and the
-`_EngineState.structural` flag that used to gate a construction off for this stage alone is
-deleted (there is nothing left to gate).
+**Detail.** The settled stage constructs NOTHING — and no Reference can make it: a structural
+dotted `!ref:a.b` stays a `Reference` just as a plain `!ref:name` does, and an attribute
+reference is REFUSED on this path exactly as under `load()`.
 
 **Why.** Until 2026-08-11 reading `split.train` BUILT `split` on this path too, so the
 "introspection without cost" API walked a dataset: 3.9s on a real config whose split scans 37
@@ -827,7 +818,7 @@ delivering block's own index. `_MergeSink` MUST record it (`beaten_per_slot`) an
 carries it out on the returned `_View`, because by the time the engine sees the merged kwargs they
 have been spliced at the MARKER's slot and the block's position is gone. Pass 7 applies the verdict
 ITSELF for the descent into that slot (`engine._flow_recursive._view_for` pops the beaten bare
-keys and rider entries — phase 4), so the settled document already carries the answer;
+keys and rider entries), so the settled document already carries the answer;
 `_late_bare_keys_per_slot` still computes the verdict for a marker's OWN dict kwargs and the
 engine's post-init tune consumes it for a body slot pass 7 cannot see. Deleting either half is
 wrong: the second answers a question the first cannot.
@@ -848,7 +839,7 @@ rule-level pin that two orderings of one spelling must DISAGREE, and
 `::test_a_second_configure_is_not_bound_by_the_first_ones_verdict`), `tests/test_includes.py`
 (the ordering group), `tests/test_ordered_merge.py`.
 
-### `configure()` runs THROUGH the document (record 19, phase 4, 2026-08-17)
+### `configure()` runs THROUGH the document (record 19, 2026-08-17)
 
 **Rule.** `configure(*objs, config=…, **named)` = `dumper.to_markers(objs)` (the objects as a
 marker document — the SAME reconstruction rule `dump()` uses, `dumpable_kwargs`) → the config
@@ -860,15 +851,12 @@ MARKER is tuned in place (`kwargs.update`, identity kept, markers inside it stay
 settled marker standing for a live child (`__confluid_live__`, stamped by `to_markers` and kept by
 the pass-7 copy) recurses; a marker the config introduced is built (`flow`) or kept deferred; a
 mapping at a slot holding an OPAQUE live object is refused (`dict_at_slot_kind`); `solidify()`
-fires post-order. There is NO second walker: `_walk`, `_LiveSink`, `_tune_deferred`, `_assign` and
-`broadcast._receiver_for_instance`'s only caller are gone, and with them the "parity" contract —
-`tests/test_*_parity.py` and `test_cross_path_pins.py` remain as BEHAVIOUR pins of one path.
+fires post-order. There is NO second walker; `tests/test_*_parity.py` and
+`test_cross_path_pins.py` are BEHAVIOUR pins of the one path.
 Consequences, each pinned: a NAMED object is addressable by a dotted ATTRIBUTE path
-(`trainer.model.lr`); a bare list/dict reaches a body-slot marker the document shows (D2/D4's
-"kept difference" is gone — one rule); a chain of INSTANCE names past the first level
-(`a.b.c.value`) is no longer a spelling (the load path never had it; use the attribute path from a
-named object); the F1 rule (the walk reaching `__confluid_kwargs__`) is superseded — there is no
-walk; the C3/C4 pins hold by construction. Warnings for a typo'd block key come from
+(`trainer.model.lr`); a bare list/dict reaches a body-slot marker the document shows; a chain of
+INSTANCE names past the first level (`a.b.c.value`) is not a spelling (use the attribute path
+from a named object). Warnings for a typo'd block key come from
 `broadcast.logger` (the scanner) — patch THAT in a test.
 **Pins.** `tests/test_configure_via_document.py`; `tests/test_configurator.py`;
 `tests/test_report.py` (the report vocabulary is the scanner's: a class block that delivers a
@@ -895,7 +883,7 @@ subclasses or to markers inside containers without a measured case.
 **Pins.** `tests/test_configure_live_child.py` (both rules, every con case).
 
 **Rule — four pass-7 defects the document path exposed are FIXED in pass 7, so `load()` gets them
-too (F7/F8/F10/F11, `BUGS-2026-08-13.md`):** a same-named child slot (`child:` inside `child:`)
+too (F7/F8/F10/F11 — the CHANGELOG's pass-7 ordering entry):** a same-named child slot (`child:` inside `child:`)
 lost its slot in the parent view (`_splice_kwargs_at_slot._parent_wins` now returns False for the
 receiver's own key), so a third-level marker's own kwargs were appended after every root key and a
 later bare key could not beat them; `tune_marker` was single-level, so `root: {child: {child:
@@ -911,7 +899,7 @@ descent into a block-delivered slot), so the settled document IS the answer for 
 its con case — a LATER rider wins; the old pin passed only because of F10),
 `tests/test_names_parity.py`.
 
-### The rule runs ONCE — pass 7 settles, pass 8 builds (record 19, phase 3, 2026-08-17)
+### The rule runs ONCE — pass 7 settles, pass 8 builds (record 19, 2026-08-17)
 
 **Rule.** `load()` ends in `engine.materialize()` = `_flow_recursive` (pass 7: the ONE broadcast/reference pass — what
 `hydraide` emits) → `instantiate` (pass 8: build every `Target` at ANY depth from its SETTLED
@@ -928,12 +916,12 @@ scope first (an included fragment's internal `!ref:` finds the fragment's key), 
 and a scope NEVER answers with the reference itself (`r: {x: !ref:x}` with a root `x` recursed
 forever, F6; the self-hit is skipped on both the pass-5 marker-aliasing probe and here). A reference
 to a MARKER shares it (identity via `flow_memo`); a reference to a plain VALUE is INLINED — after
-`load()` nothing is a late-bound `Reference` any more (F5); a walk that leaves structure is refused
-(phase 2); anything else is an import path; a miss raises a located `ReferenceResolutionError` on
+`load()` nothing is a late-bound `Reference` any more (F5); a walk that leaves structure is refused;
+anything else is an import path; a miss raises a located `ReferenceResolutionError` on
 `until="settled"` and `"objects"` alike, so hydraide reports it instead of emitting `_ref_`. The CLI-override
 contract is therefore `load(until="document")` → merge into the DOCUMENT → `load(document)` (what the app
-framework does), never "materialize a Reference the caller kept". F4 is settled by construction:
-`instantiate` recurses through plain dicts and lists (`_deep_flow` descended one level).
+framework does), never "materialize a Reference the caller kept". `instantiate` recurses through
+plain dicts and lists (F4).
 **Pins.** `tests/test_instantiate.py` (the `load(emit(x)) == load(x)` contract, the closed
 document, F4/F5/F6 rows, the two must-not-change deliveries),
 `tests/test_list_index_refs.py::test_e2e_drone_labels_index_pattern` (the override contract).
@@ -962,14 +950,13 @@ side-table; plain-dict syntax (`dict(view)` / `{**view}`) FLATTENS it and is cor
 root document — construct a `_View` instead.
 
 **Rule.** A change to the walk is a change to `broadcast._scan_view`. Sinks may NOT grow branches
-on keys or scopes — a new rule goes behind a `_Receiver` predicate, added to BOTH factories
-(`_receiver_for_target` / `_receiver_for_instance`) with a pin per path.
+on keys or scopes — a new rule goes behind a `_Receiver` predicate in `_receiver_for_target`,
+with a pin.
 
 **Rule.** Glob keys are routing metadata: they never reach ctor kwargs, post-init setattrs,
 `__confluid_kwargs__`, or `load(until="settled")` marker kwargs.
 
-**Detail — configure().** Since phase 4 there is nothing to keep in parity: `configure()` runs the
-document through the SAME scanner (see "`configure()` runs THROUGH the document"). A present
+**Detail — configure().** `configure()` runs the document through the SAME scanner (see "`configure()` runs THROUGH the document"). A present
 `null` SETS `None`; a typo'd non-dict key inside an object's block warns ONCE from the scanner
 (glob-delivered and bare keys never warn).
 
@@ -1004,8 +991,8 @@ so the default path stays zero-cost.
 
 **Rule — `strict_attrs=True` closes the surface, and is the ONLY way to.** The default is
 permissive and must stay so. A class opting in refuses any addressed key naming nothing it
-declares, via the ONE `broadcast.refuse_if_undeclared`, called from the three sites B1 already
-identified (`engine._warn_undeclared`, `_MergeSink.unknown`, `_LiveSink.unknown`). It binds
+declares, via the ONE `broadcast.refuse_if_undeclared`, called from the two sites that report an
+undeclared key (`engine._warn_undeclared`, `_MergeSink.unknown`). It binds
 `configure()` as well as the load path — a mark meaning different things per path is the exact
 asymmetry B1 removed — and `register()` carries it for the reason it carries `broadcast=False`:
 a class you do not own is the one you cannot close by editing its declaration. A `**kwargs`
@@ -1207,9 +1194,9 @@ forbids duplicate keys in one mapping.
 **Rule — a LIST whose FIRST item is a `_scope_` mapping IS a scope block**, the remaining items its
 body. That is the ONLY way to write a conditional list ITEM, because a YAML node is a mapping or a
 sequence and never both. Registered as a DEFAULT SEQUENCE tag constructor that tests the first
-node's keys, so an ordinary list keeps PyYAML's own path. Do NOT reintroduce a `_content_` key: it
-needed a reserved key, a second body-shape rule AND a scalar special case, all of which this shape
-removes (a scalar body is a one-item list, and `_resolve_list` already extends).
+node's keys, so an ordinary list keeps PyYAML's own path. Do NOT add a body key (a `_content_`-style
+reserved key): it would need a second body-shape rule AND a scalar special case, both of which this
+shape avoids (a scalar body is a one-item list, and `_resolve_list` already extends).
 
 **Rule.** A dimension VALUE that YAML reads as a boolean is REJECTED with a quote-it message.
 `{extra: yes}` becomes `True` and then never matches the `extra=yes` string an activation carries —
@@ -1585,8 +1572,7 @@ scenario `examples/deep_injection.py` stays a flat script — inline YAML, no fi
 script exits 0 while printing the wrong number, and these files double as the documentation's proof.
 
 **Rule — examples and guides show TAG input beside PLAIN output** (user ruling 2026-08-15,
-record 19; this REVERSED the "no tags in examples" rule that stood here, and its scanner
-`tests/test_canonical_spelling.py` was deleted with it). A guide's config sample is written the
+record 19). A guide's config sample is written the
 way a reader would write it — the tag form — and where the emitted/machine form matters (a
 `hydraide` artefact, a `dump()`, `confluid.example.yaml`) it is shown as OUTPUT, labelled as such.
 An example that demonstrates both spellings agree (`plain_format.py`) keeps both. Do not

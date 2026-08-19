@@ -128,8 +128,7 @@ def main() -> None:
     assert plain["trainer"].model is plain["model"], "a reference must share the instance"
     print(f"   trainer.model is model -> {plain['trainer'].model is plain['model']}")
 
-    # Independence has ONE spelling: write the marker again. (The `${clone:}`
-    # escape hatch was removed 2026-08-15 — it had no users.)
+    # Independence has ONE spelling: write the marker again.
     two = load("proto: {_target_: Model, hidden: 4}\na: ${ref:proto}\nc: {_target_: Model, hidden: 4}")
     assert two["a"] is two["proto"]
     assert two["c"] is not two["proto"] and two["c"].hidden == 4

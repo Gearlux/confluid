@@ -88,8 +88,7 @@ def _preserve_identity_copy(value: Any) -> Any:
     configuration citizen. Deep-copying them here would undo the Resolver's
     reference resolution, causing two references to the same Fluid to produce
     two separate live instances downstream. We keep identity intact and let
-    a marker written TWICE be two independent instances when that is wanted
-    (the ``${clone:}`` escape hatch was removed 2026-08-15 — zero users).
+    a marker written TWICE be two independent instances when that is wanted.
     (Identity is also what lets ``_prepare_kwargs``'s ``self_obj`` check
     locate the receiving marker's slot in its ambient context.)
     """

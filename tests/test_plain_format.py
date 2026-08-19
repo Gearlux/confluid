@@ -125,8 +125,8 @@ def test_ref_shares_one_instance(spelling: str) -> None:
 # Clone is REMOVED (user ruling 2026-08-15) — every spelling refuses loudly
 #
 # `_clone_` / `${clone:}` / the `!clone:` tag had zero users workspace-wide (one
-# comment in confluid.example.yaml). Records 9 and 10 kept it as an "escape
-# hatch"; the ruling supersedes them. Independence now has ONE spelling: write
+# comment in confluid.example.yaml) — architecture record 18. Independence has
+# ONE spelling: write
 # the marker twice — which is also what a preprocessor emits.
 # --------------------------------------------------------------------------- #
 

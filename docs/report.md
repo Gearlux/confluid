@@ -114,9 +114,7 @@ Three limits worth knowing:
 * **An undeclared key is reported on BOTH paths.** A key naming nothing the target
   declares — not a constructor parameter, not a settable class attribute, not an
   `__init__`-body slot — warns and appears under `failed` as `"unknown-attribute"`,
-  whether it arrived through `load()` or `configure()`. Until 2026-08-12 only
-  `configure()` said anything: the same typo on a marker was silently set as an
-  attribute, and in a class block silently dropped.
+  whether it arrived through `load()` or `configure()`.
 
   On the load path the own-kwarg form (`{_target_: Node, pathh: /x}`) **still
   applies** the value — that branch is the post-init attribute mechanism, so the
