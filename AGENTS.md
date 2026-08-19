@@ -1191,6 +1191,22 @@ mapping is what lets one block replace a block nested inside another.
 blocks routinely share a dimension (`lightning:`/`torch:`/`keras:` all on `framework`) and YAML
 forbids duplicate keys in one mapping.
 
+**Rule — the splice IS the include-paste rule, through `merger.deep_merge`, per key (2026-08-19).**
+`scopes._splice_key` is the ONE way a key lands in a resolved mapping — a block's contents AND a
+plain key written after a block both go through it: a mapping over a marker TUNES it (a copy),
+a nested block deep-merges, anything else replaces, and a restated key is RE-ANCHORED at the
+later writer's position. Never go back to `out[k] = v`: that deleted a marker a block re-stated
+with a mapping, lost a nested block's other keys, and kept the EARLIER writer's position so a
+later bare key won or lost depending on the activation (BUGS-2026-08-19 SR1/SR2/PA2/PA3). The ONE
+special key is `include:` — two active blocks each carrying one COMBINE into a list (the directive
+accepts one), so both files are read. The sibling arm in `deep_merge` merges two `ScopeBlock`s
+under one key with IDENTICAL `dims` + `negate` (the same wrapper on both sides of an include —
+PA4); a different condition is a different block and still replaces.
+**Pins.** the splice group in `tests/test_scopes.py` (`::test_a_block_mapping_at_a_marker_slot_TUNES_the_marker`
+… `::test_two_active_blocks_each_carrying_an_include_read_BOTH_files`, incl. the scalar-replace and
+marker-replace con cases), `tests/test_merger.py::test_two_scope_blocks_with_the_SAME_dims_merge_their_contents`
+(+ the DIFFERENT-dims con), `tests/test_includes.py::test_the_same_wrapper_key_in_an_included_and_the_including_file_merges`.
+
 **Rule — a LIST whose FIRST item is a `_scope_` mapping IS a scope block**, the remaining items its
 body. That is the ONLY way to write a conditional list ITEM, because a YAML node is a mapping or a
 sequence and never both. Registered as a DEFAULT SEQUENCE tag constructor that tests the first

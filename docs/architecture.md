@@ -1248,6 +1248,23 @@ and only values from outside the document (environment, CLI, scope activation) c
 the document exists.
 
 
+
+*Addendum 2026-08-19 — the splice is the paste.* Alternation settled WHEN a block's contents
+land; it said nothing about HOW, and the splice was a plain `out[k] = v` while the paste it claims
+to mirror is `deep_merge`. So the two disagreed on every collision: a block re-stating a marker
+slot with a mapping deleted the marker, a nested block lost its other keys, and a spliced key kept
+the earlier writer's position (an activation flipped which later line won). `scopes._splice_key`
+now applies `deep_merge` per colliding key (the common fresh-key case copies nothing), with one
+special case — two `include:` values combine into a list so both files are read — and
+`deep_merge` merges two same-condition `ScopeBlock`s under one key. One rule, one module,
+two callers; the third site the P1 record counted (composition) has a fourth (splicing).
+
+```python
+# scopes._splice_key — the whole rule
+merged = deep_merge({key: existing}, {key: value})[key]   # tune / deep-merge / replace
+out.pop(key); out[key] = merged                           # re-anchor at the later writer
+```
+
 ---
 
 ## 18. Clone is removed — independence is a second marker
