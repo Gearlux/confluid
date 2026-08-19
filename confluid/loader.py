@@ -29,7 +29,7 @@ from loggair import get_logger
 
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
 from confluid.merger import deep_merge, expand_dotted_keys
-from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, parse_value
+from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, fold_reference_kwargs, parse_value
 from confluid.scopes import default_scopes, normalize_active, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
@@ -518,7 +518,13 @@ def _register_constructors() -> None:
         return fluid
 
     def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
-        return _stamp(Reference(tag_suffix), loader, node)
+        # A mapping body carries kwargs that TUNE the referent (`resolver.fold_reference_kwargs`)
+        # — the same thing the reserved-key spelling `{_ref_: x, k: v}` stores; discarding it
+        # here was the tag half of BUGS-2026-08-19 PA10.
+        ref = Reference(tag_suffix)
+        if isinstance(node, yaml.nodes.MappingNode):
+            ref.kwargs.update(_str_keyed_mapping(loader, node))
+        return _stamp(ref, loader, node)
 
     def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         instant = _TARGET_CALL_RE.match(tag_suffix)
@@ -1094,9 +1100,16 @@ def _load(
         data = cast(Dict[str, Any], _process_imports(data))  # an `import:` a scope block spliced in
     interp_context = context if context is not None else (data if isinstance(data, dict) else None)
     resolver = Resolver(context=interp_context or {})
+    # Kwargs on a reference tune the referent: folded into the referent marker's own
+    # kwargs BEFORE pass 5 (both spellings parse carrying them — pass 5 then aliases a
+    # bare reference) and AGAIN after pass 6, because a dotted path walking THROUGH a
+    # reference (`a.optimizer.lr: 9.0`) only lands on the Reference at expansion.
+    if isinstance(data, dict):
+        fold_reference_kwargs(data)
     data = resolver.resolve(data)
     if isinstance(data, dict):
         data = expand_dotted_keys(data)
+        fold_reference_kwargs(data)
     if context is not None:
         context = expand_dotted_keys(resolver.resolve(context))
     if until == "document":

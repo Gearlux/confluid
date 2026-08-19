@@ -256,3 +256,24 @@ def test_the_engine_is_untouched_load_still_builds() -> None:
     graph = load(textwrap.dedent(TAG_BASE))
     assert isinstance(graph["model"], HModel) and graph["model"].hidden == 32
     assert isinstance(graph["optimizer"], PartialClass)
+
+
+def test_reference_kwargs_are_folded_into_the_referent_in_the_emitted_document() -> None:
+    """What `emit` writes is the settled document: the referent carries the tuned
+    kwargs, the alias is a bare anchor — and it reloads to the same values."""
+    from confluid import configurable, load
+    from confluid.hydraide import emit
+
+    @configurable
+    class _Knob:
+        def __init__(self, v: int = 1, k: int = 0) -> None:
+            self.v = v
+            self.k = k
+
+    text = "proto: !class:_Knob {v: 1}\nuse: {_ref_: proto, k: 5}\n"
+    out = emit(text)
+    assert "k: 5" in out and "_ref_" not in out
+    reloaded = load(out)
+    assert reloaded["use"] is reloaded["proto"]
+    assert (reloaded["proto"].v, reloaded["proto"].k) == (1, 5)
+    assert emit(out) == out

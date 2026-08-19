@@ -926,6 +926,24 @@ plain dicts and lists (F4).
 document, F4/F5/F6 rows, the two must-not-change deliveries),
 `tests/test_list_index_refs.py::test_e2e_drone_labels_index_pattern` (the override contract).
 
+**Rule — kwargs on a reference TUNE the shared referent, folded BEFORE pass 7 (user ruling
+2026-08-19, "option A"; BUGS-2026-08-19 PA10/BC8/SR9).** `{_ref_: proto, k: 5}`, `!ref:proto`
+with a mapping body (the tag constructor keeps it), and a dotted path walking THROUGH a reference
+(`a.optimizer.lr: 9.0`) all carry kwargs on the `Reference`; `resolver.fold_reference_kwargs`
+moves them into the referent marker's OWN kwargs (`deep_merge`, in place — it is the one shared
+object) and clears the reference. `loader._load` runs it BEFORE pass 5 (pass 5 aliases a bare
+top-level reference, which would lose them) and AGAIN after pass 6 (the dotted route only lands at
+expansion). Consequences, each pinned: the kwargs compete at the REFERENT's position like any own
+kwarg — a later bare key still wins — so there is NO second precedence rule; of two references
+tuning one referent the later wins per key; a reference to a PLAIN VALUE with kwargs is refused
+with its location; a reference without kwargs is untouched; the fold is idempotent
+(`load(load(x, until="document")) == load(x)`); hydraide emits the tuned referent and a bare
+anchor. Resolution mirrors `_settle_reference` (exact key in the enclosing mapping, else root); a
+miss is left for pass 7's located error. Do NOT tune at pass 7 instead — a tune applied when the
+reference settles would beat a later bare key regardless of document order.
+**Pins.** the reference-kwargs group in `tests/test_ref_identity.py`,
+`tests/test_hydraide.py::test_reference_kwargs_are_folded_into_the_referent_in_the_emitted_document`.
+
 ### Flat-view ordered matching — the ONE rule, for materialization AND `configure()`
 
 **Rule.** A class's visible context is the document with the descent-path keys popped. Matching

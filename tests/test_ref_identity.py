@@ -286,3 +286,118 @@ root: !class:_Root()
     assert [n.name for n in root.nodes] == ["a", "b", "c"]
     assert [n.leaf.tag for n in root.nodes] == ["a", "b", "c"]
     assert len({id(n) for n in root.nodes}) == 3
+
+
+# ---------------------------------------------------------------------------
+# Kwargs on a reference TUNE the shared referent (user ruling 2026-08-19, option A —
+# BUGS-2026-08-19 PA10 / BC8 / SR9). They are folded into the referent marker's own
+# kwargs before pass 7 (the same thing `proto.k: 5` does), so they compete at the
+# referent's position like any own kwarg; every spelling lands — the mapping form,
+# the tag with a body, a reference nested in a marker's kwargs, and a dotted path
+# walking through a reference. Before: every one of them vanished, report `unused=[]`.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _S:
+    def __init__(self, v: int = 1, k: int = 0) -> None:
+        self.v = v
+        self.k = k
+
+
+@configurable
+class _Opt:
+    def __init__(self, lr: float = 0.0) -> None:
+        self.lr = lr
+
+
+@configurable
+class _Trainer:
+    def __init__(self, optimizer: Any = None) -> None:
+        self.optimizer = optimizer
+
+
+def _register_ref_fixtures() -> None:
+    from confluid import register
+
+    for cls in (_S, _Opt, _Trainer):
+        register(cls)
+
+
+def test_the_tag_spelling_keeps_a_reference_body_at_parse() -> None:
+    """`!ref:proto` with a mapping body used to discard the body entirely."""
+    raw = load("proto: !class:_S {v: 1}\nuse: !ref:proto\n  k: 5\n", until="raw")
+    assert raw["use"].kwargs == {"k": 5}
+
+
+@pytest.mark.parametrize(
+    "label, doc",
+    [
+        ("mapping form, top level", "proto: !class:_S {v: 1}\nuse: {_ref_: proto, k: 5}\n"),
+        ("tag + body, top level", "proto: !class:_S {v: 1}\nuse: !ref:proto\n  k: 5\n"),
+        ("${ref:} plus dotted kwarg", "proto: !class:_S {v: 1}\nuse: ${ref:proto}\nuse.k: 5\n"),
+    ],
+)
+def test_reference_kwargs_tune_the_shared_referent(label: str, doc: str) -> None:
+    _register_ref_fixtures()
+    r = load(doc)
+    assert r["use"] is r["proto"], label
+    assert (r["proto"].v, r["proto"].k) == (1, 5), label
+
+
+def test_reference_kwargs_inside_a_markers_kwargs_tune_the_referent() -> None:
+    _register_ref_fixtures()
+    r = load("proto: !class:_S {v: 1}\nhost: !class:_Trainer\n  optimizer: {_ref_: proto, k: 5}\n")
+    assert r["host"].optimizer is r["proto"]
+    assert r["proto"].k == 5
+
+
+def test_a_dotted_path_THROUGH_a_reference_tunes_the_referent() -> None:
+    """`a.optimizer.lr: 9.0` where `a.optimizer` is `!ref:shared` — the dotted walk
+    lands on the Reference's kwargs (pass 6); the fold carries them to `shared`."""
+    _register_ref_fixtures()
+    doc = "shared: !class:_Opt {lr: 1.0}\na: !class:_Trainer\n  optimizer: !ref:shared\na.optimizer.lr: 9.0\n"
+    r = load(doc)
+    assert r["a"].optimizer is r["shared"]
+    assert r["shared"].lr == 9.0
+
+
+def test_two_references_tuning_one_referent_last_writer_wins_and_both_land() -> None:
+    _register_ref_fixtures()
+    r = load("proto: !class:_S\nx: {_ref_: proto, v: 3}\ny: {_ref_: proto, v: 4, k: 7}\n")
+    assert r["x"] is r["y"] is r["proto"]
+    assert (r["proto"].v, r["proto"].k) == (4, 7)
+
+
+def test_folded_reference_kwargs_compete_at_the_REFERENTS_position() -> None:
+    """Not a second precedence rule: the kwargs sit in `proto`'s own kwargs, so a
+    bare key written AFTER `proto` still wins and one written BEFORE still loses —
+    exactly as for `proto.v: 5`."""
+    _register_ref_fixtures()
+    later_bare = load("proto: !class:_S {v: 1}\nuse: {_ref_: proto, v: 5}\nv: 9\n")
+    assert later_bare["proto"].v == 9
+    earlier_bare = load("v: 9\nproto: !class:_S {v: 1}\nuse: {_ref_: proto, v: 5}\n")
+    assert earlier_bare["proto"].v == 5
+
+
+def test_a_reference_without_kwargs_is_unchanged() -> None:
+    _register_ref_fixtures()
+    r = load("proto: !class:_S {v: 1}\nuse: {_ref_: proto}\nb: !ref:proto\n")
+    assert r["use"] is r["proto"] is r["b"]
+    assert (r["proto"].v, r["proto"].k) == (1, 0)
+
+
+def test_kwargs_on_a_reference_to_a_PLAIN_VALUE_are_refused_with_a_location() -> None:
+    """A plain value has no kwargs to tune — the con case; it must not silently drop."""
+    with pytest.raises(ConfigurationError, match=r"lr.*plain value|plain value.*lr") as info:
+        load("lr: 0.1\nuse: {_ref_: lr, k: 5}\n")
+    assert "<unicode string>:2:6" in str(info.value)
+
+
+def test_reference_kwargs_survive_the_document_stage_idempotently() -> None:
+    """`load(load(x, until="document")) == load(x)` — the fold happens once."""
+    _register_ref_fixtures()
+    text = "proto: !class:_S {v: 1}\nuse: {_ref_: proto, k: 5}\n"
+    once = load(text)
+    twice = load(load(text, until="document"))
+    assert (once["proto"].v, once["proto"].k) == (twice["proto"].v, twice["proto"].k) == (1, 5)

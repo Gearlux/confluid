@@ -117,9 +117,12 @@ b: {_ref_: proto}    # the mapping form, same thing
 
 There is no "copy" marker. A second instance is a second marker.
 
-Use the scalar `${ref:…}` for the common case and the mapping form when you need
-to carry kwargs. A reference resolves to an *object*, so it must be the **whole**
-value — `"pre-${ref:x}-post"` raises rather than quietly stringifying it.
+Use the scalar `${ref:…}` for the common case and the mapping form when you want
+to tune the shared object from the reference: `{_ref_: proto, k: 5}` folds `k: 5`
+into `proto`'s own kwargs (every alias sees it — see [Targets](targets.md) →
+"`!ref:` — shared instance"). A reference resolves to an *object*, so it must be
+the **whole** value — `"pre-${ref:x}-post"` raises rather than quietly
+stringifying it.
 
 ## Environment variables: `${env:…}`
 

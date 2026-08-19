@@ -358,6 +358,82 @@ def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> An
     return None
 
 
+def fold_reference_kwargs(document: Dict[str, Any]) -> None:
+    """Fold every reference's kwargs into the referent marker's OWN kwargs, in place.
+
+    A reference shares ONE object, so kwargs written on it — ``{_ref_: proto, k: 5}``,
+    ``!ref:proto`` with a body, or a dotted path that walks through a reference
+    (``a.optimizer.lr: 9.0`` where ``a.optimizer`` is ``!ref:shared``) — tune that one
+    object (user ruling 2026-08-19; BUGS-2026-08-19 PA10 / BC8 / SR9 — every spelling
+    used to vanish with an empty report). They are folded HERE, before pass 7, into the
+    referent's own kwargs — the same thing ``proto.k: 5`` does — so they compete at the
+    referent's position like any own kwarg, and there is no second precedence rule:
+    a bare key written after the referent still beats them. Walk order is document
+    order, so of two references tuning one referent the later one wins per key.
+
+    Resolution mirrors ``engine._settle_reference``: an EXACT key in the enclosing
+    mapping (never the reference itself), else the document root. A miss is left for
+    pass 7 to report (located). A referent that is not a marker (a plain value) has no
+    kwargs to tune and is REFUSED with the reference's location. A reference to a
+    reference follows the chain. Idempotent: a folded reference carries no kwargs, so
+    ``load(load(x, until="document")) == load(x)`` holds; ``loader._load`` runs it before
+    pass 5 (both spellings parse with kwargs) and again after pass 6 (the dotted route
+    exists only after expansion).
+    """
+    from confluid.fluid import Fluid, Reference, _at_yaml_loc
+    from confluid.merger import deep_merge
+
+    def referent_of(ref: Reference, local: Dict[str, Any]) -> Any:
+        seen: Set[int] = set()
+        node: Any = ref
+        while isinstance(node, Reference):
+            if id(node) in seen:
+                return None
+            seen.add(id(node))
+            target = node.target
+            found: Any = None
+            for ctx in (local, document):
+                if target in ctx and ctx[target] is not node:
+                    found = ctx[target]
+                    break
+            if found is None:
+                return None
+            node = found
+        return node
+
+    def walk(value: Any, local: Dict[str, Any]) -> None:
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v, value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item, local)
+            return
+        if isinstance(value, Reference):
+            if not value.kwargs:
+                return
+            referent = referent_of(value, local)
+            if referent is None:
+                return  # unresolvable here — pass 7 raises the located error
+            if not isinstance(referent, Fluid):
+                raise ConfigurationError(
+                    f"!ref:{value.target}{_at_yaml_loc(value)} carries kwargs {sorted(value.kwargs)}, but "
+                    f"`{value.target}` is a plain value, not a marker — a reference's kwargs tune the object "
+                    f"the referent builds; write the value you want at `{value.target}` instead"
+                )
+            folded = dict(value.kwargs)
+            value.kwargs = {}
+            referent.kwargs = deep_merge(referent.kwargs, folded)
+            walk(referent, document)  # kwargs may themselves hold a reference with kwargs
+            return
+        if isinstance(value, Fluid):
+            for v in value.kwargs.values():
+                walk(v, value.kwargs)
+
+    walk(document, document)
+
+
 class Resolver:
     """Resolves references (!ref), environment variables (${ENV} / bare $VAR), and deep keys."""
 
