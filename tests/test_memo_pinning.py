@@ -98,10 +98,24 @@ class Maker:
         self.made = flow(Target(Widget, label=tag))  # ctor-local recipe — dies after this line
 
 
+@configurable
+class Optimizer:
+    def __init__(self, lr: float = 0.0, name: str = "") -> None:
+        self.lr = lr
+        self.name = name
+
+
+@configurable
+class Trainer:
+    def __init__(self, name: str = "", optimizer: Optional[Optimizer] = None) -> None:
+        self.name = name
+        self.optimizer = optimizer
+
+
 def _register() -> None:
     from confluid import register
 
-    for cls in (Widget, Stage, Pipeline, Engine, Owner, SlottedOwner, Maker):
+    for cls in (Widget, Stage, Pipeline, Engine, Owner, SlottedOwner, Maker, Optimizer, Trainer):
         register(cls)
 
 
@@ -173,6 +187,38 @@ def test_tuned_slots_get_distinct_instances_with_their_own_values() -> None:
         powers = [e.power for e in engines]
         assert powers == [100 + i for i in range(N_SLOTS)], f"trial {trial}: {powers}"
         assert len({id(e) for e in engines}) == N_SLOTS, f"trial {trial}: slots share instances"
+
+
+# --------------------------------------------------------------------------- #
+# BC1 (BUGS-2026-08-19) — the PASS-7 flow memo written for a tune_marker copy
+# --------------------------------------------------------------------------- #
+
+N_TRAINERS = 300
+
+
+def test_a_class_block_tune_never_hands_one_node_anothers_settled_child() -> None:
+    """``Trainer: {optimizer: {lr: 9.0}}`` over 300 trainers: pass 7 tunes each
+    trainer's ``optimizer`` marker through ``tune_marker`` (a short-lived COPY),
+    and ``flow_memo`` keyed on that copy's id without pinning it. The copy died
+    with its ``merged_kwargs``, CPython reused the address, and the next marker
+    to land there read the memo as a HIT — measured: 22 of 300 trainers holding
+    ANOTHER trainer's optimizer (278 distinct objects for 300 slots). Every
+    trainer must get its own optimizer carrying its own name."""
+    _register()
+    doc = (
+        "".join(
+            f"t{i}:\n  _target_: Trainer\n  name: t{i}\n  optimizer: {{_target_: Optimizer, name: o{i}, lr: 1.0}}\n"
+            for i in range(N_TRAINERS)
+        )
+        + "Trainer: {optimizer: {lr: 9.0}}\n"
+    )
+    for trial in range(3):
+        built = load(doc)
+        optimizers = [built[f"t{i}"].optimizer for i in range(N_TRAINERS)]
+        names = [o.name for o in optimizers]
+        assert names == [f"o{i}" for i in range(N_TRAINERS)], f"trial {trial}: a trainer holds another's optimizer"
+        assert len({id(o) for o in optimizers}) == N_TRAINERS, f"trial {trial}: optimizers are shared"
+        assert all(o.lr == 9.0 for o in optimizers), f"trial {trial}: the block did not land"
 
 
 # --------------------------------------------------------------------------- #
