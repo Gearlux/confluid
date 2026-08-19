@@ -46,8 +46,8 @@ def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
     It was a ``!ref`` TAG until 2026-08-11, which made a dumped document unreadable
     by ``yaml.safe_load`` — the one property the plain format exists to give — for
     any config carrying a function-valued param (a ``collate_fn`` is the common one).
-    The interpolation spelling is what the migrated configs use and what the codemod
-    converts a ``!ref:`` to, so this only brings ``dump()`` in line with them.
+    The interpolation spelling is the plain-YAML spelling of a whole-value reference,
+    so a dump stays ordinary YAML.
     """
     module = getattr(data, "__module__", None)
     qualname = getattr(data, "__qualname__", None) or getattr(data, "__name__", None)

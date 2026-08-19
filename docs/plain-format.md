@@ -12,12 +12,11 @@ model:
   hidden: 32
 ```
 
-The [tag format](targets.md) (`!class:MLP`) is the original spelling and still
-loads. Both produce the **same** markers, so everything downstream —
-[broadcasting](broadcasting.md), [scopes](scopes.md),
+The [tag format](targets.md) (`!class:MLP`) is the preferred way to *write* a
+config; this form is what `hydraide` *emits*. Both produce the **same** markers, so
+everything downstream — [broadcasting](broadcasting.md), [scopes](scopes.md),
 [interpolation](interpolation.md), `dump()` — behaves identically whichever you
-write. The two may be mixed in one file, which is what makes a file-by-file
-migration safe.
+write, and the two may be mixed in one file.
 
 > **Why a second format?** A tagged document is not YAML that anything else can
 > read: `yaml.safe_load` on `!class:MLP` raises `ConstructorError: could not
@@ -116,8 +115,7 @@ a: ${ref:proto}      # scalar shorthand — a is b (one shared instance)
 b: {_ref_: proto}    # the mapping form, same thing
 ```
 
-There is no "copy" marker. A second instance is a second marker — the `${clone:}`
-escape hatch was removed in 0.3.0 with no users; see the CHANGELOG.
+There is no "copy" marker. A second instance is a second marker.
 
 Use the scalar `${ref:…}` for the common case and the mapping form when you need
 to carry kwargs. A reference resolves to an *object*, so it must be the **whole**

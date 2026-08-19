@@ -6,7 +6,7 @@
 place, no re-instantiation. It is the second half of confluid's core promise:
 `load()` builds an object graph *from* a document; `configure()` brings a live
 graph *up to* one. Both apply the same single matching rule — literally: since
-[architecture record 19](architecture.md) (phase 4) `configure()` runs *through
+[architecture record 19](architecture.md) `configure()` runs *through
 the document*. The objects become a marker document (the same reconstruction
 `dump()` uses), the config is merged after it, the ONE resolution pass settles
 the result, and the settled values are written back onto the objects. There is

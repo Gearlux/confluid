@@ -30,8 +30,8 @@ All notable changes to confluid are documented here. The format follows
   `ConfluidError` is one line on stderr, exit 1; a usage error exits 2. `tests/test_cli.py`.
 
 - **`confluid.spelling.to_tags` / `convert_file` — the reserved-key spelling → the tag spelling**
-  (record 19, phase 1b). The inverse of the 2026-08-11 codemod, and line-based for the same
-  reason: it puts the tag on the KEY line, deletes the `_target_:` / `_partial_:` / `_scope_:`
+  (record 19). Line-based, because these files are mostly comments and a parse-and-rewrite
+  would reformat them: it puts the tag on the KEY line, deletes the `_target_:` / `_partial_:` / `_scope_:`
   line, and touches nothing else (comments, order, spacing, quoting). A flow marker becomes
   `!class:X(k=v)` when every kwarg is a plain scalar, else `!class:X {…}`; nested inside a flow
   container it takes the flow-body form (`{a: !class:X {}}` — measured: a tag directly before
@@ -43,7 +43,7 @@ All notable changes to confluid are documented here. The format follows
   hydraide.emit(after)` under every scope activation the document declares. First corpus: 26
   workspace configs (chainwind · sonair · traidwind — waivefront's 25 wait for a clean tree),
   confluid's own examples and guides. `tests/test_spelling.py`.
-- **`hydraide` — the preprocessor** (architecture record 19, phase 1). `confluid.hydraide.emit(source,
+- **`hydraide` — the preprocessor** (architecture record 19). `confluid.hydraide.emit(source,
   scopes=…)` resolves a config — either spelling — to ONE plain-YAML document: includes spliced,
   scopes applied, dotted keys expanded, interpolation burned in, broadcasting settled, shared
   markers emitted as NAMED anchors (`&preprocess_0`, not `&id001`), deferral kept as
@@ -51,10 +51,7 @@ All notable changes to confluid are documented here. The format follows
   diff. Both spellings of one document emit byte-identical output, and `emit` is idempotent — the
   property `check` rests on. A malformed document is refused exactly as `load()` refuses it (a
   located `ConfigurationError`). It is a WRAPPER: `dump(resolve(source))` plus a
-  `dump(anchor_names=…)` hook; no engine pass changed. **Functions only** — the `hydraide` command
-  line (`emit` / `check` verbs) is an app of the CLI framework built on confluid, not a script
-  here (the argparse `main()` and `[project.scripts] hydraide` that briefly lived in this
-  package were removed the same cycle, before any release). Guide: `docs/hydraide.md`; example:
+  `dump(anchor_names=…)` hook; no engine pass changed. Guide: `docs/hydraide.md`; example:
   `examples/hydraide.py`.
 - **`!partial:`** — the tag for a deferred marker, the same name as the key it emits. `!lazy:`
   stays as an alias.
@@ -99,21 +96,12 @@ All notable changes to confluid are documented here. The format follows
   `confluid.fluid` module-level `__getattr__` is gone; `flow` is imported from `confluid`.
 
 - **Tags are the preferred AUTHORING form; the reserved keys are the MACHINE form; neither
-  warns** (user ruling 2026-08-15, record 19). This REVERSES the tag deprecation announced in
-  this release: the once-per-document `FutureWarning` is gone, the 0.4.0 tag deletion is off,
-  and both spellings are first-class input that may be mixed in one file. Two engine facts are
+  warns** (user ruling 2026-08-15, record 19): both spellings are first-class input and may be
+  mixed in one file. Two engine facts are
   pinned by the tool's suite because the tool exposes them: identity is per MARKER, not per
   container (a list reached via `${ref:}` is emitted twice with its elements anchored), and an
   anchor does NOT follow an include-overlay tune (the key gets the tuned copy, alias sites keep
   the original — use `${ref:}` for a cross-file reference).
-
-### Removed
-
-- **`confluid-migrate`** (`confluid/migrate.py`, its tests, the script) — the tag→plain codemod
-  has no job when tags are not deprecated; `hydraide` is the one emitter of the plain form. Not
-  breaking: v0.2.0 shipped no such script and no downstream code called it.
-- **`tests/test_canonical_spelling.py`** — it enforced "no tags in examples", the opposite of the
-  ruling.
 
 ### Documentation
 
@@ -126,17 +114,14 @@ All notable changes to confluid are documented here. The format follows
   `resolve()` named two deleted marker classes. The deleted `Class` / `Instance` names were
   purged from every current-API doc sample (`io-contract.md`'s "canonical spellings" raised
   `NameError` when copied). `docs/performance.md`'s baseline was re-measured (~30 % stale).
-  The README now lists all nine passes (`import` was missing) and states the tag spelling's
-  deprecation + 0.4.0 removal on the landing page; `docs/targets.md` leads with the reserved
-  keys instead of "built from six YAML tags". `docs/class-design.md` rule 2 now states zero-arg
+  The README now lists all nine passes (`import` was missing). `docs/class-design.md` rule 2 now states zero-arg
   construction as RECOMMENDED (the 2026-08-11 ruling); the body-slot `owner` filter is stated
   in `class-design.md` / `schema-export.md`. Consumer-project names were genericized out of
   every docstring and the two `docs/` violations (a named consumer in `serialization.md` /
   `errors.md`). `loader` / `resolver` / `schema` gained module docstrings. The two unreleased
   CHANGELOG sections were merged into this one. Public docstrings teaching the tag spelling
   (16 objects, `load` / `flow` / `materialize` / `configurable` / `configure_from_file`
-  included) were rewritten to the reserved keys, and a third canonical-spelling scan pins the
-  `confluid.__all__` docstring surface so they cannot regress. User-facing hint/warning texts
+  included) were rewritten to the reserved keys. User-facing hint/warning texts
   that taught the tag spelling (the ambiguous-name hint, the auto-defer warning, the scope
   mismatch message) now teach the reserved keys.
 
@@ -153,6 +138,15 @@ All notable changes to confluid are documented here. The format follows
   call `body_slot_names` directly.
 
 ### Fixed
+
+- **The pass-7 `flow_memo` pins the marker it keys on** (BUGS-2026-08-19 BC1, 2026-08-19). The
+  memo keyed on `id()` of the marker `_flow_recursive` was handed; since the pass-7 dict-at-slot
+  tune (C1, 2026-08-14) that marker is often a `tune_marker` COPY that dies with the enclosing
+  `merged_kwargs`, and a recycled address read as a memo HIT — measured: one class block
+  `Trainer: {optimizer: {lr: 9.0}}` over 300 trainers left 22 trainers holding ANOTHER trainer's
+  optimizer (278 distinct objects for 300 slots). The write now appends to
+  `_EngineState.memo_keepalive` like the three `instance_memo` writes (architecture record 16).
+  Pinned: `tests/test_memo_pinning.py::test_a_class_block_tune_never_hands_one_node_anothers_settled_child`.
 
 - **Four pass-7 ordering defects, exposed by running `configure()` through the document and fixed
   IN pass 7 (`load()` gets them too), each measured before/after** — F7: a same-named child slot
@@ -278,7 +272,7 @@ All notable changes to confluid are documented here. The format follows
   temporary, configured, and discarded — the marker kept its defaults while the report recorded
   the key as applied, so a later `flow(obj.opt)` built with the defaults. Marker slots are now
   tuned by their owner like `PartialClass` ones; the check widened from `Partial` to `Target`,
-  which leaves `Reference`/`Clone` on the flow path (they still raise rather than becoming silent
+  which leaves `Reference` on the flow path (it still raises rather than becoming a silent
   no-ops), and the early return walks the marker's kwargs so live objects held inside one
   (`Target(Stage, dep=widget)`) are still configured. Pinned by the C3/C4 groups in
   `tests/test_configurator.py`.
@@ -339,7 +333,7 @@ All notable changes to confluid are documented here. The format follows
 - **`_partial_` beside a non-`_target_` discriminator is refused instead of swallowed**
   (BUGS-2026-08-13 P10). `{_ref_: proto, _partial_: true}` stripped the modifier and flowed
   EAGERLY — no error, no warning, and the key gone from the marker's kwargs so nothing downstream
-  could notice. Same for `_clone_` and for a `_scope_` / `_notscope_` block. `_partial_` modifies
+  could notice. Same for a `_scope_` / `_notscope_` block. `_partial_` modifies
   CONSTRUCTION and `_target_` is the only key that constructs, so the pairing now raises a located
   `ConfigurationError` naming the spelling that works (put the modifier on the node being
   constructed, then reference it). The lone-modifier error is corrected in the same change: it
@@ -393,21 +387,6 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
-- **`Clone` has ONE override semantic, whichever engine path resolves it.** The document path
-  merged a clone's overrides into the copied marker's kwargs (they reached the constructor)
-  while a directly flowed clone deep-copied the BUILT referent and pasted them on as setattrs —
-  invisible for a store-only constructor, measured three ways otherwise: an `eager=True` class
-  computed from the template's value on one path and the override's on the other (`step_size`
-  0.4 vs 0.1 for one document); `flow(clone, lr=0.9)` fed the runtime kwarg to the REFERENT's
-  build and the clone's stored kwarg then beat it, inverting `flow()`'s "runtime wins" contract
-  for every class; and overrides on non-marker referents vanished silently (live objects and
-  mappings on the document path, scalars everywhere). One helper (`engine._clone_of`) now serves
-  both paths, deciding by the REFERENT's kind: marker → kwargs-merge then BUILD; mapping → key
-  merge; live object → setattrs (the `configure()` semantic); scalar/list with overrides → a
-  located `ConfigurationError`. Runtime kwargs configure the clone (runtime wins), the fresh
-  marker is pinned in `memo_keepalive`, and the referent is deep-copied before merging so a
-  template is never mutated by its clones. Architecture record 14; pinned by the 2026-08-13
-  group in `tests/test_clone.py`.
 - **The last three private slot walks now project from `introspect.slots()`** — the 2026-08-12
   consolidation left `to_pydantic`'s signature half, `broadcast._get_param_kinds` and the dumper's
   two walks un-migrated, each with a wrong answer the shared enumeration already had right:
@@ -465,7 +444,7 @@ All notable changes to confluid are documented here. The format follows
   a marker inside a plain mapping or list is now BUILT (it used to come back as an unbuilt
   `Target` — F4); a reference to a plain value is INLINED in pass 7, so `load()` hands back the
   value where it used to hand back a late-bound `Reference` (F5) — a CLI that overrides after
-  loading merges into the `load(flow=False)` document and calls `materialize`, which is what the
+  loading merges into the `load(until="document")` document and calls `load(document)`, which is what the
   app framework already did; an unresolvable reference is a located `ReferenceResolutionError` at
   `resolve()`/`emit` and `load()` alike (it used to survive as a marker). The emitted document is
   therefore CLOSED: no `_ref_` — markers are anchors, plain values are inlined, functions are
@@ -487,13 +466,11 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_attribute_refs_removed.py`.
 - **`Clone` is removed — `_clone_`, `${clone:…}` and the `!clone:` tag, and the `Clone` marker
   class** (user ruling 2026-08-15; architecture record 18). It had zero users workspace-wide (one
-  comment in `confluid.example.yaml`); records 9 and 10 kept it as an "escape hatch" on that same
-  census, and this ruling supersedes both. Independence now has one spelling — write the marker
+  comment in `confluid.example.yaml`). Independence now has one spelling — write the marker
   again (or `<<:` an anchored base into each site) — and sharing has one, `_ref_` / `${ref:}`.
   The removal is LOUD in every spelling: `_clone_` still reaches the marker gate and is refused
   with a `file:line:col`, `${clone:x}` raises at the resolver instead of surviving as a string,
-  `!clone:` no longer parses, and `confluid-migrate` reports a `!clone:` line as a Finding rather
-  than converting it to a key the loader now refuses. **Breaking for a 0.2.0 config using
+  and `!clone:` no longer parses. **Breaking for a 0.2.0 config using
   `!clone:`** — the located error names both replacement spellings. Pinned by the Clone-removal
   group in `tests/test_plain_format.py`; `tests/test_clone.py` deleted.
 
@@ -754,13 +731,11 @@ All notable changes to confluid are documented here. The format follows
   spelling for. Measured against the pre-change engine before changing anything.
 
   ```
-  '!lazy:Adam(lr=0.01)' is a marker written as a quoted STRING, which confluid cannot
-  honour here. Write it as plain YAML instead:
+  '!lazy:Adam(lr=0.01)' is a marker written as a quoted STRING, which confluid does not parse
+  here. Write the tag unquoted — `!lazy:Adam` with a block body for nested values — or the
+  reserved-key form:
 
       {_target_: Adam, _partial_: true, lr: 0.01}
-
-  (The quoted-string spelling is deprecated and is removed in confluid 0.4.0; only
-  "!class:" and "!ref:" were ever parsed from a string, and only outside a marker's own kwargs.)
   ```
 
   The replacement is derived from the same `Target(...)` grammar the tags use, so the message
@@ -776,10 +751,8 @@ All notable changes to confluid are documented here. The format follows
   and were retargeted; one of them carried the comment *"string keeps its prefix — parsed at
   flow time"*, which was false — nothing parsed it, there or later.
 
-  **The whole path is deleted in 0.4.0 with the tags** (`TASKS.md` phase 5e). It exists only
-  to work around a tag limitation — YAML forbids two tags on one node, so a nested `!ref:` had
-  to be quoted — and `{_target_: Adam, lr: ${ref:base}}` needs no escape at all. A census
-  found zero configs using it workspace-wide.
+  A census found zero configs using the quoted spelling workspace-wide: a nested `!ref:` goes in
+  a block body, and `{_target_: Adam, lr: ${ref:base}}` needs no escape at all.
 
 ### Added
 
@@ -815,55 +788,13 @@ All notable changes to confluid are documented here. The format follows
 
 ### Changed
 
-- **The examples and the README now teach the reserved-key spelling.** Twelve of the
-  twenty-four runnable examples still used the deprecated YAML tags — `lifecycle.py` (the
-  README's designated "start here"), `deep_injection.py` (the flagship pitch),
-  `broadcasting.py`, `eager_classes.py`, `error_handling.py`, `interpolation_includes.py`,
-  `introspection.py`, `performance.py`, `report.py` and `scopes.py` — so a reader following
-  the documentation path got a `FutureWarning` saying their config was obsolete. Every one
-  was converted with `confluid-migrate` and its equivalence check; the two that document the
-  tag form itself (`plain_format.py`, `tags_deferred.py`) keep it.
-
-  Three more were fixed that no runtime check could have found: `ml_pipeline.py` used the
-  QUOTED-STRING spelling (`"!class:Adam(lr=!ref:base_lr)"`), which emits no deprecation
-  warning at all and which `confluid-migrate` reports rather than converts;
-  `examples/ml_experiments/` had migrated YAML with its comments, its `run.py` docstrings and
-  its README still describing tags — including a Hydra-comparison table telling a Hydra user
-  that confluid's answer to `_target_:` is `!class:Name()`; and `examples/schema_export.py`
-  named `!class:` in a comment.
-
-- **The guides now match their companion examples.** Converting the examples left 69 tag
-  lines across nine guides showing configs their own runnable companion no longer matched —
-  `docs/broadcasting.md` displayed `sink: !class:Passthrough(tag=addressed)` while
-  `examples/broadcasting.py` had moved to the reserved keys. `broadcasting.md`, `scopes.md`,
-  `interpolation.md`, `lifecycle.md`, `errors.md`, `eager-classes.md`, `introspection.md`,
-  `report.md` and `class-design.md` were converted, and `scopes.md` was reoriented around
-  `_scope_` (it opened by announcing "this page is written in the tag form"). Every YAML
-  snippet written into `scopes.md` and `discovery.md` was executed to confirm it does what
-  the page claims. A further 25 stale prose references were fixed across seven more guides.
-
 - **README corrections.** The "Design Goals" bullet advertised a "Tag-Based IR" with
   `!class:Name` deferred / `!class:Name()` eager — a distinction deleted in 0.3.0 when
   `Class` and `Instance` collapsed into `Target`. The Quick Start's first config used the
   quoted-string spelling. The Scopes bullet spelled a scope `_scope_: debug`, which is not
   valid: the value must be a MAPPING, and that spelling raises `ConfigurationError`.
 
-- **`confluid-migrate` is no longer suggested for a document that has no file.** PyYAML names
-  a string-loaded document `<unicode string>`, which the deprecation notice interpolated
-  straight into its remediation — `confluid-migrate <unicode string>`, a command that cannot
-  be copied or run, from a message whose only job is to say what to do next. Such a document
-  now gets an explanation instead of an uncopyable command. Pinned by
-  `tests/test_plain_format.py::test_a_string_loaded_document_is_not_told_to_run_an_uncopyable_command`.
-
 ### Fixed
-
-- **`Resolver._parse_class_string`'s docstring described behaviour that was deleted** —
-  "`Name(...)` (with parens) is eager → `Instance`; a bare `Name` is deferred → `Class`".
-  Both classes are gone and both branches return a `Target` with `partial=False`; the
-  trailing `()` has been inert since the IR collapse. It now also records that this is the
-  QUOTED-STRING grammar, a third input spelling beside the tags and the reserved keys, whose
-  inline values resolve EAGERLY where `_target_`'s `${ref:...}` stays late-bound — so the two
-  are not interchangeable for a slot flowed outside the document.
 
 - **`docs/targets.md` documented a construction rule that was deleted.** Its table said
   `!class:Model` parses to a deferred `Class` stub and only `!class:Model()` builds — the
@@ -882,52 +813,12 @@ All notable changes to confluid are documented here. The format follows
   example's README — which IS its documentation page, per the AGENTS rule — was outside every
   link check. It now covers them.
 
-### Added
-
-- **`tests/test_canonical_spelling.py`** — two scans at two strictnesses: no example may name
-  a tag anywhere (config or prose), and no guide may carry one inside a fenced ```` ```yaml ````
-  block. Prose in `docs/` stays free, because naming the deprecated spelling is how a reader
-  with old configs learns what to convert. Static over source text rather than a run of each
-  example: a runtime check costs seconds per file, sees no prose, and would have passed
-  `ml_pipeline.py`. Two inverse pins keep the allow-lists honest — an entry naming a file that
-  no longer exists, and an entry that is no longer needed.
-
-
-### Deprecated
-
-- **The YAML tag syntax (`!class:` / `!lazy:` / `!ref:` / `!clone:` / `!scope:` / `!notscope:`)
-  is deprecated and is REMOVED in 0.4.0.** Loading a tagged document now emits a `FutureWarning`
-  naming the file, the line, and the fix:
-
-  ```
-  config/train.yaml:12: the YAML tag syntax (…) is DEPRECATED and is removed in confluid 0.4.0.
-  Convert this file with `confluid-migrate config/train.yaml` — it rewrites the tags to the
-  reserved-key format (_target_ / _partial_ / ${ref:}) and verifies the marker tree is unchanged
-  before writing.
-  ```
-
-  Once per DOCUMENT, not per tag (a 400-line config would otherwise bury the message it is
-  delivering) and not per process (which would name your first config and stay silent about the
-  rest). `FutureWarning` rather than `DeprecationWarning` because Python shows it by default —
-  the audience is whoever wrote the YAML, not library code, which is the split the two categories
-  encode.
-
-  **0.3.0 deliberately ships BOTH the tags and `confluid-migrate`**, because the codemod's safety
-  check parses the tagged original to prove a conversion equivalent (`verify_equivalence`) — a
-  release that removed the tags and shipped the tool would make it refuse every file it exists to
-  convert. 0.4.0 removes the tag constructors, and with them the `${PLAIN}` → config-key
-  interpolation flip (a bare `${VAR}` becomes a config-key reference, so every one must already be
-  `${env:VAR}` — which is what the codemod converts it to).
-
 ### Removed — BREAKING
 
-- **The deprecation aliases are gone (2026-08-11).** `Class`, `Instance`, `Lazy`, `LazyClass`,
-  `lazy_param_names` and the `confluid.lazy` shim module are DELETED. They were the pre-merge /
-  pre-rename spellings, kept while both YAML formats were supported so a consumer need not change
-  in the same release. Use `Target`, `Partial`, `PartialClass`, `partial_param_names` and
-  `confluid.partial`. Importing an old name now fails loudly rather than resolving to something
-  that behaves differently: `Class` and `Instance` had become the same class, so code
-  discriminating with `isinstance(x, Instance)` reads `x.partial`.
+- **`Class`, `Instance`, `Lazy`, `LazyClass`, `lazy_param_names` and the `confluid.lazy` module
+  are gone (2026-08-11).** Use `Target`, `Partial`, `PartialClass`, `partial_param_names` and
+  `confluid.partial`. `Class` and `Instance` had become the same class, so code discriminating
+  with `isinstance(x, Instance)` reads `x.partial`.
 
   `introspect._PARTIAL_CALL_NAMES` narrowed to `("PartialClass", "Partial")` with them. That list
   matches on the call NAME in the SOURCE, so a body slot written with a removed spelling does not
@@ -958,40 +849,12 @@ All notable changes to confluid are documented here. The format follows
   `Lazy[T]`→`Partial[T]`, `LazyClass(...)`→`PartialClass(...)`,
   `lazy_param_names`→`partial_param_names`, `@configurable(lazy=True)`→`partial=True`,
   `confluid.lazy`→`confluid.partial`, `docs/tags.md`→`docs/targets.md`.
-  `Class`/`Instance`/`Lazy`/`LazyClass`/`lazy_param_names` remain as **deprecation aliases** and
-  are removed with the tag spelling. Note `Class is Instance is Target` now, so
-  `isinstance(x, Instance)` no longer separates eager from deferred — read `x.partial`.
+  `Class is Instance is Target` now, so `isinstance(x, Instance)` no longer separates eager
+  from deferred — read `x.partial`.
 
-  `confluid/lazy.py` survives as a deprecation SHIM re-exporting the renamed names,
-  because renaming a module breaks importers even when every name it exports still
-  resolves: a consumer doing `from confluid.lazy import lazy_param_names` fails on
-  the module path alone. Removed with the tag spelling.
-
-- **`dump()` emits the plain format** (`_target_:` / `_partial_:` / `_ref_:` / `_clone_:`), so an
+- **`dump()` emits the plain format** (`_target_:` / `_partial_:` / `_ref_:`), so an
   archived config is readable by `yaml.safe_load`, `yq` and a diff viewer. Reload fidelity is
   unchanged.
-
-### Changed
-
-- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
-  documented as "markers returned, NOTHING constructed", but reading `split.train`
-  means BUILDING `split`, and that branch ran on this path too. A dotted reference
-  now stays a `Reference`, exactly as a plain `!ref:name` already did.
-
-  Measured on a real config whose split scans 37 rar archives: `resolve()` took
-  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
-  process still pays one-time imports of the classes the config names).
-
-  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
-  shared instance there, which is the whole point of writing `split.train` and
-  `split.val`.
-
-  Two consumers already documented behaviour they were not getting (a visual
-  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
-  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
-  test suites hand-rolled a tag-stubbing YAML parser specifically because
-  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
-  Those workarounds can now be deleted.
 
 ### Fixed
 
@@ -999,8 +862,7 @@ All notable changes to confluid are documented here. The format follows
   TAGS: a function-valued param became `!ref 'module.qualname'` (a `collate_fn` is the common
   case) and an opaque object became a `!class:<name>` scalar. One tag anywhere costs the whole
   file its plain-YAML readability, which is the single property the format change exists to
-  give. They are now `${ref:module.qualname}` — the spelling the codemod converts a `!ref:` to,
-  so dumps and migrated configs agree — and a bare `{_target_: <name>}` mapping.
+  give. They are now `${ref:module.qualname}` and a bare `{_target_: <name>}` mapping.
 
 - **A class-resolution failure now names the YAML line that wrote the name.** `UnknownClassError`
   reported `Cannot resolve class: pkg.mod.Typo` with no file and no line, so the exact failure a
@@ -1016,30 +878,6 @@ All notable changes to confluid are documented here. The format follows
   Nested markers report their OWN node, not the enclosing one, which is what makes the line usable
   in a real config where the offending target is a source inside a pipeline's kwargs.
 
-- **`confluid-migrate --verify` reported three kinds of FALSE difference**, each
-  found by running the tool over real configs rather than test fixtures. All
-  three had the same shape — the check failed, the file was refused, and the
-  refusal looked exactly like the safety net working:
-
-  - an **unset environment variable** left `$NAME` on one side and `${env:NAME}`
-    on the other, two literals that differ as text while meaning the same thing.
-    Unset variables now get a sentinel value for the comparison, which also makes
-    it stronger: the substitution actually runs on both sides.
-  - a **live object** reached the comparison (a dotted `!ref:split.train`
-    instantiates its target to read the attribute) and was compared by `repr`,
-    which carries a memory address. The two sides are necessarily different
-    objects, so every such node read as a difference. Compared by TYPE now.
-  - a **relative `include:`** resolved against the caller's working directory
-    rather than the file's, since verification loads from text.
-
-- **`confluid-migrate --verify` could not verify a config with a relative
-  `include:`.** Verification loads the document from text, which carries no
-  location, so `include: ../base.yaml` resolved against the caller's working
-  directory instead of the file's. Every such config reported
-  `ConfigFileNotFoundError` under every activation and was refused as
-  unverifiable — a failure that reads exactly like the check doing its job. It
-  now resolves against the migrated file's own directory.
-
 - **Sibling markers could share one instance through a recycled `id()`.** Both engine memos key on
   `id(marker)`, which is unique only while the marker is alive; the engine builds short-lived
   broadcast copies, and CPython reuses a freed object's address, so the second item of a list could
@@ -1049,34 +887,6 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
 
 ### Added
-
-- **`confluid-migrate` — a codemod that rewrites tagged configs into the plain format
-  (2026-08-11).** ``confluid-migrate config/`` converts a directory in place;
-  ``--check`` reports without writing (exit 1 if anything would change), ``--report
-  out.csv`` records every converted site, and ``--verify`` proves the conversion.
-
-  It **edits lines rather than reparsing**, so everything it does not convert stays
-  byte-identical — comments, key order, spacing and quoting. That is not a
-  preference: a comment-preserving round-tripper changes 34 lines of a real
-  458-line config on a *no-op* load+dump, and these files are ~86% comments.
-
-  ``--verify`` compares the resolved marker trees of the old and new documents
-  **once per scope activation the document declares** — a wrong conversion inside a
-  variant block is invisible to a plain resolve, because the block is dropped
-  before any marker is built. A file whose conversion is not provably equivalent
-  is left untouched and reported.
-
-  Two forms need a hand edit and are reported with their line rather than guessed
-  at: a `!scope:` block with a sequence or scalar body (needs `_content_`), and
-  the quoted-string marker spelling. An `@axis=value` target selector needs no
-  migration — it lives in the target string, so `_target_: Loss@framework=keras`
-  is ordinary YAML and the registry reads it unchanged. The
-  tool also makes every environment read explicit (`${DATA_ROOT}` / `$DATA_ROOT`
-  → `${env:DATA_ROOT}`), which is meaning-preserving today and is what removes
-  every ambiguous spelling ahead of the eventual bare-`${name}` flip.
-
-  Measured over this workspace: 624 sites across 56 of 61 config files, with 3
-  findings — all the documented sequence/scalar scope bodies.
 
 - **A plain-YAML config format — no custom tags (2026-08-11).** A document may now
   be written with reserved mapping keys instead of YAML tags, which makes it
@@ -1092,14 +902,13 @@ All notable changes to confluid are documented here. The format follows
     _partial_: true
     lr: 0.5
   alias: ${ref:model}                          # was: !ref:model
-  copy: {_clone_: model, hidden: 64}           # was: !clone:model + a block
   variant:                                     # was: !scope:size=big
     _scope_: {size: big}
     model: {_target_: MLP, hidden: 512}
   ```
 
-  The keys are `_target_` / `_partial_` (construction), `_ref_` / `_clone_`
-  (references, with `${ref:…}` / `${clone:…}` as scalar shorthand), and
+  The keys are `_target_` / `_partial_` (construction), `_ref_`
+  (references, with `${ref:…}` as scalar shorthand), and
   `_scope_` / `_notscope_` (conditional blocks). Every other key in the mapping
   becomes the marker's kwargs; a mapping carrying none of them is an ordinary
   dict, untouched.
@@ -1125,16 +934,14 @@ All notable changes to confluid are documented here. The format follows
     - always_last
   ```
 
-  This replaced a `_content_` key that briefly held the same thing. The list
-  shape needs no reserved key, no second body-shape rule, and no scalar special
+  The list shape needs no reserved key, no second body-shape rule, and no scalar special
   case (a scalar body is a one-item list, and the resolver already extends).
 
   Both spellings produce the **same** Fluid markers, so broadcasting, scopes,
   interpolation, `configure()` and `dump()` are unchanged and cannot tell them
-  apart — and the two may be **mixed in one file**, which is what makes a
-  file-by-file migration safe. Parity is pinned per construct
-  (`tests/test_plain_format.py::test_both_spellings_agree`). The tag spelling
-  still loads and is not yet deprecated.
+  apart — and the two may be **mixed in one file**. Parity is pinned per construct
+  (`tests/test_plain_format.py::test_both_spellings_agree`). Both spellings are
+  first-class input (record 19).
 
   Three details worth knowing: the conversion rides the default mapping tag and
   decides from the YAML *node's* key names, so ordinary mappings keep PyYAML's
@@ -1153,8 +960,8 @@ All notable changes to confluid are documented here. The format follows
   independent of what a bare `${NAME}` is taken to mean. Checked before the
   dotted-name test, since `oc.env` contains a dot.
 
-- **`${ref:path}` / `${clone:path}`** — scalar shorthand producing the same
-  markers as `!ref:` / `!clone:`, so identity semantics are identical. A
+- **`${ref:path}`** — scalar shorthand producing the same marker as `!ref:`,
+  so identity semantics are identical. A
   reference must be the whole value; embedding one in a larger string raises
   rather than stringifying an object.
 
@@ -1236,28 +1043,6 @@ All notable changes to confluid are documented here. The format follows
   diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
   target that module.
 
-### Changed
-
-- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
-  documented as "markers returned, NOTHING constructed", but reading `split.train`
-  means BUILDING `split`, and that branch ran on this path too. A dotted reference
-  now stays a `Reference`, exactly as a plain `!ref:name` already did.
-
-  Measured on a real config whose split scans 37 rar archives: `resolve()` took
-  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
-  process still pays one-time imports of the classes the config names).
-
-  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
-  shared instance there, which is the whole point of writing `split.train` and
-  `split.val`.
-
-  Two consumers already documented behaviour they were not getting (a visual
-  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
-  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
-  test suites hand-rolled a tag-stubbing YAML parser specifically because
-  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
-  Those workarounds can now be deleted.
-
 ### Fixed
 
 - **Two classes with the same `module.QualName` no longer share an accept-list
@@ -1327,7 +1112,7 @@ All notable changes to confluid are documented here. The format follows
 - **A function-OBJECT marker target is introspected as itself, everywhere (the
   D6 adjudication, 2026-08-10).** Five of the six "normalize `marker.target`"
   sites degraded a plain callable to `None` (`resolve_class` is
-  string/type-only), so a code-built `LazyClass(builder_fn, …)` slot ran the
+  string/type-only), so a code-built `PartialClass(builder_fn, …)` slot ran the
   engine cascade with NO `NoBroadcast` gates — against what `accepts_broadcast`
   answered for the same key — and `configure()` could not tune the slot at all,
   while the identical class-target slot behaved. All six sites now normalize
@@ -1365,9 +1150,7 @@ All notable changes to confluid are documented here. The format follows
   pass.** After the `${...}` handling, a bare `$IDENTIFIER` in a string value
   reads `os.getenv` — an unset variable leaves the `$name` text literal,
   mirroring `os.path.expandvars`. Env-only by design: no dotted config-path
-  form and no `:default` (those spellings stay `${...}`-exclusive), and marker
-  strings (leading `!`) are exempt so flow-time parsing — where the
-  `@axis=$key` document-selector grammar also spells `$` — keeps its text.
+  form and no `:default` (those spellings stay `${...}`-exclusive).
   The reason: 59+ live workspace YAML lines spell `root: $DATA_ROOT/...`,
   which worked only through front-ends that re-implement
   `os.path.expandvars` — the same file through a direct `confluid.load()`
@@ -1462,8 +1245,8 @@ All notable changes to confluid are documented here. The format follows
   the repo had no diagram at all. The new guide gives the nine passes
   (parse → import → include → scope → interpolate → expand → broadcast → flow →
   solidify), what each one decides permanently, where you can stop
-  (`load_config` / `flow=False` / `resolve()` / `load()` / `solidify=False` /
-  `configure()`), and the questions the order answers — why `${...}` burns in, why
+  (the `load(until=…)` stages, `solidify=False`, `configure()`), and the questions the order
+  answers — why `${...}` burns in, why
   a scope block cannot read an interpolated value, why an included file wins or
   loses. Its runnable twin `examples/lifecycle.py` walks one document through every
   stage and ASSERTS each invariant. Cross-linked from the topic guides and listed
@@ -1493,14 +1276,10 @@ All notable changes to confluid are documented here. The format follows
   `examples/scopes.py` demo) — the top-level alias map existed since the
   scopes engine landed but was described only by its circular-chain error.
 - **Drift fixes**: the README no longer names the nonexistent
-  `ClassReference` type (the marker family is `Class`/`Instance`/`Lazy`/
-  `Reference`/`Clone`); `examples/ml_pipeline.py` no longer claims the
+  `ClassReference` type; `examples/ml_pipeline.py` no longer claims the
   configuration machinery executes property getters (it walks instance
   attributes only — the recompute rule is about ordinary domain reads);
-  `report.py`'s origin vocabulary lists `"deferred slot"` and `"own"`; the
-  `_confluid_lazy_params` stamp's comment no longer claims a downstream
-  serializer consumer that does not exist (it is queryable model metadata via
-  `lazy_param_names_of`).
+  `report.py`'s origin vocabulary lists `"deferred slot"` and `"own"`.
 - **`AGENTS.md` deduplicated against `docs/architecture.md` (2026-08-10).**
   Eight mandate paragraphs carried the full narrative — failure stories,
   measurements, rejected alternatives — that their architecture record also
@@ -1529,7 +1308,7 @@ All notable changes to confluid are documented here. The format follows
     pass, 50,002 of which reached `resolve_class` (9.5 %).
 
 - **The cascade corner runs on shared primitives (2026-08-10 — the review's P1
-  batch, closing the residue the D6/D7 defects lived in).** Five
+  batch, closing the residue the D6/D7 defects lived in).** Four
   consolidations, all behavior-preserving: (1) per-pass cache clearing is ONE
   registered `broadcast.clear_pass_caches()` — modules owning a cache
   self-register (`engine._parent_blacklist_cache` does) and every entry point
@@ -1537,14 +1316,11 @@ All notable changes to confluid are documented here. The format follows
   same-qualname class redefined between calls (a notebook cell re-run) was
   served its previous definition's accept-list with no diagnostic; (2) the
   "mapping tunes a deferred marker" idiom is ONE `broadcast.tune_marker`
-  (the engine's post-init tune and the live sink's `dict_at_slot` carried
-  twin inline copies, already cosmetically drifted); (3)
-  `_hoist_block_routing`'s inline `'**'` merge goes through `_merge_routing`
-  (a fifth copy of the rider-merge idiom Phase B extracted); (4) the
+  (two inline copies had already cosmetically drifted); (3) the
   report's glob-prefix used-key spelling is ONE `broadcast._mark_used_key`
   beside the origin-label constants it parses (both sinks carried a
   byte-identical parsing expression — a scanner label rename would have
-  silently broken unused-tracking in two modules); (5) the scanner's
+  silently broken unused-tracking in two modules); (4) the scanner's
   `gated`/`floating` boolean pair is the closed `_Delivery` Literal
   (`addressed`/`glob_one`/`rider`) on `_consume` and the receiver
   `dict_slot` predicate — three real states, self-documented.
@@ -1557,50 +1333,19 @@ All notable changes to confluid are documented here. The format follows
   `merger.expand_dotted_mapping` under two copy-policy hooks (deep-copy with
   Fluid identity + `deep_merge` vs share-by-reference + shallow last-write),
   which also propagates the fresh-head position anchoring to in-block dotted
-  keys; (2) the `Target(...)` call grammar — `_TARGET_CALL_RE` moved to
-  `resolver` (with the `_split_inline_pairs` k=v splitter) and
-  `resolver._parse_class_string` matches it instead of a hand-rolled laxer
-  split, so the quoted-string form accepts exactly the spellings the tag form
-  does (an illegal name now yields a deferred `Class` marker rather than an
-  eager `Instance` under a name the registry can never resolve); (3) the
+  keys; (2) the `Target(...)` call grammar — `_TARGET_CALL_RE` lives in
+  `resolver` (with the `_split_inline_pairs` k=v splitter), the ONE grammar
+  the tag constructors use; (3) the
   annotation-marker scan — `introspect.marked_param_names` (see Fixed).
   Value-coercion policies (tag `parse_value` vs quoted context-resolve) are
   deliberately NOT unified — they differ by design and stay at their callers.
-
-- **The two precedence-rule drivers now share ONE walk** (phases A2/A3 of the
-  one-scanner plan; docs/architecture.md record 8). `broadcast._scan_view`
-  owns the main loop and the five-branch block ladder that previously existed
-  byte-for-byte in both `_prepare_kwargs` and `configurator._apply`; the
-  paths differ only in a declared receiver (`_receiver_for_target` /
-  `_receiver_for_instance`, side by side, every kept difference pinned in
-  `tests/test_cross_path_pins.py`) and an effect-writing sink (`_MergeSink` /
-  `configurator._LiveSink`). Behavior-preserving, proven by replaying a
-  verbatim copy of the old implementation against every real invocation over
-  an 18-document corpus (deleted with the phase); scanner branch pins live in
-  `tests/test_scanner.py`. Measured: materialize within 1% of baseline,
-  configure() ~19% faster.
-
-- **The splice pair lives in one module over shared primitives** (phase B,
-  closing the one-scanner plan). `configurator`'s `_spliced` family moved to
-  `broadcast` (renamed `_spliced_subtree_view` / `_spliced_at_slot` /
-  `_hoist_block_routing`) beside the marker splice; the three byte-duplicated
-  idioms are now single functions — `_merge_rider` (the `'**'` merge),
-  `_merge_routing` (the routing hoist), `_spent_at_boundary` (the
-  one-level-spend rule). One adjudicated policy change rode along (D1): a
-  routing hoist now merges into an existing ROUTING entry only and REPLACES
-  anything else — the old marker-path variant merged unconditionally, folding
-  an addressed slot value into child routing so its contents leaked to
-  descendants they were never aimed at (latent; no suite trigger existed).
-  Pinned in `tests/test_scanner.py`.
 
 - **Dead compatibility shims pruned (private names, zero users verified
   workspace-wide).** Five never-imported re-exports dropped from
   `confluid.engine` (`_classify_annotation`, `_scope_of`, `_settability_target`,
   `_warn_if_init_unscannable`, `_warned_unscannable_inits`); `confluid.loader`'s
   blanket compat block reduced to its one real dependency (`materialize`);
-  `confluid.fluid.__getattr__`'s `cast` arm removed (`flow` stays — it has a
-  downstream consumer); the uncalled `pydantic_export._unwrap_annotated`
-  deleted. Public API is untouched.
+  the uncalled `pydantic_export._unwrap_annotated` deleted. Public API is untouched.
 
 - **Cache ownership follows module ownership.** The engine's parent-attr
   blacklist now rides its own `engine._parent_blacklist_cache` (cleared per
@@ -1619,33 +1364,11 @@ All notable changes to confluid are documented here. The format follows
   and why `${...}` interpolation burns in at load for every spelling (with the
   rejected late-bound/copy-on-write alternatives on record).
 
-### Changed
-
-- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
-  documented as "markers returned, NOTHING constructed", but reading `split.train`
-  means BUILDING `split`, and that branch ran on this path too. A dotted reference
-  now stays a `Reference`, exactly as a plain `!ref:name` already did.
-
-  Measured on a real config whose split scans 37 rar archives: `resolve()` took
-  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
-  process still pays one-time imports of the classes the config names).
-
-  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
-  shared instance there, which is the whole point of writing `split.train` and
-  `split.val`.
-
-  Two consumers already documented behaviour they were not getting (a visual
-  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
-  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
-  test suites hand-rolled a tag-stubbing YAML parser specifically because
-  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
-  Those workarounds can now be deleted.
-
 ### Fixed
 
 - **Rider content reaches a declared deferred slot on BOTH paths, BOTH value
   shapes (the D5 adjudication, 2026-08-09).** The 2×2 was crossed: for a
-  trainer with `self.optimizer = LazyClass(AdamW, lr=0.001)`,
+  trainer with `self.optimizer = PartialClass(AdamW, lr=0.001)`,
   `'**.optimizer.lr': 0.01` (rider MAPPING) tuned the slot under `configure()`
   and was silently ignored under `load()` — the kept difference D5 — while
   `'**.lr': 0.01` (rider SCALAR) tuned it under `load()` and was silently
@@ -1667,16 +1390,16 @@ All notable changes to confluid are documented here. The format follows
   `examples/broadcasting.py::rider_content_reaches_deferred_slots`.
 
 - **The marker helpers and `input_specs` read a builder FUNCTION's own
-  signature.** `lazy_param_names` / `mandatory_param_names` reached for
+  signature.** `partial_param_names` / `mandatory_param_names` reached for
   `getattr(target, "__init__")` — on a function that is `object.__init__`
-  (`*args, **kwargs`) — so an identical `Lazy[...]` / `Mandatory[...]`
+  (`*args, **kwargs`) — so an identical `Partial[...]` / `Mandatory[...]`
   annotation was reported on a class and silently EMPTY on a registered
   builder function (measured: `{'model'}` vs `set()`), and `input_specs`
   reported an empty contract for every function target. All now dispatch
   through `introspect.init_callable`; the scan-plus-cache itself is ONE
   helper, `introspect.marked_param_names`, replacing three near-identical
   copies that had already drifted on exactly this. Pins:
-  `tests/test_lazy.py::test_lazy_param_names_reads_a_builder_functions_own_signature`,
+  `tests/test_partial.py::test_partial_param_names_reads_a_builder_functions_own_signature`,
   `tests/test_io_contract.py::test_input_specs_and_mandatory_read_a_builder_functions_signature`.
 
 - **`get_hierarchy` finds docs kept at class level.** The class walker read
@@ -1725,20 +1448,6 @@ All notable changes to confluid are documented here. The format follows
   DEBUG line. Pin:
   `tests/test_scanner.py::test_view_set_override_diagnostic_survives_array_valued_writes`.
 
-- **`configure()`'s deferred-slot tuning now applies the same cascade gates as
-  the load path.** The two copies of the bare-pool merge had drifted apart
-  twice: a bare LIST value tuned a deferred slot on the configure path only
-  (`stages: [1, 2]` silently rode into an optimizer marker's kwargs), and the
-  Fluid gates — declared-key-only (never the `**kwargs` catchall) plus the
-  `_same_target` self-broadcast guard — existed on the engine path only. Both
-  paths now call the ONE cascade function,
-  `broadcast.merge_bare_pool_into_kwargs`; the ordering verdicts stay
-  per-caller by design (the engine's per-pass `_order_resolved`, configure()'s
-  call-scoped `beaten` set). Pins: the D2/D3 group in
-  `tests/test_cross_path_pins.py`, alongside difference-pins for the
-  documented KEPT cross-path behaviors (D4/D5) so future drift in either
-  direction fails a named test.
-
 - **The settability predicates read a builder FUNCTION's own signature.**
   `accepts_key` / `accepts_broadcast` / `accepts_any_key` answered True for
   EVERY key on a registered builder function (measured: `accepts_key(builder,
@@ -1752,34 +1461,25 @@ All notable changes to confluid are documented here. The format follows
   the param-kind scan, and the engine's constructor filter alike.
 
 - **The per-class marker caches no longer leak across the MRO.**
-  `lazy_param_names` / `mandatory_param_names` / `no_broadcast_param_names`
+  `partial_param_names` / `mandatory_param_names` / `no_broadcast_param_names`
   read their cache with `getattr`, which walks the MRO: a subclass queried
   after its parent returned the PARENT's stamped answer (measured: a subclass
-  declaring `opt: Lazy[Any]` reported an empty set), and in the other
+  declaring `opt: Partial[Any]` reported an empty set), and in the other
   direction a subclass overriding `__init__` without markers inherited the
   parent's — for `NoBroadcast`, silently blocking bare keys the subclass never
   opted out of. The read is now the class's OWN `__dict__`, the same guard the
   registry has always used for `__confluid_name__`.
 
-- **`materialize()` interpolates.** docs/interpolation.md promises `${...}`
-  substitution "at materialization — `load()`, `materialize()`, or
-  `resolve()`"; measured, `materialize()` was the one entry point that skipped
-  the Resolver pass, so the literal `${key.path}` rode into values silently
-  (`configure()` resolves too). It now runs the same pass `load()` runs —
-  idempotent on the load path, which has already substituted.
-
 - **`${...}` inside a marker's kwarg block interpolates — all spellings agree.**
   The Resolver returned any Fluid whole, so a placeholder written in a
   `!class:`/`!lazy:` tag's mapping body stayed the LITERAL string on every path
   (measured: `input_dir: "${DATA_ROOT}/files"` reached the constructed object
-  verbatim, silently) — while the quoted-string spelling of the same target
-  interpolated, because `_parse_class_string` resolves per kwarg. Marker kwargs
+  verbatim, silently). Marker kwargs
   are now walked by the same load-time pass, in place (marker identity is
   load-bearing for the flow memo and `!ref:` sharing) and text-only: a
-  `"!ref:"`/`"!class:"` string keeps its prefix for flow-time parsing, a
   `Reference` fluid stays late-bound, nested markers recurse, and sibling
   kwargs act as the local scope. Substituted values BURN IN — `dump()` emits
-  them and a deferred `!lazy:` slot flowed later sees them; a slot that must
+  them and a deferred `!partial:` slot flowed later sees them; a slot that must
   stay late-bound uses `!ref:` to a plain key.
 
 - **The override DEBUG line picks its article from the winning scope's name** —
@@ -1909,14 +1609,14 @@ All notable changes to confluid are documented here. The format follows
   aim at one.** Two further divergences from the load path, both on the
   post-construction side:
 
-  - `_assign` materialized the marker, because `Lazy` subclasses `Class`. A `!lazy:`
+  - `_assign` materialized the marker, because `PartialClass` subclasses `Target`. A `!partial:`
     slot exists precisely so its owner can flow it later *with* the runtime argument
     (`params=model.parameters()`), so building it here produced an object
     constructed without that argument — and the failure landed far from the cause.
-    `Lazy` is now excluded, matching `engine._apply_post_init_attrs`.
+    `PartialClass` is now excluded, matching `engine._apply_post_init_attrs`.
   - `_walk` then flowed the slot again to recurse into it and configured the
     resulting object, which is never written back to the attribute. Every bare key
-    aimed at a deferred slot was applied to a throwaway and silently lost. A `Lazy`
+    aimed at a deferred slot was applied to a throwaway and silently lost. A `PartialClass`
     is now tuned in place — merged into `marker.kwargs` under the same accept-list
     and `NoBroadcast` gates the engine applies — so the value is there when the
     owner flows it.
@@ -1940,8 +1640,8 @@ All notable changes to confluid are documented here. The format follows
   owner is the only place that knows where each block sat relative to the bare
   keys.
 
-- **A deferred (`!lazy:`) slot declared in code is now configurable.** Three
-  separate rules combined to make a `self.optimizer = LazyClass(AdamW, lr=1e-4)`
+- **A deferred (`!partial:`) slot declared in code is now configurable.** Three
+  separate rules combined to make a `self.optimizer = PartialClass(AdamW, lr=1e-4)`
   slot unreachable from config — every natural spelling failed, and all but one
   failed *silently*:
 
@@ -1951,10 +1651,10 @@ All notable changes to confluid are documented here. The format follows
   | `optimizer: {lr: 0.5}` | slot replaced by a raw `dict` | applied, `weight_decay` kept |
   | `optimizer.lr: 0.5` | slot replaced by a raw `dict` | applied, `weight_decay` kept |
 
-  The three causes: (1) `_resolve_kwarg_value` returned a `Lazy` untouched, so it
+  The three causes: (1) `_resolve_kwarg_value` returned a `PartialClass` untouched, so it
   received no broadcasting at all — but deferral means "do not BUILD it", and
   merging keys into a marker's `kwargs` builds nothing, which is precisely what
-  the `Class` branch beside it already did. A `Lazy` **is** a `Class`, so it now
+  the `Target` branch beside it already did. A `PartialClass` **is** a `Target`, so it now
   takes that branch and only the terminal eager flow is withheld. (2) A mapping
   addressed at a slot holding a deferred marker was assigned verbatim, destroying
   the marker; it now **merges into the marker's kwargs**, so the kwargs you did
@@ -2001,13 +1701,13 @@ All notable changes to confluid are documented here. The format follows
   class Loaders:
       def __init__(self, *loaders, device=None): ...
 
-  slot = LazyClass(Loaders, device="cuda")   # the config owns the knobs
+  slot = PartialClass(Loaders, device="cuda")   # the config owns the knobs
   flow(slot, train_dl, valid_dl)             # the run supplies the inputs
   ```
 
   Positional args are runtime-only — never stored on a marker, never emitted by
   `dump()` — the same status the `params=` / `dataset=` kwargs already had. They
-  suppress `Instance` memoization (they override the stored spec), are dropped
+  suppress instance memoization (they override the stored spec), are dropped
   for an already-live object (matching the runtime-kwarg convention), and raise
   `ConstructionError` for a registry-configurable bare type, which materializes
   through a synthesized marker.
@@ -2021,9 +1721,9 @@ All notable changes to confluid are documented here. The format follows
   document mapped to the values it offers:
 
   ```python
-  from confluid import discover_dimension_values, load_config
+  from confluid import discover_dimension_values, load
 
-  discover_dimension_values(load_config("experiment.yaml"))
+  discover_dimension_values(load("experiment.yaml", until="raw"))
   # {"task": {"classification", "segmentation"}, "model": {"convnet"}}
   ```
 
@@ -2155,28 +1855,6 @@ All notable changes to confluid are documented here. The format follows
   silently-empty collections. The six above validate into a real `list` / `dict`
   holding the identical element objects, so they never had that problem.
 
-### Changed
-
-- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
-  documented as "markers returned, NOTHING constructed", but reading `split.train`
-  means BUILDING `split`, and that branch ran on this path too. A dotted reference
-  now stays a `Reference`, exactly as a plain `!ref:name` already did.
-
-  Measured on a real config whose split scans 37 rar archives: `resolve()` took
-  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
-  process still pays one-time imports of the classes the config names).
-
-  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
-  shared instance there, which is the whole point of writing `split.train` and
-  `split.val`.
-
-  Two consumers already documented behaviour they were not getting (a visual
-  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
-  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
-  test suites hand-rolled a tag-stubbing YAML parser specifically because
-  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
-  Those workarounds can now be deleted.
-
 ### Fixed
 
 - **A `**kwargs` constructor no longer drops every runtime kwarg.** `_ctor_params`
@@ -2188,7 +1866,7 @@ All notable changes to confluid are documented here. The format follows
   class Forwarding(SomeBase):
       def __init__(self, **kwargs): super().__init__(**kwargs)
 
-  flow(LazyClass(Forwarding), model=net, args=training_args)
+  flow(PartialClass(Forwarding), model=net, args=training_args)
   # was: Forwarding()  -> "requires either a `model` or `model_init` argument"
   # now: Forwarding(model=net, args=training_args)
   ```
@@ -2502,28 +2180,6 @@ _First public release, published to PyPI as `confluid` (tag `v0.1.0`)._
 - **One AST scanner:** the three near-identical `__init__`-body scanners are
   unified in stdlib-only `confluid.introspect` (`scan_init_body` + three
   projections); the wraps-transparency dependency is now pinned by a test.
-
-### Changed
-
-- **`resolve()` no longer instantiates a dotted `!ref:a.b` (2026-08-11).** It is
-  documented as "markers returned, NOTHING constructed", but reading `split.train`
-  means BUILDING `split`, and that branch ran on this path too. A dotted reference
-  now stays a `Reference`, exactly as a plain `!ref:name` already did.
-
-  Measured on a real config whose split scans 37 rar archives: `resolve()` took
-  **3.9s** for a call that constructs nothing; it is now 10ms (the first call in a
-  process still pays one-time imports of the classes the config names).
-
-  `materialize()` / `load()` are unchanged — a dotted ref still resolves off ONE
-  shared instance there, which is the whole point of writing `split.train` and
-  `split.val`.
-
-  Two consumers already documented behaviour they were not getting (a visual
-  editor's YAML importer: "no instantiation — every node is a Fluid marker"; a
-  flow-graph builder: "step markers stay UNbuilt"), and two projects' shipped-config
-  test suites hand-rolled a tag-stubbing YAML parser specifically because
-  `resolve()` "is not an escape either, since it instantiates a dotted `!ref:a.b`".
-  Those workarounds can now be deleted.
 
 ### Fixed
 

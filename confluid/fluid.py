@@ -136,7 +136,7 @@ def _at_yaml_loc(node: Any) -> str:
 class Target(Fluid):
     """A callable to build, plus the kwargs to build it with.
 
-    The ``_target_:`` YAML key produces one of these (the deprecated tag spelling
+    The ``_target_:`` YAML key produces one of these (the ``!class:`` tag spelling
     parses to the same marker). Materialization BUILDS it — always, and
     regardless of what surrounds it.
 
@@ -211,7 +211,7 @@ class ScopeBlock:
 class PartialClass(Target, Generic[T]):
     """A :class:`Target` that materialization NEVER builds.
 
-    Written ``_partial_: true`` in YAML (the deprecated tag spelling parses to the
+    Written ``_partial_: true`` in YAML (the ``!partial:`` tag spelling parses to the
     same marker), and ``PartialClass(...)`` in code. Nothing auto-flows one — not ``materialize``,
     not an external deep-flow walker. Only an explicit
     ``flow(marker, *args, **kwargs)`` builds it, which is the point: the receiving
