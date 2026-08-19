@@ -196,6 +196,17 @@ The rules, each the same one an activation follows:
 
 `hydraide emit cfg.yaml` with no `--scope` therefore emits the defaulted variant.
 
+To show the default beside the offered values — a CLI's `--help`, a picker —
+read both from the RAW document:
+
+```python
+from confluid import default_scopes, discover_dimension_values, load
+
+raw = load("experiment.yaml", until="raw")
+discover_dimension_values(raw)   # {"framework": {"lightning", "keras"}}
+default_scopes(raw)              # {"framework": "lightning"}
+```
+
 ## Scope aliases — one name for a bundle of scopes
 
 A document may declare a top-level `scope_aliases:` mapping, so a caller can
