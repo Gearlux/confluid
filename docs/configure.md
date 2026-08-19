@@ -217,6 +217,11 @@ configure(trainer, config={"lr": 0.7})                        # nothing competes
   lose state.
 - **Configure objects you did not build** — instances handed to you by a
   framework or test harness.
+- **Wire live objects in** — a value in `config=` that is neither a marker nor a
+  mapping is assigned *as that object*: `configure(t, config={"dataset": ds})`
+  leaves `t.dataset is ds` true, and the named spelling
+  `configure(trainer=t, config={"trainer": {"lr": 0.1}})` touches `lr` and
+  nothing else on `t` (an unmentioned attribute is never copied).
 - **Layer override documents** over a graph a previous pass produced.
 
 If you are starting from YAML and have no live objects yet, you want

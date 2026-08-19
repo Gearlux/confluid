@@ -139,6 +139,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A live value in a document keeps its identity through every merge** (BUGS-2026-08-19
+  PA5/PA12/CD3/CD4, 2026-08-19). `merger._preserve_identity_copy` kept markers by identity and
+  `deepcopy`d every OTHER leaf, and it runs under `deep_merge` (include paste, CLI overlays,
+  `configure()`'s named-key fold, the scope splice) and `expand_dotted_keys` (pass 6 of every
+  `load()`, `configure()`). Measured: a dataset handed through `load({"x": ds})` or
+  `configure(t, config={"dataset": ds})` came out as a silent copy (`t.dataset is ds → False`);
+  the named spelling `configure(trainer=t, config={"trainer": {"lr": 0.1}})` copied every
+  attribute it did not mention; an uncopyable value raised a raw `TypeError: cannot pickle
+  '_thread.lock' object`; and any `include:` line duplicated an anchored marker aliased inside a
+  scope block (one instance became two). The copy is structural now — dicts, lists, tuples and
+  `ScopeBlock`s are rebuilt (a merge still never mutates its inputs), markers AND live leaves are
+  kept by identity. Pinned: `tests/test_merger.py` (identity through `deep_merge` /
+  `expand_dotted_keys`, the uncopyable leaf, the ScopeBlock's inner marker, the containers-still-
+  rebuilt con case), `tests/test_configurator.py` (CD3, CD4), `tests/test_load_stages.py`
+  (PA12), `tests/test_scopes.py` (PA5 end to end).
+
 - **A scope block splices by the include-paste rule** (BUGS-2026-08-19 SR1/SR2/PA2/PA3/PA4,
   2026-08-19). `scopes._resolve_dict` landed a block's keys — and a plain key written after a
   block — by plain assignment, while `docs/lifecycle.md` and `_splice_includes` said scopes follow

@@ -1,4 +1,4 @@
-from copy import copy, deepcopy
+from copy import copy
 from typing import Any, Callable, Dict, cast
 
 from confluid.fluid import Fluid, ScopeBlock, Target
@@ -35,7 +35,7 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """
     result: Dict[str, Any] = cast(
         Dict[str, Any],
-        _preserve_identity_copy(base) if isinstance(base, dict) else deepcopy(base),
+        _preserve_identity_copy(base),
     )
     for key, value in overlay.items():
         existing = result.get(key) if key in result else None
@@ -108,15 +108,27 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _preserve_identity_copy(value: Any) -> Any:
-    """Deepcopy ordinary containers but preserve identity of live Fluid objects.
+    """Rebuild the CONTAINERS, keep every LEAF — a structural copy, never a deep one.
 
-    Fluid markers (Target, Partial, Reference) represent *one* logical
-    configuration citizen. Deep-copying them here would undo the Resolver's
-    reference resolution, causing two references to the same Fluid to produce
-    two separate live instances downstream. We keep identity intact and let
-    a marker written TWICE be two independent instances when that is wanted.
-    (Identity is also what lets ``_prepare_kwargs``'s ``self_obj`` check
-    locate the receiving marker's slot in its ambient context.)
+    A merge must not mutate its inputs, and that is a property of the containers:
+    ``deep_merge`` and ``expand_dotted_mapping`` rebuild dicts, lists, tuples and
+    ``ScopeBlock``s so the base document's mappings are never written through.
+    A leaf is never mutated by either — it is replaced, or (a marker) tuned into a
+    copy — so a leaf is returned AS-IS:
+
+    * a ``Fluid`` marker represents *one* configuration citizen; copying it would
+      undo reference resolution (two references to one marker → two instances) and
+      break ``_prepare_kwargs``'s identity check for the receiving slot;
+    * any OTHER object is a LIVE value the document carries — a dataset, a model, a
+      lock — and the caller expects THAT object on the other side. Until 2026-08-19
+      this branch was ``deepcopy(value)``: a dataset handed through ``load(<dict>)``
+      or ``configure(config=...)`` came out as a silent copy, the named
+      ``configure(trainer=t, config={"trainer": {...}})`` spelling copied every
+      attribute it did not mention, and an uncopyable value raised a raw
+      ``TypeError: cannot pickle`` (BUGS-2026-08-19 PA12 / CD3 / CD4);
+    * a ``ScopeBlock`` is a container of its contents — rebuilt, with the markers
+      inside kept by identity; ``deepcopy`` duplicated an anchored marker aliased
+      inside a block whenever the document also had an ``include:`` (PA5).
     """
     if isinstance(value, Fluid):
         return value
@@ -124,7 +136,13 @@ def _preserve_identity_copy(value: Any) -> Any:
         return {k: _preserve_identity_copy(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_preserve_identity_copy(item) for item in value]
-    return deepcopy(value)
+    if isinstance(value, tuple):
+        return tuple(_preserve_identity_copy(item) for item in value)
+    if isinstance(value, ScopeBlock):
+        block = ScopeBlock(dict(value.dims), value.negate, _preserve_identity_copy(value.contents))
+        block._yaml_loc = value._yaml_loc
+        return block
+    return value
 
 
 def expand_dotted_mapping(
@@ -149,9 +167,9 @@ def expand_dotted_mapping(
     broadcast layer for in-block dotted keys — ~40 near-identical lines whose
     only real differences are the three POLICY hooks:
 
-    * ``copy_value`` — what seeding/assigning a value does (deep-copy with
-      Fluid identity preserved for the document top level, share-by-reference
-      inside a block);
+    * ``copy_value`` — what seeding/assigning a value does (a structural copy —
+      containers rebuilt, markers and live leaves kept by identity — for the
+      document top level, share-by-reference inside a block);
     * ``merge_leaf`` — how a dict landing on an existing dict combines
       (``deep_merge`` vs a shallow last-write union);
     * ``descend`` — how the walk enters an existing dict (in place over the
@@ -222,8 +240,9 @@ def expand_dotted_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     are expanded; dotted keys inside nested blocks are expanded lazily at
     block-consumption time by ``broadcast._expand_block_keys`` — the SAME
     grammar (:func:`expand_dotted_mapping`) under reference-sharing policy
-    hooks. This document-level policy deep-copies values with Fluid identity
-    preserved and ``deep_merge``s a dict landing on an existing dict.
+    hooks. This document-level policy copies values structurally (containers
+    rebuilt, markers and live leaves kept by identity) and ``deep_merge``s a
+    dict landing on an existing dict.
     """
     return expand_dotted_mapping(
         data,

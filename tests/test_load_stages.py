@@ -312,3 +312,20 @@ def test_the_engine_entries_run_neither_pass_5_nor_pass_6() -> None:
         body = inspect.getsource(entry)
         assert "Resolver(" not in body and ".resolve(" not in body, entry.__name__
         assert "expand_dotted_keys(" not in body, entry.__name__
+
+
+# --------------------------------------------------------------------------- live values in a data document
+
+
+def test_a_live_value_in_a_data_document_keeps_its_identity() -> None:
+    """BUGS-2026-08-19 PA12 — `load(<dict>)` is how a pre-built object enters a
+    document; pass 6 deep-copied it (and crashed on an uncopyable one)."""
+    import threading
+
+    class Opaque:
+        pass
+
+    o = Opaque()
+    assert load({"x": o, "y": 1}, until="document")["x"] is o
+    lock = threading.Lock()
+    assert load({"lock": lock, "y": 1}, until="document")["lock"] is lock
