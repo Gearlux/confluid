@@ -417,6 +417,23 @@ val_set: !class:Stream
 Independence has exactly one spelling: write the marker again (`c` above) — a
 second marker says "a second object" in plain YAML.
 
+**Kwargs on a reference tune the one shared object.** A reference written with a
+body — `!ref:proto` followed by `k: 5`, the mapping form `{_ref_: proto, k: 5}`, or
+a dotted path that walks through a reference (`a.optimizer.lr: 9.0` where
+`a.optimizer` is `!ref:shared`) — folds those kwargs into the *referent's* own
+kwargs before broadcasting, exactly as `proto.k: 5` written beside it would. So
+they compete at the referent's position like any own kwarg (a bare key written
+after `proto` still wins), every alias and the referent itself see them, and of
+two references tuning one referent the later one wins per key. A reference to a
+plain value cannot carry kwargs — that is a located error.
+
+```yaml
+proto: !class:Box {size: 3}
+a: !ref:proto
+  color: red        # proto, a and b are ONE Box(size=3, color=red)
+b: !ref:proto
+```
+
 ## Runnable example
 
 [`examples/tags_deferred.py`](../examples/tags_deferred.py) exercises every

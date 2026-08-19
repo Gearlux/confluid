@@ -139,6 +139,17 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Kwargs on a reference tune the shared referent instead of vanishing** (BUGS-2026-08-19
+  PA10/BC8/SR9; user ruling 2026-08-19). `{_ref_: proto, k: 5}`, `!ref:proto` with a body (the tag
+  constructor discarded it at parse) and a dotted path walking through a reference
+  (`a.optimizer.lr: 9.0` where `a.optimizer` is `!ref:shared`) all dropped their kwargs silently,
+  report `unused=[]`. `resolver.fold_reference_kwargs` now folds them into the referent marker's own
+  kwargs before pass 7 (`loader._load` runs it before pass 5 and after pass 6), so they compete at
+  the referent's position like any own kwarg — a later bare key still wins — and every alias sees
+  them; of two references tuning one referent the later wins per key; a reference to a plain value
+  with kwargs is a located `ConfigurationError`. Pinned: the reference-kwargs group in
+  `tests/test_ref_identity.py`, `tests/test_hydraide.py`.
+
 - **A live value in a document keeps its identity through every merge** (BUGS-2026-08-19
   PA5/PA12/CD3/CD4, 2026-08-19). `merger._preserve_identity_copy` kept markers by identity and
   `deepcopy`d every OTHER leaf, and it runs under `deep_merge` (include paste, CLI overlays,

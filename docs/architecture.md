@@ -1303,6 +1303,24 @@ d: {_clone_: proto}              # -> ConfigurationError, located, naming both s
 **What you may change.** The wording of the refusal. Not the loudness — a removed spelling that
 degrades to data is the failure mode the reserved-key format exists to end.
 
+*Addendum 2026-08-19 — kwargs on a reference tune the shared object.* Two spellings parsed
+kwargs onto a `Reference` (`{_ref_: proto, k: 5}`; `!ref:proto` with a body — the tag constructor
+discarded it) and a third put them there at expansion (`a.optimizer.lr: 9.0` through a reference);
+nothing read them, so all three vanished with an empty report. The ruling (user, 2026-08-19,
+"option A" over refusing) keeps the reference what this record made it — ONE object, no copy —
+and gives the kwargs the only meaning consistent with that: they tune the referent, for every
+alias. The mechanism is `resolver.fold_reference_kwargs`, run by `load()` before pass 5 and after
+pass 6: the kwargs move into the referent marker's OWN kwargs, exactly what `proto.k: 5` does, so
+they take the referent's position under the one precedence rule (a later bare key still wins)
+instead of becoming a late tune that beats everything. A reference to a plain value cannot carry
+kwargs and is refused with its location.
+
+```yaml
+proto: !class:Box {size: 3}
+a: !ref:proto
+  color: red          # == proto.color: red — proto, a (and any other alias) are ONE Box
+```
+
 ---
 
 ## 19. hydraide — one preprocessor emits a resolved plain document; the runtime consumes it
