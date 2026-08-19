@@ -610,3 +610,54 @@ def test_a_marker_body_slot_IS_emitted_by_dump() -> None:
         configure(host, config="lr: 0.75")
         assert host.opt.kwargs == {"lr": 0.75}, "the marker itself carries the value"
         assert _yaml.safe_load(dump(host))["opt"]["lr"] == 0.75, "and the document carries it too"
+
+
+# --- live objects are assigned, never copied (BUGS-2026-08-19 CD3 / CD4) -------
+
+
+class _Dataset:
+    """Not a marker, not @configurable — the thing a trainer is handed."""
+
+
+@configurable
+class _Model:
+    def __init__(self, lr: float = 0.0) -> None:
+        self.lr = lr
+
+
+@configurable
+class _Trainer:
+    def __init__(self, dataset: Any = None, model: Any = None, lr: float = 0.001) -> None:
+        self.dataset = dataset
+        self.model = model
+        self.lr = lr
+
+
+def test_the_named_spelling_keeps_an_unmentioned_live_child_by_identity() -> None:
+    """CD3 — `configure(trainer=t, config={"trainer": {...}})` folds the overlay
+    into the object's marker; the marker's OTHER kwargs (a live dataset) must not
+    come back as copies, and an uncopyable one must not crash the call."""
+    import threading
+
+    get_registry().register_class(_Trainer)
+    ds = _Dataset()
+    t = _Trainer(dataset=ds)
+    configure(trainer=t, config={"trainer": {"lr": 0.1}})
+    assert t.dataset is ds
+    assert t.lr == 0.1
+
+    t2 = _Trainer(dataset=threading.Lock())
+    configure(trainer=t2, config={"trainer": {"lr": 0.2}})  # used to raise TypeError: cannot pickle
+    assert t2.lr == 0.2
+
+
+def test_a_live_object_handed_through_config_is_assigned_by_identity() -> None:
+    """CD4 — wiring a pre-built dataset / model: the object on the trainer must
+    be THE object the caller passed (an optimizer built on `m` trains `m`)."""
+    get_registry().register_class(_Trainer)
+    get_registry().register_class(_Model)
+    ds, m = _Dataset(), _Model()
+    t = _Trainer()
+    configure(t, config={"dataset": ds, "model": m})
+    assert t.dataset is ds
+    assert t.model is m

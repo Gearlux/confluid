@@ -1167,3 +1167,18 @@ def test_default_scopes_reads_the_raw_documents_defaults() -> None:
     assert default_scopes([1, 2]) == {}
     with pytest.raises(ScopeError, match="default_scopes"):
         default_scopes({"default_scopes": [42]})
+
+
+def test_an_include_line_does_not_break_an_anchor_aliased_inside_a_scope_block(tmp_path: Path) -> None:
+    """BUGS-2026-08-19 PA5 — any `include:` runs the document through `deep_merge`,
+    which deep-copied every ScopeBlock and with it the anchored marker inside;
+    one instance became two. Same document, with and without the include."""
+    _register_splice_fixtures()
+    (tmp_path / "other.yaml").write_text("unrelated: 1\n")
+    doc = "proto: &p !class:_Model\n  depth: 3\nblk: !scope:x\n  shared: *p\n"
+    (tmp_path / "plain.yaml").write_text(doc)
+    (tmp_path / "with_include.yaml").write_text("include: other.yaml\n" + doc)
+    plain = load(str(tmp_path / "plain.yaml"), scopes=["x"])
+    assert plain["proto"] is plain["shared"]
+    included = load(str(tmp_path / "with_include.yaml"), scopes=["x"])
+    assert included["proto"] is included["shared"]

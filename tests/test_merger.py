@@ -199,3 +199,76 @@ def test_an_unrelated_dotted_key_keeps_its_written_position() -> None:
     from confluid.merger import expand_dotted_keys
 
     assert list(expand_dotted_keys({"z": 1, "a.b": 2, "m": 3})) == ["z", "a", "m"]
+
+
+# ---------------------------------------------------------------------------
+# Live leaves keep their IDENTITY through a merge (BUGS-2026-08-19 PA5 / PA12 /
+# CD3 / CD4). `_preserve_identity_copy` deep-copied every non-marker value, so a
+# dataset or a model handed into a document came out as a COPY, an uncopyable one
+# (a lock, an open file) crashed with a raw TypeError, and a ScopeBlock's inner
+# anchored markers were duplicated. A merge must not mutate its inputs — that is
+# the CONTAINERS' job, which are still rebuilt; a leaf is never mutated, so it is
+# never copied.
+# ---------------------------------------------------------------------------
+
+
+class _Live:
+    """A stand-in for a dataset / model object that is not a marker."""
+
+
+def test_a_live_leaf_keeps_identity_through_deep_merge() -> None:
+    from confluid.merger import deep_merge
+
+    live = _Live()
+    merged = deep_merge({"ds": live, "a": {"x": 1}}, {"a": {"y": 2}})
+    assert merged["ds"] is live
+    overlaid = deep_merge({"a": 1}, {"ds": live})
+    assert overlaid["ds"] is live
+
+
+def test_a_live_leaf_keeps_identity_through_expand_dotted_keys() -> None:
+    from confluid.merger import expand_dotted_keys
+
+    live = _Live()
+    assert expand_dotted_keys({"ds": live, "a.b": 1})["ds"] is live
+
+
+def test_an_uncopyable_leaf_merges_instead_of_raising() -> None:
+    """A lock is the canonical uncopyable object (`TypeError: cannot pickle`)."""
+    import threading
+
+    from confluid.merger import deep_merge, expand_dotted_keys
+
+    lock = threading.Lock()
+    assert deep_merge({"lock": lock}, {"x": 1})["lock"] is lock
+    assert expand_dotted_keys({"lock": lock, "a.b": 1})["lock"] is lock
+
+
+def test_a_scope_blocks_inner_markers_keep_identity_through_deep_merge() -> None:
+    """PA5 — the anchored marker INSIDE a block (`shared: *p`) must stay the same
+    object as the one at the top level, or one instance becomes two."""
+    from confluid.fluid import ScopeBlock, Target
+    from confluid.merger import deep_merge
+
+    proto = Target("Box", size=3)
+    base = {"proto": proto, "blk": ScopeBlock({"x": None}, False, {"shared": proto})}
+    merged = deep_merge(base, {"unrelated": 1})
+    assert merged["proto"] is proto
+    assert merged["blk"].contents["shared"] is proto
+    assert merged["blk"] is not base["blk"], "the block itself is a container — rebuilt, not shared"
+    assert merged["blk"].dims == {"x": None} and merged["blk"].negate is False
+
+
+def test_containers_are_still_rebuilt_so_the_base_is_never_mutated() -> None:
+    """The con case: what the copy exists for is unchanged."""
+    from confluid.merger import deep_merge, expand_dotted_keys
+
+    base = {"a": {"x": [1, 2], "t": (1, [2])}}
+    merged = deep_merge(base, {"a": {"y": 1}})
+    merged["a"]["x"].append(3)
+    merged["a"]["t"][1].append(9)
+    assert base["a"]["x"] == [1, 2]
+    assert base["a"]["t"] == (1, [2])
+    assert isinstance(merged["a"]["t"], tuple)
+    expanded = expand_dotted_keys({"a": {"x": [1]}, "a.y": 2})
+    expanded["a"]["x"].append(5)
