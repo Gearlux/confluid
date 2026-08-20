@@ -46,6 +46,10 @@ logger = get_logger("confluid.loader")
 # Per-context include accumulator (a YAML-side concern — deliberately NOT on
 # the engine's _ENGINE_STATE): populated only inside ``load(..., return_paths=True)``.
 _INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
+#: Sibling accumulator for `import:` directives — pass 2 consumes the key, so an emitted
+#: document lost its imports and could not reload in a fresh process (BUGS-2026-08-19 CD13).
+#: `hydraide.emit()` activates it to re-emit the directive; None = off (zero cost).
+_IMPORT_ACCUMULATOR: ContextVar[Optional[List[str]]] = ContextVar("confluid_import_accumulator", default=None)
 
 
 # Process-wide application identity for the XDG search path (see
@@ -783,7 +787,10 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
         if imports:
             if isinstance(imports, str):
                 imports = [imports]
+            accum = _IMPORT_ACCUMULATOR.get()
             for m in imports:
+                if accum is not None and m not in accum:
+                    accum.append(m)
                 try:
                     importlib.import_module(m)
                 except ImportError as exc:

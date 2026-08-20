@@ -409,6 +409,27 @@ def _flow_recursive(
         # (``PartialClass(builder_fn)``) yielded accept-EVERYTHING and no NoBroadcast
         # gates. The receiver normalizes via the one ``_settability_target``.
         actual_target = data.target if not isinstance(data.target, str) else None
+        if actual_target is None:
+            # Pass 7 is the last pass an emitted document sees: an unresolvable STRING
+            # target used to sail through settle with the accept-EVERYTHING list (it
+            # absorbed every bare key) and `hydraide emit`/`check` blessed a typo'd
+            # class name with exit 0 (BUGS-2026-08-19 CD14). Nothing imports between
+            # pass 7 and pass 8 inside one load, so a target unresolvable here is
+            # unresolvable at construction too — refuse NOW, located, on the settled
+            # path exactly as `load()` refuses one pass later. Strict, like the
+            # construction funnel: an ambiguous name stops the run naming its
+            # candidates instead of reading as "unknown".
+            try:
+                if resolve_class(data.target, strict=True, context=get_active_context()) is None:
+                    raise UnknownClassError(
+                        f"Cannot resolve class: {data.target}{_at_yaml_loc(data)}{_selector_detail(data.target)}"
+                    )
+            except AmbiguousClassError as exc:
+                raise AmbiguousClassError(f"{exc}{_at_yaml_loc(data)}") from exc
+            except ConfigurationError as exc:
+                if isinstance(exc, UnknownClassError):
+                    raise
+                raise type(exc)(f"{exc}{_at_yaml_loc(data)}") from exc
         # Always prepared (even with no parent context) so own kwargs get
         # scope tags, glob routing, and in-marker dotted-key expansion.
         # The slot this marker sits in: the key the caller descended through (a kwarg name,

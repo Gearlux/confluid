@@ -7,6 +7,8 @@ final kwargs, every contest is settled, shared markers are anchors and deferral 
 tool's contract, not the engine's.
 """
 
+import subprocess
+import sys
 import textwrap
 import warnings
 from pathlib import Path
@@ -297,3 +299,84 @@ def test_a_dotted_kwarg_position_survives_the_emit_round_trip() -> None:
     assert load(out)["t"].power == 50, f"the emitted artefact replays differently:\n{out}"
     assert out.index("power: 99") < out.index("t.power"), "the dotted line sits after the key it beat"
     assert emit(out) == out, "emit is idempotent"
+
+
+# ---------------------------------------------------------------------------
+# CD13 / CD14 / CD15 (BUGS-2026-08-19) — the emitted artefact is self-contained,
+# a typo'd class refuses at settle, and anchors are unique.
+# ---------------------------------------------------------------------------
+
+
+def test_emit_reemits_import_and_the_artefact_reloads_in_a_fresh_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CD13 — pass 2 consumes `import:`; without re-emitting it the artefact's
+    classes were registered only as a side effect of the emitting process, and a
+    fresh `load()` failed with UnknownClassError."""
+    from confluid.hydraide import emit
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mod_cd13.py").write_text(
+        "from confluid import configurable\n"
+        "@configurable\n"
+        "class CD13Model:\n"
+        "    def __init__(self, hidden: int = 8):\n"
+        "        self.hidden = hidden\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "src.yaml").write_text("import: mod_cd13\nmodel: !class:CD13Model\n  hidden: 32\n")
+
+    out = emit("src.yaml")
+    assert out.splitlines()[0] == "import: mod_cd13"
+    (tmp_path / "artefact.yaml").write_text(out)
+    probe = (
+        "import sys; sys.path.insert(0, r'" + str(tmp_path) + "')\n"
+        "from confluid import load\n"
+        "r = load(r'" + str(tmp_path / "artefact.yaml") + "')\n"
+        "print('reloaded', type(r['model']).__name__, r['model'].hidden)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert "reloaded CD13Model 32" in result.stdout, result.stdout + result.stderr
+    assert emit(str(tmp_path / "artefact.yaml")) == out, "emit stays idempotent with the import line"
+
+
+def test_emit_refuses_an_unknown_class_with_its_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CD14 — a typo'd class name sailed through settle with the accept-everything
+    list (it absorbed every bare key) and `check` blessed it with exit 0."""
+    from confluid.exceptions import UnknownClassError
+    from confluid.hydraide import emit
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "unknown.yaml").write_text("x: !class:NoSuchClass\nlr: 0.1\n")
+    with pytest.raises(UnknownClassError, match=r"NoSuchClass at .*unknown\.yaml:1:4"):
+        emit("unknown.yaml")
+    with pytest.raises(UnknownClassError, match=r"unknown\.yaml:1:4"):
+        load(str(tmp_path / "unknown.yaml"), until="settled")
+
+
+def test_two_paths_folding_to_one_anchor_name_stay_unique(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CD15 — `m[0]` folds to `m_0` beside a key literally named `m_0`: the emitted
+    document carried a DUPLICATE anchor and no parser could read it back."""
+    from confluid.hydraide import emit
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mod_cd15.py").write_text(
+        "from confluid import configurable\n"
+        "@configurable\n"
+        "class CD15Box:\n"
+        "    def __init__(self, size: int = 0):\n"
+        "        self.size = size\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "anchors.yaml").write_text(
+        "import: mod_cd15\n"
+        "m:\n  - !class:CD15Box {size: 1}\nm_0: !class:CD15Box {size: 2}\n"
+        "use_a: ${ref:m[0]}\nuse_b: ${ref:m_0}\n"
+    )
+    out = emit("anchors.yaml")
+    anchors = [word for line in out.splitlines() for word in line.split() if word.startswith("&")]
+    assert len(anchors) == len(set(anchors)), f"duplicate anchor in:\n{out}"
+    (tmp_path / "anchors_out.yaml").write_text(out)
+    reloaded = load(str(tmp_path / "anchors_out.yaml"))
+    assert reloaded["use_a"] is reloaded["m"][0]
+    assert reloaded["use_b"] is reloaded["m_0"]

@@ -500,9 +500,17 @@ compares them byte-for-byte to what its serializer renders.
 no-op, and `convert_file`'s activation-gated write.
 
 **Rule — `hydraide` is the ONE emitter of the plain form, and it is a WRAPPER over passes 1–7.**
-`hydraide.emit(source, scopes=…)` is `dump(load(source, until="settled"))` plus named anchors; it adds NO pass and
+`hydraide.emit(source, scopes=…)` is `dump(load(source, until="settled"))` plus named anchors AND the
+re-emitted `import:` directive (`loader._IMPORT_ACCUMULATOR`, the include accumulator's sibling —
+pass 2 consumes the key, and without it the artefact could not reload in a fresh process,
+BUGS-2026-08-19 CD13); it adds NO pass and
 re-derives NO rule — if the emitted document is wrong, the defect is in pass 7 (`engine.settle`) or `dump()`,
-never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`).
+never in `hydraide.py`. It refuses exactly what `load()` refuses (a located `ConfigurationError`) —
+including an unresolvable STRING target, which pass 7 refuses since 2026-08-19 (CD14: it used to
+sail through settle with the accept-EVERYTHING list and absorb every bare key, and `check` blessed
+the typo with exit 0; nothing imports between pass 7 and pass 8 inside one load, so the refusal
+loses nothing). Anchor names are deterministically UNIQUE (`&m_0`, `&m_0-2` — CD15), and the
+COMMAND renders PyYAML's own syntax errors and output-write failures as one line + exit 1 (CD16).
 **The `hydraide` COMMAND is `confluid/cli.py` — Click, the OPTIONAL `confluid[cli]` extra,
 console script `hydraide = confluid.cli:main` (user instruction 2026-08-17).** Three verbs — `emit CONFIG [--scope DIM=VALUE]… [-o FILE]`,
 `check CONFIG`, `completion bash|zsh|fish` — and the contract: a located `ConfluidError` is ONE

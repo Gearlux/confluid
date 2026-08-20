@@ -175,9 +175,19 @@ invariant its tests pin.
   On reload the alias sites share one instance.
 - **Deferral survives.** A `!partial:` / `_partial_: true` node is emitted
   deferred and stays deferred on reload.
+- **The artefact is self-contained.** Every `import:` the load consumed — the
+  entry file's and the included files' — is re-emitted as the document's first
+  line, so a fresh process can `load()` the artefact without the source tree's
+  side effects.
 - **A malformed document is refused, located.** `emit` raises exactly what
   `load()` would — a `ConfigurationError` naming `file:line:col`; the command
-  renders it as one line, no traceback.
+  renders it as one line, no traceback. That includes a class name the document
+  cannot resolve: settle (pass 7) refuses it where construction would have, so
+  `check` cannot bless a typo'd `_target_:` with exit 0. A YAML syntax error
+  (PyYAML's own, with its file:line mark) is also one line from the command.
+- **Anchor names are unique.** Two shared values whose shortest paths fold to
+  one spelling (`m[0]` and a key literally named `m_0`) get deterministic
+  suffixes (`&m_0`, `&m_0-2`) — the output always parses back.
 
 ## Two things to know
 
