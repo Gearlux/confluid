@@ -3,6 +3,7 @@ from copy import copy
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
+from loggair import get_logger
 
 from confluid.introspect import NO_DEFAULT, slots
 from confluid.registry import get_registry
@@ -60,6 +61,12 @@ def _represent_callable(dumper: yaml.SafeDumper, data: Any) -> Any:
     return dumper.represent_str(f"${{ref:{module}.{qualname}}}")
 
 
+logger = get_logger("confluid.dumper")
+
+#: Once-per-type loudness for the placeholder below — a dump may hold thousands of one shape.
+_OPAQUE_WARNED: set = set()
+
+
 def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Fallback: emit a bare ``{_target_: <module.qualname>}`` marker mapping.
 
@@ -73,8 +80,35 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
     a tag anywhere in the document costs the whole file its plain-YAML
     readability. The reserved-key mapping says the same thing and parses.
     """
+    import enum as _enum
+    import os as _os
+
+    if isinstance(data, _os.PathLike):
+        # A Path's document spelling is its string — every constructor that took a
+        # path string re-creates the Path on reload. The bare placeholder reloaded as
+        # `PosixPath('.')`, silently pointing a sink at the launch directory
+        # (BUGS-2026-08-19 CD9).
+        return dumper.represent_str(_os.fspath(data))
+    if isinstance(data, _enum.Enum):
+        # An Enum member's document spelling is its VALUE — a pydantic-validated
+        # constructor coerces it back on reload; the placeholder raised on reload.
+        return dumper.represent_data(data.value)
+    if hasattr(data, "item") and type(data).__module__.split(".", 1)[0] == "numpy" and getattr(data, "ndim", None) == 0:
+        # A numpy SCALAR dumps as the Python scalar it wraps (`np.float32(1.5)`
+        # reloaded as `np.float32(0.0)` through the placeholder).
+        return dumper.represent_data(data.item())
     cls = data.__class__
     name = f"{cls.__module__}.{cls.__qualname__}"
+    # Not reconstructible: the placeholder keeps the dump COMPLETE, but it used to be
+    # silent — and a bare `{_target_: X}` reloads DEFAULT-constructed, which is a lie
+    # about the run (CD9). Say so, once per type.
+    if cls not in _OPAQUE_WARNED:
+        _OPAQUE_WARNED.add(cls)
+        logger.warning(
+            f"dump: a live {name} has no reconstructible document spelling — emitted as a bare "
+            f"{{_target_: {name}}} placeholder, which reloads DEFAULT-constructed. Register the "
+            f"class (or mark it @configurable) for a faithful round trip."
+        )
     return dumper.represent_dict({"_target_": name})
 
 
@@ -134,11 +168,11 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
 
     # Objects materialized via Confluid but not @configurable — use stored origin metadata
     if hasattr(data, "__confluid_class__") and not hasattr(data.__class__, "__confluid_configurable__"):
-        target = data.__confluid_class__
-        if isinstance(target, type):
-            cls_name = f"{target.__module__}.{target.__qualname__}"
-        else:
-            cls_name = str(target)
+        # The ONE naming rule (F3): the registry's key first, the dotted path as the
+        # fallback. This branch carried its own inline copy, and for a registered
+        # FUNCTION target it fell through to str() — a memory address in the artifact
+        # (`_target_: <function build_widget at 0x…>`, BUGS-2026-08-19 CD12).
+        cls_name = _target_name(data.__confluid_class__)
         return dumper.represent_mapping(
             "tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **getattr(data, "__confluid_kwargs__", {})}
         )
@@ -181,7 +215,8 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
     # The ONE enumeration, projected to _DUMP_KINDS. ``slots()`` returns signature
     # order by construction, which is what the dump-key round-trip is pinned on;
     # an unreadable signature yields no signature slots (the old except branch).
-    dump_slots = [s for s in slots(data.__class__) if s.kind in _DUMP_KINDS]
+    all_slots = slots(data.__class__)
+    dump_slots = [s for s in all_slots if s.kind in _DUMP_KINDS]
     params = [s.name for s in dump_slots]
     defaults: Dict[str, Any] = {s.name: s.default for s in dump_slots}
 
@@ -221,6 +256,15 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
             val = captured[p]
             if not _skip_none(p, val):
                 kwargs[p] = val
+
+    # A **kwargs class: the captured extras ARE constructor arguments — the declared-slot
+    # projection above cannot see them, so `Wrap(a=2, foo=3)` dumped as `{a: 2}` and the
+    # reload lost `foo` (BUGS-2026-08-19 CD11). `var_keyword` is not a _DUMP_KINDS member,
+    # so the presence test reads the UNfiltered enumeration.
+    if any(s.kind == "var_keyword" for s in all_slots):
+        for name, val in captured.items():
+            if name not in kwargs and name not in params and not _skip_none(name, val):
+                kwargs[name] = val
 
     # Include post-construction attributes set via @configurable
     for name in getattr(data, "__confluid_extra__", []):
