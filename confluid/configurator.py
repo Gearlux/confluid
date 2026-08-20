@@ -233,6 +233,7 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
     cls = obj.__class__
     label = getattr(cls, "__confluid_name__", cls.__name__)
     eager_params: Set[str] = _ctor_params(cls) or set() if getattr(cls, "__confluid_eager__", False) else set()
+    captured: Dict[str, Any] = getattr(obj, "__confluid_kwargs__", {})
 
     for attr, settled in node.kwargs.items():
         member = getattr(cls, attr, None)
@@ -274,6 +275,14 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
         else:
             value = _materialize_value(settled, visited, report)
             if current is not _MISSING and _same(value, current):
+                continue
+            if current is _MISSING and attr in captured and _same(value, captured[attr]):
+                # The capture FALLBACK (an eager class's transformed ctor param, a
+                # property-shadowed slot): the document's value, not a config change —
+                # re-setting it grew a NEW attribute the class never stores and fired
+                # the eager staleness warning on every configure() for keys the config
+                # never mentioned (BUGS-2026-08-19 CD8). A value the config DID change
+                # differs from the capture and falls through to _set.
                 continue
             if isinstance(value, dict) and dict_at_slot_kind(current) == "opaque":
                 # The dict-at-slot rule's fourth arm (user ruling): a mapping addressed at a

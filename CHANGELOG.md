@@ -139,6 +139,21 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The dump round trip holds for opaque values, `**kwargs` extras and stamped function
+  targets — and `configure()` stops replanting the capture** (BUGS-2026-08-19
+  CD8/CD9/CD11/CD12, 2026-08-19). Measured before → after: a `Path` attribute dumped as
+  `{_target_: pathlib.PosixPath}` and reloaded as `PosixPath('.')` — a sink silently pointing at
+  the launch directory → dumps as its string and reloads intact; a numpy scalar reloaded as
+  `np.float32(0.0)` → dumps `1.5`; an `Enum` member raised on reload → dumps its value; any other
+  opaque keeps the placeholder but WARNS once per type that it reloads default-constructed;
+  `Wrap(a=2, foo=3)` dumped `{a: 2}` and reloaded with `kwargs == {}` → the captured extras are
+  emitted (`foo: 3`); a registered FUNCTION target under `__confluid_class__` emitted
+  `_target_: <function build_widget at 0x…>` → the registry key, via the ONE `_target_name`;
+  `configure(e, {"lr": 0.5})` on an eager class planted a new `width` attribute and warned about
+  keys the config never mentioned → the capture-equal fallback is skipped, while a config that
+  CHANGES the param still applies it (pinned con). Pinned: `tests/test_dumper.py`,
+  `tests/test_configurator.py`.
+
 - **`configure()` reaches children beyond `__dict__`, never runs a property getter, gates the
   named-overlay path, and takes `scopes=`** (BUGS-2026-08-19 CD1/CD2/CD6/CD18 + SR4's channel
   half, 2026-08-19). Measured before → after: an `nn.Module` child (kept in `_modules`) was

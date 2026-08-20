@@ -1558,7 +1558,20 @@ the registry strips, and a registered FUNCTION is not a `type` so it fell throug
 emitted `<function build at 0x108420fe0>` — a memory address, which makes two dumps of the SAME
 object differ as well as failing to reload. Ask `registry.key_for()` first; fall back to the
 dotted path for an unregistered target (still importable), and pass a STRING target through
-verbatim (it is already the document's spelling).
+verbatim (it is already the document's spelling). BOTH naming branches go through
+`_target_name` — the `__confluid_class__` branch carried an inline copy and emitted a memory
+address for a registered FUNCTION target (2026-08-19, BUGS-2026-08-19 CD12).
+
+**Rule — opaque VALUES dump by value where a faithful spelling exists (2026-08-19, CD9/CD11).**
+`_represent_opaque` spells a `PathLike` as its string, an `Enum` member as its value, and a numpy
+SCALAR as `.item()` — each reloads through the constructor that took it; the bare
+`{_target_: X}` placeholder reloaded DEFAULT-constructed, silently (a sink pointing at `'.'`).
+Any other opaque keeps the placeholder and WARNS once per type. A `**kwargs` class's captured
+extras are emitted as marker kwargs (the declared-slot projection cannot see them; the presence
+test reads the UNfiltered `slots()` — `var_keyword` is not a `_DUMP_KINDS` member). And
+`configure()` SKIPS a settled kwarg that equals the capture when the attribute does not exist on
+the object (CD8) — the capture is the dump fallback, not a config change; re-setting it planted
+new attributes and fired the eager staleness warning for keys the config never mentioned.
 **Pins.** the F3 group in `tests/test_dumper.py`, incl.
 `::test_a_marker_targeting_a_registered_FUNCTION_reloads` (which asserts no `0x` in the document)
 and `::test_a_marker_and_a_live_instance_name_the_same_class_alike`.

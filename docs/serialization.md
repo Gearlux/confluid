@@ -57,7 +57,15 @@ dump(trainer)                     # _target_: Trainer / lr: 0.1 / epochs: 50
   never emitted; they are recomputed by the reconstructed object
   ([Class Design](class-design.md)). A constructor **parameter** shadowed by a
   property dumps its CAPTURED ctor value (`device: cpu`, not the getter's
-  derived object) — the getter never runs during a dump. This is why the convention asks for a
+  derived object) — the getter never runs during a dump.
+
+Opaque **values** dump by value wherever a faithful spelling exists: a `Path`
+as its string, an `Enum` member as its value, a numpy scalar as the Python
+scalar it wraps — each reloads through the constructor that took it. A
+`**kwargs` class's captured extras are emitted too (they *are* constructor
+arguments). Anything else keeps the bare `{_target_: X}` placeholder, and the
+dump WARNS once per type that the placeholder reloads default-constructed —
+register the class for a faithful round trip. This is why the convention asks for a
   recomputing `@property` rather than a stored attribute: a property stays out
   of the document, while a stored one is a body slot and is dumped.
 - **Runtime-injected arguments** — the `params=` / positional inputs handed

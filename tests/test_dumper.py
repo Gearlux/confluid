@@ -1,9 +1,12 @@
+import enum
+import pathlib as _pathlib
 from typing import Any
 
+import numpy as np
 import pytest
 import yaml
 
-from confluid import configurable, configure, dump, get_registry, load
+from confluid import configurable, configure, dump, get_registry, load, register
 
 
 @pytest.fixture(autouse=True)
@@ -561,3 +564,110 @@ def test_configure_of_a_property_shadowed_param_class_touches_nothing_derived() 
     configure(loop, config={"max_epochs": 2})
     assert loop.max_epochs == 2
     assert getter_runs == [], "configure() must not execute nor write back the getter"
+
+
+# --- value-faithful opaque spellings, **kwargs extras, and the F3 rule's second
+# branch (BUGS-2026-08-19 CD9 / CD11 / CD12) --------------------------------------
+
+
+def test_a_path_valued_attribute_round_trips_as_its_string() -> None:
+    """CD9 — `{_target_: pathlib.PosixPath}` reloaded as `PosixPath('.')`, silently:
+    a sink pointing at the launch directory instead of the run's output."""
+
+    @configurable
+    class _Sink:
+        def __init__(self, path: str = ".") -> None:
+            self.path = _pathlib.Path(path)
+
+    sink = load("_target_: _Sink\npath: /data/run42/out\n")
+    text = dump(sink)
+    assert "path: /data/run42/out" in text, text
+    assert "_target_: pathlib" not in text
+    assert load(text).path == _pathlib.Path("/data/run42/out")
+
+
+def test_numpy_scalars_and_enums_round_trip_by_value() -> None:
+    class _Color(enum.Enum):
+        RED = "red"
+        BLUE = "blue"
+
+    @configurable
+    class _Host:
+        def __init__(self, scale: Any = None, color: Any = None) -> None:
+            self.scale = scale
+            self.color = color
+
+    host = _Host(scale=np.float32(1.5), color=_Color.RED)
+    text = dump(host)
+    assert "scale: 1.5" in text, text
+    assert "color: red" in text, text
+    reloaded = load(text)
+    assert reloaded.scale == 1.5
+    assert reloaded.color == "red"
+
+
+def test_a_genuinely_opaque_value_still_emits_the_placeholder_but_AUDIBLY(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The con + the loudness: the placeholder keeps a dump complete, and the lie it
+    tells on reload (a default-constructed object) is now announced once per type."""
+    from types import SimpleNamespace
+
+    import confluid.dumper as dumper_mod
+
+    class _Callback:
+        pass
+
+    @configurable
+    class _Trainer:
+        def __init__(self, callback: Any = None) -> None:
+            self.callback = callback
+
+    records: list = []
+    monkeypatch.setattr(
+        dumper_mod, "logger", SimpleNamespace(warning=records.append, debug=lambda m: None, trace=lambda m: None)
+    )
+    dumper_mod._OPAQUE_WARNED.discard(_Callback)
+    trainer = _Trainer(callback=_Callback())
+    text = dump(trainer)
+    assert "_Callback" in text
+    assert any("DEFAULT-constructed" in r for r in records), records
+    records.clear()
+    dump(trainer)
+    assert not records, "once per type"
+
+
+def test_a_kwargs_classes_captured_extras_survive_the_round_trip() -> None:
+    """CD11 — `Wrap(a=2, foo=3)` dumped as `{a: 2}`; the reload lost `foo`."""
+
+    @configurable
+    class _Wrap:
+        def __init__(self, a: int = 1, **kwargs: Any) -> None:
+            self.a = a
+            self.kwargs = dict(kwargs)
+
+    wrapped = load("_target_: _Wrap\na: 2\nfoo: 3\n")
+    assert wrapped.kwargs == {"foo": 3}
+    text = dump(wrapped)
+    assert "foo: 3" in text, text
+    assert load(text).kwargs == {"foo": 3}
+
+
+def test_a_stamped_function_target_dumps_its_registry_key_not_an_address() -> None:
+    """CD12 — the `__confluid_class__` branch carried its own inline copy of the
+    naming rule and emitted `<function build_widget at 0x…>` for a registered
+    FUNCTION target (F3 fixed the marker branch only)."""
+
+    class _Widget:
+        def __init__(self, size: int) -> None:
+            self.size = size
+
+    def build_widget(size: int = 1) -> _Widget:
+        return _Widget(size)
+
+    register(build_widget, name="build_widget")
+    widget = load("_target_: build_widget\nsize: 7\n")
+    text = dump(widget)
+    assert "0x" not in text, text
+    assert "_target_: build_widget" in text
+    assert load(text).size == 7

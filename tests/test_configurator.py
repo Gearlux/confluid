@@ -785,3 +785,36 @@ def test_a_named_overlay_typo_is_audible_and_strict_attrs_refuses() -> None:
     report = configure(trainer=loose, config={"trainer": {"ghost": 1}})
     assert loose.ghost == 1, "B1: the value still applies on a permissive class"  # type: ignore[attr-defined]
     assert [(f.key, f.reason) for f in report.failed] == [("ghost", "unknown-attribute")]
+
+
+def test_configure_does_not_replant_captured_ctor_params_it_did_not_change() -> None:
+    """CD8 (BUGS-2026-08-19) — the capture fallback is the DOCUMENT's value, not a
+    config change: re-setting it grew a `width` attribute the class never stores and
+    fired the eager staleness warning for keys the config never mentioned."""
+    from types import SimpleNamespace
+
+    import confluid.configurator as configurator_mod
+
+    @configurable(eager=True)
+    class _EagerBox:
+        def __init__(self, width: int = 3, lr: float = 0.1) -> None:
+            self.w2 = width * 2
+            self.lr = lr
+
+    records: list = []
+    original = configurator_mod.logger
+    configurator_mod.logger = SimpleNamespace(  # type: ignore[assignment]  # the documented log-assert pattern
+        warning=records.append, debug=lambda m: None, trace=lambda m: None
+    )
+    try:
+        box = _EagerBox(width=5)
+        configure(box, config={"lr": 0.5})
+    finally:
+        configurator_mod.logger = original
+    public = {k: v for k, v in vars(box).items() if not k.startswith("__")}
+    assert public == {"w2": 10, "lr": 0.5}, "width must not be re-planted as a new attribute"
+    assert not any("width" in r for r in records), records
+
+    changed = _EagerBox(width=5)
+    configure(changed, config={"width": 7})
+    assert vars(changed)["width"] == 7, "the con: a config that CHANGES the param still applies it"
