@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loggair import get_logger
 
 from confluid.exceptions import ScopeError
-from confluid.fluid import Fluid, ScopeBlock, _at_yaml_loc
+from confluid.fluid import Fluid, ScopeBlock, _at_yaml_loc, format_yaml_loc
 from confluid.merger import deep_merge
 
 logger = get_logger("confluid.scopes")
@@ -58,7 +58,7 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
 METADATA_KEYS = ("scope_aliases", "default_scopes", "scopes")
 
 
-def parse_default_scopes(value: Any) -> Dict[str, str]:
+def parse_default_scopes(value: Any, where: str = "") -> Dict[str, str]:
     """Validate a document's ``default_scopes:`` value into a ``{dimension: value}`` map.
 
     The value must be a list of ``"dim=value"`` strings. Every entry MUST be keyed:
@@ -71,7 +71,7 @@ def parse_default_scopes(value: Any) -> Dict[str, str]:
         return {}
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ScopeError(
-            f"`default_scopes` must be a list of 'dimension=value' strings, got {value!r}. "
+            f"{where}`default_scopes` must be a list of 'dimension=value' strings, got {value!r}. "
             f"Write it as `default_scopes: [framework=lightning]`."
         )
     defaults: Dict[str, str] = {}
@@ -79,7 +79,7 @@ def parse_default_scopes(value: Any) -> Dict[str, str]:
         key, val = parse_scope_arg(raw)
         if val is None:
             raise ScopeError(
-                f"`default_scopes` entry {raw!r} names no value: a default names the value a "
+                f"{where}`default_scopes` entry {raw!r} names no value: a default names the value a "
                 f"dimension takes when the caller passes none, and a boolean scope (or an alias) "
                 f"has no value to default — nothing the caller passes could switch it off. Write "
                 f"`{key}=<value>`, or use `!notscope:{key}` for a block that is active while `{key}` is unset."
@@ -168,6 +168,13 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
     return resolved
 
 
+#: Side channel of `_walk_dimensions`: per dimension, where its positive values are
+#: declared — read ONLY by `_check_active_values_are_declared` for its error message
+#: (the walker's public return stays a pair; discovery has no use for locations).
+#: Reset per walk; single-threaded within one load like the rest of pass 4.
+_DECLARATION_LOCS: Dict[str, List[str]] = {}
+
+
 def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
     """The ONE dimension walker: ``(positive values per key, keys carrying a negation)``.
 
@@ -193,6 +200,9 @@ def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
                     negated.add(key)
                 else:
                     values.add(value)
+                    loc = format_yaml_loc(node)
+                    if loc:
+                        _DECLARATION_LOCS.setdefault(key, []).append(loc)
             walk(node.contents)
             return
         if isinstance(node, dict):
@@ -267,15 +277,18 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
     """
     if not active:
         return
+    _DECLARATION_LOCS.clear()
     positive, negated = _walk_dimensions(config)
     for key, value in active.items():
         if value is None or key in negated or not positive.get(key):
             continue
         if value not in positive[key]:
             known = ", ".join(sorted(positive[key]))
+            locs = ", ".join(_DECLARATION_LOCS.get(key, []))
+            declared_at = f" (declared at {locs})" if locs else ""
             raise ScopeError(
                 f"No scope block matches {key}={value!r}. "
-                f"This document declares {key} with: {known}. "
+                f"This document declares {key} with: {known}{declared_at}. "
                 f"Either use one of those values, or add a `_scope_: {{{key}: {value}}}` block."
             )
 

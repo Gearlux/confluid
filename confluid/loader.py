@@ -30,7 +30,7 @@ from loggair import get_logger
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, fold_reference_kwargs, parse_value
-from confluid.scopes import default_scopes, normalize_active, parse_scope_arg, resolve_scopes
+from confluid.scopes import normalize_active, parse_default_scopes, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
 
@@ -720,7 +720,11 @@ def _register_constructors() -> None:
 _register_constructors()
 
 
-def _load_config_file(path: Union[str, Path], _included: Optional[Set[Path]] = None) -> Dict[str, Any]:
+def _load_config_file(
+    path: Union[str, Path],
+    _included: "Optional[Dict[Path, None]]" = None,
+    including: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Read ONE YAML file: parse (markers), ``import:``, recursive ``include:`` — passes 1–3.
 
     The file-reading half of ``load(path, until="raw")``, and what every
@@ -731,19 +735,27 @@ def _load_config_file(path: Union[str, Path], _included: Optional[Set[Path]] = N
     real file.
     """
     requested = Path(path)
-    path = resolve_config_path(path).resolve()
+    base_dir = including.parent if including is not None else None
+    path = resolve_config_path(path, base_dir=base_dir).resolve()
     if _included is None:
-        _included = set()
+        _included = {}
     if path in _included:
-        raise CircularIncludeError(f"Circular include: {path}")
-    _included.add(path)
+        # The insertion-ordered dict IS the include chain — render it, not just the
+        # revisited file (BUGS-2026-08-19 PA25: `Circular include: c1.yaml` left the
+        # reader to rediscover the cycle by hand).
+        chain = " -> ".join(str(p) for p in (*_included, path))
+        raise CircularIncludeError(f"Circular include: {chain}")
+    _included[path] = None
     _record_loaded_path(path)
 
     if not path.exists():
+        via = f"{including} includes {requested}: " if including is not None else ""
         if requested.is_absolute():
-            raise ConfigFileNotFoundError(f"Not found: {path}")
-        searched = ", ".join(str(c) for c in _search_candidates(requested, None))
-        raise ConfigFileNotFoundError(f"Not found: {requested} (searched: {searched})")
+            raise ConfigFileNotFoundError(f"{via}Not found: {path}")
+        # The candidates the resolver ACTUALLY probed — the including file's directory
+        # is tier 1 for an include, and the old message dropped it (PA25).
+        searched = ", ".join(str(c) for c in _search_candidates(requested, base_dir))
+        raise ConfigFileNotFoundError(f"{via}Not found: {requested} (searched: {searched})")
 
     with open(path, "r") as f:
         data = yaml.load(f, Loader=ConfluidLoader) or {}
@@ -751,7 +763,7 @@ def _load_config_file(path: Union[str, Path], _included: Optional[Set[Path]] = N
     return cast(Dict[str, Any], _import_and_include(data, path, _included))
 
 
-def _import_and_include(data: Any, base_path: Path, _included: Set[Path]) -> Any:
+def _import_and_include(data: Any, base_path: Path, _included: "Dict[Path, None]") -> Any:
     """Passes 2–3 on a PARSED root: ``import:`` then ``include:`` splicing.
 
     Root-level ``!class:`` documents parse to a Fluid. Imports/includes are
@@ -785,7 +797,7 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _process_includes_recursive(
-    data: Any, current_path: Path, _included: Set[Path], spliced: Optional[List[Path]] = None
+    data: Any, current_path: Path, _included: "Dict[Path, None]", spliced: Optional[List[Path]] = None
 ) -> Any:
     from confluid.fluid import Fluid, ScopeBlock
 
@@ -861,7 +873,7 @@ def _settle_scopes_and_includes(data: Any, base_path: Path, active: Dict[str, Op
     for _ in range(_MAX_SETTLE_PASSES):
         data = resolve_scopes(data, active)
         spliced: List[Path] = []
-        data = _process_includes_recursive(data, base_path, set(), spliced)
+        data = _process_includes_recursive(data, base_path, {}, spliced)
         if not spliced:
             return data
     raise ConfigurationError(
@@ -872,7 +884,7 @@ def _settle_scopes_and_includes(data: Any, base_path: Path, active: Dict[str, Op
 
 
 def _splice_includes(
-    block: Dict[str, Any], current_path: Path, _included: Set[Path], spliced: Optional[List[Path]] = None
+    block: Dict[str, Any], current_path: Path, _included: "Dict[Path, None]", spliced: Optional[List[Path]] = None
 ) -> Dict[str, Any]:
     """Splice each included document AT THE POSITION its ``include:`` key was written.
 
@@ -921,7 +933,7 @@ def _splice_includes(
                 f"include: entries must be paths, got {inc_path!r} in {includes!r} (in {current_path})"
             )
         target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
-        included.append(_load_config_file(target_path, _included=set(_included)))
+        included.append(_load_config_file(target_path, _included=dict(_included), including=current_path))
         if spliced is not None:
             spliced.append(target_path)
 
@@ -1067,9 +1079,9 @@ def _load(
             data = _load_config_file(data)  # a missing file raises ConfigFileNotFoundError
         else:
             data = yaml.load(str(data), Loader=ConfluidLoader) or {}
-            data = _import_and_include(data, base_path, set())
+            data = _import_and_include(data, base_path, {})
     else:
-        data = _import_and_include(data, base_path, set())
+        data = _import_and_include(data, base_path, {})
     if until == "raw":
         return data
 
@@ -1084,7 +1096,8 @@ def _load(
     # about to discard.
     if isinstance(data, dict):
         aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
-        defaults = default_scopes(data)
+        where = f"{base_path}: " if base_path is not None else ""
+        defaults = parse_default_scopes(data.get("default_scopes") if isinstance(data, dict) else None, where=where)
         data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases, defaults))
     elif scopes:
         # Non-dict roots (e.g. a document whose root is a marker) carry no

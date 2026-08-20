@@ -139,6 +139,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The located-error sweep — five raises that had the location in hand and dropped it**
+  (BUGS-2026-08-19 SR14/SR15/ENG-4/ENG-10/PA25, 2026-08-19). A `@axis=$key` selector whose key is
+  missing now names the marker's line (`… or write the value literally. at <file>:1:7`); the
+  undeclared-scope-value `ScopeError` lists where the values are declared (`declares fw with: x, y
+  (declared at dims.yaml:1:4, dims.yaml:3:4)`); a malformed `default_scopes:` leads with its file;
+  `flow()` of an unresolvable `Reference` names its line like `load()` always did; a validating
+  `__setattr__`'s `TypeError` (torch's "cannot assign 'int' as child module") becomes the same
+  located `ConstructionError` the `AttributeError` path raises, at both post-init setattr sites; an
+  include miss reads `sub/a.yaml includes missing.yaml: Not found … (searched: sub/missing.yaml, …)`
+  — the including file and the tier actually probed first — and a circular include renders the
+  whole chain (`c1.yaml -> c2.yaml -> c1.yaml`). Pinned by message in `tests/test_exceptions.py`.
+
 - **Four construction-time silences and one eager build** (BUGS-2026-08-19
   ENG-3/ENG-7/ENG-11/ENG-16/ENG-17, 2026-08-19). Measured before → after:
   a typo'd key on an UNREGISTERED target (`_target_: torch.optim.Adam` shape) vanished with an

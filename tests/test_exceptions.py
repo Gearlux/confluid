@@ -34,6 +34,7 @@ from confluid import (
     configurable,
     flow,
     get_registry,
+    load,
 )
 from confluid.env import load_workspace_env
 from confluid.scopes import _resolve_aliases
@@ -260,3 +261,87 @@ def test_ambiguous_class_names_the_yaml_file_and_line(tmp_path: Path) -> None:
         confluid.load(str(cfg))
 
     assert "ambiguous.yaml:4:" in str(ei.value), f"no file:line in the message: {ei.value}"
+
+
+# ---------------------------------------------------------------------------
+# The located-error sweep (BUGS-2026-08-19 SR14 / SR15 / ENG-4 / ENG-10 / PA25):
+# every raise below had the marker or the file in hand and dropped it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_missing_selector_key_names_the_markers_line() -> None:
+    """SR14 — the registry raise had no node; the engine funnel re-locates it."""
+
+    @configurable(framework="torch")
+    class _SelLoss:
+        def __init__(self, k: int = 1) -> None:
+            self.k = k
+
+    with pytest.raises(ConfigurationError, match=r"no key 'engine'.*at <unicode string>:1:7"):
+        load("loss: !class:_SelLoss@framework=$engine\n")
+
+
+def test_an_undeclared_scope_value_names_where_the_values_are_declared(tmp_path: Path) -> None:
+    """SR15 — the declaring blocks carry `_yaml_loc`; the refusal now lists them."""
+    config = tmp_path / "dims.yaml"
+    config.write_text("a: !scope:fw=x\n  v: 1\nb: !scope:fw=y\n  v: 2\n")
+    with pytest.raises(ScopeError, match=r"declares fw with: x, y \(declared at .*dims\.yaml:1:4, .*dims\.yaml:3:4\)"):
+        load(str(config), scopes=["fw=z"])
+
+
+def test_a_malformed_default_scopes_names_its_file(tmp_path: Path) -> None:
+    """SR15 — the loader holds the path; the refusal now leads with it."""
+    config = tmp_path / "bad_defaults.yaml"
+    config.write_text("default_scopes: fw=x\na: !scope:fw=x\n  v: 1\n")
+    with pytest.raises(ScopeError, match=r"bad_defaults\.yaml.*`default_scopes` must be a list"):
+        load(str(config))
+
+
+def test_flowing_an_unresolvable_reference_names_its_line() -> None:
+    """ENG-4 — `flow(ref)` raised `Cannot resolve Reference: nothing` with no location
+    while `load()` of the same document located it."""
+    document = load("x: 1\nr: {_ref_: nothing}\n", until="document")
+    with pytest.raises(ReferenceResolutionError, match=r"nothing at <unicode string>:2:4"):
+        flow(document["r"])
+
+
+def test_a_validating_setattr_TypeError_becomes_a_located_construction_error() -> None:
+    """ENG-10 — torch-style `cannot assign 'int' as child module` escaped RAW from a
+    line the author never wrote; it now joins the AttributeError wrap."""
+
+    class _Validating:
+        def __init__(self, width: int = 4) -> None:
+            self.width = width
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name == "head" and not isinstance(value, str):
+                raise TypeError(f"cannot assign {type(value).__name__!r} as head (str expected)")
+            object.__setattr__(self, name, value)
+
+    configurable(_Validating)
+    with pytest.raises(ConstructionError, match=r"cannot accept 'head'.*<unicode string>:1:6.*str expected"):
+        load("net: {_target_: _Validating, width: 8, head: 3}")
+
+
+def test_an_include_miss_names_the_including_file_and_the_real_search_tiers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PA25 — the message dropped the including file AND the including-dir tier it
+    actually probed first."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.yaml").write_text("include: missing.yaml\n")
+    (tmp_path / "main.yaml").write_text("include: sub/a.yaml\n")
+    with pytest.raises(
+        ConfigFileNotFoundError, match=r"a\.yaml includes missing\.yaml.*searched: .*sub[/\\]missing\.yaml"
+    ):
+        load("main.yaml")
+
+
+def test_a_circular_include_renders_the_whole_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA25 — `Circular include: c1.yaml` left the reader to rediscover the cycle."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "c1.yaml").write_text("include: c2.yaml\n")
+    (tmp_path / "c2.yaml").write_text("include: c1.yaml\n")
+    with pytest.raises(CircularIncludeError, match=r"c1\.yaml -> .*c2\.yaml -> .*c1\.yaml"):
+        load("c1.yaml")
