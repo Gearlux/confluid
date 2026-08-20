@@ -1,6 +1,6 @@
 import types
 from copy import copy
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -371,4 +371,62 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
                 _discover_and_register(val, visited)
 
     _discover_and_register(obj)
+    if isinstance(obj, dict):
+        obj = _reemit_dotted_positions(obj)
     return yaml.dump(obj, Dumper=_LocalDumper, default_flow_style=False, sort_keys=False)
+
+
+def _reemit_dotted_positions(document: Dict[Any, Any]) -> Dict[Any, Any]:
+    """Put a dotted delivery's POSITION back into document order — plain YAML's one channel.
+
+    A kwarg a top-level dotted line delivered rides a marker stamp
+    (:func:`confluid.fluid.dotted_positions_of`) that plain YAML cannot carry, so a
+    dump of the bare mapping would replay its contest differently — the settled
+    value would sit at the MARKER's position and a bare key the dotted line beat
+    would win the reload (breaking ``load(emit(x)) == load(x)``). Re-emitting the
+    line — ``t.lr: <settled value>``, inserted right after the last sibling key it
+    out-positioned — restores the order, exactly the way a class block survives in
+    an emitted document and replays. The marker body keeps the settled value too
+    (the replayed fold overwrites it with itself); reloading re-stamps, so
+    ``emit(emit(x)) == emit(x)`` holds.
+    """
+    from confluid.fluid import Fluid, dotted_positions_of
+
+    inserts: List[Tuple[int, str, Any]] = []  # (insert-after root index, dotted key, settled value)
+    root_index = {k: i for i, k in enumerate(document)}
+
+    def walk(node: Any, path: Tuple[str, ...], seen: Dict[int, Any]) -> None:
+        if id(node) in seen:
+            return
+        seen[id(node)] = node  # id-keyed store: the value IS the pin (architecture record 16)
+        if isinstance(node, Fluid):
+            for kwarg, beats in dotted_positions_of(node).items():
+                if kwarg not in node.kwargs:
+                    continue
+                after = max((root_index[b] for b in beats if b in root_index), default=-1)
+                inserts.append((after, ".".join((*path, kwarg)), node.kwargs[kwarg]))
+            for k, v in node.kwargs.items():
+                if isinstance(k, str):
+                    walk(v, (*path, k), seen)
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(k, str):
+                    walk(v, (*path, k), seen)
+
+    for key, value in document.items():
+        if isinstance(key, str):
+            walk(value, (key,), {})
+    if not inserts:
+        return document
+
+    out: Dict[Any, Any] = {}
+    for index, (key, value) in enumerate(document.items()):
+        out[key] = value
+        for after, dotted_key, dotted_value in inserts:
+            if after == index:
+                out[dotted_key] = dotted_value
+    for after, dotted_key, dotted_value in inserts:
+        if after == -1 or after >= len(document):
+            out.setdefault(dotted_key, dotted_value)
+    return out

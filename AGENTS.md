@@ -812,6 +812,27 @@ author's reading order:
   `tests/test_broadcast_scoping.py::test_top_level_dotted_glob_pair_merges_in_merger` (the
   symmetry guard).
 
+**Rule — a dotted line landing DIRECTLY on a marker's kwarg keeps the LINE's position, per key
+(BC4, user ruling 2026-08-19: option B — per-key, never move the whole marker).** Pass 6's fold
+into the marker's kwargs would silently move the value to the MARKER's position (`t.lr: 9.0` as
+the last line lost to a bare `lr:` between — `explain` said "own 9.0 — beaten, earlier"). Three
+pieces, one identity: `expand_dotted_mapping(stamp_positions=True)` (the document top level ONLY —
+the in-block caller does not stamp) records per kwarg the sibling keys the line out-positioned
+(`fluid.dotted_positions_of` is the read surface); the scanner's `_dotted_protected` gate skips a
+cascade delivery arriving VIA an out-positioned key — `via` is the delivering TOP-LEVEL key (the
+bare key itself, a block's name, the rider's `'**'`), the same identity
+`_cascade_scalar_positions` orders by; and `dump()` RE-EMITS a stamped kwarg as a dotted line
+after the keys it beat (`_reemit_dotted_positions`), because plain YAML cannot carry the stamp
+and the bare mapping would replay the contest differently — that is what keeps
+`load(emit(x)) == load(x)` and `emit(emit(x)) == emit(x)`. A dotted path ending in a PLAIN dict
+(fresh head, dict-valued slot) is UNTOUCHED — those contests are ordered by the existing
+machinery and pinned. The marker's OTHER kwargs keep the marker's position: the dotted and
+instance-block spellings of one override agree on every key (the momentum pin — the reason B was
+chosen over re-anchoring the whole marker).
+**Pins.** the BC4 group in `tests/test_document_order.py` (three later-spec spellings, both bare
+cons, the one-kwarg-not-the-marker pin, two-marker depth, document-stage idempotence),
+`tests/test_hydraide.py::test_a_dotted_kwarg_position_survives_the_emit_round_trip`.
+
 **Rule.** The candidate set both paths' verdicts draw from is the ONE
 `broadcast._cascade_scalar_positions` (bare keys at their own index, a `'**'` rider's scalar
 contents at the RIDER's index). The directional reads stay per-caller (load: keys AFTER the slot;

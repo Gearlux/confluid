@@ -31,7 +31,7 @@ from typing import Annotated, Any, Callable, Dict, FrozenSet, List, Literal, Opt
 from loggair import get_active_config, get_logger
 
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Fluid, Reference, Target, _at_yaml_loc
+from confluid.fluid import Fluid, Reference, Target, _at_yaml_loc, dotted_positions_of
 from confluid.introspect import _slots_cache, baked_init_attrs, init_callable, init_source_available, slot_names, slots
 from confluid.merger import expand_dotted_mapping
 from confluid.registry import resolve_class
@@ -1436,6 +1436,18 @@ def _scan_view(
     accepts_value = receiver.accepts_value
     blocked = receiver.blocked
     apply = sink.apply
+    # A kwarg a top-level DOTTED line delivered competes at the LINE's position, per
+    # key (BC4, option B): the stamp names the sibling keys the line out-positioned,
+    # and a cascade delivery arriving VIA one of them is skipped — one arriving via a
+    # later key still wins. `via` is the delivering TOP-LEVEL key: the bare key
+    # itself, a block's name, or the rider's own `'**'` — the same identity
+    # `_cascade_scalar_positions` orders by.
+    dotted_stamp = dotted_positions_of(self_obj) if self_obj is not None else {}
+
+    def _dotted_protected(kwarg: str, via: str) -> bool:
+        beats = dotted_stamp.get(kwarg)
+        return beats is not None and via in beats
+
     route = sink.route
     unknown = sink.unknown
     dict_at_slot = sink.dict_at_slot
@@ -1454,7 +1466,7 @@ def _scan_view(
         pos = current_pos
         return frozenset(k for k, i in _positions.items() if i < pos)
 
-    def _consume(block: Dict[str, Any], *, origin: str, delivery: _Delivery) -> None:
+    def _consume(block: Dict[str, Any], *, origin: str, delivery: _Delivery, via: str = "") -> None:
         """Unroll a block addressed to this node — the ONE branch ladder.
 
         ``delivery`` names how the block reached this node (see
@@ -1469,7 +1481,7 @@ def _scan_view(
         floating = delivery == "rider"
         for bk, bv in _expand_block_keys(block).items():
             if bk == "**" and isinstance(bv, dict):
-                _consume(bv, origin=_ORIGIN_RIDER, delivery="rider")
+                _consume(bv, origin=_ORIGIN_RIDER, delivery="rider", via="**")
                 route("**", bv)
                 continue
             if bk == "*" and isinstance(bv, dict):
@@ -1478,7 +1490,7 @@ def _scan_view(
             if isinstance(bv, dict) and bk in receiver.inner_names and delivery in ("rider", "addressed"):
                 # Addressed to me again (``Cls.inst.attr`` form, or a named
                 # match while floating under '**') — unroll inline, ungated.
-                _consume(bv, origin=f"block {bk!r}", delivery="addressed")
+                _consume(bv, origin=f"block {bk!r}", delivery="addressed", via=via)
                 continue
             if isinstance(bv, dict) and not accepts_value(bk, bv):
                 # Not a dict-typed VALUE. Either a slot content aimed at a
@@ -1492,11 +1504,17 @@ def _scan_view(
                     route(bk, bv)
                 continue
             if gated:
-                if blocked is not None and bk not in blocked and accepts_value(bk, bv):
+                if (
+                    blocked is not None
+                    and bk not in blocked
+                    and accepts_value(bk, bv)
+                    and not _dotted_protected(bk, via)
+                ):
                     apply(bk, bv, origin, _KeyScope.EXACT, False, True, current_pos)
                 continue
             if accepts_value(bk, bv):
-                apply(bk, bv, origin, _KeyScope.EXACT, False, False, current_pos)
+                if not _dotted_protected(bk, via):
+                    apply(bk, bv, origin, _KeyScope.EXACT, False, False, current_pos)
             else:
                 unknown(bk, bv, origin=origin)
 
@@ -1504,7 +1522,7 @@ def _scan_view(
         """The receiver's own kwargs — addressed to me by definition, thus EXACT."""
         for k, v in _expand_block_keys(kwargs).items():
             if k == "**" and isinstance(v, dict):
-                _consume(v, origin=_ORIGIN_RIDER, delivery="rider")
+                _consume(v, origin=_ORIGIN_RIDER, delivery="rider", via="**")
                 route("**", v)
             elif k == "*" and isinstance(v, dict):
                 route("*", v)
@@ -1552,19 +1570,19 @@ def _scan_view(
             _consume({k: v}, origin="addressed", delivery="addressed")
             continue
         if k == "**" and isinstance(v, dict):
-            _consume(v, origin=_ORIGIN_RIDER, delivery="rider")
+            _consume(v, origin=_ORIGIN_RIDER, delivery="rider", via="**")
             continue
         if k == "*" and isinstance(v, dict):
-            _consume(v, origin=_ORIGIN_GLOB_ONE, delivery="glob_one")
+            _consume(v, origin=_ORIGIN_GLOB_ONE, delivery="glob_one", via="*")
             continue
         if (k in block_names or k == instance_name) and isinstance(v, dict):
             sink.matched(k)
-            _consume(v, origin=f"block {k!r}", delivery="addressed")
+            _consume(v, origin=f"block {k!r}", delivery="addressed", via=k)
             continue
         if scope is _KeyScope.STRICT:
             continue  # routing block for a sibling name — not mine
         # Plain broadcast — the only path the NoBroadcast opt-out gates.
-        if blocked is not None and k not in blocked and accepts_value(k, v):
+        if blocked is not None and k not in blocked and accepts_value(k, v) and not _dotted_protected(k, k):
             apply(k, v, "bare", _KeyScope.BARE, False, True, pos)
 
     if not self_unrolled and own_kwargs is not None:

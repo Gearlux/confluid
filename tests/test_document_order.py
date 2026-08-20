@@ -406,3 +406,60 @@ def test_a_key_restated_inside_a_group_lands_at_the_GROUPS_later_position() -> N
     assert load(group)["group"]["node"].power == 50
     assert load("power: 99\n" + group)["group"]["node"].power == 50, "the earlier root key flipped the contest"
     assert load(group + "power: 99\n")["group"]["node"].power == 99, "a LATER root key still wins (con)"
+
+
+# --------------------------------------------------------------------------- #
+# A dotted key landing DIRECTLY on a marker's kwarg competes at the DOTTED
+# LINE's position — per key (BUGS-2026-08-19 BC4, user ruling 2026-08-19,
+# "option B").
+#
+# Pass 6 folds `t.lr: 9.0` into the marker's kwargs, which used to move the
+# value to the MARKER's line: written as the last line of the file it lost to
+# a bare `lr: 5.0` between (`explain` even said "own 9.0 — beaten, earlier").
+# The fold now stamps the marker (kwarg -> the sibling keys the dotted line
+# out-positioned) and the scanner's sink consults the stamp: a cascade
+# delivery the dotted line out-positioned is skipped; one written after it
+# still wins. The marker's OTHER kwargs keep the marker's position — the
+# block spelling and the dotted spelling of one override agree (the momentum
+# case), which is what option B was chosen for over moving the whole marker.
+# --------------------------------------------------------------------------- #
+
+_BC4_NODE = "t: !class:OrderedEngine\n  power: 1\n  fuel: diesel\n"
+
+
+@pytest.mark.parametrize(
+    "label, document, expected_power",
+    [
+        ("dotted LAST beats a bare between", _BC4_NODE + "power: 99\nt.power: 50\n", 50),
+        ("bare LAST still wins (con)", _BC4_NODE + "t.power: 50\npower: 99\n", 99),
+        ("dotted LAST beats a class block between", _BC4_NODE + "OrderedEngine: {power: 99}\nt.power: 50\n", 50),
+        ("dotted LAST beats a rider between", _BC4_NODE + "'**': {power: 99}\nt.power: 50\n", 50),
+        ("bare BEFORE the marker never mattered (con)", "power: 99\n" + _BC4_NODE + "t.power: 50\n", 50),
+    ],
+)
+def test_a_dotted_marker_kwarg_competes_at_the_dotted_lines_position(
+    label: str, document: str, expected_power: int
+) -> None:
+    assert load(document)["t"].power == expected_power, label
+
+
+def test_the_dotted_line_moves_ONE_kwarg_not_the_whole_marker() -> None:
+    """The momentum case — the reason option B was chosen: the marker's other
+    kwargs keep the marker's position, so the dotted spelling agrees with the
+    block spelling (`t: {power: 50}` via instance name) on every key."""
+    document = _BC4_NODE + "fuel: electric\nt.power: 50\n"
+    engine = load(document)["t"]
+    assert engine.power == 50
+    assert engine.fuel == "electric", "the untouched kwarg must NOT move to the dotted line"
+
+
+def test_a_dotted_kwarg_through_TWO_markers_competes_at_its_line_too() -> None:
+    document = (
+        "car: !class:OrderedCar\n" "  spare: !class:OrderedEngine {power: 1}\n" "power: 99\n" "car.spare.power: 50\n"
+    )
+    assert load(document)["car"].spare.power == 50
+
+
+def test_the_dotted_position_survives_the_document_stage() -> None:
+    document = _BC4_NODE + "power: 99\nt.power: 50\n"
+    assert load(load(document, until="document"))["t"].power == 50

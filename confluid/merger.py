@@ -1,5 +1,5 @@
 from copy import copy
-from typing import Any, Callable, Dict, cast
+from typing import Any, Callable, Dict, FrozenSet, cast
 
 from confluid.fluid import Fluid, ScopeBlock, Target
 
@@ -151,6 +151,7 @@ def expand_dotted_mapping(
     copy_value: Callable[[Any], Any],
     merge_leaf: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
     descend: Callable[[Dict[str, Any], str, Dict[str, Any]], Dict[str, Any]],
+    stamp_positions: bool = False,
 ) -> Dict[str, Any]:
     """The ONE dotted-key expansion grammar; policy hooks carry copy semantics.
 
@@ -203,11 +204,14 @@ def expand_dotted_mapping(
             continue
         parts = key.split(".")
         cur: Dict[str, Any] = result
+        owner: Any = None  # the Fluid whose kwargs `cur` is, when it is one
         for part in parts[:-1]:
             nxt = cur.get(part)
             if isinstance(nxt, Fluid):
+                owner = nxt
                 cur = nxt.kwargs
                 continue
+            owner = None
             if isinstance(nxt, dict):
                 cur = descend(cur, part, nxt)
                 continue
@@ -220,6 +224,20 @@ def expand_dotted_mapping(
             cur[last] = merge_leaf(prev, value)
         else:
             cur[last] = copy_value(value)
+        if stamp_positions and owner is not None and cur is owner.kwargs:
+            # The value landed DIRECTLY in a marker's kwargs, which moves it to the
+            # MARKER's document position — the dotted line's own position would be
+            # silently lost (`t.lr: 9.0` as the last line lost to a bare `lr:` between
+            # it and the marker — BUGS-2026-08-19 BC4). Stamp the kwarg with the keys
+            # written BEFORE the line (`result`'s keys at this point in the one ordered
+            # pass): the scanner skips a cascade delivery the line out-positioned, and
+            # `dump()` re-emits the line after those keys so an emitted artefact
+            # replays identically. A dotted path ending in a PLAIN dict (a fresh head,
+            # a dict-valued slot) is untouched — those contests already order by the
+            # existing machinery and are pinned.
+            stamps: Dict[str, FrozenSet[str]] = getattr(owner, "_dotted_out_positioned", None) or {}
+            stamps[last] = frozenset(k for k in result if isinstance(k, str))
+            owner._dotted_out_positioned = stamps
     return result
 
 
@@ -249,4 +267,5 @@ def expand_dotted_keys(data: Dict[str, Any]) -> Dict[str, Any]:
         copy_value=_preserve_identity_copy,
         merge_leaf=deep_merge,
         descend=_descend_in_place,
+        stamp_positions=True,  # document top level — dotted lines keep their position (BC4)
     )

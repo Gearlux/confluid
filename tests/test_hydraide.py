@@ -277,3 +277,23 @@ def test_reference_kwargs_are_folded_into_the_referent_in_the_emitted_document()
     assert reloaded["use"] is reloaded["proto"]
     assert (reloaded["proto"].v, reloaded["proto"].k) == (1, 5)
     assert emit(out) == out
+
+
+def test_a_dotted_kwarg_position_survives_the_emit_round_trip() -> None:
+    """BC4 option B: the position lives in a marker stamp plain YAML cannot
+    carry, so `dump()` re-emits the dotted line after the keys it beat — the
+    emitted artefact replays to the same answer, like a class block does."""
+    from confluid import configurable, load
+    from confluid.hydraide import emit
+
+    @configurable
+    class _Motor:
+        def __init__(self, power: int = 0) -> None:
+            self.power = power
+
+    text = "t: !class:_Motor\n  power: 1\npower: 99\nt.power: 50\n"
+    assert load(text)["t"].power == 50
+    out = emit(text)
+    assert load(out)["t"].power == 50, f"the emitted artefact replays differently:\n{out}"
+    assert out.index("power: 99") < out.index("t.power"), "the dotted line sits after the key it beat"
+    assert emit(out) == out, "emit is idempotent"

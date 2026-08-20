@@ -104,6 +104,26 @@ def late_bare_keys_of(obj: Any) -> Dict[str, FrozenSet[str]]:
     return late or {}
 
 
+def dotted_positions_of(obj: Any) -> Dict[str, FrozenSet[str]]:
+    """Per kwarg of ``obj`` delivered by a top-level DOTTED line, the sibling keys that line beat.
+
+    Written by pass 6 (``merger.expand_dotted_mapping``, stamping enabled for the
+    document's top level) when a dotted key lands DIRECTLY in a marker's kwargs:
+    ``t.lr: 9.0`` folds the value into ``t``'s kwargs — which would silently move
+    it to the MARKER's document position — so the fold records the keys written
+    BEFORE the dotted line, and the scanner skips a cascade delivery the line
+    out-positioned (BUGS-2026-08-19 BC4, user ruling: per-key position, option B).
+    ``dump()`` re-emits a stamped kwarg as a dotted line after the keys it beat,
+    which is what keeps ``load(emit(x)) == load(x)`` — plain YAML cannot carry the
+    stamp, so the position is put back into document ORDER, the one thing it can.
+
+    Empty for anything that is not a marker and for a marker with no dotted
+    delivery — the overwhelmingly common case, so this stays allocation-free.
+    """
+    stamped: Optional[Dict[str, FrozenSet[str]]] = getattr(obj, "_dotted_out_positioned", None)
+    return stamped or {}
+
+
 def format_yaml_loc(obj: Any) -> str:
     """Render a Fluid's YAML source location as ``"path/to.yaml:line:col"`` or ``""``.
 

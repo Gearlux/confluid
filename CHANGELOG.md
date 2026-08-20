@@ -139,6 +139,19 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A dotted key landing directly on a marker's kwarg competes at the dotted line's position**
+  (BUGS-2026-08-19 BC4; user ruling 2026-08-19, per-key "option B"). Pass 6 folded `t.lr: 9.0`
+  into the marker's kwargs, silently moving the value to the MARKER's line: written as the last
+  line it lost to a bare `lr: 5.0` between (`explain` reported "own 9.0 — beaten, earlier"), and
+  to a class block or `'**'` rider the same way, while the instance-block spelling of the same
+  override won. The fold now stamps the marker (kwarg → the sibling keys the line out-positioned),
+  the scanner skips a cascade delivery arriving via an out-positioned key (one written after the
+  line still wins), and `dump()` re-emits a stamped kwarg as a dotted line after the keys it beat —
+  so `load(emit(x)) == load(x)` and `emit(emit(x)) == emit(x)` hold. Per key by ruling: the
+  marker's other kwargs keep the marker's position, so the dotted and block spellings of one
+  override agree on every key. Pinned: the BC4 group in `tests/test_document_order.py`,
+  `tests/test_hydraide.py`.
+
 - **A grouping dict is transparent for position, not only for nesting** (BUGS-2026-08-19
   BC2/BC9, 2026-08-19). Pass 7's dict branch appended a group's entries after every inherited
   key, so a marker inside `group:` held an unbeatable position — its own kwargs beat a LATER
