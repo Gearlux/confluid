@@ -139,6 +139,23 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Four construction-time silences and one eager build** (BUGS-2026-08-19
+  ENG-3/ENG-7/ENG-11/ENG-16/ENG-17, 2026-08-19). Measured before → after:
+  a typo'd key on an UNREGISTERED target (`_target_: torch.optim.Adam` shape) vanished with an
+  empty report → still not applied (unregistered targets take no post-init attributes) but a
+  located WARNING plus an `unknown-attribute` report record; a body slot deferred by ANNOTATION
+  alone (`self.optimizer: Partial[Optim] = None`) built its `_target_:` value eagerly and crashed
+  the runtime-injection constructor → stays a `PartialClass` (both deferral signals gate the
+  promotion), and the tuned marker of a `Partial[T]` slot no longer builds because ONE later bare
+  key exists; the promoted marker keeps `_yaml_loc` and the promotion warning names the line
+  (ENG-11); a `Reference` kwarg whose REFERENT failed to construct was silently left in the slot
+  (`except ValueError` also caught `ConfigurationError`) → the referent's own error propagates,
+  only a genuine `ReferenceResolutionError` defers; a ctor-DEFAULT marker
+  (`engine: Engine = Target(Engine)`) was ONE object through the id()-keyed memo, so two Cars in
+  one pass shared one Engine → one child per host (the default is copied per instance before
+  resolving; `!ref:` stays the one sharing spelling, pinned). Pinned across
+  `tests/test_instantiate.py`, `tests/test_deferred_broadcasting.py`, `tests/test_ref_identity.py`.
+
 - **The registry refuses what it cannot name or bind, derives `category` at its one authority,
   enumerates safely, and stays interruptible** (BUGS-2026-08-19 R1/R2/R3/R4/R5/R6/R9/R10,
   2026-08-19). Measured before: `@configurable("Named")` and `register(functools.partial(...))`

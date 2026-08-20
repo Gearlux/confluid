@@ -417,6 +417,12 @@ val_set: !class:Stream
 Independence has exactly one spelling: write the marker again (`c` above) — a
 second marker says "a second object" in plain YAML.
 
+A marker used as a **constructor default** (`def __init__(self, engine=Target(Engine))`)
+is a *recipe*, not a shared node: Python evaluates the default once, but each host
+built in a pass gets its **own** child from it — exactly as the body-slot spelling
+(`self.engine = Target(Engine)`) and the same code outside a pass behave. To share
+one instance across hosts, use `!ref:`.
+
 **Kwargs on a reference tune the one shared object.** A reference written with a
 body — `!ref:proto` followed by `k: 5`, the mapping form `{_ref_: proto, k: 5}`, or
 a dotted path that walks through a reference (`a.optimizer.lr: 9.0` where

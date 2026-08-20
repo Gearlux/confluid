@@ -401,3 +401,59 @@ def test_reference_kwargs_survive_the_document_stage_idempotently() -> None:
     once = load(text)
     twice = load(load(text, until="document"))
     assert (once["proto"].v, once["proto"].k) == (twice["proto"].v, twice["proto"].k) == (1, 5)
+
+
+# ---------------------------------------------------------------------------
+# ENG-3 (BUGS-2026-08-19) — a referenced node that FAILS to construct fails the
+# load; only a genuinely unresolvable reference stays deferred.
+# ---------------------------------------------------------------------------
+
+
+def test_a_referenced_nodes_constructor_failure_propagates() -> None:
+    """`except ValueError` swallowed the referent's own crash (ConfigurationError
+    IS a ValueError) and silently left the Reference in the slot."""
+    from confluid import Target, active_context, flow
+    from confluid.fluid import Reference
+
+    class _BadCtor:
+        def __init__(self, x: int = 0) -> None:
+            raise ValueError("disk is on fire")
+
+    @configurable
+    class _Holder:
+        def __init__(self, child: Any = None) -> None:
+            self.child = child
+
+    with active_context({"a": Target(_BadCtor)}):
+        with pytest.raises(ValueError, match="disk is on fire"):
+            flow(Target(_Holder, child=Reference("a")))
+
+
+def test_a_reference_to_an_UNKNOWN_class_propagates() -> None:
+    from confluid import Target, active_context, flow
+    from confluid.exceptions import UnknownClassError
+    from confluid.fluid import Reference
+
+    @configurable
+    class _Holder2:
+        def __init__(self, child: Any = None) -> None:
+            self.child = child
+
+    with active_context({"a": Target("no.such.module.Cls")}):
+        with pytest.raises(UnknownClassError):
+            flow(Target(_Holder2, child=Reference("a")))
+
+
+def test_a_genuinely_unresolvable_reference_is_still_kept_deferred() -> None:
+    """The con: the narrow catch — a miss stays a Reference for a later flow."""
+    from confluid import Target, active_context, flow
+    from confluid.fluid import Reference
+
+    @configurable
+    class _Holder3:
+        def __init__(self, child: Any = None) -> None:
+            self.child = child
+
+    with active_context({"unrelated": 1}):
+        host = flow(Target(_Holder3, child=Reference("missing_key")))
+    assert isinstance(host.child, Reference)

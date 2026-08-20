@@ -959,8 +959,13 @@ def _resolve_kwarg_value(
     if isinstance(v, Reference) and context:
         try:
             return flow(v)
-        except ValueError:
-            return v  # Unresolvable reference — keep deferred
+        except ReferenceResolutionError:
+            # Genuinely unresolvable HERE — keep deferred for a later flow. The catch
+            # is NARROW on purpose: ``ConfigurationError`` dual-inherits ``ValueError``,
+            # so a broad ``except ValueError`` also swallowed the REFERENT's own
+            # constructor crash and an UnknownClassError, silently leaving the
+            # Reference in the slot (BUGS-2026-08-19 ENG-3).
+            return v
     if isinstance(v, Fluid):
         return v  # Other Fluid types stay as-is
     if isinstance(v, list):
@@ -1177,6 +1182,23 @@ def _apply_post_init_attrs(
     round-trip.
     """
     if not getattr(target, "__confluid_configurable__", False):
+        # An UNREGISTERED target does not participate in the config graph (registry
+        # mandate), so nothing is applied — but the drop used to be SILENT: a typo'd
+        # key on a `_target_: torch.optim.Adam` marker vanished with an empty report
+        # while the same typo on a @configurable class warned (BUGS-2026-08-19 ENG-7).
+        # Say so, in the report's vocabulary; register() the class to accept the key.
+        label = getattr(target, "__name__", str(target))
+        report = _ENGINE_STATE.get().report
+        for k in merged:
+            if _is_glob_key(k) or k in ctor:
+                continue
+            logger.warning(
+                f"{label} has no parameter {k!r}{_at_yaml_loc(obj)} — DROPPED: the target is not "
+                f"@configurable/registered, so post-init attributes are not applied. register() the "
+                f"class to accept extra keys, or remove the key."
+            )
+            if report is not None:
+                report.record_failed(k, label, "unknown-attribute")
         return
     extra_keys: list[str] = []
     for k, v in merged.items():
@@ -1205,15 +1227,25 @@ def _apply_post_init_attrs(
             # ``'S' object has no attribute '__dict__'`` from a line the author never
             # wrote, which points at the engine instead of at their config.
             existing = getattr(instance, "__dict__", {}).get(k)
+            slot_declared_deferred = isinstance(existing, PartialClass) or k in partial_param_names(target)
             if isinstance(v, Fluid) and not getattr(v, "partial", False):
-                if isinstance(v, Target) and isinstance(existing, PartialClass):
+                if isinstance(v, Target) and slot_declared_deferred:
+                    # BOTH deferral signals gate the promotion — the PartialClass VALUE
+                    # and the Partial[T] ANNOTATION (`self.optimizer: Partial[Optim] = None`
+                    # used to be built eagerly here, crashing a runtime-injection ctor —
+                    # BUGS-2026-08-19 ENG-17). The promoted marker KEEPS the original's
+                    # location and merge bookkeeping: a fresh PartialClass dropped them,
+                    # so the eventual flow() error named no file:line (ENG-11).
                     logger.warning(
                         f"Config slot {k!r} on {getattr(target, '__name__', target)} received an "
-                        "eager '_target_:' value but the slot is a deferred runtime-injection "
-                        "slot; deferring it. Add '_partial_: true' to the marker to make the "
-                        "intent explicit and silence this."
+                        f"eager '_target_:' value{_at_yaml_loc(v)} but the slot is a deferred "
+                        "runtime-injection slot; deferring it. Add '_partial_: true' to the marker "
+                        "to make the intent explicit and silence this."
                     )
-                    v = PartialClass(v.target, **v.kwargs)
+                    promoted = PartialClass(v.target)
+                    promoted.__dict__.update({dk: dv for dk, dv in v.__dict__.items() if dk != "partial"})
+                    promoted.partial = True
+                    v = promoted
                 else:
                     v = flow(v)
             elif isinstance(v, dict) and dict_at_slot_kind(existing) == "configurable":
@@ -1252,7 +1284,11 @@ def _apply_post_init_attrs(
                 late = late_bare_keys_of(obj).get(k, frozenset())
                 pool = {bk: bv for bk, bv in (broadcast_ctx or {}).items() if bk in late}
                 if pool:
-                    tuned = _resolve_kwarg_value(tuned, context=context, broadcast_ctx=pool)
+                    # The declared deferral rides along: without it one later bare key
+                    # was enough to BUILD a Partial[T] slot's tuned marker (ENG-17).
+                    tuned = _resolve_kwarg_value(
+                        tuned, context=context, broadcast_ctx=pool, slot_is_partial=slot_declared_deferred
+                    )
                 # Settled either way now — a later bare key has been applied, an earlier
                 # one has lost. Mark it so the broadcast pass below does not re-run the
                 # contest and hand the win to whichever key it happens to visit.
@@ -1391,13 +1427,27 @@ def _broadcast_onto_instance(
     waiting for (caught downstream by a CLI's flow-mode test, not here).
     """
     seen: set[str] = set()
-    partial_slots = partial_param_names(type(instance))
+    cls = type(instance)
+    partial_slots = partial_param_names(cls)
+    class_defaults = {s.name: s.default for s in slots(cls) if isinstance(s.default, Fluid)}
     instance_vars = getattr(instance, "__dict__", None)
     for attr_name, attr_val in list(instance_vars.items()) if instance_vars else []:
         if attr_name.startswith("__confluid_"):
             continue
         if not isinstance(attr_val, Fluid):
             continue
+        if class_defaults.get(attr_name) is attr_val:
+            # A ctor-DEFAULT marker is ONE object, evaluated at class definition and
+            # reached from every instance — the id()-keyed instance memo then handed
+            # every host in one pass the FIRST host's built child (two Cars, one
+            # Engine — BUGS-2026-08-19 ENG-16), where the same code outside a pass
+            # and the body-slot spelling both build one per host. A default is a
+            # RECIPE, not a shared node: copy it per instance so the memo keys a
+            # per-host object (the memo write pins it — record 16). Sharing keeps its
+            # one spelling, `!ref:`.
+            attr_val = copy(attr_val)
+            attr_val.kwargs = dict(attr_val.kwargs)
+            setattr(instance, attr_name, attr_val)
         resolved = _resolve_kwarg_value(
             attr_val, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=attr_name in partial_slots
         )
