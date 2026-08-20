@@ -118,7 +118,11 @@ Three limits worth knowing:
 
   On the load path the own-kwarg form (`{_target_: Node, pathh: /x}`) **still
   applies** the value — that branch is the post-init attribute mechanism, so the
-  warning makes it audible rather than removing it. A class that wants the same
+  warning makes it audible rather than removing it. On an **unregistered** target
+  (`_target_: torch.optim.Adam` with a typo'd key) nothing is applied — such a
+  class does not take post-init attributes — but the drop warns with the location
+  and records `"unknown-attribute"` all the same; `register()` the class to accept
+  extra keys. A class that wants the same
   key REFUSED instead opts in with `@configurable(strict_attrs=True)` — see
   [Closing the Config Surface](strict-attrs.md). Three things are never
   reported: a `**kwargs` class (no accept-list — it accepts everything by design),

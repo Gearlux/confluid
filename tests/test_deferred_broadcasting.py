@@ -289,3 +289,81 @@ def test_broadcast_reaches_body_assigned_class_attribute() -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# ---------------------------------------------------------------------------
+# ENG-17 / ENG-11 (BUGS-2026-08-19) — the post-init path honours BOTH deferral
+# signals, and the promotion keeps the marker's location.
+# ---------------------------------------------------------------------------
+
+
+def _write_eng17_module(tmp_path: Any, monkeypatch: Any) -> Any:
+    import textwrap
+
+    (tmp_path / "eng17_mod.py").write_text(
+        textwrap.dedent(
+            """
+            from confluid import Target, configurable
+            from confluid.partial import Partial
+
+
+            class Optim:
+                def __init__(self, params=None, lr: float = 0.1, momentum: float = 0.0):
+                    if params is None:
+                        raise ValueError("Optim needs params (runtime injection)")
+                    self.lr = lr
+
+
+            @configurable
+            class AnnotatedOnly:
+                def __init__(self, x: int = 1):
+                    self.x = x
+                    self.optimizer: Partial[Optim] = None
+
+
+            @configurable
+            class AnnotatedTarget:
+                def __init__(self, x: int = 1):
+                    self.x = x
+                    self.optimizer: Partial[Optim] = Target(Optim, lr=0.1)
+            """
+        )
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    import importlib
+
+    return importlib.import_module("eng17_mod")
+
+
+def test_a_slot_deferred_by_ANNOTATION_alone_keeps_a_target_value_unbuilt(tmp_path: Any, monkeypatch: Any) -> None:
+    """`self.optimizer: Partial[Optim] = None` — the annotation is a declared
+    deferral signal (docs/targets.md: "a body slot is deferred if EITHER signal
+    says so"); the post-init path consulted only the VALUE and built the marker,
+    crashing a runtime-injection constructor."""
+    _write_eng17_module(tmp_path, monkeypatch)
+    host = load("t: {_target_: eng17_mod.AnnotatedOnly, optimizer: {_target_: eng17_mod.Optim, lr: 0.5}}")["t"]
+    assert isinstance(host.optimizer, PartialClass), repr(host.optimizer)
+    assert host.optimizer.kwargs == {"lr": 0.5}
+    assert host.optimizer._yaml_loc is not None, "the promoted marker keeps the document location (ENG-11)"
+    built = flow(host.optimizer, params=[1, 2])
+    assert built.lr == 0.5
+
+
+def test_a_tuned_deferred_slot_with_a_LATER_bare_key_stays_a_marker(tmp_path: Any, monkeypatch: Any) -> None:
+    """The tune path re-resolved the slot with no knowledge of the declaration —
+    one later bare key was enough to build the Partial[T] slot eagerly."""
+    _write_eng17_module(tmp_path, monkeypatch)
+    host = load("t: {_target_: eng17_mod.AnnotatedTarget, optimizer: {lr: 0.5}}\nmomentum: 0.9\n")["t"]
+    assert isinstance(host.optimizer, Target), repr(host.optimizer)
+    assert host.optimizer.kwargs == {"lr": 0.5, "momentum": 0.9}
+    assert flow(host.optimizer, params=[1]).lr == 0.5
+
+
+def test_an_EXPLICITLY_partial_value_still_lands_untouched(tmp_path: Any, monkeypatch: Any) -> None:
+    """The con: the already-working spelling (`_partial_: true`) is unchanged."""
+    _write_eng17_module(tmp_path, monkeypatch)
+    host = load(
+        "t: {_target_: eng17_mod.AnnotatedOnly, optimizer: {_target_: eng17_mod.Optim, _partial_: true, lr: 0.7}}"
+    )["t"]
+    assert isinstance(host.optimizer, PartialClass)
+    assert host.optimizer.kwargs == {"lr": 0.7}

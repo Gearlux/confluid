@@ -228,3 +228,85 @@ def test_construction_does_not_rerun_the_precedence_rule() -> None:
     assert marker.kwargs["lr"] == 0.9
     assert flow(marker).lr == 0.9
     assert load(marker, context={"lr": 0.1}).lr == 0.9  # a second broadcast would say 0.1
+
+
+# ---------------------------------------------------------------------------
+# ENG-7 / ENG-16 (BUGS-2026-08-19) — construction-time behaviour of markers on
+# unregistered targets and of ctor-DEFAULT markers.
+# ---------------------------------------------------------------------------
+
+
+class _ThirdParty:
+    """Unregistered, not @configurable — the `torch.optim.Adam` shape."""
+
+    def __init__(self, lr: float = 0.1, weight_decay: float = 0.0) -> None:
+        self.lr = lr
+        self.weight_decay = weight_decay
+
+
+def test_a_typo_on_an_unregistered_target_is_dropped_AUDIBLY(monkeypatch: Any) -> None:
+    """ENG-7 — the drop stays (an unregistered target does not participate in the
+    config graph), the silence goes: a warning names the key and location, and the
+    report records the failure. The same typo on a @configurable class already
+    warned and applied (B1)."""
+    from types import SimpleNamespace
+
+    import confluid.engine as engine_mod
+    from confluid import collect_report
+
+    records: list = []
+    monkeypatch.setattr(
+        engine_mod, "logger", SimpleNamespace(warning=records.append, debug=lambda m: None, trace=lambda m: None)
+    )
+    with collect_report() as rep:
+        built = load({"tp": Target(_ThirdParty, **{"lr": 0.5, "weight_decai": 0.01})})
+    assert built["tp"].lr == 0.5
+    assert not hasattr(built["tp"], "weight_decai"), "nothing is applied to an unregistered target"
+    assert any("weight_decai" in r and "DROPPED" in r for r in records), records
+    assert [f.key for f in rep.failed] == ["weight_decai"]
+
+
+def test_the_unregistered_drop_warning_names_the_documents_location(monkeypatch: Any) -> None:
+    """The document spelling of the same typo: the marker carries `_yaml_loc`,
+    so the warning names file:line:col."""
+    from types import SimpleNamespace
+
+    import confluid.engine as engine_mod
+
+    records: list = []
+    monkeypatch.setattr(
+        engine_mod, "logger", SimpleNamespace(warning=records.append, debug=lambda m: None, trace=lambda m: None)
+    )
+    built = load("w: {_target_: textwrap.TextWrapper, width: 42, widht: 9}")
+    assert built["w"].width == 42
+    assert not hasattr(built["w"], "widht") or "widht" not in vars(built["w"])
+    assert any("widht" in r and "DROPPED" in r and ":1:" in r for r in records), records
+
+
+@configurable
+class _DefaultEngine:
+    def __init__(self, power: int = 1) -> None:
+        self.power = power
+
+
+@configurable
+class _DefaultCar:
+    def __init__(self, engine: Any = Target(_DefaultEngine)) -> None:
+        self.engine = engine
+
+
+def test_a_ctor_DEFAULT_marker_builds_one_child_per_host_in_one_pass() -> None:
+    """ENG-16 — the default is ONE object evaluated at class definition; the
+    id()-keyed memo handed every host in one pass the FIRST host's child. A
+    default is a recipe: one Engine per Car, matching the body-slot spelling
+    and the same code outside a pass."""
+    built = load("a: {_target_: _DefaultCar}\nb: {_target_: _DefaultCar}\n")
+    assert isinstance(built["a"].engine, _DefaultEngine)
+    assert isinstance(built["b"].engine, _DefaultEngine)
+    assert built["a"].engine is not built["b"].engine
+
+
+def test_the_ref_sharing_spelling_still_shares_ONE_instance() -> None:
+    """The con for ENG-16: sharing has its own spelling and it is untouched."""
+    built = load("proto: {_target_: _DefaultCar}\nuse: {_ref_: proto}\n")
+    assert built["use"] is built["proto"]

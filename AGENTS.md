@@ -546,9 +546,32 @@ trailing `()` is inert); `!lazy:` / `_partial_: true` is the only spelling that 
 
 **Rule.** A slot the RECEIVING class declared deferred (`Partial[T]`, or a body slot holding
 `PartialClass(...)`) keeps its value unbuilt whatever the value says — the receiver's declared
-contract, read via `partial_param_names(target)` in `_flow_target`. That is a slot declaration, not
-parent-context guessing: static, local to the class, and readable. The ONE promotion site (marker →
-`PartialClass`, with the warning) stays `_apply_post_init_attrs`.
+contract, read via `partial_param_names(target)` in `_flow_target` AND on the post-init path
+(2026-08-19, BUGS-2026-08-19 ENG-17: the post-init promotion consulted only the VALUE signal, so
+an annotation-only slot — `self.optimizer: Partial[Optim] = None` — built its `_target_:` value
+eagerly, and the slot-tune re-resolve built a tuned `Partial[T]` marker whenever ONE later bare
+key existed). That is a slot declaration, not parent-context guessing: static, local to the
+class, and readable. The ONE promotion site (marker → `PartialClass`, with the warning) stays
+`_apply_post_init_attrs` — and the promoted marker KEEPS the original's `_yaml_loc` and merge
+bookkeeping, so a later `flow()` failure still names the document line (ENG-11); the warning
+names it too.
+
+**Rule — a ctor-DEFAULT marker builds ONE child per host (2026-08-19, ENG-16).** A default is
+evaluated once at class definition, so the id()-keyed instance memo handed every host in one pass
+the FIRST host's built child (two Cars, one Engine) — where the body-slot spelling and the same
+code outside a pass both build per host. `_broadcast_onto_instance` copies a marker whose slot
+DEFAULT it is (identity against `slots()`' defaults) before resolving, so the memo keys a
+per-host object. Sharing keeps its one spelling, `!ref:` — pinned as the con.
+
+**Rule — a typo'd key on an UNREGISTERED target is DROPPED, audibly (2026-08-19, ENG-7).**
+An unregistered target does not participate in the config graph, so nothing is applied — but the
+drop warns (located) and records `unknown-attribute`, instead of vanishing with an empty report
+while the same typo on a `@configurable` class warned. `register()` the class to accept extra keys.
+
+**Rule — the reference-kwarg deferral catch is `ReferenceResolutionError`, never `ValueError`
+(2026-08-19, ENG-3).** `ConfigurationError` dual-inherits `ValueError`, so the broad catch also
+swallowed the REFERENT's own constructor crash and `UnknownClassError`, silently leaving the
+`Reference` in the slot. A genuine miss still defers; everything else propagates.
 
 **Rule.** Never reintroduce a third mode or a context-dependent build rule. The deleted middle state
 (`Class`) was justified as "so broadcasting can still reach it", which is not a reason: broadcasting
