@@ -34,6 +34,12 @@ register(keras.losses.CategoricalCrossentropy,
          task="classification", role="loss", framework="keras")
 ```
 
+`task` + `role` also derive `category = f"{task}_{role}"` when no explicit
+`category=` is given — on every registration that (re)states either half, so a
+subclass re-tagging `role="metric"` leaves the loss picker and joins the metric
+one, and `register_class(task=…, role=…)` derives exactly like the decorator.
+An explicit `category=` argument always wins.
+
 `task` / `role` say what a class is **for**; neither says a torch loss cannot be
 handed to a Keras trainer. Without the axis, a picker asked for "a classification
 loss" offers both and the mismatch surfaces as a type error far from its cause.

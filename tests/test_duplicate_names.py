@@ -220,6 +220,25 @@ def test_lookup_by_class_object_is_identity_not_name() -> None:
     assert reg.get_class(second) is second
 
 
+def test_lookup_by_an_unregistered_subclass_object_is_NOT_the_parent() -> None:
+    """R4 (BUGS-2026-08-19) — the read-side twin of the own-mark rule the write
+    side has had all along: a subclass inherits `__confluid_name__`, so the name
+    fallback answered with the PARENT class for a class that was never registered."""
+
+    @configurable
+    class R4Base:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    class R4Sub(R4Base):
+        pass
+
+    reg = get_registry()
+    assert reg.key_for(R4Sub) is None, "the subclass is unregistered"
+    assert reg.get_class(R4Sub) is None, "an unregistered class must not resolve to its parent"
+    assert reg.get_class(R4Base) is R4Base
+
+
 def test_lookup_by_class_object_survives_a_name_override() -> None:
     @configurable(name="Renamed")
     class Original:

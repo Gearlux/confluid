@@ -29,7 +29,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Un
 
 from loggair import get_logger
 
-from confluid.exceptions import AmbiguousClassError, ConfigurationError
+from confluid.exceptions import AmbiguousClassError, ConfigurableDefinitionError, ConfigurationError
 from confluid.resolver import Resolver
 
 logger = get_logger("confluid.registry")
@@ -288,15 +288,40 @@ class ConfluidRegistry:
         # never an INHERITED one, which would register a subclass under its parent's
         # custom name. That fallback is what makes a bare ``register_class(cls)`` after
         # a ``@configurable(name="Custom")`` idempotent instead of minting a duplicate.
+        if isinstance(cls, (staticmethod, classmethod)):
+            kind = type(cls).__name__
+            raise ConfigurableDefinitionError(
+                f"{cls!r} is a {kind} DESCRIPTOR, not a callable target — register the function "
+                f"(apply @configurable / register() under @{kind})"
+            )
         own_name = cls.__dict__.get("__confluid_name__") if hasattr(cls, "__dict__") else None
-        cls_name = name or own_name or cls.__name__
+        cls_name = name or own_name or getattr(cls, "__name__", None)
+        if not cls_name:
+            # A functools.partial / callable instance has no __name__, so this line used
+            # to crash with a raw AttributeError (BUGS-2026-08-19 R1). A provided name=
+            # always suffices — a NAMED nameless target registers and flows.
+            raise ConfigurableDefinitionError(
+                f"cannot derive a registration name for {cls!r}: the target has no __name__. "
+                f"Pass name= (e.g. register(target, name='build_thing')), or wrap it in a named function"
+            )
         # Fall back to any tags already on the class — this keeps a re-register
         # (e.g. a snapshot restore, which only forwards ``category``) from
         # dropping ``group`` / ``task`` / ``role`` set by the original ``@configurable``.
-        category = category if category is not None else getattr(cls, "__confluid_category__", None)
+        taxonomy_restated = task is not None or role is not None
         group = group if group is not None else getattr(cls, "__confluid_group__", None)
         task = task if task is not None else getattr(cls, "__confluid_task__", None)
         role = role if role is not None else getattr(cls, "__confluid_role__", None)
+        if category is None and taxonomy_restated and task and role:
+            # ``category = f"{task}_{role}"`` is DERIVED, never typed by hand — and it is
+            # derived HERE, the one stamping authority, whenever the taxonomy is
+            # (re)stated. It used to be derived only inside ``configurable()`` and only
+            # when BOTH halves were passed in that one call, so ``register_class(task=…,
+            # role=…)`` derived nothing and a subclass restating ``role=`` kept its
+            # parent's category — a metric indexed under every loss picker
+            # (BUGS-2026-08-19 R5/R6). An explicit ``category=`` argument still wins,
+            # and a call restating NEITHER half keeps the existing mark untouched.
+            category = f"{task}_{role}"
+        category = category if category is not None else getattr(cls, "__confluid_category__", None)
         framework = framework if framework is not None else getattr(cls, "__confluid_framework__", None)
         lazy = lazy or bool(getattr(cls, "__confluid_partial__", False))
         random = random or bool(getattr(cls, "__confluid_random__", False))
@@ -473,7 +498,14 @@ class ConfluidRegistry:
             entry = self._entry_for_object(name)
             if entry is not None:
                 return entry.cls
-            name = getattr(name, "__confluid_name__", getattr(name, "__name__", str(name)))
+            if isinstance(name, type):
+                # A CLASS object falls back to its OWN name mark, never an inherited
+                # one — a plain getattr answered with the PARENT class for an
+                # unregistered subclass (BUGS-2026-08-19 R4; the write side has
+                # enforced own-mark-only since the duplicate-names work).
+                name = name.__dict__.get("__confluid_name__") or name.__name__
+            else:
+                name = getattr(name, "__confluid_name__", getattr(name, "__name__", str(name)))
         base, selectors = parse_target_spec(name)
         explicit = {
             "category": category,
@@ -488,7 +520,7 @@ class ConfluidRegistry:
 
     def _entry_for_object(self, cls: Any) -> Optional[_ClassEntry]:
         """The entry holding ``cls`` itself, by identity — never by name."""
-        for key in (_entry_key(cls), *(k for k in self._by_key if k.startswith(f"{_entry_key(cls)}~"))):
+        for key in (_entry_key(cls), *(k for k in list(self._by_key) if k.startswith(f"{_entry_key(cls)}~"))):
             entry = self._by_key.get(key)
             if entry is not None and entry.cls is cls:
                 return entry
@@ -599,28 +631,36 @@ class ConfluidRegistry:
                 continue
             keys = set(index.get(value, set()))
             result = keys if result is None else (result & keys)
-        entries = self._by_key.values() if result is None else (self._by_key[k] for k in result if k in self._by_key)
+        # Snapshots, not live views: a concurrent registration (an MCP server
+        # enumerating while a lazy import registers) raised "dictionary changed size
+        # during iteration" from this comprehension (BUGS-2026-08-19 R9). ``list(d)``
+        # copies in one C-level step under the GIL.
+        entries = (
+            list(self._by_key.values())
+            if result is None
+            else [self._by_key[k] for k in list(result) if k in self._by_key]
+        )
         return {self._public_key(entry) for entry in entries}
 
     def list_categories(self) -> Set[str]:
         """Return the set of category names that have at least one registered class."""
-        return set(self._by_category.keys())
+        return set(list(self._by_category))
 
     def list_groups(self) -> Set[str]:
         """Return the set of group names that have at least one registered class."""
-        return set(self._by_group.keys())
+        return set(list(self._by_group))
 
     def list_tasks(self) -> Set[str]:
         """Return the set of task names that have at least one registered class."""
-        return set(self._by_task.keys())
+        return set(list(self._by_task))
 
     def list_roles(self) -> Set[str]:
         """Return the set of role names that have at least one registered class."""
-        return set(self._by_role.keys())
+        return set(list(self._by_role))
 
     def list_frameworks(self) -> Set[str]:
         """Return the set of framework names that have at least one registered class."""
-        return set(self._by_framework.keys())
+        return set(list(self._by_framework))
 
 
 # Global Singleton instance
@@ -670,7 +710,11 @@ def load_configurables(group: str = "confluid.configurables") -> Dict[str, Any]:
     for ep in importlib.metadata.entry_points(group=group):
         try:
             loaded[ep.name] = ep.load()
-        except BaseException as exc:  # broad by design: optional deps, version skew, anything at import
+        # Broad by design — optional deps, version skew, anything at import — but never
+        # KeyboardInterrupt/SystemExit: Ctrl-C during a slow bootstrap of many entry
+        # points must stop the process, not be logged as a failed import
+        # (BUGS-2026-08-19 R10).
+        except Exception as exc:
             logger.warning(f"load_configurables: entry point '{ep.name}' ({ep.value}) failed to import: {exc}")
             loaded[ep.name] = exc
     return loaded

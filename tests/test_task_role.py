@@ -476,3 +476,49 @@ def test_marks_is_the_one_public_read_surface_for_the_stamps() -> None:
 
     u = marks(Untagged)
     assert not u.configurable and u.task is None and not u.lazy
+
+
+def test_a_subclass_restating_role_gets_a_rederived_category() -> None:
+    """R5 (BUGS-2026-08-19) — restating half the taxonomy re-derives `category`
+    from the effective task+role; the stale parent category indexed a METRIC
+    under every LOSS picker."""
+    from confluid import marks
+
+    @configurable(task="classification", role="loss")
+    class R5BaseLoss:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    @configurable(role="metric")
+    class R5AccuracyFromLoss(R5BaseLoss):
+        pass
+
+    m = marks(R5AccuracyFromLoss)
+    assert (m.task, m.role, m.category) == ("classification", "metric", "classification_metric")
+    assert marks(R5BaseLoss).category == "classification_loss", "the parent keeps its own category"
+    reg = get_registry()
+    assert "R5AccuracyFromLoss" not in reg.list_classes(category="classification_loss")
+    assert "R5AccuracyFromLoss" in reg.list_classes(category="classification_metric")
+
+
+def test_register_class_derives_category_like_the_decorator_does() -> None:
+    """R6 (BUGS-2026-08-19) — register_class is the ONE stamping authority, so the
+    derivation lives there; it used to exist only inside configurable()."""
+    from confluid import marks
+
+    class R6Plain:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    get_registry().register_class(R6Plain, task="classification", role="model")
+    assert marks(R6Plain).category == "classification_model"
+
+
+def test_an_explicit_category_argument_still_wins_over_derivation() -> None:
+    from confluid import marks
+
+    @configurable(task="segmentation", role="model", category="hand_set")
+    class R56HandSet:
+        pass
+
+    assert marks(R56HandSet).category == "hand_set"
