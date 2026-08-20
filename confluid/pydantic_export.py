@@ -31,6 +31,7 @@ from typing import (
     FrozenSet,
     List,
     Literal,
+    Optional,
     Set,
     Tuple,
     Type,
@@ -41,7 +42,8 @@ from typing import (
 )
 
 from annotated_types import Ge, Gt, Interval, Le, Lt
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
+from pydantic.json_schema import WithJsonSchema
 
 from confluid.exceptions import IntrospectionError
 from confluid.introspect import NO_DEFAULT, Slot, slots
@@ -103,9 +105,13 @@ class _StrictConfigBase(BaseModel):
     typos. ``arbitrary_types_allowed`` lets nested annotations include
     library types we haven't (and don't want to) introspect (e.g. a sentinel
     ``Path`` from pathlib, or any user class without a pydantic mirror).
+    ``protected_namespaces=()`` lets a constructor parameter be named
+    ``model_<anything>`` without pydantic's namespace warning — the names that
+    genuinely SHADOW a ``BaseModel`` attribute (``model_config``, ``schema``,
+    ``copy`` …) are mangled by :func:`_field_name` instead.
     """
 
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True, protected_namespaces=())
 
 
 def _is_configurable(obj: Any) -> bool:
@@ -128,6 +134,25 @@ def _qualname(cls: Callable[..., Any]) -> str:
 # this is what lets a third-party class like ``torch.nn.CrossEntropyLoss``
 # (``weight: Optional[Tensor]``) be ``register``-ed and surfaced without a wrapper.
 _OPAQUE_TOP_MODULES = frozenset({"torch", "numpy"})
+
+
+@lru_cache(maxsize=None)
+def _json_schemable(anno: type) -> bool:
+    """True when pydantic can emit a JSON Schema for the leaf type (``int``, ``Path``, an Enum, a model…).
+
+    A probe, cached per type: building a ``TypeAdapter`` (arbitrary types allowed, as in the
+    generated models) and asking for its schema. A type pydantic cannot schema — or cannot
+    even build a validator for — answers False and is made opaque by the caller.
+    """
+    from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
+
+    try:
+        TypeAdapter(anno, config=ConfigDict(arbitrary_types_allowed=True)).json_schema()
+    except (PydanticInvalidForJsonSchema, PydanticSchemaGenerationError):
+        return False
+    except Exception:  # a pydantic-core SchemaError (a type it cannot isinstance) — not schemable either
+        return False
+    return True
 
 
 def _is_opaque_type(anno: Any) -> bool:
@@ -203,6 +228,23 @@ def _convert_annotation_unwrapped(anno: Any) -> Any:
             # (see _OPAQUE_TOP_MODULES). The value still validates loosely; the
             # source class enforces the real type at construction.
             return Any
+        if anno is collections.abc.Callable:
+            # The bare PEP 585 spelling has no ``get_origin`` and so missed the
+            # ``Callable[...]`` coercion below (BUGS-2026-08-19 N11).
+            return Any
+        if getattr(anno, "_is_protocol", False) and not getattr(anno, "_is_runtime_protocol", False):
+            # A Protocol that is not ``@runtime_checkable`` cannot be ``isinstance``-checked,
+            # and pydantic's is-instance schema raised a raw ``SchemaError`` from the
+            # constructor of EVERY class that typed a param with one (N1). A runtime-
+            # checkable Protocol falls through and keeps its check.
+            return Any
+        if isinstance(anno, type) and not _json_schemable(anno):
+            # A plain leaf class (a helper class, ``logging.Logger``, ``TextIO`` …) validates
+            # fine as an arbitrary type but has no JSON Schema, so ``model_json_schema()``
+            # raised for every consumer of the mirror (N10). Keep the isinstance check,
+            # make the SCHEMA opaque — the documented "never crashes" coercion, which was
+            # a two-module allow-list, now holds for any leaf pydantic cannot schema.
+            return Annotated[anno, WithJsonSchema({})]
         return anno
 
     # ``Literal[...]`` arguments are values, not types — don't recurse.
@@ -277,7 +319,18 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
     container, are returned untouched.
     """
     range_marks = tuple(m for m in metadata if isinstance(m, _RANGE_MARK_TYPES))
-    if not range_marks or get_origin(inner) not in _RANGE_CONTAINER_ORIGINS:
+    if not range_marks:
+        return inner, metadata
+    if get_origin(inner) in (Union, types.UnionType):
+        # ``Optional[Tuple[float, float]]`` is the zero-arg spelling of the same container
+        # (class-design rule 2); the mark used to stay on the Union and pydantic raised a
+        # raw ``TypeError: Unable to apply constraint`` on a LEGAL value (BUGS-2026-08-19 N9).
+        # Relocate into each container arm; the other arms (``None``) are left alone.
+        arms = tuple(_spread_range_marks_into_container(a, metadata)[0] for a in get_args(inner))
+        if arms != get_args(inner):
+            return Union[arms], tuple(m for m in metadata if m not in range_marks)  # type: ignore[return-value]
+        return inner, metadata
+    if get_origin(inner) not in _RANGE_CONTAINER_ORIGINS:
         return inner, metadata
 
     def _mark(arg: Any) -> Any:
@@ -292,6 +345,31 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
     new_inner = generic[new_args[0]] if len(new_args) == 1 else generic[new_args]
     remaining = tuple(m for m in metadata if m not in range_marks)
     return new_inner, remaining
+
+
+def _field_name(name: str) -> str:
+    """The pydantic FIELD name for a constructor parameter.
+
+    The parameter's own name, unless pydantic cannot take it: a leading underscore
+    makes a private attribute (``NameError: Fields must not use names with leading
+    underscores`` — on EVERY constructor call of the class, BUGS-2026-08-19 N2), and a
+    ``BaseModel`` attribute name (``model_config``, ``schema``, ``copy`` …) shadows the
+    base (``TypeError`` from ``create_model`` — swallowed, so validation went silently
+    OFF for the class, N3). Those two shapes get a mangled field name; the real name
+    rides as the field's ALIAS, so ``model_validate(kwargs)`` and the JSON schema still
+    speak the parameter's name. :func:`field_name_for` is the reverse map.
+    """
+    if name.startswith("_") or hasattr(BaseModel, name):
+        return f"{name.lstrip('_')}_"
+    return name
+
+
+def field_name_for(model: Type[BaseModel], name: str) -> Optional[str]:
+    """Map a constructor-parameter name to the generated model's field name (``None`` when absent)."""
+    if name in model.model_fields:
+        return name
+    mangled = _field_name(name)
+    return mangled if mangled in model.model_fields else None
 
 
 def _field_for_slot(slot: Slot, description: str) -> Tuple[Any, Any]:
@@ -317,6 +395,8 @@ def _field_for_slot(slot: Slot, description: str) -> Tuple[Any, Any]:
     """
     converted_type = _convert_annotation(slot.annotation)
     desc_kw: Dict[str, Any] = {"description": description} if description else {}
+    if _field_name(slot.name) != slot.name:
+        desc_kw["alias"] = slot.name  # the kwarg / document / schema spelling stays the parameter's own name
 
     if slot.default is NO_DEFAULT:
         return converted_type, Field(..., **desc_kw)
@@ -457,7 +537,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     for slot in slots(cls):
         if slot.kind not in _FIELD_KINDS:
             continue
-        fields[slot.name] = _field_for_slot(slot, param_docs.get(slot.name, ""))
+        fields[_field_name(slot.name)] = _field_for_slot(slot, param_docs.get(slot.name, ""))
 
     # Also surface post-init body slots (``self.optimizer = PartialClass(...)`` etc.)
     # that aren't constructor parameters — the minimal-ctor / post-construction

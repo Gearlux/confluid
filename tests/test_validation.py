@@ -641,3 +641,54 @@ def test_flow_wraps_validation_error_in_runtime_error() -> None:
     assert (
         chained
     ), f"expected ValidationError in chain, got {type(raised).__name__} → {type(raised.__cause__).__name__}"
+
+
+# ---------------------------------------------------------------------------
+# The validation hook never turns itself off SILENTLY, and the policy setter
+# refuses a typo (BUGS-2026-08-19 N4 / N13).
+# ---------------------------------------------------------------------------
+
+
+def test_set_policy_refuses_a_typo_like_the_env_var_does() -> None:
+    from confluid.exceptions import ValidationModeError
+
+    reset_policy()
+    try:
+        with pytest.raises(ValidationModeError, match="stict"):
+            set_policy(init="stict")
+        assert get_policy().init == "strict", "a refused value must not be stored"
+    finally:
+        reset_policy()
+
+
+def test_a_class_whose_mirror_cannot_be_built_still_constructs_and_says_so_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N4 — `except TypeError: return` skipped validation with no log line, so a class
+    ran with validation OFF under the default strict policy and nobody knew."""
+    from types import SimpleNamespace
+
+    import confluid.validation as validation_mod
+    from confluid.exceptions import IntrospectionError
+
+    records: list = []
+    monkeypatch.setattr(
+        validation_mod, "logger", SimpleNamespace(warning=lambda m: records.append(m), debug=lambda m: None)
+    )
+
+    @configurable
+    class Unmirrorable:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    def boom(cls: type) -> None:
+        raise IntrospectionError("Cannot introspect Unmirrorable.__init__: name 'X' is not defined")
+
+    monkeypatch.setattr("confluid.pydantic_export.to_pydantic", boom)
+    validation_mod._unvalidatable_warned.discard(Unmirrorable)
+
+    assert Unmirrorable(lr="not a float").lr == "not a float"  # skipped, not blocked
+    Unmirrorable(lr=0.2)
+    warnings = [r for r in records if "validation is OFF" in r]
+    assert len(warnings) == 1, records
+    assert "Unmirrorable" in warnings[0] and "IntrospectionError" in warnings[0]

@@ -599,8 +599,13 @@ def test_body_slot_ANNOTATIONS_reach_the_generated_model() -> None:
     # ``Partial[T]`` is stripped to a union admitting the target, the deferred
     # marker, and its generated config model.
     optimizer_arms = get_args(fields["optimizer"].annotation)
-    assert _Deferred in optimizer_arms, "the flow-target type survives into the schema"
-    assert type(None) in optimizer_arms
+    # a plain flow-target class rides as ``Annotated[T, WithJsonSchema({})]`` (the schema is
+    # opaque, the isinstance check is kept) — unwrap before asserting the type survived
+    from typing import Annotated, get_origin
+
+    bare_arms = tuple(get_args(a)[0] if get_origin(a) is Annotated else a for a in optimizer_arms)
+    assert _Deferred in bare_arms, "the flow-target type survives into the schema"
+    assert type(None) in bare_arms
 
 
 def test_the_partial_body_slot_scan_agrees_with_the_schema_today() -> None:
@@ -911,3 +916,165 @@ def test_a_validated_sequence_is_re_iterable_while_an_iterable_is_not() -> None:
     assert list(built.seq) == [1, 2] and list(built.seq) == [1, 2], "Sequence must be re-iterable"
     # `it` is coerced to Any, so it is handed back as the original list untouched.
     assert built.it == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# A class must never become unconstructable because of its schema mirror, and
+# the mirror must JSON-schema whatever pydantic can validate (BUGS-2026-08-19
+# N1 / N2 / N3 / N9 / N10 / N11). Module-scope fixtures: get_type_hints needs
+# module globals.
+# ---------------------------------------------------------------------------
+
+import collections.abc as _abc  # noqa: E402
+import logging as _logging  # noqa: E402
+from typing import Annotated as _Annotated  # noqa: E402
+from typing import Protocol as _Protocol  # noqa: E402
+from typing import runtime_checkable as _runtime_checkable  # noqa: E402
+
+from annotated_types import Interval as _Interval  # noqa: E402
+
+
+class _Sampler(_Protocol):  # NOT runtime-checkable — cannot be isinstance'd
+    def sample(self) -> int: ...
+
+
+@_runtime_checkable
+class _Closable(_Protocol):
+    def close(self) -> None: ...
+
+
+@configurable
+class _ProtoHost:
+    def __init__(self, sampler: Optional[_Sampler] = None, closer: Optional[_Closable] = None) -> None:
+        self.sampler = sampler
+        self.closer = closer
+
+
+@configurable
+class _UnderscoreHost:
+    def __init__(self, lr: float = 0.1, _seed: int = 0) -> None:
+        self.lr = lr
+        self._seed = _seed
+
+
+@configurable
+class _ReservedNamesHost:
+    def __init__(self, model_config: Optional[dict] = None, schema: str = "s", copy: int = 1, lr: float = 0.1) -> None:
+        self.model_config = model_config
+        self.schema = schema
+        self.copy = copy
+        self.lr = lr
+
+
+@configurable
+class _OptionalRangeHost:
+    def __init__(
+        self,
+        crop: _Annotated[Tuple[float, float], _Interval(ge=0.0, le=1.0)] = (0.1, 0.9),
+        crop_opt: _Annotated[Optional[Tuple[float, float]], _Interval(ge=0.0, le=1.0)] = None,
+    ) -> None:
+        self.crop = crop
+        self.crop_opt = crop_opt
+
+
+class _Backbone:
+    """A plain helper class — not torch/numpy, not @configurable."""
+
+
+@configurable
+class _PlainLeafHost:
+    def __init__(self, backbone: Optional[_Backbone] = None, log: Optional[_logging.Logger] = None) -> None:
+        self.backbone = backbone
+        self.log = log
+
+
+@configurable
+class _BareCallableHost:
+    def __init__(self, fn: Optional[_abc.Callable] = None) -> None:
+        self.fn = fn
+
+
+def test_a_non_runtime_protocol_param_is_any_and_the_class_constructs() -> None:
+    """N1 — `Cls()` raised a raw pydantic-core SchemaError ('cls' must be valid as the
+    first argument to isinstance). A non-runtime Protocol cannot be checked, so it is
+    `Any`; a runtime-checkable one keeps its isinstance check."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    host = _ProtoHost()
+    assert host.sampler is None
+    from typing import Annotated, get_origin
+
+    fields = to_pydantic(_ProtoHost).model_fields
+    assert fields["sampler"].annotation == Optional[Any]
+    closer_arms = [get_args(a)[0] if get_origin(a) is Annotated else a for a in get_args(fields["closer"].annotation)]
+    assert _Closable in closer_arms  # kept (opaque in the schema, isinstance-checked at validation)
+    with pytest.raises(ValidationError):
+        _ProtoHost(closer=3)  # type: ignore[arg-type]
+
+
+def test_an_underscore_param_constructs_and_still_validates() -> None:
+    """N2 — `Host()` raised `NameError: Fields must not use names with leading
+    underscores` on EVERY call. The field is mangled, the alias is the real name."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    host = _UnderscoreHost(lr=0.2, _seed=3)
+    assert (host.lr, host._seed) == (0.2, 3)
+    with pytest.raises(ValidationError):
+        _UnderscoreHost(lr="x")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        _UnderscoreHost(_seed="x")  # type: ignore[arg-type]
+    schema = to_pydantic(_UnderscoreHost).model_json_schema()
+    assert set(schema["properties"]) == {"lr", "_seed"}
+
+
+def test_basemodel_reserved_names_construct_and_still_validate() -> None:
+    """N3 — a param named `model_config` crashed `to_pydantic` (`'FieldInfo' object is
+    not iterable`) and the swallowed TypeError left validation silently OFF."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    host = _ReservedNamesHost(model_config={"a": 1}, schema="x", copy=2, lr=0.3)
+    assert (host.model_config, host.schema, host.copy, host.lr) == ({"a": 1}, "x", 2, 0.3)
+    with pytest.raises(ValidationError):
+        _ReservedNamesHost(lr="x")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        _ReservedNamesHost(copy="x")  # type: ignore[arg-type]
+    schema = to_pydantic(_ReservedNamesHost).model_json_schema()
+    assert set(schema["properties"]) == {"model_config", "schema", "copy", "lr"}
+
+
+def test_a_range_mark_on_an_OPTIONAL_container_relocates_element_wise() -> None:
+    """N9 — the zero-arg spelling of the pinned container convention raised a raw
+    `TypeError: Unable to apply constraint 'ge'` on a LEGAL value."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    _OptionalRangeHost(crop_opt=(0.2, 0.8))
+    _OptionalRangeHost(crop=(0.2, 0.8))
+    with pytest.raises(ValidationError):
+        _OptionalRangeHost(crop_opt=(0.2, 1.8))
+    schema = to_pydantic(_OptionalRangeHost).model_json_schema()
+    crop_opt = schema["properties"]["crop_opt"]
+    arms = crop_opt.get("anyOf", [crop_opt])
+    array = next(a for a in arms if a.get("type") == "array")
+    assert array["prefixItems"][0]["maximum"] == 1.0
+
+
+def test_a_plain_leaf_class_keeps_its_isinstance_check_and_json_schemas() -> None:
+    """N10 — any plain class (or `logging.Logger`) made `model_json_schema()` raise
+    `PydanticInvalidForJsonSchema`; the documented coercion was a torch/numpy allow-list."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    schema = to_pydantic(_PlainLeafHost).model_json_schema()
+    assert set(schema["properties"]) == {"backbone", "log"}
+    with pytest.raises(ValidationError):
+        _PlainLeafHost(backbone=3)  # type: ignore[arg-type]  # the isinstance check is KEPT — only the schema is opaque
+    _PlainLeafHost(backbone=_Backbone())
+
+
+def test_a_bare_collections_abc_callable_param_json_schemas() -> None:
+    """N11 — `typing.Callable` was coerced, the PEP 585 spelling was not."""
+    assert "fn" in to_pydantic(_BareCallableHost).model_json_schema()["properties"]
