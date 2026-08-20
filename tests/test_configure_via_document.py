@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 import pytest
 
-from confluid import Partial, PartialClass, configurable, configure, flow
+from confluid import Partial, PartialClass, configurable, configure, configure_from_file, flow
 from confluid.report import ConfigurationReport
 
 
@@ -193,3 +193,45 @@ def test_the_second_walker_is_gone() -> None:
 
     for name in ("_walk", "_LiveSink", "_tune_deferred", "_assign"):
         assert not hasattr(configurator, name), name
+
+
+# --- configure() has a scopes= channel (BUGS-2026-08-19 CD18 / SR4's channel) ----
+
+
+def test_configure_resolves_scope_blocks_under_the_given_activation() -> None:
+    @configurable
+    class _ScModel:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    config = (
+        "torch: !scope:framework=torch\n  lr: 0.3\n"
+        "keras: !scope:framework=keras\n  lr: 0.5\n"
+        "no_fw: !notscope:framework\n  lr: 0.9\n"
+    )
+    torch_model = _ScModel()
+    report = configure(torch_model, config=config, scopes=["framework=torch"])
+    assert torch_model.lr == 0.3
+    assert not report.unused, "a consumed scope wrapper is structure, never an unused override"
+
+    keras_model = _ScModel()
+    configure(keras_model, config=config, scopes=["framework=keras"])
+    assert keras_model.lr == 0.5
+
+    default_model = _ScModel()
+    report = configure(default_model, config=config)
+    assert default_model.lr == 0.9, "the !notscope: default fires when nothing is activated"
+    assert not report.unused
+
+
+def test_configure_from_file_forwards_the_activation(tmp_path: Any) -> None:
+    @configurable
+    class _ScModel2:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    path = tmp_path / "exp.yaml"
+    path.write_text("torch: !scope:framework=torch\n  lr: 0.3\nno_fw: !notscope:framework\n  lr: 0.9\n")
+    model = _ScModel2()
+    configure_from_file(model, path=str(path), scopes=["framework=torch"])
+    assert model.lr == 0.3

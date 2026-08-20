@@ -3,7 +3,15 @@ from typing import Any
 
 import pytest
 
-from confluid import ConfigFileNotFoundError, configurable, configure, configure_from_file, get_registry, load
+from confluid import (
+    ConfigFileNotFoundError,
+    ConfigurationError,
+    configurable,
+    configure,
+    configure_from_file,
+    get_registry,
+    load,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -661,3 +669,119 @@ def test_a_live_object_handed_through_config_is_assigned_by_identity() -> None:
     configure(t, config={"dataset": ds, "model": m})
     assert t.dataset is ds
     assert t.model is m
+
+
+# --- children beyond __dict__, and B1 on the named-overlay path (BUGS-2026-08-19
+# CD1 / CD2-apply / CD6) ---------------------------------------------------------
+
+
+def test_configure_reaches_a_child_that_lives_outside_dict() -> None:
+    """CD1 — an nn.Module-style host keeps children in a parallel store resolved by
+    __getattr__, not __dict__; _apply read __dict__ only, missed the child, and
+    REPLACED it with a fresh build (identity lost, the original never configured)."""
+
+    @configurable
+    class _StoreChild:
+        def __init__(self, dropout: float = 0.0) -> None:
+            self.dropout = dropout
+
+    @configurable
+    class _StoreHost:
+        def __init__(self, backbone: Any = None, dropout: float = 0.0) -> None:
+            object.__setattr__(self, "_children", {})
+            self.backbone = backbone
+            self.dropout = dropout
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            if isinstance(value, _StoreChild):
+                self._children[name] = value  # the nn.Module pattern: NOT in __dict__
+            else:
+                object.__setattr__(self, name, value)
+
+        def __getattr__(self, name: str) -> Any:
+            children = self.__dict__.get("_children", {})
+            if name in children:
+                return children[name]
+            raise AttributeError(name)
+
+    child = _StoreChild()
+    host = _StoreHost(backbone=child)
+    assert "backbone" not in vars(host), "the fixture must model the outside-__dict__ shape"
+    report = configure(host, config={"dropout": 0.5})
+    assert host.backbone is child, "the child is configured, never replaced"
+    assert host.dropout == 0.5
+    assert child.dropout == 0.5, "the recursion reaches the live child"
+    assert not report.failed
+
+
+def test_configure_keeps_a_slots_hosts_child_and_tunes_it_via_a_block() -> None:
+    """CD1 — a __slots__ host has no __dict__ at all; the child used to be rebuilt."""
+
+    @configurable
+    class _SlotModel:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class _SlotHost:
+        __slots__ = ("model",)
+
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    child = _SlotModel()
+    host = _SlotHost(model=child)
+    configure(host, config={"_SlotHost": {"model": {"lr": 0.7}}})
+    assert host.model is child
+    assert child.lr == 0.7
+
+
+def test_configure_survives_a_ctor_param_behind_a_read_only_property() -> None:
+    """CD1 — the class-design convention's private-backing shape crashed the whole
+    call with `AttributeError: property has no setter`; the property slot is derived
+    state and is neither read nor written (F1's ruled semantics for the capture)."""
+
+    @configurable
+    class _Held:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class _BackingHost:
+        def __init__(self, model: Any = None, lr: float = 0.0) -> None:
+            self._model = model
+            self.lr = lr
+
+        @property
+        def model(self) -> Any:
+            return self._model
+
+    held = _Held()
+    host = _BackingHost(model=held)
+    configure(host, config={"lr": 0.9})
+    assert host.lr == 0.9
+    assert host.model is held, "the backing slot is untouched"
+
+
+def test_a_named_overlay_typo_is_audible_and_strict_attrs_refuses() -> None:
+    """CD6 — `configure(trainer=t, config={"trainer": {"ghost": 1}})` silently set
+    the attribute with an empty report; strict_attrs was not honoured at all."""
+
+    @configurable(strict_attrs=True)
+    class _StrictTrainer:
+        def __init__(self, lr: float = 0.001) -> None:
+            self.lr = lr
+
+    strict = _StrictTrainer()
+    with pytest.raises(ConfigurationError, match="ghost.*strict_attrs"):
+        configure(trainer=strict, config={"trainer": {"ghost": 1}})
+
+    @configurable
+    class _LooseTrainer:
+        def __init__(self, lr: float = 0.001) -> None:
+            self.lr = lr
+
+    loose = _LooseTrainer()
+    report = configure(trainer=loose, config={"trainer": {"ghost": 1}})
+    assert loose.ghost == 1, "B1: the value still applies on a permissive class"  # type: ignore[attr-defined]
+    assert [(f.key, f.reason) for f in report.failed] == [("ghost", "unknown-attribute")]

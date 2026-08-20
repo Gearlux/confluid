@@ -139,6 +139,24 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`configure()` reaches children beyond `__dict__`, never runs a property getter, gates the
+  named-overlay path, and takes `scopes=`** (BUGS-2026-08-19 CD1/CD2/CD6/CD18 + SR4's channel
+  half, 2026-08-19). Measured before → after: an `nn.Module` child (kept in `_modules`) was
+  REPLACED by a fresh build — the original never configured (`net.backbone is bb → False`) → found
+  via `getattr` and configured in place (`True`, recursion reaches it); a `__slots__` host's child
+  likewise; a ctor param behind a read-only property crashed the whole call
+  (`AttributeError: property has no setter`) → the property slot is neither read nor written;
+  `dump()` of a property-shadowed ctor param emitted the getter's derived object (running the
+  getter 4×, and the artefact neither reloaded nor re-applied) → dumps the CAPTURED ctor value,
+  getter runs 0× (discovery walk included); a typo'd key in a named overlay
+  (`configure(trainer=t, config={"trainer": {"ghost": 1}})`) was set in silence with an empty
+  report and `strict_attrs` ignored → warns, records `unknown-attribute`, still applies (B1), and
+  `strict_attrs` refuses located; scope blocks in a config resolved with NO activation (blocks
+  vanished, `!notscope:` fired, the caller's intent silently discarded) → `configure()` /
+  `configure_from_file()` take `scopes=` and resolve exactly as `load()` does, with consumed
+  wrappers never reported unused. Pinned: `tests/test_configurator.py`, `tests/test_dumper.py`,
+  `tests/test_configure_via_document.py`.
+
 - **The emitted artefact is self-contained, honest, and always parses back** (BUGS-2026-08-19
   CD13/CD14/CD15/CD16, 2026-08-19). `hydraide emit` re-emits every `import:` the load consumed
   (the include accumulator's sibling), so a fresh process reloads the artefact — it used to fail

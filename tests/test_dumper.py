@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 import yaml
 
-from confluid import configurable, dump, get_registry
+from confluid import configurable, configure, dump, get_registry, load
 
 
 @pytest.fixture(autouse=True)
@@ -514,3 +514,50 @@ def test_a_STRING_marker_target_passes_through_verbatim() -> None:
             self.child = Target("SomeName", size=3)
 
     assert _yaml.safe_load(dump(Host()))["child"]["_target_"] == "SomeName"
+
+
+# --- a property-shadowed ctor param dumps the CAPTURED value, getter never runs
+# (BUGS-2026-08-19 CD2) ----------------------------------------------------------
+
+
+def test_a_property_shadowed_ctor_param_dumps_the_captured_value_without_running_the_getter() -> None:
+    getter_runs: list = []
+
+    @configurable
+    class _Loop:
+        def __init__(self, device: str = "auto", max_epochs: int = 1) -> None:
+            self.device_choice = device  # the ctor param is TRANSFORMED, stored elsewhere
+            self.max_epochs = max_epochs
+
+        @property
+        def device(self) -> object:
+            getter_runs.append(1)
+            return object()  # derived, not serializable — dumping it broke the round trip
+
+    loop = _Loop(device="cpu")
+    text = dump(loop)
+    assert getter_runs == [], f"the getter ran during dump:\n{text}"
+    assert "device: cpu" in text, text
+    reloaded = load(text)
+    assert reloaded.device_choice == "cpu"
+    assert reloaded.max_epochs == 1
+
+
+def test_configure_of_a_property_shadowed_param_class_touches_nothing_derived() -> None:
+    getter_runs: list = []
+
+    @configurable
+    class _Loop2:
+        def __init__(self, device: str = "auto", max_epochs: int = 1) -> None:
+            self.device_choice = device
+            self.max_epochs = max_epochs
+
+        @property
+        def device(self) -> object:
+            getter_runs.append(1)
+            return object()
+
+    loop = _Loop2()
+    configure(loop, config={"max_epochs": 2})
+    assert loop.max_epochs == 2
+    assert getter_runs == [], "configure() must not execute nor write back the getter"

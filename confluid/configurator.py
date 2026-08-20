@@ -29,16 +29,16 @@ pass aggregates into one report.
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 import yaml
 from loggair import get_logger
 
 from confluid.broadcast import accepts_key, clear_pass_caches, dict_at_slot_kind
 from confluid.dumper import to_markers
-from confluid.engine import _ctor_params, _maybe_solidify, _resolve_target_callable, flow
+from confluid.engine import _ctor_params, _maybe_solidify, _resolve_target_callable, _warn_undeclared, flow
 from confluid.exceptions import ConfigurationError
-from confluid.fluid import Fluid, Target
+from confluid.fluid import Fluid, ScopeBlock, Target
 from confluid.loader import ConfluidLoader, load
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.report import ConfigurationReport
@@ -52,7 +52,11 @@ _MISSING = object()
 
 
 def configure(
-    *instances: Any, config: Any, context: Optional[Dict[str, Any]] = None, **named: Any
+    *instances: Any,
+    config: Any,
+    context: Optional[Dict[str, Any]] = None,
+    scopes: Optional[List[str]] = None,
+    **named: Any,
 ) -> ConfigurationReport:
     """Apply ``config`` to existing objects, in place, through the document (see the module doc).
 
@@ -95,6 +99,8 @@ def configure(
     # a marker-valued key IS an override, it lands on a slot; glob blocks register per
     # non-dict leaf.
     for k, v in config.items():
+        if isinstance(v, ScopeBlock):
+            continue  # a scope WRAPPER is structure — pass 4 consumes it; its contents register
         if k in ("*", "**") and isinstance(v, dict):
             report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
         else:
@@ -144,28 +150,35 @@ def configure(
     #    entry point exactly like load(): a class redefined since the
     #    last pass must not be served its previous accept-list.
     clear_pass_caches()
+    # The ambient report spans the APPLY phase too: `_apply`'s undeclared-key gate
+    # (B1 — `_warn_undeclared`) records through the engine state, exactly as the
+    # load path's own-kwarg branch does.
     token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), report=report))
     try:
-        settled = load(merged, until="settled")
+        settled = load(merged, until="settled", scopes=scopes)
+
+        # 4. Apply the settled values back onto the live objects. ``visited`` maps id -> the
+        #    OBJECT (recording an id pins it for the call — see the id-pinning rule).
+        visited: Dict[int, Any] = {}
+        for name in document:
+            node = settled.get(name)
+            if isinstance(node, Target):
+                _apply(objects[name], node, visited, report)
+            else:
+                _materialize_value(node, visited, report)  # a container: every marker inside applies to its object
     finally:
         _ENGINE_STATE.reset(token)
-
-    # 4. Apply the settled values back onto the live objects. ``visited`` maps id -> the
-    #    OBJECT (recording an id pins it for the call — see the id-pinning rule).
-    visited: Dict[int, Any] = {}
-    for name in document:
-        node = settled.get(name)
-        if isinstance(node, Target):
-            _apply(objects[name], node, visited, report)
-        else:
-            _materialize_value(node, visited, report)  # a container: every marker inside applies to its object
     if ambient is None:
         report.log_unused()
     return report
 
 
 def configure_from_file(
-    *instances: Any, path: Union[str, Path], context: Optional[Dict[str, Any]] = None, **named: Any
+    *instances: Any,
+    path: Union[str, Path],
+    context: Optional[Dict[str, Any]] = None,
+    scopes: Optional[List[str]] = None,
+    **named: Any,
 ) -> ConfigurationReport:
     """Load a YAML config file and apply it to existing instances in one call.
 
@@ -187,7 +200,7 @@ def configure_from_file(
     Raises:
         confluid.ConfigFileNotFoundError: If ``path`` does not exist.
     """
-    return configure(*instances, config=load(path, until="raw"), context=context, **named)
+    return configure(*instances, config=load(path, until="raw"), context=context, scopes=scopes, **named)
 
 
 # --------------------------------------------------------------------------- #
@@ -219,11 +232,24 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
     visited[id(obj)] = obj
     cls = obj.__class__
     label = getattr(cls, "__confluid_name__", cls.__name__)
-    live_vars = getattr(obj, "__dict__", None) or {}
     eager_params: Set[str] = _ctor_params(cls) or set() if getattr(cls, "__confluid_eager__", False) else set()
 
     for attr, settled in node.kwargs.items():
-        current = live_vars.get(attr, _MISSING)  # never getattr: a property getter must not run
+        member = getattr(cls, attr, None)
+        if isinstance(member, property):
+            # Derived state — a getter must not run and a setterless slot must not be
+            # written; the captured ctor kwarg was the document's value (CD2's apply half:
+            # a config that never named `device` used to fail validating the getter's
+            # derived value against the ctor's declared type). A property WITH a setter
+            # is written below like any slot, without the getter ever running.
+            current = _MISSING
+        else:
+            # ``getattr``, not ``__dict__``: a child living elsewhere — an ``nn.Module``
+            # submodule (``_modules``), a ``__slots__`` slot — read as MISSING through
+            # ``__dict__``, so the recursion below never matched it and configure()
+            # REPLACED the child with a fresh build instead of configuring it in place
+            # (BUGS-2026-08-19 CD1). Property getters are already excluded above.
+            current = getattr(obj, attr, _MISSING)
         if isinstance(settled, Target):
             if isinstance(current, Fluid):
                 # A marker at a slot holding a marker (a deferred body slot): tune IN PLACE —
@@ -247,7 +273,7 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
             value: Any = settled if settled.partial else flow(settled)  # a marker the config introduced
         else:
             value = _materialize_value(settled, visited, report)
-            if attr in live_vars and _same(value, current):
+            if current is not _MISSING and _same(value, current):
                 continue
             if isinstance(value, dict) and dict_at_slot_kind(current) == "opaque":
                 # The dict-at-slot rule's fourth arm (user ruling): a mapping addressed at a
@@ -260,6 +286,14 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
                 )
             if isinstance(value, str):
                 value = parse_value(value)
+        if isinstance(member, property) and member.fset is None:
+            continue  # derived state recomputes — never written (the load path's rule)
+        # B1 binds this path too (CD6): a key naming nothing the class declares warns,
+        # records "unknown-attribute" and still applies — and strict_attrs refuses —
+        # exactly as the load path's own-kwarg branch. It used to be set in silence
+        # when it arrived through a NAMED overlay (folded into the marker's own kwargs,
+        # which pass 7 never gates).
+        _warn_undeclared(obj, cls, attr, node)
         _set(obj, attr, value, label, eager_params, report)
     _maybe_solidify(obj)
 
