@@ -1309,8 +1309,8 @@ discarded it) and a third put them there at expansion (`a.optimizer.lr: 9.0` thr
 nothing read them, so all three vanished with an empty report. The ruling (user, 2026-08-19,
 "option A" over refusing) keeps the reference what this record made it — ONE object, no copy —
 and gives the kwargs the only meaning consistent with that: they tune the referent, for every
-alias. The mechanism is `resolver.fold_reference_kwargs`, run by `load()` before pass 5 and after
-pass 6: the kwargs move into the referent marker's OWN kwargs, exactly what `proto.k: 5` does, so
+alias. The mechanism is `resolver.fold_reference_kwargs`, run by `load()` once — after expansion,
+before interpolation: the kwargs move into the referent marker's OWN kwargs, exactly what `proto.k: 5` does, so
 they take the referent's position under the one precedence rule (a later bare key still wins)
 instead of becoming a late tune that beats everything. A reference to a plain value cannot carry
 kwargs and is refused with its location.
@@ -1337,7 +1337,7 @@ and two census-kept features (Clone, attribute references) each carried a runtim
 spelling that a preprocessor makes unnecessary.
 
 **Decision.** `hydraide` is passes 1–7 — parse (either spelling), import, include, scope,
-interpolate, expand, broadcast — followed by a serializer: `confluid.hydraide.emit(source,
+expand, interpolate, broadcast — followed by a serializer: `confluid.hydraide.emit(source,
 scopes=…)` is `dump(load(source, until="settled"), anchor_names=…)` and `check(path)` is "the
 file is its own resolution" (a unified diff otherwise). It emits ONE plain-YAML document in which
 every marker carries its FINAL kwargs, every contest is settled, shared markers are named YAML
@@ -1500,3 +1500,49 @@ objects, paths = load("experiment.yaml", return_paths=True)          # + every f
 
 **What you may change.** The stage NAMES (they are a Literal, one place). Not the shape: do not add
 a second entry function for a stage, and do not make a stage reachable for one input shape only.
+
+---
+
+## 21. Expansion runs before interpolation
+
+*2026-08-20*
+
+**Context.** Interpolation (then pass 5) read the document BEFORE dotted keys nested (then pass
+6), so `${train.lr}` answered with whichever literal `train.lr:` key existed at that moment —
+while the returned tree answered with the expanded merge (document order, last wins). One
+document, two answers (BUGS-2026-08-19 PA8):
+
+```yaml
+train.lr: 0.2
+train:
+  lr: 0.1
+x: ${train.lr}     # was 0.2 — the tree says 0.1
+```
+
+**Decision.** Expansion moved ahead of interpolation: `loader._load` runs hoist → expand → fold
+→ interpolate. Two mechanisms keep the reference spellings whole across the new order:
+whole-string `${ref:...}` strings become `Reference` markers BEFORE expansion
+(`resolver.hoist_marker_placeholders` — purely syntactic, the same stage the `!ref:` tag already
+occupies), and `fold_reference_kwargs` collapses from two runs to ONE (the dotted route through a
+reference has landed by expansion; interpolation's aliasing of a bare reference runs with the
+kwargs already folded).
+
+**Consequences.** `${a.b}` and the returned document give one answer. A dotted write through any
+OTHER unresolved `${...}` string is refused by `merger.expand_dotted_mapping` — the alternative
+was silently clobbering the placeholder with a fresh dict; value substitution is not sharing, and
+the refusal names `${ref:...}` as the sharing spelling. A dotted write's VALUE interpolates where
+it LANDS: `train.lr: ${x.y}` resolves inside `train:`, so a competing `train.x.y` wins there —
+the same answer a literal `lr: ${x.y}` written inside the block gets.
+
+**Example.**
+
+```yaml
+proto: !class:Sink {v: 1}
+use: ${ref:proto}     # hoisted to a Reference before expansion…
+use.k: 5              # …so this folds into proto's own kwargs: {v: 1, k: 5}
+```
+
+**What you may change.** Not the order back — PA8 returns immediately — and not the hoist into a
+lookup (it must stay syntactic: resolution before scope-settled data would bind against a tree
+that still has inactive blocks). The dotted-write refusal may gain located positions when mapping
+keys ever carry them; it must not become a silent clobber again.

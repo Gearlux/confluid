@@ -42,7 +42,7 @@ from confluid.fluid import Fluid, ScopeBlock, Target
 from confluid.loader import ConfluidLoader, load
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.report import ConfigurationReport
-from confluid.resolver import Resolver, parse_value
+from confluid.resolver import Resolver, hoist_marker_placeholders, parse_value
 from confluid.state import _ENGINE_STATE, _active_report
 from confluid.validation import get_policy, validate_setattr
 
@@ -92,7 +92,8 @@ def configure(
         hint = " — for a config file path, use configure_from_file(path=...)" if isinstance(config, str) else ""
         logger.warning(f"configure(): config is a {type(config).__name__}, not a mapping; nothing applied{hint}")
         return report
-    config = expand_dotted_keys(Resolver(context=context if context is not None else config).resolve(config))
+    config = expand_dotted_keys(hoist_marker_placeholders(config))
+    config = Resolver(context=context if context is not None else config).resolve(config)
 
     # Register unused-tracking candidates: every top-level config key (dotted keys already
     # expanded to their block, which is what pass 7 marks used) is an override candidate —

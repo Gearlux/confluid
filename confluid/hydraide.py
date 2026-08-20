@@ -1,7 +1,7 @@
 """hydraide — the preprocessor: one resolved, plain-YAML document per config.
 
 ``emit(source)`` runs the first seven passes of a load — parse (either
-spelling), import, include, scope, interpolate, expand, broadcast — and
+spelling), import, include, scope, expand, interpolate, broadcast — and
 serializes the result: every marker carries its FINAL kwargs, every ordering
 contest is settled, a shared marker is a YAML anchor, deferral is
 ``_partial_: true``. The emitted document is ordinary YAML that ``yaml.safe_load``

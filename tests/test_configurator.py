@@ -818,3 +818,17 @@ def test_configure_does_not_replant_captured_ctor_params_it_did_not_change() -> 
     changed = _EagerBox(width=5)
     configure(changed, config={"width": 7})
     assert vars(changed)["width"] == 7, "the con: a config that CHANGES the param still applies it"
+
+
+def test_an_empty_string_value_stays_the_empty_string() -> None:
+    """PA7 ripple — parse_value("") is "" now; a {"name": ""} override used to set
+    None (yaml.safe_load("") parses empty text to null)."""
+
+    @configurable
+    class Named:
+        def __init__(self, name: str = "default") -> None:
+            self.name = name
+
+    obj = Named()
+    configure(obj, config={"Named.name": ""})
+    assert obj.name == ""

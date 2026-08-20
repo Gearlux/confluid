@@ -14,8 +14,8 @@ run in, what each one consumes, and what it decides **permanently**. Most
    │     ── until="raw" stops here: the raw document, scope blocks intact ──  │
    │                                                                          │
    │  4  SCOPE        _scope_ / _notscope_        blocks spliced or dropped   │
-   │  5  INTERPOLATE  ${...} and $VAR             substituted — BURNS IN      │
-   │  6  EXPAND       a.b.c: v                    nested at the written slot  │
+   │  5  EXPAND       a.b.c: v                    nested at the written slot  │
+   │  6  INTERPOLATE  ${...} and $VAR             substituted — BURNS IN      │
    │                                                                          │
    │     ── until="document" stops here: the Fluid IR ──                      │
    │                                                                          │
@@ -41,8 +41,8 @@ run in, what each one consumes, and what it decides **permanently**. Most
 | 2 | **Import** | `import: pkg.mod` | the module is imported, so its `@configurable` classes are registered | a failed import warns, it does not raise |
 | 3 | **Include** | `include: other.yaml` | files merge into ONE document; the included document is **pasted at the `include:` line** | nothing is resolved yet |
 | 4 | **Scope** | `scopes=[...]` from the caller, filled in per dimension from the document's static `default_scopes:` | active blocks splice their contents at the wrapper's slot, inactive ones vanish | the activation map itself — nothing downstream can see it |
-| 5 | **Interpolate** | `${env:VAR}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included | `${ref:}` targets — pass 7 settles those, so an override merged into the document before then is what they see |
-| 6 | **Expand** | `trainer.lr: 0.1` | dotted keys nest, anchored where the dotted spelling was written; kwargs written on a reference are folded into the referent marker's own kwargs | `'*'` / `'**'` — ordinary path segments here |
+| 5 | **Expand** | `trainer.lr: 0.1` | dotted keys nest, anchored where the dotted spelling was written; kwargs written on a reference are folded into the referent marker's own kwargs; a dotted write through an unresolved `${...}` string is refused (`${ref:...}` values are already markers by now — they hoist just before this pass) | `'*'` / `'**'` — ordinary path segments here |
+| 6 | **Interpolate** | `${env:VAR}`, `${a.b}`, `$VAR` | the substituted text **burns in**, marker kwargs included — and a `${a.b}` reads the EXPANDED tree, the same answer the returned document gives | `${ref:}` targets — pass 7 settles those, so an override merged into the document before then is what they see |
 | 7 | **Broadcast** | the whole document as a flat view | which value each node's kwargs end up with (document order, last spec wins); every `${ref:}` is settled — a marker is shared by identity, a plain value is inlined; an unresolvable reference OR an unresolvable `_target_:` class is a located error | `PartialClass` markers — settled but not built |
 | 8 | **Instantiate** | the settled tree — what `hydraide` emits | every marker at any depth is constructed from its settled kwargs (no second look at the document), kwargs validated under `policy.yaml`, ctor kwargs captured for `dump()` | `PartialClass` markers — construction is the one thing deferral withholds |
 | 9 | **Solidify** | the built graph | `solidify()` fires post-order — children final, then the parent | objects flowed with `solidify=False` |
@@ -70,7 +70,11 @@ data are idempotent, so `load(load(x, until="document"))` is `load(x)`.
 
 ## What the order answers
 
-**"Why is my `${...}` frozen?"** — Interpolation (5) runs *before* anything is
+**"Why does `${train.lr}` agree with the tree `load()` returns?"** — Expansion (5)
+runs *before* interpolation (6), so a dotted spelling and its nested twin have
+already merged (document order, last wins) when the placeholder reads the key.
+
+**"Why is my `${...}` frozen?"** — Interpolation (6) runs *before* anything is
 built (8), and it is a single pass. The value it produced is what the marker
 carries from then on; `dump()` emits it and a deferred slot flowed an hour later
 still sees it. For a value that must follow a LATER override, use `${ref:}` — it is
@@ -81,7 +85,7 @@ reference to a marker is that marker, and one that resolves to nothing is an err
 naming its line.
 
 **"Why can't a `_scope_` block choose a `${...}` value?"** — Scopes (4) resolve
-before interpolation (5), and the order is forced: a `${a.b}` may read a key that
+before interpolation (6), and the order is forced: a `${a.b}` may read a key that
 only an active block provides, so which blocks are active must be settled first.
 Activation therefore comes from the caller's `scopes=[...]` — expanded through the
 document's static `scope_aliases:`, and filled in per dimension from its static
