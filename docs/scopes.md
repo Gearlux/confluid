@@ -157,6 +157,7 @@ The rule is narrow, and three neighbouring cases stay silent on purpose:
 | the dimension is **not declared** at all | inert no-op — a CLI may pass a dimension a config has not grown into yet |
 | the dimension is **not activated** | its `default_scopes:` value if the document declares one, else the unscoped keys |
 | the dimension carries **any** `_notscope_` block | every value is accepted — see below |
+| a **bare** activation of a KEYED dimension (`--scope framework` with only `framework=…` blocks) | a `ScopeError` naming the declared values — a bare name can select nothing, and it would silently suppress the `default_scopes:` value on top |
 
 That last row follows from what a negation means: `_notscope_: {task: segmentation}`
 is activated by *every* value except `segmentation`, and deactivated by that one.

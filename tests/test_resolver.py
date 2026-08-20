@@ -188,3 +188,26 @@ def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
     a.kwargs["child"] = b
     b.kwargs["parent"] = a  # cycle
     assert Resolver(context={}).resolve(a) is a
+
+
+# --------------------------------------------------------------------------- found-null and int-keyed paths
+
+
+def test_a_placeholder_to_a_NULL_value_resolves_to_none() -> None:
+    """SR6 (BUGS-2026-08-19) — the walker said None for FOUND-null and for a miss
+    alike, so `${a.b}` to a legal null stayed the literal text."""
+    from confluid import load
+
+    assert load("a: {b: null}\nuse: ${a.b}\n", until="document")["use"] is None
+
+
+def test_int_keyed_tables_are_addressable_by_every_path_spelling() -> None:
+    """SR7 — the literal-int segment stepped lists only; the same dict step the
+    `idxref` branch always had covers `{1: DJI}` and `{'1': DJI}` alike."""
+    from confluid import load
+
+    doc = load("class_names: {1: DJI, 2: MAVIC}\nuse: ${class_names.1}\nuse2: ${class_names[2]}\n", until="document")
+    assert doc["use"] == "DJI"
+    assert doc["use2"] == "MAVIC"
+    assert load("names: {'1': DJI}\nuse: ${names.1}\n", until="document")["use"] == "DJI"
+    assert load("items: [a, b]\nuse: ${items.1}\n", until="document")["use"] == "b", "list indexing unchanged"

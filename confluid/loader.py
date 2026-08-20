@@ -28,7 +28,7 @@ import yaml
 from loggair import get_logger
 
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
-from confluid.merger import deep_merge, expand_dotted_keys
+from confluid.merger import deep_merge, document_copy, expand_dotted_keys
 from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, fold_reference_kwargs, parse_value
 from confluid.scopes import normalize_active, parse_default_scopes, parse_scope_arg, resolve_scopes
 
@@ -1188,6 +1188,19 @@ def _load(
             data = yaml.load(str(data), Loader=ConfluidLoader) or {}
             data = _import_and_include(data, base_path, {})
     else:
+        # Already-parsed data ALIASES the caller's objects, and the passes below write
+        # in place — scope resolution rewrote a marker's kwargs, so a RAW document
+        # loaded twice answered with the FIRST call's activation and
+        # `discover_dimension_values(raw)` went empty after one load (BUGS-2026-08-19
+        # SR3); `import:` was popped from the caller's own dict (PA26's caller half).
+        # Copy structurally: markers through a memo (a shared marker stays ONE marker),
+        # every non-document leaf by identity. An explicit `context` rides the SAME
+        # memo — `load(doc["car"], context=doc)` relies on the marker being the same
+        # object in both, and separate copies would sever the slot-identity search.
+        copy_memo: Dict[int, Any] = {}
+        data = document_copy(data, copy_memo)
+        if context is not None:
+            context = document_copy(context, copy_memo)
         data = _import_and_include(data, base_path, {})
     if until == "raw":
         return data

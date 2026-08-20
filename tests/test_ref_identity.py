@@ -457,3 +457,37 @@ def test_a_genuinely_unresolvable_reference_is_still_kept_deferred() -> None:
     with active_context({"unrelated": 1}):
         host = flow(Target(_Holder3, child=Reference("missing_key")))
     assert isinstance(host.child, Reference)
+
+
+def test_a_dotted_ref_to_a_NULL_value_is_the_value_not_an_attribute_refusal() -> None:
+    """SR6 — `!ref:cfg.x` with `cfg: {x: null}` was refused as "reads the ATTRIBUTE
+    `x` of the object built at `cfg`" — an object that does not exist. A structural
+    walk that FOUND null is a hit."""
+
+    @configurable
+    class _NullHost:
+        def __init__(self, v: Any = 1) -> None:
+            self.v = v
+
+    built = load("cfg: {x: null}\nuse: {_target_: _NullHost, v: {_ref_: cfg.x}}\n")
+    assert built["use"].v is None
+    assert load("cfg: {x: 0}\nuse: {_ref_: cfg.x}\n")["use"] == 0, "falsy-but-present still resolves (con)"
+
+
+def test_a_genuine_attribute_reference_is_still_refused() -> None:
+    """The con for SR6: the refusal fires for a walk that LEAVES structure, not for
+    a structural hit on a null."""
+
+    @configurable
+    class _SplitLike:
+        def __init__(self, v: int = 2) -> None:
+            self.v = v
+
+    with pytest.raises(ConfigurationError, match="reads the ATTRIBUTE"):
+        load("split: {_target_: _SplitLike, v: 2}\nt: {_ref_: split.train}\n")
+
+
+def test_a_dotted_ref_into_an_int_keyed_table_resolves() -> None:
+    """SR7 — `!ref:class_names[1]` on `{1: DJI}` was refused as an attribute ref."""
+    built = load("class_names: {1: DJI, 2: MAVIC}\nuse: {_ref_: 'class_names[1]'}\n")
+    assert built["use"] == "DJI"

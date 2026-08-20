@@ -164,6 +164,12 @@ Literal["raw", "document", "settled", "objects"]` (`loader.Stage`; `_STAGES = ge
 the ONE runtime tuple, an unknown value raises `ConfigurationError`, never defaults). `load` accepts
 a path, YAML text or already-parsed data (dict / list / marker) and runs the passes the input still
 needs — passes already applied are idempotent, so `load(load(x, until="document")) == load(x)`.
+**Parsed-data input is COPIED on entry** (`merger.document_copy`, 2026-08-19 — SR3): the passes
+write in place (pass 4 rewrote a marker's kwargs, `import:` was popped from the caller's dict),
+so a raw document loaded twice answered with the FIRST call's activation and
+`discover_dimension_values(raw)` went empty after one load. Markers copy through a memo (a
+shared marker stays ONE marker) and an explicit `context` rides the SAME memo — the
+slot-identity search across `data`/`context` depends on it; non-document leaves keep identity.
 `return_paths=True` returns `(result, paths)`, `paths` being every file read for that call in read
 order (a scope-spliced include included). Do NOT add a second entry name for a stage, and do
 not make a stage reachable for one input shape only — every stage takes a path, text or parsed
@@ -331,6 +337,16 @@ a developer's real `~/.config` must never leak into a run.
 **Rule.** Every dotted/bracketed path — `!ref:` targets, `${key.path}`, `configure()`'s dotted
 candidates — is tokenized by `resolver._parse_path_segments` and walked by `_walk_path_segments`.
 Extend the shared walker; never add a fourth grammar — and never re-add a second POLICY.
+The walker's MISS is the `PATH_MISS` sentinel, never `None` (2026-08-19, BUGS-2026-08-19
+SR6/SR7): a walk that FOUND a legal `null` is a hit — conflating the two refused
+`!ref:cfg.x` on `cfg: {x: null}` as an "attribute reference" naming an object that does not
+exist, and left `${a.b}` to the same null as literal text. The three consumers where the
+difference matters read the sentinel (`refuse_attribute_reference`'s probe, the `${...}`
+placeholder, pass 7's `_settle_reference`); `_lookup_path` keeps the legacy None contract for
+pass-5 aliasing and the `$key` selector, which act only on non-null hits. The literal-int
+segment steps into a DICT exactly as the `idxref` segment always did (int key first,
+digit-string fallback), so an int-keyed table (`class_names: {1: DJI}`) is addressable by
+every spelling.
 
 **Rule — attribute references are REMOVED (record 19, user ruling 1b, 2026-08-17).** The
 walker is STRUCTURAL: a `key` segment steps into a dict, an `idx` segment into a list, and
@@ -1401,7 +1417,10 @@ entry). An EMPTY body yields `{}` — "declares nothing" is a real state. A sequ
 MAPPING slot raises a located `ScopeError`, but ONLY when the block is ACTIVE (an inactive block is
 dropped without its contents being examined).
 
-**Rule.** An ACTIVE keyed scope MUST name a value the document declares, else `ScopeError`. Three
+**Rule.** An ACTIVE keyed scope MUST name a value the document declares, else `ScopeError` —
+and a BARE activation of a dimension declared with keyed values alone is refused the same way,
+naming the values and their lines (2026-08-19, SR13: it selected nothing AND suppressed the
+`default_scopes:` value, so the run silently used neither). Three
 exemptions are load-bearing: an UNDECLARED dimension is an inert no-op; an UNSET dimension resolves
 to defaults; a dimension carrying ANY `!notscope:` block accepts EVERY value. Consequently
 `discover_dimension_values` reports POSITIVE values only and maps a negation-only dimension to an

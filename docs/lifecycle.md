@@ -49,7 +49,10 @@ run in, what each one consumes, and what it decides **permanently**. Most
 
 ## Where you can stop
 
-`load` is the ONE door. It takes a path, YAML text or already-parsed data, runs
+`load` is the ONE door. It takes a path, YAML text or already-parsed data —
+parsed data is copied structurally on entry, so the caller's tree is never
+mutated (load a raw document twice under different activations and each call
+answers for itself) — runs
 the passes the input still needs, and stops where `until=` says (a closed
 Literal — a typo raises rather than defaulting). Passes already applied to the
 data are idempotent, so `load(load(x, until="document"))` is `load(x)`.

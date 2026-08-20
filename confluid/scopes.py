@@ -280,8 +280,20 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
     _DECLARATION_LOCS.clear()
     positive, negated = _walk_dimensions(config)
     for key, value in active.items():
-        if value is None or key in negated or not positive.get(key):
+        if key in negated or not positive.get(key):
             continue
+        if value is None:
+            # A BARE activation of a KEYED dimension (`--scope framework` against
+            # `framework=keras|lightning` blocks) can never select a variant — and it
+            # SUPPRESSED the document's `default_scopes` value on top, so the run
+            # silently used neither (BUGS-2026-08-19 SR13). Name the values.
+            known = ", ".join(sorted(positive[key]))
+            locs = ", ".join(_DECLARATION_LOCS.get(key, []))
+            declared_at = f" (declared at {locs})" if locs else ""
+            raise ScopeError(
+                f"{key} is a KEYED dimension — a bare activation selects nothing. "
+                f"This document declares {key} with: {known}{declared_at}; write {key}=<value>."
+            )
         if value not in positive[key]:
             known = ", ".join(sorted(positive[key]))
             locs = ", ".join(_DECLARATION_LOCS.get(key, []))

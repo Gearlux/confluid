@@ -329,3 +329,42 @@ def test_a_live_value_in_a_data_document_keeps_its_identity() -> None:
     assert load({"x": o, "y": 1}, until="document")["x"] is o
     lock = threading.Lock()
     assert load({"lock": lock, "y": 1}, until="document")["lock"] is lock
+
+
+# --------------------------------------------------------------------------- load() never mutates parsed input
+
+
+def test_a_raw_document_survives_loads_under_different_activations() -> None:
+    """SR3 (BUGS-2026-08-19) — pass 4 rewrote the caller's marker kwargs in place,
+    so the SECOND load answered with the FIRST call's activation, and discovery
+    went empty. The raw→discover→load-with-scopes sequence is the documented CLI
+    pattern; the raw tree must survive it."""
+    from confluid import discover_dimension_values
+
+    raw = load(
+        "m: !class:collections.Counter\n  v: 1\n  alt: !scope:model=convnet\n    v: 10\n",
+        until="raw",
+    )
+    assert discover_dimension_values(raw) == {"model": {"convnet"}}
+    first = load(raw, scopes=["model=convnet"], until="document")
+    assert first["m"].kwargs == {"v": 10}
+    second = load(raw, until="document")
+    assert second["m"].kwargs == {"v": 1}, "the first activation must not burn into the raw tree"
+    assert discover_dimension_values(raw) == {"model": {"convnet"}}, "discovery survives the loads"
+
+
+def test_load_does_not_pop_import_from_the_callers_dict() -> None:
+    """PA26's caller half, closed by the same copy."""
+    caller = {"import": "os", "a": 1}
+    load(caller, until="raw")
+    assert caller == {"import": "os", "a": 1}
+
+
+def test_the_copy_spans_data_AND_context_through_one_memo() -> None:
+    """The con: `load(doc["car"], context=doc)` locates the marker's slot in the
+    context by IDENTITY — separate copies would sever it (the ordered-broadcast
+    pin next door relies on this shape end to end)."""
+    document: dict = {"box": Target(_Box, size=1), "size": 9}
+    built = load(document["box"], context=document)
+    assert built.size == 9, "the later bare key still reaches the marker through the copied context"
+    assert document["box"].kwargs == {"size": 1}, "the caller's marker is untouched"

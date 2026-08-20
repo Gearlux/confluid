@@ -139,6 +139,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`load()` never mutates parsed input; found-null is a hit; int-keyed tables are addressable;
+  a bare keyed activation is refused** (BUGS-2026-08-19 SR3/SR6/SR7/SR13, 2026-08-19). Measured
+  before → after: a raw document loaded twice answered with the FIRST call's activation and
+  `discover_dimension_values(raw)` went empty (pass 4 rewrote the caller's marker kwargs in
+  place; `import:` was popped from the caller's dict — PA26's caller half, BC20's kwarg write) →
+  parsed data is structurally copied on entry (markers through a memo, an explicit `context` on
+  the SAME memo, leaves by identity), each load answers for itself and discovery survives;
+  `!ref:cfg.x` on `cfg: {x: null}` was refused as an attribute reference and `${a.b}` to the same
+  null stayed literal text → the walker's MISS is a sentinel, found-null resolves to `None`
+  (falsy-but-present and the genuine attribute refusal pinned as cons); `${class_names.1}` /
+  `!ref:class_names[1]` on `{1: DJI}` were literal/refused → `DJI` (int key first, digit-string
+  fallback; list indexing unchanged); `scopes=["framework"]` against keyed blocks selected
+  nothing and suppressed `default_scopes` → a located `ScopeError` naming the declared values
+  (defaults and boolean dimensions pinned unchanged). Pinned across `tests/test_load_stages.py`,
+  `tests/test_resolver.py`, `tests/test_ref_identity.py`, `tests/test_scopes.py`.
+
 - **The tag spelling refuses what it silently degraded, and legal-but-odd inputs stop crashing
   raw** (BUGS-2026-08-19 PA11/PA13/PA14/PA19/PA20/PA28, 2026-08-19). Measured before → after:
   `!class:Foo bar` and a sequence body dropped their data whole → located refusals naming the

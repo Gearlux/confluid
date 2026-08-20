@@ -208,6 +208,12 @@ def _parse_path_segments(path: str) -> Optional[List[_PathSegment]]:
     return segments
 
 
+#: The walker's MISS sentinel: ``None`` is a legal FOUND value (`cfg: {x: null}`), and
+#: conflating the two refused a dotted ref to a null as an "attribute reference" while
+#: `${a.b}` to the same null stayed a literal (BUGS-2026-08-19 SR6).
+PATH_MISS: Any = object()
+
+
 def _walk_path_segments(
     segments: List[_PathSegment],
     context: Any,
@@ -237,33 +243,45 @@ def _walk_path_segments(
             if isinstance(current, dict) and val in current:
                 current = current[val]
                 continue
-            return None
+            return PATH_MISS
         if kind == "idx":
             assert isinstance(val, int)
             if isinstance(current, (list, tuple)) and -len(current) <= val < len(current):
                 current = current[val]
                 continue
-            return None
+            if isinstance(current, dict):
+                # An int-keyed table (`class_names: {1: DJI}`) is addressable, exactly
+                # as the `idxref` branch below always allowed — the literal-int branch
+                # returned MISS for every dict, so `${class_names.1}` stayed a literal
+                # and `!ref:class_names[1]` was refused (BUGS-2026-08-19 SR7). The int
+                # key first, the digit-string key as the fallback.
+                if val in current:
+                    current = current[val]
+                    continue
+                if str(val) in current:
+                    current = current[str(val)]
+                    continue
+            return PATH_MISS
         if kind == "idxref":
             assert isinstance(val, str)
             if not isinstance(context, dict):
-                return None
+                return PATH_MISS
             ref_val = lookup_fn(val, context)
             if ref_val is None:
-                return None
+                return PATH_MISS
             if isinstance(current, (list, tuple)):
                 if not isinstance(ref_val, int):
-                    return None
+                    return PATH_MISS
                 if -len(current) <= ref_val < len(current):
                     current = current[ref_val]
                     continue
-                return None
+                return PATH_MISS
             if isinstance(current, dict):
                 if isinstance(ref_val, (str, int)) and ref_val in current:
                     current = current[ref_val]
                     continue
-                return None
-            return None
+                return PATH_MISS
+            return PATH_MISS
     return current
 
 
@@ -315,7 +333,7 @@ def refuse_attribute_reference(target: str, context: Optional[Dict[str, Any]], w
     if first not in ctx or "." not in target and "[" not in target:
         return  # not a document key (an import path), or a whole-object ref — not this refusal's case
     segments = _parse_path_segments(target)
-    if segments is not None and _walk_path_segments(segments, ctx, Resolver(context=ctx)._lookup_path) is not None:
+    if segments is not None and _walk_path_segments(segments, ctx, Resolver(context=ctx)._lookup_path) is not PATH_MISS:
         return  # a structural walk that succeeds is legitimate
     attr = target.rsplit(".", 1)[-1] if "." in target else target
     raise ConfigurationError(
@@ -603,6 +621,20 @@ class Resolver:
         segments = _parse_path_segments(path)
         if segments is None:
             return None
+        walked = _walk_path_segments(segments, context, self._lookup_path)
+        return None if walked is PATH_MISS else walked
+
+    def _lookup_path_found(self, path: str, context: Dict[str, Any]) -> Any:
+        """Like :meth:`_lookup_path`, but a MISS is :data:`PATH_MISS`, never ``None`` —
+        for the callers where a null VALUE is a legal answer (SR6): the ``${a.b}``
+        placeholder and pass 7's structural reference walk. The legacy None contract
+        stays for pass-5 marker aliasing and the ``$key`` selector, which only act on
+        non-null hits anyway."""
+        if path in context:
+            return context[path]
+        segments = _parse_path_segments(path)
+        if segments is None:
+            return PATH_MISS
         return _walk_path_segments(segments, context, self._lookup_path)
 
     def _interpolate(self, value: str, local_context: Optional[Dict[str, Any]] = None) -> Any:
@@ -735,8 +767,8 @@ class Resolver:
         if _is_config_path(name):
             for ctx in (local_context, self.context):
                 if ctx:
-                    found = self._lookup_path(name, ctx)
-                    if found is not None:
+                    found = self._lookup_path_found(name, ctx)
+                    if found is not PATH_MISS:
                         return found, True
         else:
             env_val = os.getenv(name)
