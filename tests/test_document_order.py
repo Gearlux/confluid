@@ -357,3 +357,52 @@ def test_configure_orders_a_rider_against_a_block_like_the_load_path(document: s
     configure(car, config=document)
 
     assert flow(car.engine).power == expected
+
+
+# --------------------------------------------------------------------------- #
+# A grouping dict is transparent for POSITION too (BUGS-2026-08-19 BC2 / BC9).
+#
+# The docs say a plain grouping dict "consumes no nesting level"; its entries
+# are therefore spliced into the parent view AT THE GROUP KEY'S SLOT — never
+# appended after every later line. Appending gave a marker inside a group an
+# unbeatable position (its own kwargs sat after a later bare key, class block
+# and rider alike), and a key restated inside a group kept the position of an
+# EARLIER root key of the same name, so adding an earlier LOSING line flipped
+# which later line won (E4, re-opened as BC9).
+# --------------------------------------------------------------------------- #
+
+_GROUPED = "group:\n  node: !class:OrderedEngine(power=1)\n"
+
+
+@pytest.mark.parametrize(
+    "label, document, expected",
+    [
+        ("later bare key wins", _GROUPED + "power: 99\n", 99),
+        ("later class block wins", _GROUPED + "OrderedEngine: {power: 99}\n", 99),
+        ("later rider wins", _GROUPED + "'**': {power: 99}\n", 99),
+        ("earlier bare key loses to the own kwarg (con)", "power: 99\n" + _GROUPED, 1),
+    ],
+)
+def test_a_marker_inside_a_grouping_dict_competes_at_the_GROUPS_position(
+    label: str, document: str, expected: int
+) -> None:
+    assert load(document)["group"]["node"].power == expected, label
+
+
+def test_a_marker_in_a_dict_valued_kwarg_competes_at_its_slot_too() -> None:
+    document = (
+        "car: !class:OrderedCar\n"
+        "  engine: !lazy:OrderedEngine(power=1)\n"
+        "table:\n"
+        "  spare: !class:OrderedEngine(power=1)\n"
+        "power: 99\n"
+    )
+    assert load(document)["table"]["spare"].power == 99
+
+
+def test_a_key_restated_inside_a_group_lands_at_the_GROUPS_later_position() -> None:
+    """BC9 — an earlier, LOSING root key must not change which later line wins."""
+    group = "group:\n  node: !class:OrderedEngine(power=1)\n  power: 50\n"
+    assert load(group)["group"]["node"].power == 50
+    assert load("power: 99\n" + group)["group"]["node"].power == 50, "the earlier root key flipped the contest"
+    assert load(group + "power: 99\n")["group"]["node"].power == 99, "a LATER root key still wins (con)"
