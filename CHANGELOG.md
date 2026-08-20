@@ -139,6 +139,17 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A class block's C2 verdict protects the addressed node, not its subtree** (BUGS-2026-08-19
+  BC5, 2026-08-19 — a regression from the phase-4 C2 fix). `_view_for` popped the bare keys the
+  block out-positioned from the view used for the WHOLE descent below the slot, so a grandchild
+  the block never addressed lost the cascade: `lr: 9.0` + a later `Trainer: {optimizer: {lr: 5.0}}`
+  gave `optimizer.lr = 5.0` (right) but `optimizer.sched.lr = 1.0` — without the block line it is
+  `9.0`. The narrowed view still protects the tuned marker's own kwargs; its child view is now
+  rebuilt from the un-narrowed context (`_flow_recursive(descend_context=…)`), so `sched.lr = 9.0`
+  either way. Same fix for the `'**'` rider variant. Pinned:
+  `tests/test_cross_path_pins.py::test_a_block_verdict_protects_the_slot_but_not_its_descendants`
+  (all four orderings, cons included).
+
 - **The schema mirror is built for every legal signature, JSON-schemas, and never switches
   validation off silently** (BUGS-2026-08-19 N1/N2/N3/N4/N9/N10/N11/N13, 2026-08-19). Measured
   before: a non-runtime `Protocol`-typed param made `Cls()` raise a raw `pydantic_core.SchemaError`;

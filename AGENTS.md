@@ -828,7 +828,11 @@ delivering block's own index. `_MergeSink` MUST record it (`beaten_per_slot`) an
 carries it out on the returned `_View`, because by the time the engine sees the merged kwargs they
 have been spliced at the MARKER's slot and the block's position is gone. Pass 7 applies the verdict
 ITSELF for the descent into that slot (`engine._flow_recursive._view_for` pops the beaten bare
-keys and rider entries), so the settled document already carries the answer;
+keys and rider entries) — and the verdict binds the ADDRESSED node only: the narrowed view
+protects that marker's own kwargs, while its child view is rebuilt from the UN-narrowed context
+(`descend_context`), because a grandchild the block never addressed must still see the cascade
+(2026-08-19, BUGS-2026-08-19 BC5 — the pop used to cut a later bare key off from the whole
+subtree). So the settled document already carries the answer;
 `_late_bare_keys_per_slot` still computes the verdict for a marker's OWN dict kwargs and the
 engine's post-init tune consumes it for a body slot pass 7 cannot see. Deleting either half is
 wrong: the second answers a question the first cannot.

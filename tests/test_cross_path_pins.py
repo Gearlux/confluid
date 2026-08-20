@@ -354,3 +354,55 @@ def test_the_block_vs_bare_contest_agrees_across_BOTH_paths(layout: str) -> None
     via_configure = flow(live.engine).power
 
     assert via_load == via_configure == expected
+
+
+# ---------------------------------------------------------------------------
+# The C2 verdict binds the ADDRESSED node, never its subtree
+# (BUGS-2026-08-19 BC5 — a regression from the C2 fix itself)
+#
+# `Trainer: {optimizer: {lr: 5.0}}` addresses the optimizer SLOT. The verdict
+# ("the block out-positioned the bare `lr`") must protect the optimizer's own
+# lr — and nothing deeper: the optimizer's child `sched` was never addressed,
+# so the bare `lr: 9.0` cascade still reaches it. The fix popped the beaten
+# bare keys from the view used for the WHOLE descent below the slot, so every
+# grandchild silently lost the cascade.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class BC5Sched:
+    def __init__(self, lr: float = 0.0) -> None:
+        self.lr = lr
+
+
+@configurable
+class BC5Opt:
+    def __init__(self, lr: float = 0.0, sched: Any = None) -> None:
+        self.lr = lr
+        self.sched = sched
+
+
+@configurable
+class BC5Trainer:
+    def __init__(self, optimizer: Any = None) -> None:
+        self.optimizer = optimizer
+
+
+_BC5_TREE = "t: !class:BC5Trainer\n  optimizer: !class:BC5Opt\n    lr: 1.0\n    sched: !class:BC5Sched {lr: 1.0}\n"
+
+
+@pytest.mark.parametrize(
+    "label, tail, want_opt, want_sched",
+    [
+        ("bare then LATER block", "lr: 9.0\nBC5Trainer: {optimizer: {lr: 5.0}}\n", 5.0, 9.0),
+        ("block then LATER bare", "BC5Trainer: {optimizer: {lr: 5.0}}\nlr: 9.0\n", 9.0, 9.0),
+        ("rider then LATER block", "'**': {lr: 9.0}\nBC5Trainer: {optimizer: {lr: 5.0}}\n", 5.0, 9.0),
+        ("bare only (con)", "lr: 9.0\n", 9.0, 9.0),
+    ],
+)
+def test_a_block_verdict_protects_the_slot_but_not_its_descendants(
+    label: str, tail: str, want_opt: float, want_sched: float
+) -> None:
+    optimizer = load(_BC5_TREE + tail)["t"].optimizer
+    assert optimizer.lr == want_opt, label
+    assert optimizer.sched.lr == want_sched, f"{label}: the grandchild was never addressed by the block"
