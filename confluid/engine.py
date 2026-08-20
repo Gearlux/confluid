@@ -95,7 +95,7 @@ from confluid.introspect import init_callable, init_setattr_names, slot_names, s
 from confluid.partial import partial_param_names
 from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
-from confluid.resolver import Resolver, refuse_attribute_reference, resolve_reference_path
+from confluid.resolver import PATH_MISS, Resolver, refuse_attribute_reference, resolve_reference_path
 
 # The engine state moved to `confluid.state` so `confluid.broadcast` can read
 # the ambient report without importing the engine (see that module's docstring
@@ -588,8 +588,8 @@ def _settle_reference(ref: Reference, parent_context: Optional[Dict[str, Any]]) 
         )
     refuse_attribute_reference(target, root if _first_key(target) in root else scope, _at_yaml_loc(ref))
     for ctx in (scope, root):
-        found = Resolver(context=ctx)._lookup_path(target, ctx)
-        if found is not None and found is not ref:
+        found = Resolver(context=ctx)._lookup_path_found(target, ctx)
+        if found is not PATH_MISS and found is not ref:
             return (
                 _flow_recursive(found, parent_context=parent_context)
                 if isinstance(found, (Fluid, dict, list))

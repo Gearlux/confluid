@@ -7,7 +7,7 @@
 A `${...}` placeholder in a string value is substituted at load time. The name decides the source:
 
 - **Plain name → environment variable** (the historical behaviour): `${HOME}`, `${PORT:8080}` (with an optional `:default`).
-- **Dotted / bracketed name → another config key**, resolved against the config tree with the same path machinery `${ref:}` uses: `${train.dataset}`, `${items[0]}`, `${db.port:5432}`.
+- **Dotted / bracketed name → another config key**, resolved against the config tree with the same path machinery `${ref:}` uses: `${train.dataset}`, `${items[0]}`, `${db.port:5432}`. An int-keyed table is addressable too (`${class_names.1}` on `{1: DJI}` — int key first, digit-string key as the fallback), and a key holding a legal `null` resolves to `None` rather than leaving the literal text.
 
 ```yaml
 train:

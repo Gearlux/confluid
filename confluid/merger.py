@@ -1,5 +1,5 @@
 from copy import copy
-from typing import Any, Callable, Dict, FrozenSet, cast
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, cast
 
 from confluid.fluid import Fluid, ScopeBlock, Target
 
@@ -105,6 +105,46 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
         result.pop(key, None)
         result[key] = merged
     return result
+
+
+def document_copy(value: Any, _memo: "Optional[Dict[int, Any]]" = None) -> Any:
+    """A load-private copy of an already-parsed document — the passes mutate THE COPY.
+
+    ``load(data)`` runs passes that write in place — scope resolution rewrites a
+    marker's kwargs, interpolation burns in, ``import:`` is popped — so a RAW
+    document loaded twice answered with the FIRST call's activation and
+    ``discover_dimension_values(raw)`` went empty after one load (BUGS-2026-08-19
+    SR3; the pop was PA26's caller-dict half, the kwarg write BC20). Containers,
+    markers and scope blocks are rebuilt; markers are copied THROUGH the memo so a
+    shared marker stays ONE marker in the copy (`${ref:}` identity — and the memo is
+    also what lets an explicit `context` share the copy with `data`); every other
+    leaf keeps identity, exactly as `_preserve_identity_copy` treats leaves.
+    """
+    memo: Dict[int, Any] = _memo if _memo is not None else {}
+    if id(value) in memo:
+        return memo[id(value)]
+    if isinstance(value, Fluid):
+        duplicate = copy(value)
+        memo[id(value)] = duplicate  # the memo entry pins what it keys on (record 16)
+        duplicate.kwargs = {k: document_copy(v, memo) for k, v in value.kwargs.items()}
+        return duplicate
+    if isinstance(value, ScopeBlock):
+        block = ScopeBlock(dict(value.dims), value.negate, document_copy(value.contents, memo))
+        block._yaml_loc = value._yaml_loc
+        memo[id(value)] = block
+        return block
+    if isinstance(value, dict):
+        fresh_map: Dict[Any, Any] = {}
+        memo[id(value)] = fresh_map
+        for k, v in value.items():
+            fresh_map[k] = document_copy(v, memo)
+        return fresh_map
+    if isinstance(value, list):
+        fresh_list: List[Any] = []
+        memo[id(value)] = fresh_list
+        fresh_list.extend(document_copy(v, memo) for v in value)
+        return fresh_list
+    return value
 
 
 def _preserve_identity_copy(value: Any) -> Any:

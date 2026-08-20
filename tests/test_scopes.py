@@ -1206,3 +1206,19 @@ def test_a_non_string_scope_value_is_refused_like_a_boolean() -> None:
         load("b:\n  _scope_: {f: 010}\n  a: 1\n", until="raw")
     raw = load("b:\n  _scope_: {f: '0.10'}\n  a: 1\n", until="raw")
     assert raw["b"].dims == {"f": "0.10"}, "the quoted spelling keeps its text (the con)"
+
+
+def test_a_bare_activation_of_a_KEYED_dimension_is_refused_naming_the_values() -> None:
+    """SR13 (BUGS-2026-08-19) — `scopes=["framework"]` against keyed blocks selected
+    nothing AND suppressed the document's default_scopes value, silently: the run
+    used neither. The refusal names the declared values and their lines."""
+    doc = (
+        "default_scopes: [framework=lightning]\n"
+        "l: !scope:framework=lightning\n  runnable: L\n"
+        "k: !scope:framework=keras\n  runnable: K\n"
+    )
+    with pytest.raises(ScopeError, match=r"KEYED dimension.*keras, lightning.*framework=<value>"):
+        load(doc, scopes=["framework"], until="document")
+    assert load(doc, until="document") == {"runnable": "L"}, "no activation still takes the default (con)"
+    boolean = load("d: !scope:debug\n  verbose: true\n", scopes=["debug"], until="document")
+    assert boolean == {"verbose": True}, "a bare BOOLEAN activation is untouched (con)"
