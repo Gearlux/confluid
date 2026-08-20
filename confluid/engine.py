@@ -341,7 +341,12 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
 # ``accepts_any_key`` — importable from there or from ``confluid`` top-level.)
 
 
-def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, slot_key: Optional[str] = None) -> Any:
+def _flow_recursive(
+    data: Any,
+    parent_context: Optional[Dict[str, Any]] = None,
+    slot_key: Optional[str] = None,
+    descend_context: Optional[Dict[str, Any]] = None,
+) -> Any:
     # Shared-identity memo: ensures the same raw marker (reached directly or via
     # !ref:) always flows to the same Instance/Class marker object, so a single
     # live object is instantiated downstream.
@@ -395,7 +400,19 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, 
 
         # Splice this Fluid's prepared kwargs into its slot in parent_context to
         # preserve document order for downstream broadcasts.
-        child_ctx = _splice_kwargs_at_slot(parent_context or {}, self_key, merged_kwargs, receiver_cls=data.target)
+        # ``descend_context`` is the UN-narrowed view a C2-narrowed call rides in on
+        # (see ``_view_for`` below): the narrowed ``parent_context`` protects THIS
+        # marker's block-tuned own kwargs, but the verdict binds the addressed node
+        # only — descendants the block never addressed must still see the popped
+        # cascade keys, so the child view is built from the full context
+        # (BUGS-2026-08-19 BC5: `Trainer: {optimizer: {lr: 5}}` silently cut a later
+        # bare `lr: 9` off from optimizer's own child `sched`).
+        child_ctx = _splice_kwargs_at_slot(
+            (descend_context if descend_context is not None else parent_context) or {},
+            self_key,
+            merged_kwargs,
+            receiver_cls=data.target,
+        )
         # Routing entries ('**'/'*' glob blocks, STRICT sub-blocks) are
         # addressing metadata: they ride in child_ctx only, never into the
         # marker's kwargs (→ ctor / post-init / dump / settled output).
@@ -421,7 +438,14 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None, 
             return narrowed
 
         resolved_kwargs = {
-            k: _flow_recursive(v, parent_context=_view_for(k), slot_key=k)
+            k: _flow_recursive(
+                v,
+                parent_context=_view_for(k),
+                slot_key=k,
+                # A narrowed descent carries the full view alongside, so the
+                # narrowing stops at the addressed node (BC5, see child_ctx above).
+                descend_context=child_ctx if k in beaten else None,
+            )
             for k, v in merged_kwargs.items()
             if not (_is_glob_key(k) or merged_kwargs.scope_of(k) is _KeyScope.STRICT)
         }
