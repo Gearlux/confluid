@@ -664,3 +664,48 @@ def test_the_refusal_binds_the_TAG_spelling_too() -> None:
 
     with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
         load("w: !scope:mode=fast\n  size: 1\n  size: 2\n")
+
+
+# ---------------------------------------------------------------------------
+# Legal-but-odd inputs stop crashing raw (BUGS-2026-08-19 PA13 / PA14).
+# ---------------------------------------------------------------------------
+
+
+def test_empty_text_loads_as_an_empty_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA13 — `load("")` resolved '' to the working DIRECTORY and crashed with a raw
+    IsADirectoryError; empty text is text."""
+    monkeypatch.chdir(tmp_path)
+    assert load("") == {}
+    assert load("   ") == {}
+
+
+def test_a_directory_is_refused_as_not_a_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from confluid import ConfigFileNotFoundError
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "d.yaml").mkdir()
+    with pytest.raises(ConfigFileNotFoundError, match="is a directory, not a config file"):
+        load("d.yaml")
+    with pytest.raises(ConfigFileNotFoundError, match="is a directory"):
+        load(Path("."))
+
+
+def test_an_empty_include_path_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ConfigurationError, match="non-empty path"):
+        load("include: ''\nb: 2\n", until="raw")
+
+
+@pytest.mark.parametrize(
+    "document",
+    ["import: 42\na: 1\n", "import: [os, 42]\na: 1\n", "import: {os: x}\na: 1\n"],
+)
+def test_a_malformed_import_directive_is_refused(document: str) -> None:
+    """PA14 — `import: 42` crashed with a raw TypeError, a mixed list with an
+    AttributeError, and a dict silently imported its KEYS."""
+    with pytest.raises(ConfigurationError, match="import: takes a module name or a list of names"):
+        load(document, until="raw")
+
+
+def test_a_plain_import_still_imports(tmp_path: Path) -> None:
+    assert load("import: os\na: 1\n", until="raw") == {"a": 1}

@@ -139,6 +139,22 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The tag spelling refuses what it silently degraded, and legal-but-odd inputs stop crashing
+  raw** (BUGS-2026-08-19 PA11/PA13/PA14/PA19/PA20/PA28, 2026-08-19). Measured before → after:
+  `!class:Foo bar` and a sequence body dropped their data whole → located refusals naming the
+  shape; `!class:Foo(a=1, b=2)` (one space — the AGENTS-cited motivating failure) surfaced as
+  `Cannot resolve class: Foo(a=1,` → refused at parse naming the space rule; `(a)` and `(a=[1,2])`
+  silently dropped/corrupted kwargs → refused naming the fragment; `_target_:` inside a
+  `!class:` body became a ctor kwarg literally named `_target_` → refused as one spelling too
+  many; an empty `!scope:` suffix was silently inert → refused like the reserved-key spelling;
+  `_scope_: {f: 0.10}` minted `'0.1'` (never matching the CLI string or the tag's text) → the
+  boolean quote-it refusal covers every non-string; `import: 42`/`[os, 42]`/`{os: x}` crashed
+  raw or imported dict KEYS → one shape refusal like `include:`'s; `load("")`, `load(Path("."))`,
+  a directory named `d.yaml`, and `include: ''` crashed with raw `IsADirectoryError` → empty text
+  is `{}` and a directory is a located `ConfigFileNotFoundError`. Five con pins: the bare tag,
+  well-formed inline, mapping body, quoted dim values and `import: os` are untouched. Pinned:
+  `tests/test_plain_format.py`, `tests/test_scopes.py`, `tests/test_loader.py`.
+
 - **The dump round trip holds for opaque values, `**kwargs` extras and stamped function
   targets — and `configure()` stops replanting the capture** (BUGS-2026-08-19
   CD8/CD9/CD11/CD12, 2026-08-19). Measured before → after: a `Path` attribute dumped as

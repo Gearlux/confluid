@@ -305,7 +305,17 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
                     f'({{{dim.strip()}: "{str(value).lower()}"}}), or use {{{dim.strip()}: }} '
                     f"for a boolean DIMENSION with no value"
                 )
-            dims[dim.strip()] = None if value is None else str(value)
+            if value is not None and not isinstance(value, str):
+                # Same trap one type over (BUGS-2026-08-19 PA20): YAML coerces `0.10`
+                # to the float 0.1 and `010` to the int 8, so the str() mint produced
+                # '0.1' / '8' — values the tag spelling (which keeps its text) and the
+                # CLI activation string never match. Quote it, like the boolean.
+                raise ConfigurationError(
+                    f"{key} value for {dim.strip()!r} is the YAML {type(value).__name__} {value!r} — "
+                    f'quote it ({{{dim.strip()}: "{value}"}}) so it matches the activation string '
+                    f"a CLI passes and the text the tag spelling keeps"
+                )
+            dims[dim.strip()] = value
         return ScopeBlock(dims=dims, negate=key == NOTSCOPE_KEY, contents=body)
 
     path = mapping[key]
@@ -493,7 +503,7 @@ def _register_constructors() -> None:
     """
     from confluid.fluid import PartialClass, Reference, ScopeBlock, Target
 
-    def _parse_inline_kwargs(args_str: str) -> dict[str, Any]:
+    def _parse_inline_kwargs(args_str: str, where: str = "") -> dict[str, Any]:
         """Parse inline ``key=value`` pairs from a ``Name(...)`` tag suffix.
 
         The split is the shared grammar (``resolver._split_inline_pairs``);
@@ -505,6 +515,15 @@ def _register_constructors() -> None:
         on one node, so the scanner rejects it — use the quoted-string form or
         a mapping body when you need those.
         """
+        if args_str and args_str.strip():
+            for fragment in args_str.split(","):
+                if "=" not in fragment:
+                    raise ConfigurationError(
+                        f"malformed inline kwargs ({args_str!r}){f' at {where}' if where else ''}: "
+                        f"fragment {fragment.strip()!r} has no '='. "
+                        f"Inline values cannot contain ',' — write lists/dicts (and any spaced values) in the "
+                        f"block body instead: one `key: value` line per kwarg"
+                    )
         return {k: parse_value(v) for k, v in _split_inline_pairs(args_str)}
 
     _stamp = _stamp_loc  # the ONE stamping helper, shared with the reserved-key path
@@ -530,14 +549,66 @@ def _register_constructors() -> None:
             ref.kwargs.update(_str_keyed_mapping(loader, node))
         return _stamp(ref, loader, node)
 
+    def _refuse_degrading_tag_shapes(
+        factory_label: str, tag_suffix: str, instant: Any, node: yaml.nodes.Node, loader: yaml.SafeLoader
+    ) -> None:
+        """The malformed-marker rule for the tag spelling (BUGS-2026-08-19 PA11).
+
+        Every shape here used to DEGRADE silently — a scalar or sequence body was
+        dropped whole, and a spaced inline (`!class:Foo(a=1, b=2)` — YAML cuts the tag
+        at the space) surfaced much later as `Cannot resolve class: Foo(a=1,`. A
+        malformed marker raises a located ConfigurationError at load — that failure
+        mode is precisely what the plain format exists to end, and the AGENTS
+        two-spellings rule names the spaced inline as the motivating failure.
+        """
+        where = _node_where(node, loader)
+        if "(" in tag_suffix and instant is None:
+            raise ConfigurationError(
+                f"{factory_label}{tag_suffix} at {where} carries malformed inline kwargs — a tag cannot "
+                f"contain spaces (YAML ends it at the first one) and the parens must close. Write "
+                f"`{factory_label}{tag_suffix.split('(', 1)[0]}(a=1,b=2)` without spaces, or use the block body"
+            )
+        if isinstance(node, yaml.nodes.SequenceNode):
+            raise ConfigurationError(
+                f"{factory_label}{tag_suffix} at {where} has a SEQUENCE body — a marker's body is its "
+                f"kwargs mapping, and a sequence has no keys. Put the list under a named kwarg "
+                f"(`items:` with the list below), or drop the tag if a plain list was meant"
+            )
+        if isinstance(node, yaml.nodes.ScalarNode):
+            raw = loader.construct_scalar(node)
+            if raw and str(raw).strip():
+                raise ConfigurationError(
+                    f"{factory_label}{tag_suffix} at {where} is followed by the scalar {raw!r}, which a "
+                    f"marker cannot carry — kwargs are a mapping body (`key: value` lines) or inline "
+                    f"`(k=v)` on the tag"
+                )
+
+    def _refuse_reserved_keys_in_tag_body(
+        factory_label: str, tag_suffix: str, mapping: dict, node: yaml.nodes.Node, loader: yaml.SafeLoader
+    ) -> None:
+        # A reserved key inside a TAGGED body silently became a constructor kwarg
+        # literally named `_target_` (BUGS-2026-08-19 PA28) — the mixed node is one
+        # spelling too many. Class-family tags only: a scope block's body keys are
+        # ordinary config keys and may legitimately splice a `_target_:` mapping.
+        conflicting = sorted(k for k in mapping if isinstance(k, str) and k in RESERVED_KEYS)
+        if conflicting:
+            raise ConfigurationError(
+                f"{factory_label}{tag_suffix} at {_node_where(node, loader)} carries the reserved "
+                f"key(s) {conflicting} in its body — the tag already declares the marker, so the mixed "
+                f"node is one spelling too many (the key would silently become a constructor kwarg). "
+                f"Use ONE spelling: the tag alone, or a reserved-key mapping alone"
+            )
+
     def class_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         instant = _TARGET_CALL_RE.match(tag_suffix)
         factory = Target
         name = instant.group(1) if instant else tag_suffix
-        inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
+        inline = _parse_inline_kwargs(instant.group(2), where=_node_where(node, loader)) if instant else {}
 
+        _refuse_degrading_tag_shapes("!class:", tag_suffix, instant, node, loader)
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
+            _refuse_reserved_keys_in_tag_body("!class:", tag_suffix, mapping, node, loader)
             # Merge inline ``(k=v)`` kwargs with the mapping body instead of
             # discarding the inline ones. Block-body keys win on conflict —
             # they sit later in document order, matching the flat-view
@@ -556,10 +627,12 @@ def _register_constructors() -> None:
         # values are coerced and merged with the body exactly as for !class:.
         instant = _TARGET_CALL_RE.match(tag_suffix)
         name = instant.group(1) if instant else tag_suffix
-        inline = _parse_inline_kwargs(instant.group(2)) if instant else {}
+        inline = _parse_inline_kwargs(instant.group(2), where=_node_where(node, loader)) if instant else {}
 
+        _refuse_degrading_tag_shapes("!partial:", tag_suffix, instant, node, loader)
         if isinstance(node, yaml.nodes.MappingNode):
             mapping: dict[str, Any] = _str_keyed_mapping(loader, node)
+            _refuse_reserved_keys_in_tag_body("!partial:", tag_suffix, mapping, node, loader)
             return _stamp(_make_fluid(PartialClass, name, {**inline, **mapping}), loader, node)
 
         if isinstance(node, yaml.nodes.ScalarNode) and instant:
@@ -587,6 +660,14 @@ def _register_constructors() -> None:
         rather than splicing an empty string.
         """
         key, value = _parse_scope_suffix(tag_suffix)
+        if not key or not key.strip():
+            # A positive block on the dimension named '' can never fire, so the body
+            # vanished without a word — while the reserved-key spelling refused
+            # (BUGS-2026-08-19 PA19; two spellings, one behaviour).
+            raise ConfigurationError(
+                f"!scope:/!notscope: at {_node_where(node, loader)} names no dimension — write "
+                f"`!scope:debug` or `!scope:framework=torch`"
+            )
         contents: Any
         if isinstance(node, yaml.nodes.MappingNode):
             contents = _str_keyed_mapping(loader, node)
@@ -622,7 +703,9 @@ def _register_constructors() -> None:
             # literally named ``target`` collides with the marker ctor's own
             # first parameter when splatted.
             return _stamp(
-                _make_fluid(Target, instant.group(1), _parse_inline_kwargs(instant.group(2))),
+                _make_fluid(
+                    Target, instant.group(1), _parse_inline_kwargs(instant.group(2), where=_node_where(node, loader))
+                ),
                 loader,
                 node,
             )
@@ -752,6 +835,11 @@ def _load_config_file(
     _included[path] = None
     _record_loaded_path(path)
 
+    if path.is_dir():
+        # `open()` on a directory raised a raw IsADirectoryError from deep inside the
+        # loader (BUGS-2026-08-19 PA13) — say what it is where the config can be seen.
+        via = f"{including} includes {requested}: " if including is not None else ""
+        raise ConfigFileNotFoundError(f"{via}{path} is a directory, not a config file")
     if not path.exists():
         via = f"{including} includes {requested}: " if including is not None else ""
         if requested.is_absolute():
@@ -787,6 +875,11 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
         if imports:
             if isinstance(imports, str):
                 imports = [imports]
+            if not isinstance(imports, list) or not all(isinstance(m, str) for m in imports):
+                # `import: 42` crashed with a raw TypeError, `import: [os, 42]` with an
+                # AttributeError, and `import: {os: x}` silently imported the dict's KEYS
+                # (BUGS-2026-08-19 PA14) — the same shape refusal `include:` got for P15.
+                raise ConfigurationError(f"import: takes a module name or a list of names, got {imports!r}")
             accum = _IMPORT_ACCUMULATOR.get()
             for m in imports:
                 if accum is not None and m not in accum:
@@ -939,6 +1032,11 @@ def _splice_includes(
             raise ConfigurationError(
                 f"include: entries must be paths, got {inc_path!r} in {includes!r} (in {current_path})"
             )
+        if not inc_path.strip():
+            raise ConfigurationError(
+                f"include: takes a non-empty path (in {current_path}) — an empty one resolved to the "
+                f"working DIRECTORY and crashed the open (BUGS-2026-08-19 PA13)"
+            )
         target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
         included.append(_load_config_file(target_path, _included=dict(_included), including=current_path))
         if spliced is not None:
@@ -1064,6 +1162,8 @@ def _names_a_file(data: Union[str, Path]) -> bool:
     """
     if isinstance(data, Path):
         return True
+    if not data.strip():
+        return False  # empty text parses to {} — it used to resolve to '.' and open a DIRECTORY (PA13)
     if "\n" in data or ":" in data or len(data) >= 255:
         return False
     return data.endswith(_CONFIG_SUFFIXES) or resolve_config_path(data).exists()
