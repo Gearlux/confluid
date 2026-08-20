@@ -1618,7 +1618,19 @@ waivefront.sources.HDF5WindwoSource` names no file and no line, while the marker
 location sits one frame up in `_flow_target`. When you add or touch such a helper, pass the marker
 (or the loc) and render it into the message.
 
-**Pins.** `tests/test_exceptions.py`. **Docs.** `docs/errors.md`.
+**Sweep 2026-08-19 (BUGS-2026-08-19 SR14/SR15/ENG-4/ENG-10/PA25).** Five raises had the marker or
+the file in hand and dropped it; all are located now and pinned by message: a `@axis=$key`
+selector miss re-locates through `_resolve_target_callable`'s `except ConfigurationError` (the
+same funnel that re-locates `AmbiguousClassError`); the undeclared-scope-value `ScopeError` lists
+where the values are DECLARED (`scopes._DECLARATION_LOCS`, filled by the one `_walk_dimensions`
+walk); a malformed `default_scopes:` leads with its file (`parse_default_scopes(where=…)`);
+`flow()` of an unresolvable `Reference` names its line; a validating `__setattr__`'s `TypeError`
+joins the `AttributeError` wrap at BOTH post-init setattr sites; an include miss names the
+INCLUDING file and the search tiers actually probed (base_dir threaded into `_load_config_file`),
+and `CircularIncludeError` renders the whole chain (`_included` is an insertion-ordered
+`Dict[Path, None]` — the chain IS the store).
+
+**Pins.** `tests/test_exceptions.py` (incl. the located-error sweep group). **Docs.** `docs/errors.md`.
 
 ### Dependencies
 

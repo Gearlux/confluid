@@ -824,6 +824,11 @@ def _resolve_target_callable(node: Any) -> Any:
         # Raised inside the registry, which has never seen the document — re-raise with the
         # line that wrote the ambiguous name, keeping the candidate list the registry built.
         raise AmbiguousClassError(f"{exc}{_at_yaml_loc(node)}") from exc
+    except ConfigurationError as exc:
+        # Same rule for every other registry-side refusal — a `@axis=$key` selector whose
+        # key is missing used to escape with no file:line while the marker held the
+        # location one frame up (BUGS-2026-08-19 SR14).
+        raise type(exc)(f"{exc}{_at_yaml_loc(node)}") from exc
     if resolved is None:
         raise UnknownClassError(f"Cannot resolve class: {target}{_at_yaml_loc(node)}{_selector_detail(target)}")
     return resolved
@@ -1301,7 +1306,10 @@ def _apply_post_init_attrs(
                 v = tuned
             try:
                 setattr(instance, k, v)
-            except AttributeError as exc:
+            except (AttributeError, TypeError) as exc:
+                # TypeError joins AttributeError (BUGS-2026-08-19 ENG-10): a validating
+                # __setattr__ — torch's "cannot assign 'int' as child module" — used to
+                # escape RAW and unlocated from a line the author never wrote.
                 # No path fits: the constructor did not take this key and the object
                 # refuses the attribute (``__slots__`` without a matching slot, a frozen
                 # dataclass, a C type). Raise WHERE the config can be seen — the raw
@@ -1367,7 +1375,7 @@ def _apply_mapping_onto_live(child: Any, mapping: Dict[str, Any], node: Any) -> 
             val = flow(val)
         try:
             setattr(child, mk, val)
-        except AttributeError as exc:
+        except (AttributeError, TypeError) as exc:  # a validating __setattr__ raises TypeError (ENG-10)
             raise ConstructionError(
                 f"{cls.__name__} cannot accept {mk!r}{_at_yaml_loc(node)}: the object does not "
                 f"allow the attribute to be set ({exc})."
@@ -1554,7 +1562,7 @@ def _flow_reference(
     resolved = resolver._resolve_ref(obj.target)
     if resolved is not None:
         return flow(resolved, *runtime_args, **runtime_kwargs)
-    raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
+    raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}{_at_yaml_loc(obj)}")
 
 
 def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
