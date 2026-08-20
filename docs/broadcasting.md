@@ -41,6 +41,13 @@ Details that make the grammar predictable:
   a key starting with `*` must be quoted (`'**.lr':`, `'**':`) because a bare
   `*` opens a YAML alias — the top-level dotted form `trainer.**.lr:` needs
   no quotes.
+* A dotted key that lands **directly on a marker's kwarg** (`t.lr: 9.0` onto
+  `t: !class:Trainer`) competes at the **dotted line's** position, per key: it
+  beats a bare key, block or rider written before it and loses to one written
+  after — and the marker's *other* kwargs keep the marker's position, so the
+  dotted and instance-block spellings of one override agree on every key. An
+  emitted document (`hydraide emit`) re-writes such a line after the keys it
+  beat, so the artefact replays identically.
 * A marker's **own kwargs follow the same rule** — they configure that marker
   only. A kwarg set on a wrapper block that the wrapper itself does not
   accept *shields* the wrapper's subtree from an outer `'**'` cascade
