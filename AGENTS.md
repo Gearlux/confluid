@@ -391,6 +391,15 @@ reserved key on the node was enough to make the anchor's `_target_` work.
 **Rule.** A malformed marker raises a located `ConfigurationError` at load. Never degrade one
 silently — that failure mode is precisely what this format replaces (`!class:Model(a=1, b=2)`,
 with one space, produced a target named `Model(a=1,` and dropped both kwargs, with no error).
+The TAG spelling enforces it too (2026-08-19, BUGS-2026-08-19 PA11/PA13/PA14/PA19/PA20/PA28):
+`loader._refuse_degrading_tag_shapes` refuses a scalar/sequence body and the spaced-inline shape
+above; `_parse_inline_kwargs` refuses a fragment without `=` (which is also how a `,` inside an
+inline value surfaces — lists go in the block body); `_refuse_reserved_keys_in_tag_body` refuses
+a reserved key inside a `!class:`/`!partial:` body (a scope body's keys are ordinary config keys
+and are exempt); an empty `!scope:` suffix and a non-string `_scope_` dimension value are refused
+like the boolean always was; `import:` refuses non-string shapes like `include:` does; empty TEXT
+loads as `{}`, and a DIRECTORY at a config path is a located `ConfigFileNotFoundError`, never a
+raw `IsADirectoryError`.
 
 **Rule — a RESERVED key inside a DOTTED key is refused (P16).** `model._target_: Box` cannot
 become a marker: conversion happens at PARSE time and `merger.expand_dotted_keys` runs afterwards,

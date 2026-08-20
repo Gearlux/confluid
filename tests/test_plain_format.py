@@ -677,3 +677,49 @@ def test_a_non_reserved_underscore_wrapped_key_is_untouched() -> None:
 
 def test_a_plain_reserved_key_is_untouched() -> None:
     assert isinstance(load("model:\n  _target_: Box", until="document")["model"], Target)
+
+
+# ---------------------------------------------------------------------------
+# The tag spelling refuses what it silently degraded (BUGS-2026-08-19 PA11 /
+# PA28) — the malformed-marker rule, applied to the six shapes that dropped
+# data with no diagnostic.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _PA11Foo:
+    def __init__(self, a: Any = None, lr: Any = None, **kw: Any) -> None:
+        self.a = a
+        self.lr = lr
+        self.kw = dict(kw)
+
+
+@pytest.mark.parametrize(
+    "label, document, match",
+    [
+        ("scalar body", "x: !class:_PA11Foo bar\n", r"followed by the scalar 'bar'"),
+        ("sequence body", "x: !class:_PA11Foo\n  - 1\n  - 2\n", r"SEQUENCE body"),
+        ("inline plus sequence body", "x: !class:_PA11Foo(a=1)\n  - 1\n", r"SEQUENCE body"),
+        ("space inside inline kwargs", "x: !class:_PA11Foo(a=1, lr=2)\n", r"cannot contain spaces"),
+        ("inline pair without =", "x: !class:_PA11Foo(a)\n", r"fragment 'a' has no '='"),
+        ("comma inside an inline value", "x: !class:_PA11Foo(a=[1,2])\n", r"has no '='"),
+        ("reserved key inside a tag body", "x: !class:_PA11Foo\n  _target_: Bar\n  a: 1\n", r"reserved key"),
+        ("reserved key inside a partial body", "x: !partial:_PA11Foo\n  _partial_: true\n", r"reserved key"),
+    ],
+)
+def test_a_degrading_tag_shape_is_refused_located(label: str, document: str, match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match) as info:
+        load(document)
+    assert ":1:" in str(info.value), f"{label}: the refusal must name the line — {info.value}"
+
+
+def test_the_well_formed_tag_shapes_still_load() -> None:
+    """The con matrix: bare tag, inline kwargs, mapping body, inline+mapping merge."""
+    built = load(
+        "a: !class:_PA11Foo\n"
+        "b: !class:_PA11Foo(a=1,lr=2)\n"
+        "c: !class:_PA11Foo\n  a: 1\n"
+        "d: !class:_PA11Foo(a=1)\n  lr: 3\n"
+    )
+    assert (built["a"].a, built["b"].a, built["b"].lr, built["c"].a) == (None, 1, 2, 1)
+    assert (built["d"].a, built["d"].lr) == (1, 3)

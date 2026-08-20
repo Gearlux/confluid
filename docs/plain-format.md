@@ -188,7 +188,23 @@ with `_scope_:` — only the container differs.
 ## Malformed markers raise
 
 A marker that does not make sense is a located `ConfigurationError` at load,
-never a silently degraded value:
+never a silently degraded value — in BOTH spellings. The tag form refuses the
+shapes that used to drop data in silence:
+
+```yaml
+x: !class:Foo bar              # a scalar after the tag — kwargs are a mapping or (k=v)
+x: !class:Foo                  # a SEQUENCE body — a marker's body is its kwargs mapping
+  - 1
+x: !class:Foo(a=1, b=2)        # a space inside inline kwargs (YAML cuts the tag at it)
+x: !class:Foo(a)               # an inline fragment without '='
+x: !class:Foo(a=[1,2])         # a ',' inside an inline value — lists go in the block body
+x: !class:Foo                  # a reserved key inside a tagged body — one spelling too many
+  _target_: Bar
+blk: !scope:                   # a scope tag naming no dimension
+b: {_scope_: {f: 0.10}}        # a non-string dimension value (YAML coerces 0.10 -> 0.1) — quote it
+```
+
+And the reserved-key form's own refusals:
 
 ```yaml
 x: {_target_: Box, _ref_: y}       # Conflicting reserved keys

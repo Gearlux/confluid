@@ -1182,3 +1182,27 @@ def test_an_include_line_does_not_break_an_anchor_aliased_inside_a_scope_block(t
     assert plain["proto"] is plain["shared"]
     included = load(str(tmp_path / "with_include.yaml"), scopes=["x"])
     assert included["proto"] is included["shared"]
+
+
+def test_an_empty_scope_suffix_is_refused_like_the_reserved_key_spelling() -> None:
+    """PA19 (BUGS-2026-08-19) — `!scope:` with no dimension was silently inert (a
+    positive block on '' can never fire, so the body vanished) while
+    `_scope_: {'': }` refused. Two spellings, one behaviour."""
+    from confluid import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="names no dimension"):
+        load("blk: !scope:\n  a: 1\nb: 2\n", until="raw")
+
+
+def test_a_non_string_scope_value_is_refused_like_a_boolean() -> None:
+    """PA20 — YAML coerces `0.10` to 0.1 and `010` to 8, so the str() mint produced
+    values the tag spelling (which keeps its text) and a CLI activation string never
+    match; the refusal booleans already got now covers every non-string."""
+    from confluid import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match=r"float 0\.1.*quote it"):
+        load("b:\n  _scope_: {f: 0.10}\n  a: 1\n", until="raw")
+    with pytest.raises(ConfigurationError, match=r"int 8.*quote it"):
+        load("b:\n  _scope_: {f: 010}\n  a: 1\n", until="raw")
+    raw = load("b:\n  _scope_: {f: '0.10'}\n  a: 1\n", until="raw")
+    assert raw["b"].dims == {"f": "0.10"}, "the quoted spelling keeps its text (the con)"
