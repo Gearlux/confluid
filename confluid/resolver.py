@@ -376,6 +376,42 @@ def resolve_reference_path(target: str, context: Optional[Dict[str, Any]]) -> An
     return None
 
 
+def hoist_marker_placeholders(value: Any) -> Any:
+    """Convert whole-string ``${ref:...}`` values into ``Reference`` markers, in place.
+
+    Purely syntactic (no lookup), so it can run BEFORE expansion — which must see the
+    marker: the tag spelling (``!ref:``) becomes a marker at parse time, and with
+    expansion running ahead of interpolation (PA8) a dotted write through the
+    placeholder spelling (``use: ${ref:proto}`` + ``use.k: 5``) would otherwise clobber
+    the still-a-string value with a fresh dict instead of tuning the shared referent.
+    Both spellings now settle at the same stage. Containers and marker kwargs are
+    walked in place; every other value (embedded ``${ref:...}``, refused ``${clone:...}``)
+    is left for interpolation to handle with its located errors.
+    """
+    from confluid.fluid import Fluid
+
+    if isinstance(value, str):
+        whole = _INTERP_RE.fullmatch(value)
+        if whole and whole.group(1) in _MARKER_RESOLVERS and whole.group(1) != "clone":
+            marker = Resolver()._marker_resolver(whole.group(1), whole.group(2))
+            if marker is not None:
+                return marker
+        return value
+    if isinstance(value, dict):
+        for key in list(value):
+            value[key] = hoist_marker_placeholders(value[key])
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = hoist_marker_placeholders(item)
+        return value
+    if isinstance(value, Fluid):
+        for key in list(value.kwargs):
+            value.kwargs[key] = hoist_marker_placeholders(value.kwargs[key])
+        return value
+    return value
+
+
 def fold_reference_kwargs(document: Dict[str, Any]) -> None:
     """Fold every reference's kwargs into the referent marker's OWN kwargs, in place.
 
@@ -394,9 +430,10 @@ def fold_reference_kwargs(document: Dict[str, Any]) -> None:
     pass 7 to report (located). A referent that is not a marker (a plain value) has no
     kwargs to tune and is REFUSED with the reference's location. A reference to a
     reference follows the chain. Idempotent: a folded reference carries no kwargs, so
-    ``load(load(x, until="document")) == load(x)`` holds; ``loader._load`` runs it before
-    pass 5 (both spellings parse with kwargs) and again after pass 6 (the dotted route
-    exists only after expansion).
+    ``load(load(x, until="document")) == load(x)`` holds; ``loader._load`` runs it ONCE,
+    after expansion (pass 5) and before interpolation (pass 6): the dotted route has
+    landed by then, and pass 6's aliasing of a bare top-level reference runs with the
+    kwargs already folded.
     """
     from confluid.fluid import Fluid, Reference, _at_yaml_loc
     from confluid.merger import deep_merge
@@ -457,6 +494,8 @@ class Resolver:
 
     def __init__(self, context: Optional[Dict[str, Any]] = None) -> None:
         self.context = context or {}
+        self._kwargs_seen: Set[int] = set()
+        self._resolving: Set[int] = set()
 
     def resolve(self, value: Any, local_context: Optional[Dict[str, Any]] = None) -> Any:
         """
@@ -529,7 +568,7 @@ class Resolver:
         ``_seen`` guards hand-built marker cycles; a marker reached twice in one
         document is walked once per entry, which is idempotent either way.
         """
-        seen = _seen if _seen is not None else set()
+        seen = _seen if _seen is not None else self._kwargs_seen
         if id(fluid) in seen:
             return
         seen.add(id(fluid))
@@ -628,7 +667,7 @@ class Resolver:
         """Like :meth:`_lookup_path`, but a MISS is :data:`PATH_MISS`, never ``None`` —
         for the callers where a null VALUE is a legal answer (SR6): the ``${a.b}``
         placeholder and pass 7's structural reference walk. The legacy None contract
-        stays for pass-5 marker aliasing and the ``$key`` selector, which only act on
+        stays for pass-6 marker aliasing and the ``$key`` selector, which only act on
         non-null hits anyway."""
         if path in context:
             return context[path]
@@ -693,8 +732,14 @@ class Resolver:
                 return str(resolved)
             return match.group(0)  # miss / non-scalar → leave the literal ${...}
 
-        result = _INTERP_RE.sub(replacer, value)
-        return self._expand_bare_env(result)
+        parts: List[str] = []
+        last = 0
+        for match in _INTERP_RE.finditer(value):
+            parts.append(self._expand_bare_env(value[last : match.start()]))
+            parts.append(replacer(match))
+            last = match.end()
+        parts.append(self._expand_bare_env(value[last:]))
+        return "".join(parts)
 
     def _expand_bare_env(self, value: str) -> str:
         """Expand bare ``$IDENTIFIER`` occurrences as environment variables.
@@ -769,6 +814,18 @@ class Resolver:
                 if ctx:
                     found = self._lookup_path_found(name, ctx)
                     if found is not PATH_MISS:
+                        if isinstance(found, (dict, list)):
+                            if id(found) in self._resolving:
+                                raise ConfigurationError(
+                                    f"${{{name}}} is circular — the container it names is still being "
+                                    f"resolved through this very placeholder"
+                                )
+                            container_id = id(found)
+                            self._resolving.add(container_id)
+                            try:
+                                found = self.resolve(found, local_context)
+                            finally:
+                                self._resolving.discard(container_id)
                         return found, True
         else:
             env_val = os.getenv(name)
@@ -789,6 +846,8 @@ def parse_value(value: str) -> Any:
     Examples:
         "42" -> 42, "3.14" -> 3.14, "true" -> True, "[1, 2]" -> [1, 2]
     """
+    if value == "":
+        return ""
     low = value.lower()
     if low == "true":
         return True

@@ -107,7 +107,7 @@ def late_bare_keys_of(obj: Any) -> Dict[str, FrozenSet[str]]:
 def dotted_positions_of(obj: Any) -> Dict[str, FrozenSet[str]]:
     """Per kwarg of ``obj`` delivered by a top-level DOTTED line, the sibling keys that line beat.
 
-    Written by pass 6 (``merger.expand_dotted_mapping``, stamping enabled for the
+    Written by pass 5 (``merger.expand_dotted_mapping``, stamping enabled for the
     document's top level) when a dotted key lands DIRECTLY in a marker's kwargs:
     ``t.lr: 9.0`` folds the value into ``t``'s kwargs — which would silently move
     it to the MARKER's document position — so the fold records the keys written

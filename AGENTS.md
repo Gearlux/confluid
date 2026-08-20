@@ -343,7 +343,7 @@ SR6/SR7): a walk that FOUND a legal `null` is a hit — conflating the two refus
 exist, and left `${a.b}` to the same null as literal text. The three consumers where the
 difference matters read the sentinel (`refuse_attribute_reference`'s probe, the `${...}`
 placeholder, pass 7's `_settle_reference`); `_lookup_path` keeps the legacy None contract for
-pass-5 aliasing and the `$key` selector, which act only on non-null hits. The literal-int
+pass-6 aliasing and the `$key` selector, which act only on non-null hits. The literal-int
 segment steps into a DICT exactly as the `idxref` segment always did (int key first,
 digit-string fallback), so an int-keyed table (`class_names: {1: DJI}`) is addressable by
 every spelling.
@@ -1026,7 +1026,7 @@ Never add a third reader of the context at construction.
 **Rule — a reference is settled ONCE, in pass 7 (`engine._settle_reference`).** Nearest enclosing
 scope first (an included fragment's internal `!ref:` finds the fragment's key), then the root —
 and a scope NEVER answers with the reference itself (`r: {x: !ref:x}` with a root `x` recursed
-forever, F6; the self-hit is skipped on both the pass-5 marker-aliasing probe and here). A reference
+forever, F6; the self-hit is skipped on both the pass-6 marker-aliasing probe and here). A reference
 to a MARKER shares it (identity via `flow_memo`); a reference to a plain VALUE is INLINED — after
 `load()` nothing is a late-bound `Reference` any more (F5); a walk that leaves structure is refused;
 anything else is an import path; a miss raises a located `ReferenceResolutionError` on
@@ -1043,9 +1043,10 @@ document, F4/F5/F6 rows, the two must-not-change deliveries),
 with a mapping body (the tag constructor keeps it), and a dotted path walking THROUGH a reference
 (`a.optimizer.lr: 9.0`) all carry kwargs on the `Reference`; `resolver.fold_reference_kwargs`
 moves them into the referent marker's OWN kwargs (`deep_merge`, in place — it is the one shared
-object) and clears the reference. `loader._load` runs it BEFORE pass 5 (pass 5 aliases a bare
-top-level reference, which would lose them) and AGAIN after pass 6 (the dotted route only lands at
-expansion). Consequences, each pinned: the kwargs compete at the REFERENT's position like any own
+object) and clears the reference. `loader._load` runs it ONCE, after
+expansion (pass 5) and before interpolation (pass 6): the dotted route has landed by then, and
+pass 6's aliasing of a bare top-level reference runs with the kwargs already folded (2026-08-20 —
+expansion moved ahead of interpolation, see the Interpolation rules). Consequences, each pinned: the kwargs compete at the REFERENT's position like any own
 kwarg — a later bare key still wins — so there is NO second precedence rule; of two references
 tuning one referent the later wins per key; a reference to a PLAIN VALUE with kwargs is refused
 with its location; a reference without kwargs is untouched; the fold is idempotent
@@ -1441,7 +1442,7 @@ Three properties are load-bearing: it goes through `_check_active_values_are_dec
 an alias) is REFUSED, because nothing the caller passes could switch such a default off, so it
 would be always-on — `!notscope:` is the spelling for "active while unset"; and it is never
 interpolated (a `${a.b}` may read a key an active block provides, so activation must settle
-first — do NOT move the read past pass 5). Do not add a second reader of the key beside
+first — do NOT move the read past the scope pass). Do not add a second reader of the key beside
 `default_scopes()`.
 **Pins.** the `default_scopes` group in `tests/test_scopes.py` (fires when unset, caller wins,
 per-dimension fill, undeclared/boolean/alias/malformed refused, not interpolated, deactivates a
@@ -1462,7 +1463,26 @@ then global). That test is what keeps every pre-existing `${VAR}` an env var.
 
 **Rule.** Bare `$IDENTIFIER` expands as an ENV-ONLY read after the `${...}` pass — no dotted form,
 no `:default`, no exemptions (a tag TARGET's `@axis=$key` selector lives on the marker, never in a
-string value, so nothing needs a leading-`!` escape).
+string value, so nothing needs a leading-`!` escape) — and on AUTHOR text only: text a `${...}`
+substitution just produced is never re-scanned (2026-08-20, BUGS-2026-08-13 P8 — an env value
+carrying `$HOME` used to expand it, an injection channel).
+
+**Rule — interpolation is pass 6, AFTER expansion (2026-08-20; BUGS-2026-08-19 PA6/PA7/PA8 +
+BUGS-2026-08-13 P8/P9).** A `${train.lr}` reads the EXPANDED tree — the same answer the returned
+document gives (a dotted line and its nested twin merge FIRST, document order, last wins). The
+pieces, each pinned in `tests/test_resolver.py` / `tests/test_load_stages.py`: (a) a whole-string
+container hit resolves before it is handed back (`c: ${a.b}` no longer receives the raw subtree,
+placeholders and all) and a container reaching itself through the placeholder is a refused cycle;
+(b) an env variable SET to the empty string is `""` in every spelling — only UNSET is a miss;
+(c) a marker's kwargs are walked once per `Resolver` (instance-level seen set) — an anchored
+marker aliased at two slots is no longer interpolated twice; (d) whole-string `${ref:...}`
+STRINGS hoist to `Reference` markers BEFORE expansion (`resolver.hoist_marker_placeholders`),
+so a dotted write through the placeholder spelling tunes the shared referent exactly as the
+`!ref:` tag does; (e) a dotted write through any OTHER unresolved `${...}` string is refused in
+`merger.expand_dotted_mapping` — value substitution is not sharing, `${ref:}` is; (f) a dotted
+write's VALUE interpolates where it LANDS, so a competing path in the landing block wins there
+(the same answer a literal key written inside the block gets). Do not reorder the passes back,
+and do not add a second interpolation pass — single-pass is the contract the P8/P9 fixes rest on.
 
 **Rule.** Interpolation is a SINGLE PASS and the substituted value BURNS IN — `dump()` emits it and
 a deferred slot flowed later sees it. Marker kwargs are IN the pass (walked in place, identity

@@ -18,13 +18,19 @@ data_dir: "${DATA_ROOT}/${train.dataset}/${train.version}/data"   # -> /store/RF
 epochs:   "${train.epochs}"                                        # whole match keeps the native int type
 ```
 
-A whole-string match (`"${train.epochs}"`) returns the value with its real type; an embedded match substitutes `str(value)` (scalars only). Local (sibling) keys win over global, mirroring `${ref:}`. On a miss the `:default` applies, else the literal `${...}` is left in place. Interpolation is a single pass, so a referenced key must already be a literal/scalar — for wiring a live object into another config slot, use `${ref:}` instead.
+A whole-string match (`"${train.epochs}"`) returns the value with its real type — a container too: `c: ${a.b}` naming a mapping yields that mapping with its own placeholders resolved (a container that reaches itself through the placeholder is a refused cycle). An embedded match substitutes `str(value)` (scalars only — a container stays the literal text). Local (sibling) keys win over global, mirroring `${ref:}`. On a miss the `:default` applies, else the literal `${...}` is left in place; an environment variable SET to the empty string is a hit — `${EMPTY}` is `""` and `${EMPTY}/x` is `/x`, matching the bare `$EMPTY` spelling. Interpolation is a single pass — text a substitution just produced is never re-scanned, so an env value that itself carries `$HOME` or `${...}`-shaped text arrives verbatim. For wiring a live object into another config slot, use `${ref:}` instead.
 
 Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps meaning an environment variable — only names containing a `.` or `[` hit the config tree.
 
-> **When it runs:** interpolation is pass 5 — applied by `load()` at every stage
-> from `until="document"` on. The raw parse (`load(x, until="raw")`) still carries
-> the literal `${...}` placeholders.
+> **When it runs:** interpolation is pass 6, AFTER dotted-key expansion — a
+> `${a.b}` reads the expanded tree, the same answer the returned document gives —
+> applied by `load()` at every stage from `until="document"` on. The raw parse
+> (`load(x, until="raw")`) still carries the literal `${...}` placeholders.
+> Consequently a dotted write cannot land inside a substituted value:
+> `use: ${a.b}` plus `use.k: 5` is refused (value substitution is not sharing) —
+> to tune one shared object through a second name, write `use: ${ref:a.b}`; the
+> reference spelling becomes a marker before expansion, so the dotted write folds
+> into the referent.
 
 ## Bare `$VAR` — environment variables only
 
@@ -37,7 +43,11 @@ on a front-end re-implementing `os.path.expandvars` before handing the file to t
   spellings remain `${...}`-exclusive.
 - **Unset stays literal.** An unset variable leaves the `$name` text in place,
   mirroring `os.path.expandvars`. (An unresolved `${...}` literal is likewise
-  untouched — the bare pattern cannot match a `${`.)
+  untouched — the bare pattern cannot match a `${`.) A variable SET to the empty
+  string expands to `""` — only unset is a miss.
+- **Author text only.** The bare-`$` pass runs on the text the author wrote —
+  never on text a `${...}` substitution just produced. An env value that contains
+  `$HOME` arrives as `$HOME`.
 - **Burn-in.** Like every interpolation, the substitution is a single load-time
   pass: a marker kwarg `"$DATA_ROOT/x"` carries the expanded value from then on
   (`dump()` emits it; a deferred slot flowed later sees it).

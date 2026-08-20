@@ -139,6 +139,21 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Interpolation is pass 6, after expansion, and genuinely single-pass** (BUGS-2026-08-19
+  PA6/PA7/PA8 + BUGS-2026-08-13 P8/P9, 2026-08-20). Measured before → after: `${train.lr}` beside
+  `train.lr: 0.2` and a later `train: {lr: 0.1}` gave `0.2` while the returned tree said `0.1` →
+  both say `0.1` (expansion runs first; whole-string `${ref:...}` strings hoist to markers before
+  it, so `use: ${ref:proto}` + `use.k: 5` still tunes the shared referent, and a dotted write
+  through any other unresolved `${...}` string is refused instead of silently clobbered);
+  `c: ${a.b}` handed back the RAW subtree, unresolved placeholders and all → the resolved
+  container (a container reaching itself through the placeholder is a refused cycle);
+  an env var SET to the empty string read as unset (`${EMPTY}` → `None`, `${EMPTY}/x` literal) →
+  `""` / `/x` in every spelling; an env value carrying `$HOME` was re-scanned and expanded by the
+  bare-`$` pass (`pa$HOME` → `pa/Users/gert`) → substituted text is never re-scanned; an anchored
+  marker aliased at two slots had its kwargs interpolated twice (`${env:INDIRECT}x` → `hunter2x`)
+  → walked once per resolver, same answer as the un-aliased document. Pinned across
+  `tests/test_resolver.py`, `tests/test_load_stages.py`, `tests/test_configurator.py`.
+
 - **`load()` never mutates parsed input; found-null is a hit; int-keyed tables are addressable;
   a bare keyed activation is refused** (BUGS-2026-08-19 SR3/SR6/SR7/SR13, 2026-08-19). Measured
   before → after: a raw document loaded twice answered with the FIRST call's activation and

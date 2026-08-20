@@ -368,3 +368,52 @@ def test_the_copy_spans_data_AND_context_through_one_memo() -> None:
     built = load(document["box"], context=document)
     assert built.size == 9, "the later bare key still reaches the marker through the copied context"
     assert document["box"].kwargs == {"size": 1}, "the caller's marker is untouched"
+
+
+# --------------------------------------------------------------------------- expansion runs before interpolation (PA8)
+
+
+def test_interpolation_reads_the_expanded_tree() -> None:
+    """PA8 (BUGS-2026-08-19) — `${train.lr}` answered with a literal dotted key the
+    final document does not even contain; expansion runs first now, so interpolation
+    and the returned tree give the same answer."""
+    doc = load("train.lr: 0.2\ntrain:\n  lr: 0.1\nx: ${train.lr}\n", until="document")
+    assert doc["train"]["lr"] == 0.1
+    assert doc["x"] == 0.1
+
+
+def test_a_dotted_only_key_still_interpolates() -> None:
+    """PA8 con — with no nested twin, the expanded tree holds the same value."""
+    doc = load("a.b: 7\nx: ${a.b}\n", until="document")
+    assert doc["x"] == 7 and doc["a"] == {"b": 7}
+
+
+def test_a_dotted_writes_value_interpolates_where_it_lands() -> None:
+    """PA8 consequence — the value sits inside the landing block when interpolation
+    runs, so a competing local path wins there: the same answer a literal
+    `lr: ${x.y}` written inside the block gets."""
+    doc = load("x: {y: 1}\ntrain.lr: ${x.y}\ntrain:\n  x: {y: 2}\n", until="document")
+    assert doc["train"]["lr"] == 2
+
+
+def test_container_placeholder_resolves_at_the_load_door(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA6 end to end — the report's repro through load()."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    doc = load("a:\n  b:\n    path: ${env:CONFLUID_TEST_ROOT}/x\nc: ${a.b}\n", until="document")
+    assert doc["c"] == {"path": "/store/x"}
+
+
+def test_ref_placeholder_spelling_survives_expansion() -> None:
+    """The hoist — `${ref:proto}` becomes a marker BEFORE expansion, so a dotted
+    write through it tunes the shared referent exactly as the `!ref:` tag does."""
+    doc = load("proto: !class:collections.Counter {v: 1}\nuse: ${ref:proto}\nuse.k: 5\n", until="document")
+    assert doc["use"] is doc["proto"]
+    assert doc["proto"].kwargs == {"v": 1, "k": 5}
+
+
+def test_a_dotted_write_through_a_plain_placeholder_is_refused() -> None:
+    """`use: ${a.b}` is VALUE substitution, not sharing — a dotted write through it
+    would silently clobber the not-yet-resolved string, so it refuses and names the
+    sharing spelling instead."""
+    with pytest.raises(ConfigurationError, match=r"\$\{a\.b\}"):
+        load("a:\n  b: {v: 1}\nuse: ${a.b}\nuse.k: 5\n", until="document")

@@ -29,7 +29,14 @@ from loggair import get_logger
 
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
 from confluid.merger import deep_merge, document_copy, expand_dotted_keys
-from confluid.resolver import _TARGET_CALL_RE, Resolver, _split_inline_pairs, fold_reference_kwargs, parse_value
+from confluid.resolver import (
+    _TARGET_CALL_RE,
+    Resolver,
+    _split_inline_pairs,
+    fold_reference_kwargs,
+    hoist_marker_placeholders,
+    parse_value,
+)
 from confluid.scopes import normalize_active, parse_default_scopes, parse_scope_arg, resolve_scopes
 
 logger = get_logger("confluid.loader")
@@ -1224,27 +1231,29 @@ def _load(
         # metadata, but a ScopeBlock could still sit at the top level.
         data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes, None))
 
-    # ---- passes 5–6: interpolate, expand -----------------------------------------
+    # ---- passes 5–6: expand, interpolate -----------------------------------------
     # Run ONCE, here, for ``data`` AND for an explicit ``context`` (a fragment's
     # document, resolved against itself) — the engine takes both as PREPARED and
     # runs neither pass again. Marker KWARGS interpolate in place, text-only
     # (``Resolver._interpolate_fluid_kwargs``); a miss keeps the literal.
     if isinstance(data, dict):
         data = cast(Dict[str, Any], _process_imports(data))  # an `import:` a scope block spliced in
-    interp_context = context if context is not None else (data if isinstance(data, dict) else None)
-    resolver = Resolver(context=interp_context or {})
-    # Kwargs on a reference tune the referent: folded into the referent marker's own
-    # kwargs BEFORE pass 5 (both spellings parse carrying them — pass 5 then aliases a
-    # bare reference) and AGAIN after pass 6, because a dotted path walking THROUGH a
-    # reference (`a.optimizer.lr: 9.0`) only lands on the Reference at expansion.
-    if isinstance(data, dict):
-        fold_reference_kwargs(data)
-    data = resolver.resolve(data)
+    # Expansion runs BEFORE interpolation (PA8): a ${train.lr} placeholder reads the
+    # EXPANDED tree — the same answer the final document gives — instead of whichever
+    # literal dotted key happened to be written. Reference kwargs then fold ONCE: both
+    # spellings parse carrying them, the dotted route (`a.optimizer.lr: 9.0` walking
+    # through a reference) has landed by now, and interpolation's aliasing runs after.
+    data = hoist_marker_placeholders(data)
     if isinstance(data, dict):
         data = expand_dotted_keys(data)
         fold_reference_kwargs(data)
+    if context is not None and isinstance(context, dict):
+        context = expand_dotted_keys(hoist_marker_placeholders(context))
+    interp_context = context if context is not None else (data if isinstance(data, dict) else None)
+    resolver = Resolver(context=interp_context or {})
+    data = resolver.resolve(data)
     if context is not None:
-        context = expand_dotted_keys(resolver.resolve(context))
+        context = resolver.resolve(context)
     if until == "document":
         return data
 

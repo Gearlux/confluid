@@ -1,6 +1,7 @@
 from copy import copy
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, cast
 
+from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, ScopeBlock, Target
 
 
@@ -255,6 +256,17 @@ def expand_dotted_mapping(
             if isinstance(nxt, dict):
                 cur = descend(cur, part, nxt)
                 continue
+            if isinstance(nxt, str) and "${" in nxt:
+                # A `${...}` string is a not-yet-resolved placeholder (expansion runs
+                # before interpolation) — replacing it with a fresh dict would silently
+                # lose it. Value substitution is not sharing; tuning goes through a
+                # reference.
+                raise ConfigurationError(
+                    f"the dotted key {key!r} writes through {part!r}, which holds the unresolved "
+                    f"placeholder {nxt!r} — a dotted write cannot land inside a substituted value. "
+                    f"Write the keys at the placeholder's referent, or share and tune the one object "
+                    f"with ${{ref:...}} / !ref: instead."
+                )
             fresh: Dict[str, Any] = {}
             cur[part] = fresh
             cur = fresh

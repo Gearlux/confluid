@@ -211,3 +211,70 @@ def test_int_keyed_tables_are_addressable_by_every_path_spelling() -> None:
     assert doc["use2"] == "MAVIC"
     assert load("names: {'1': DJI}\nuse: ${names.1}\n", until="document")["use"] == "DJI"
     assert load("items: [a, b]\nuse: ${items.1}\n", until="document")["use"] == "b", "list indexing unchanged"
+
+
+# --------------------------------------------------------------------------- interpolation family (PA6/PA7 + P8/P9)
+
+
+def test_whole_string_container_hit_is_resolved_not_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA6 (BUGS-2026-08-19) — `${a.b}` naming a container returned the RAW subtree,
+    unresolved placeholders and all; a config-path container hit now resolves."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    resolver = Resolver(context={"a": {"b": {"path": "${CONFLUID_TEST_ROOT}/x"}}})
+    assert resolver.resolve("${a.b}") == {"path": "/store/x"}
+
+
+def test_circular_container_placeholder_is_refused() -> None:
+    """PA6 guard — a container reached through the placeholder currently resolving
+    it is a cycle: refused, never silently emitted raw (it used to self-nest once)."""
+    context = {"a": {"b": {"x": "${a.b}"}}}
+    with pytest.raises(ConfigurationError, match="circular"):
+        Resolver(context=context).resolve("${a.b}")
+
+
+def test_two_placeholders_naming_one_container_both_resolve() -> None:
+    """PA6 guard hygiene — the guard releases the container after each hit, so a
+    second placeholder naming the same subtree is not a false cycle."""
+    resolver = Resolver(context={"a": {"b": {"v": 1}}})
+    out = resolver.resolve({"c": "${a.b}", "d": "${a.b}"})
+    assert out["c"] == {"v": 1} and out["d"] == {"v": 1}
+
+
+def test_empty_env_var_is_the_empty_string_in_every_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA7 — a SET-but-empty variable read as unset: `${EMPTY}` -> None, `${EMPTY}/x`
+    and `${env:EMPTY}/x` stayed literal; only bare `$EMPTY/x` already worked."""
+    monkeypatch.setenv("CONFLUID_TEST_EMPTY", "")
+    resolver = Resolver()
+    assert resolver.resolve("${CONFLUID_TEST_EMPTY}") == ""
+    assert resolver.resolve("${CONFLUID_TEST_EMPTY}/x") == "/x"
+    assert resolver.resolve("${env:CONFLUID_TEST_EMPTY}/x") == "/x"
+    assert resolver.resolve("$CONFLUID_TEST_EMPTY/x") == "/x"
+
+
+def test_substituted_values_are_never_rescanned_for_bare_dollar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P8 (BUGS-2026-08-13) — the embedded branch fed substituted VALUES back through
+    the bare-`$` pass, expanding a `$HOME` inside an env value (injection channel)."""
+    monkeypatch.setenv("CONFLUID_TEST_PW", "pa$HOME")
+    resolver = Resolver()
+    assert resolver.resolve("${env:CONFLUID_TEST_PW}/x") == "pa$HOME/x"
+    assert resolver.resolve("${env:CONFLUID_TEST_PW}") == "pa$HOME"
+
+
+def test_author_written_bare_dollar_still_expands_beside_a_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P8 con — only SUBSTITUTED text is exempt; a `$OTHER` the author wrote expands."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    monkeypatch.setenv("CONFLUID_TEST_OTHER", "zz")
+    assert Resolver().resolve("${env:CONFLUID_TEST_ROOT}/$CONFLUID_TEST_OTHER") == "/store/zz"
+
+
+def test_marker_kwargs_interpolate_once_per_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P9 (BUGS-2026-08-13) — a marker aliased at two slots was walked twice, and the
+    second walk expanded placeholder-shaped text the FIRST walk substituted."""
+    from confluid.fluid import Target
+
+    monkeypatch.setenv("CONFLUID_TEST_INDIRECT", "${env:CONFLUID_TEST_SECRET}")
+    monkeypatch.setenv("CONFLUID_TEST_SECRET", "hunter2")
+    marker = Target("Whatever")
+    marker.kwargs["path"] = "${env:CONFLUID_TEST_INDIRECT}x"
+    Resolver(context={}).resolve({"proto": marker, "other": marker})
+    assert marker.kwargs["path"] == "${env:CONFLUID_TEST_SECRET}x"
