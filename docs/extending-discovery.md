@@ -55,6 +55,8 @@ nodes and enforces *socket types*.
 
 A task-scoped category is **derived**, never typed by hand. Declare `task` + `role`; confluid stamps
 `__confluid_task__` / `__confluid_role__` **and** derives `category = f"{task}_{role}"`
+(the derivation fires on every registration that restates `task=` or `role=` — a subclass
+re-tagging `role=` gets a re-derived category; an explicit `category=` argument wins)
 (`decorators.py`: `effective_category = category or (f"{task}_{role}" if task and role else None)`),
 so task/role queries and the category-driven form-spec both work from one declaration.
 

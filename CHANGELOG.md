@@ -139,6 +139,27 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The registry refuses what it cannot name or bind, derives `category` at its one authority,
+  enumerates safely, and stays interruptible** (BUGS-2026-08-19 R1/R2/R3/R4/R5/R6/R9/R10,
+  2026-08-19). Measured before: `@configurable("Named")` and `register(functools.partial(...))`
+  crashed with a raw `AttributeError` from an unrelated line; a nameless callable silently
+  registered under the literal name `wrapper`, every second one clobbering the first;
+  `@configurable` above `@staticmethod`/`@classmethod` registered a broken target (instance calls
+  raised, a classmethod object is not callable); `get_class(UnregisteredSub)` answered the PARENT
+  class via the inherited name mark; a subclass restating `role="metric"` kept the parent's
+  `classification_loss` category (a metric in every loss picker) and `register_class(task=, role=)`
+  derived nothing; `list_classes()` during a concurrent registration raised `RuntimeError:
+  dictionary changed size during iteration`; and `except BaseException` in `load_configurables`
+  swallowed Ctrl-C. Now: located `ConfigurableDefinitionError`s naming the fix (a provided `name=`
+  still suffices — a named partial registers and flows; a function genuinely named `wrapper` is
+  untouched; `@staticmethod` ABOVE `@configurable` keeps working); the read side of `get_class`
+  uses the own-`__dict__` mark like the write side; `category` derivation lives in
+  `register_class` and fires whenever the taxonomy is restated (explicit `category=` wins);
+  enumeration iterates `list(...)` snapshots (no lock — `list(dict)` copies under the GIL);
+  `load_configurables` catches `Exception`. Pinned: `tests/test_registry.py` (refusals, cons, the
+  switch-interval race), `tests/test_duplicate_names.py`, `tests/test_task_role.py`,
+  `tests/test_load_configurables.py`.
+
 - **A dotted key landing directly on a marker's kwarg competes at the dotted line's position**
   (BUGS-2026-08-19 BC4; user ruling 2026-08-19, per-key "option B"). Pass 6 folded `t.lr: 9.0`
   into the marker's kwargs, silently moving the value to the MARKER's line: written as the last

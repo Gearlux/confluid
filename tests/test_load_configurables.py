@@ -128,3 +128,20 @@ def test_a_broken_entry_is_collected_and_the_rest_still_load(tmp_path: Path, mon
 def test_the_default_group_is_confluid_configurables() -> None:
     """The group default is the convention the workspace's pyproject blocks declare."""
     assert inspect.signature(load_configurables).parameters["group"].default == "confluid.configurables"
+
+
+@pytest.mark.parametrize("exc_stmt", ["raise KeyboardInterrupt()", "raise SystemExit(3)"])
+def test_an_interrupt_during_an_entry_point_import_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc_stmt: str
+) -> None:
+    """R10 (BUGS-2026-08-19) — `except BaseException` logged Ctrl-C as
+    "failed to import: " and kept going: a slow bootstrap of many entry points
+    could not be interrupted. Ordinary import failures keep the per-entry
+    tolerance (the tests above); the two process-control exceptions propagate."""
+    _write_module(tmp_path, "fake_cfg_interrupting_plugin", exc_stmt + "\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    entry = importlib.metadata.EntryPoint(name="interrupting", value="fake_cfg_interrupting_plugin", group=_GROUP)
+    _serve_entries(monkeypatch, [entry])
+
+    with pytest.raises((KeyboardInterrupt, SystemExit)):
+        load_configurables()

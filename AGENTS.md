@@ -1134,9 +1134,33 @@ NON-raising by default; `strict=True` is set at exactly the two construction fun
 different object → warning + last-write-wins. Any tag differing → coexist.
 
 **Rule.** `register_class`'s `name` falls back to the class's OWN `__dict__` mark, never an
-inherited one (a plain `getattr` registers a subclass under its parent's custom name).
-`key_for(cls)` is live-computed, never a second stamp — the dumper asks it so `dump()` emits a key
-that reloads THIS class.
+inherited one (a plain `getattr` registers a subclass under its parent's custom name) — and the
+READ side follows the same rule: `get_class(<class object>)` falls back to the own mark after the
+identity lookup misses, so an unregistered SUBCLASS answers `None`, never its parent
+(2026-08-19, BUGS-2026-08-19 R4). `key_for(cls)` is live-computed, never a second stamp — the
+dumper asks it so `dump()` emits a key that reloads THIS class.
+
+**Rule — registration REFUSES what it cannot name or bind (2026-08-19, R1/R2/R3).** A positional
+non-callable to `configurable()` (`@configurable("Named")`), a target with no `__name__` and no
+`name=` (a `functools.partial`, a callable instance — checked on the ORIGINAL callable, before the
+validation wrap, so a function genuinely named `wrapper` is untouched), and a
+`staticmethod`/`classmethod` DESCRIPTOR all raise `ConfigurableDefinitionError` naming the fix.
+They used to crash with a raw `AttributeError` from an unrelated line, silently register under the
+literal name `wrapper` (each clobbering the last), or register a broken target (a wrapped
+staticmethod lost its descriptor; a classmethod object is not callable). A provided `name=` always
+suffices for a nameless callable — a named partial registers and flows (pinned con). The working
+descriptor order is `@staticmethod` ABOVE `@configurable`.
+
+**Rule — enumeration takes SNAPSHOTS (2026-08-19, R9).** `list_classes` /
+`list_categories`-family / `_entry_for_object` iterate `list(...)` copies of the backing dicts,
+never live views — a concurrent registration during an enumeration (an MCP server listing while a
+lazy import registers) raised `RuntimeError: dictionary changed size during iteration`. There is
+deliberately NO lock: `list(dict)` copies in one C-level step under the GIL. A NEW enumeration
+over a registry index copies first.
+
+**Rule — `load_configurables` catches `Exception`, never `BaseException` (2026-08-19, R10).**
+Per-entry tolerance is for a BROKEN entry point; `KeyboardInterrupt`/`SystemExit` propagate, or a
+slow bootstrap of many entry points cannot be interrupted.
 
 **Why.** `docs/architecture.md` record 4. **Docs.** `docs/discovery.md`, `docs/errors.md`.
 **Pins.** `tests/test_duplicate_names.py`.
@@ -1160,7 +1184,14 @@ makes every `$` selector follow the verb.
 ### Discovery taxonomy
 
 **Rule.** Tag with `@configurable(task=…, role=…)` in preference to a hand-concatenated
-`category` — confluid derives `category = f"{task}_{role}"` and indexes all three. `framework=` is
+`category` — confluid derives `category = f"{task}_{role}"` and indexes all three. The derivation
+lives in `register_class`, the ONE stamping authority, and fires whenever the taxonomy is
+(re)stated: restating `role=` alone re-derives from the effective task+role (a subclass turning a
+loss into a metric leaves the loss picker — R5), and a direct `register_class(task=…, role=…)`
+derives exactly like the decorator (R6). An explicit `category=` argument always wins; a call
+restating neither half keeps the existing mark. Consequence: re-registering with `role=`/`task=`
+and no `category=` REPLACES a hand-set category from an earlier call — derived-never-typed is the
+rule. `framework=` is
 the THIRD orthogonal axis: which ENGINE's API a class belongs to (the API, not the tensor runtime),
 deliberately NOT folded into `category`. Untagged classes are ABSENT from an index, so a filter
 returns only what claims that value.
@@ -1189,7 +1220,9 @@ dropped or renamed tag silently empties the corresponding picker.
 **Rule.** `group=` is presentation-only (palette nesting within a category) and does NOT gate what a
 consumer is offered.
 
-**Pins.** `tests/test_task_role.py`, `tests/test_group.py`. **Docs.** `docs/discovery.md`.
+**Pins.** `tests/test_task_role.py` (incl. the R5/R6 derivation group), `tests/test_group.py`,
+`tests/test_registry.py` (the refusal + snapshot groups), `tests/test_duplicate_names.py` (R4),
+`tests/test_load_configurables.py` (R10). **Docs.** `docs/discovery.md`.
 
 ### Behavioral marks
 

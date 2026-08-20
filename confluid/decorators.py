@@ -182,12 +182,37 @@ def configurable(
             "a constant's outputs are a pure function of its config, a random class's are not."
         )
 
-    # ``task`` + ``role`` derive ``category`` when an explicit one isn't given,
-    # so a single tag feeds both the orthogonal (task/role) and legacy
-    # (category) discovery paths.
-    effective_category = category or (f"{task}_{role}" if task and role else None)
+    if cls is not None and not callable(cls) and not isinstance(cls, (staticmethod, classmethod)):
+        # `@configurable("Named")` — the positional slot is the TARGET; a string here
+        # used to travel all the way to register_class and crash with a raw
+        # AttributeError on an unrelated line (BUGS-2026-08-19 R1).
+        raise ConfigurableDefinitionError(
+            f"configurable() takes the class or callable to register as its positional argument, got "
+            f"{cls!r} — a name is a keyword: @configurable(name={cls!r})"
+        )
 
     def decorator(c: C) -> C:
+        if isinstance(c, (staticmethod, classmethod)):
+            # Above the descriptor decorator, @configurable receives the DESCRIPTOR:
+            # wrapping a staticmethod made a plain function (instance calls broke) and
+            # a classmethod object registered as an uncallable target (R3). The working
+            # order applies @configurable to the FUNCTION first.
+            kind = type(c).__name__
+            raise ConfigurableDefinitionError(
+                f"@configurable sits UNDER @{kind}, not above it — write:\n"
+                f"    @{kind}\n    @configurable\n    def ...\n"
+                f"so the function is registered and the descriptor still binds"
+            )
+        if name is None and not isinstance(c, type) and callable(c) and getattr(c, "__name__", None) is None:
+            # Checked on the ORIGINAL callable, before the validation wrap: the wrapper
+            # would carry its own literal name "wrapper" (functools.wraps copies nothing
+            # off a functools.partial / callable instance), and every such target used
+            # to register under "wrapper", each clobbering the last (R2). The test is
+            # for a MISSING __name__ — a function genuinely named `wrapper` is untouched.
+            raise ConfigurableDefinitionError(
+                f"cannot derive a registration name for {c!r}: the target has no __name__. "
+                f"Pass name= (e.g. @configurable(name='build_thing')), or wrap it in a named function"
+            )
         # A @configurable FUNCTION (not a class) gets its CALL validated by a
         # functools.wraps wrapper — the callable analogue of the class
         # __init__ wrap below. Markers + registration then land on the WRAPPER
@@ -201,7 +226,7 @@ def configurable(
         get_registry().register_class(
             c,
             name=name,
-            category=effective_category,
+            category=category,
             group=group,
             task=task,
             role=role,
