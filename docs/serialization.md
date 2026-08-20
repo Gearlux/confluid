@@ -55,7 +55,9 @@ dump(trainer)                     # _target_: Trainer / lr: 0.1 / epochs: 50
 
 - **Derived state** — read-only properties and `_`-prefixed internals are
   never emitted; they are recomputed by the reconstructed object
-  ([Class Design](class-design.md)). This is why the convention asks for a
+  ([Class Design](class-design.md)). A constructor **parameter** shadowed by a
+  property dumps its CAPTURED ctor value (`device: cpu`, not the getter's
+  derived object) — the getter never runs during a dump. This is why the convention asks for a
   recomputing `@property` rather than a stored attribute: a property stays out
   of the document, while a stored one is a body slot and is dumped.
 - **Runtime-injected arguments** — the `params=` / positional inputs handed

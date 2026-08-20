@@ -203,6 +203,16 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
 
     kwargs: Dict[str, Any] = {}
     for p in params:
+        member = getattr(type(data), p, None)
+        if isinstance(member, property):
+            # A slot shadowed by a PROPERTY is derived state — reading it would EXECUTE
+            # the getter and dump its derived value (a ctor param `device: "auto"` behind a
+            # read-only `device` property dumped `_target_: torch.device`, which neither
+            # reloads nor re-applies — BUGS-2026-08-19 CD2). The captured ctor kwarg below
+            # is the document's value, exactly as for an eager class's transformed param.
+            if p in captured and not _skip_none(p, captured[p]):
+                kwargs[p] = captured[p]
+            continue
         if hasattr(data, p):
             val = getattr(data, p)
             if not _skip_none(p, val):
@@ -344,6 +354,8 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
                 if s.kind not in _DUMP_KINDS:
                     continue
                 param_set.add(s.name)
+                if isinstance(getattr(target.__class__, s.name, None), property):
+                    continue  # derived state — the emission reads the captured kwarg, not the getter (CD2)
                 if hasattr(target, s.name):
                     _discover_and_register(getattr(target, s.name), visited)
             # Traverse captured ctor kwargs too — a nested configurable an

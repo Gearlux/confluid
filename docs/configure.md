@@ -222,6 +222,18 @@ configure(trainer, config={"lr": 0.7})                        # nothing competes
   leaves `t.dataset is ds` true, and the named spelling
   `configure(trainer=t, config={"trainer": {"lr": 0.1}})` touches `lr` and
   nothing else on `t` (an unmentioned attribute is never copied).
+- **Children beyond `__dict__` are reached** — a child living in a parallel
+  store (`nn.Module`'s `_modules`, a `__slots__` slot) is found and configured
+  in place, never replaced. A slot shadowed by a class-level **property** is
+  derived state: the getter never runs, a setterless slot is never written, and
+  the captured constructor kwarg is what the object's document shows.
+- **Scope blocks resolve under `scopes=`** — `configure(model, config=cfg,
+  scopes=["framework=torch"])` activates blocks exactly as `load()` does
+  (`default_scopes:` / `!notscope:` semantics included); `configure_from_file`
+  forwards it. A consumed scope wrapper is structure, never an "unused" key.
+- **A typo'd key in a named block is audible** — it warns, records
+  `unknown-attribute`, and still applies (B1); `@configurable(strict_attrs=True)`
+  refuses it, exactly as on the load path.
 - **Layer override documents** over a graph a previous pass produced.
 
 If you are starting from YAML and have no live objects yet, you want

@@ -924,6 +924,27 @@ Consequences, each pinned: a NAMED object is addressable by a dotted ATTRIBUTE p
 INSTANCE names past the first level (`a.b.c.value`) is not a spelling (use the attribute path
 from a named object). Warnings for a typo'd block key come from
 `broadcast.logger` (the scanner) — patch THAT in a test.
+
+**Rule — ONE read rule on both sides of the document (2026-08-19, BUGS-2026-08-19 CD1/CD2).**
+`dumpable_kwargs` (the document's writer) and `_apply` (its reader-back) read a slot the SAME way:
+a slot shadowed by a class-level `property` is derived state — the getter NEVER runs (dump,
+discovery walk, and apply alike), a setterless slot is never written, and the CAPTURED ctor kwarg
+is the document's value (the eager-class fallback); every other slot is read via `getattr`, so a
+child living beyond `__dict__` — an `nn.Module` submodule in `_modules`, a `__slots__` slot — is
+FOUND and configured in place. Before: the two sides disagreed (`to_markers` used `getattr`,
+`_apply` used `__dict__`), so configure() REPLACED an `nn.Module` child with a fresh build,
+crashed on a private-backing property host, and `dump()` emitted a getter's derived object that
+neither reloaded nor re-applied.
+
+**Rule — B1 binds the named-overlay path, and `configure()` takes `scopes=` (2026-08-19,
+CD6/CD18).** A key folded in by a NAMED overlay is the marker's OWN kwarg by the time pass 7
+runs, so the accept-list never gated it: a typo was set in silence and `strict_attrs` ignored.
+`_apply` now runs `_warn_undeclared` (warn + `unknown-attribute` + still applied; `strict_attrs`
+refuses) before every set, under the call's ambient report — the engine-state token spans the
+APPLY phase, not just the settle. `configure(*objs, config=…, scopes=[…])` and
+`configure_from_file(..., scopes=[…])` thread the activation into the inner
+`load(until="settled")`, so scope blocks resolve exactly as under `load()`; a scope WRAPPER key
+is structure and never registers as an unused override.
 **Pins.** `tests/test_configure_via_document.py`; `tests/test_configurator.py`;
 `tests/test_report.py` (the report vocabulary is the scanner's: a class block that delivers a
 mapping to a child records at the RECEIVER the block addressed).
