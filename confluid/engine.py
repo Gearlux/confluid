@@ -357,9 +357,34 @@ def _flow_recursive(
     #    fresh BARE entries within the subtree).
     if isinstance(data, dict):
         if parent_context:
-            local_ctx = _View(parent_context)  # tags copied when parent is a _View
-            for k, v in data.items():
-                local_ctx.set(k, v, _KeyScope.BARE)
+            # Transparent for POSITION as well as for nesting: the group's entries are
+            # SPLICED at the group key's slot — the same "replace the slot with the
+            # contents" rule `_splice_kwargs_at_slot` applies at a marker boundary —
+            # never appended after every inherited key. Appending gave a marker inside
+            # a group an unbeatable position (its own kwargs sat after a later bare
+            # key / class block / rider — BC2), and `_View.set`'s keep-the-position
+            # rule let a key restated inside the group inherit an EARLIER root key's
+            # slot, so adding an earlier LOSING line flipped a later contest (BC9 —
+            # E4 re-opened). Built fresh in document order; every insertion re-anchors
+            # (pop + set), so a parent key AFTER the group still beats the group's copy.
+            local_ctx = _View()
+            if isinstance(parent_context, _View):
+                local_ctx.scopes.update(parent_context.scopes)
+            scope_of = parent_context.scope_of if isinstance(parent_context, _View) else (lambda _k: _KeyScope.BARE)
+            spliced = False
+            for k, v in parent_context.items():
+                if not spliced and k == slot_key and v is data:
+                    for gk, gv in data.items():
+                        local_ctx.pop(gk, None)
+                        local_ctx.set(gk, gv, _KeyScope.BARE)
+                    spliced = True
+                    continue
+                local_ctx.pop(k, None)
+                local_ctx.set(k, v, scope_of(k))
+            if not spliced:
+                for gk, gv in data.items():
+                    local_ctx.pop(gk, None)
+                    local_ctx.set(gk, gv, _KeyScope.BARE)
         else:
             local_ctx = _View(data)
         return {k: _flow_recursive(v, parent_context=local_ctx, slot_key=k) for k, v in data.items()}

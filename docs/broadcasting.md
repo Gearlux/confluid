@@ -31,7 +31,11 @@ Details that make the grammar predictable:
   named `opt`; use `trainer.**.opt.lr` to float `opt` at any depth.
 * Segment matching is by **class name or instance `name`**; containers
   (lists, plain grouping dicts) are transparent — one level = one object
-  nesting hop.
+  nesting hop. Transparent for **position** too: a group's entries compete
+  from the group key's line, so a marker inside `group:` loses to a bare key,
+  class block or rider written after the group, exactly as it would at a
+  direct slot — and a key restated inside the group sits at the group's line,
+  not at the line of an earlier same-named root key.
 * All three spellings converge inside blocks too: `trainer: {'**.lr': 1}` ≡
   `trainer: {'**': {lr: 1}}` ≡ `trainer.**.lr: 1`. **YAML quoting caveat:**
   a key starting with `*` must be quoted (`'**.lr':`, `'**':`) because a bare

@@ -139,6 +139,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A grouping dict is transparent for position, not only for nesting** (BUGS-2026-08-19
+  BC2/BC9, 2026-08-19). Pass 7's dict branch appended a group's entries after every inherited
+  key, so a marker inside `group:` held an unbeatable position — its own kwargs beat a LATER
+  bare key, class block and `'**'` rider alike (`group: {node: !class:T {lr: 1.0}}` + `lr: 9.0`
+  answered `1.0`; the same marker at a direct slot or in a list kwarg answered `9.0`) — and a
+  key restated inside a group kept an EARLIER same-named root key's position, so adding an
+  earlier LOSING line flipped a later contest (re-opens 2026-08-13's E4, whose probe had no own
+  kwarg on the node). The group's entries are now SPLICED at the group key's slot, rebuilt fresh
+  in document order with per-key re-anchoring — the same rule `_splice_kwargs_at_slot` applies at
+  a marker boundary. Pinned: the grouping-dict group in `tests/test_document_order.py` (three
+  later-spec spellings, the dict-valued-kwarg case, BC9's flip with both cons).
+
 - **A class block's C2 verdict protects the addressed node, not its subtree** (BUGS-2026-08-19
   BC5, 2026-08-19 — a regression from the phase-4 C2 fix). `_view_for` popped the bare keys the
   block out-positioned from the view used for the WHOLE descent below the slot, so a grandchild
