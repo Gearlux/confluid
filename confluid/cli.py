@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import yaml
+
 try:
     import click
     from click.shell_completion import CompletionItem, get_completion_class
@@ -133,8 +135,15 @@ def emit(config: Path, scope: Tuple[str, ...], output: Optional[str]) -> None:
         text = _emit(config, scopes=list(scope) or None)
     except ConfluidError as exc:
         raise click.ClickException(str(exc)) from exc  # one line on stderr, exit 1
+    except yaml.YAMLError as exc:
+        # A YAML syntax error is PyYAML's to raise (its mark carries file:line);
+        # the CLI contract is still ONE line + exit 1, never a traceback (CD16).
+        raise click.ClickException(" ".join(str(exc).split())) from exc
     if output:
-        Path(output).write_text(text)
+        try:
+            Path(output).write_text(text)
+        except OSError as exc:
+            raise click.ClickException(f"cannot write {output}: {exc}") from exc
     else:
         click.echo(text, nl=False)
 
@@ -148,6 +157,8 @@ def check(config: Path, scope: Tuple[str, ...]) -> None:
         diff = _check(config, scopes=list(scope) or None)
     except ConfluidError as exc:
         raise click.ClickException(str(exc)) from exc
+    except yaml.YAMLError as exc:
+        raise click.ClickException(" ".join(str(exc).split())) from exc
     if diff is not None:
         click.echo(diff, nl=False)
         sys.exit(1)

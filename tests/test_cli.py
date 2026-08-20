@@ -194,3 +194,23 @@ def test_importing_the_cli_without_click_names_the_extra(monkeypatch: pytest.Mon
         importlib.reload(cli_module)
     monkeypatch.undo()
     importlib.reload(cli_module)  # restore the real module for the other tests
+
+
+def test_a_yaml_syntax_error_is_one_line_and_exit_1(tmp_path: Path) -> None:
+    """CD16 — a PyYAML parse error escaped as a ~69-line traceback; the CLI
+    contract is ONE line on stderr, exit 1 (PyYAML's mark carries the location)."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("a: [1, 2\n")
+    result = _run("emit", str(bad))
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "bad.yaml" in result.output
+
+
+def test_an_unwritable_output_path_is_one_line_and_exit_1(tmp_path: Path) -> None:
+    good = tmp_path / "ok.yaml"
+    good.write_text("lr: 0.1\n")
+    result = _run("emit", str(good), "-o", str(tmp_path / "nodir" / "out.yaml"))
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "cannot write" in result.output

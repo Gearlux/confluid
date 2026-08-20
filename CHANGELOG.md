@@ -139,6 +139,20 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The emitted artefact is self-contained, honest, and always parses back** (BUGS-2026-08-19
+  CD13/CD14/CD15/CD16, 2026-08-19). `hydraide emit` re-emits every `import:` the load consumed
+  (the include accumulator's sibling), so a fresh process reloads the artefact — it used to fail
+  with `UnknownClassError` because the classes were registered only as a side effect of the
+  emitting process; pass 7 refuses an unresolvable STRING target with a located
+  `UnknownClassError` (it used to take the accept-everything list, absorb every bare key, and
+  `check` blessed a typo'd class with exit 0 — nothing imports between pass 7 and pass 8, so
+  settle refuses exactly what construction would); anchor names are deterministically unique
+  (`&m_0` / `&m_0-2` where two shortest paths folded to one spelling and emitted a duplicate
+  anchor no parser could read); and the `hydraide` command renders PyYAML syntax errors (with
+  their file:line mark) and `-o` write failures as ONE line + exit 1 instead of a traceback.
+  Pinned: `tests/test_hydraide.py` (incl. the fresh-process subprocess reload and emit
+  idempotence with the import line), `tests/test_cli.py`.
+
 - **The located-error sweep — five raises that had the location in hand and dropped it**
   (BUGS-2026-08-19 SR14/SR15/ENG-4/ENG-10/PA25, 2026-08-19). A `@axis=$key` selector whose key is
   missing now names the marker's line (`… or write the value literally. at <file>:1:7`); the

@@ -73,13 +73,21 @@ def _anchor_names(tree: Any) -> Dict[int, str]:
 
     walk(tree, "")
     names: Dict[int, str] = {}
-    for object_id, seen_at in paths.items():
+    used: Dict[str, int] = {}
+    for object_id, seen_at in sorted(paths.items(), key=lambda kv: min(kv[1])):
         if len(seen_at) < 2:
             continue
         best = min((p for p in seen_at if p), key=lambda p: (len(p), p), default="")
         # An anchor is [0-9a-zA-Z_-]+ in YAML; the paths above are built from
         # keys and indices, so only a key carrying other characters needs the fold.
-        names[object_id] = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in best) or "shared"
+        name = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in best) or "shared"
+        # Two shortest paths can FOLD to one spelling (`m[0]` → `m_0` beside a key
+        # literally named `m_0`) — the emitted YAML then carried a duplicate anchor
+        # and no parser could read it back (BUGS-2026-08-19 CD15). Deterministic
+        # suffixing keeps every anchor unique; iteration order is fixed by path, so
+        # the same document always emits the same names.
+        used[name] = used.get(name, 0) + 1
+        names[object_id] = name if used[name] == 1 else f"{name}-{used[name]}"
     return names
 
 
@@ -90,7 +98,20 @@ def emit(source: Union[str, Path], *, scopes: Optional[List[str]] = None) -> str
     Raises the same located ``ConfigurationError`` a ``load()`` would for a
     malformed document — a preprocessor must not degrade what the loader refuses.
     """
-    tree = load(source, until="settled", scopes=scopes)
+    from confluid.loader import _IMPORT_ACCUMULATOR
+
+    # Pass 2 CONSUMES `import:` — without re-emitting the directive the artefact
+    # could not reload in a fresh process: its classes were registered only as a
+    # side effect of this very load (BUGS-2026-08-19 CD13). The accumulator
+    # collects every directive, included files' included, deduped in read order.
+    imports: List[str] = []
+    token = _IMPORT_ACCUMULATOR.set(imports)
+    try:
+        tree = load(source, until="settled", scopes=scopes)
+    finally:
+        _IMPORT_ACCUMULATOR.reset(token)
+    if imports and isinstance(tree, dict):
+        tree = {"import": imports if len(imports) > 1 else imports[0], **tree}
     return dump(tree, anchor_names=_anchor_names(tree))
 
 
