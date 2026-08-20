@@ -40,7 +40,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional, Set, Type
 
 from confluid.exceptions import ValidationModeError
 
@@ -162,12 +162,15 @@ def set_policy(
     """Replace one or more knobs on the active policy and return the new policy."""
     current = get_policy()
     updates: Dict[str, ValidationMode] = {}
+    # Validate against the closed Literal like the env-var reader does — a typo
+    # (``set_policy(init="stict")``) used to be stored and then read as warn-mode
+    # by every ``!= "strict"`` test downstream (BUGS-2026-08-19 N13).
     if init is not None:
-        updates["init"] = init
+        updates["init"] = _normalize_mode(init, env_var="set_policy(init=...)")
     if yaml is not None:
-        updates["yaml"] = yaml
+        updates["yaml"] = _normalize_mode(yaml, env_var="set_policy(yaml=...)")
     if tool is not None:
-        updates["tool"] = tool
+        updates["tool"] = _normalize_mode(tool, env_var="set_policy(tool=...)")
     if not updates:
         return current
     new_policy = replace(current, **updates)
@@ -245,13 +248,9 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     from pydantic import ValidationError
 
     from confluid.fluid import Fluid
-    from confluid.pydantic_export import to_pydantic
 
-    try:
-        model = to_pydantic(cls)
-    except TypeError:
-        # Class signature not introspectable (e.g. C extension without a
-        # Python wrapper). Skip validation rather than blocking instantiation.
+    model = _model_or_none(cls)
+    if model is None:
         return
 
     # Split kwargs into "concrete" (eager pydantic check) and "deferred"
@@ -279,15 +278,47 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
             # nor "field required" errors. ``validate_assignment`` checks one
             # field against the model's schema; ``model_construct`` builds an
             # un-validated stub instance to give it a target.
+            from confluid.pydantic_export import field_name_for
+
             stub = model.model_construct()
             for name, value in concrete.items():
-                if name not in model.model_fields:
+                field = field_name_for(model, name)
+                if field is None:
                     continue
-                model.__pydantic_validator__.validate_assignment(stub, name, value)
+                model.__pydantic_validator__.validate_assignment(stub, field, value)
     except ValidationError as exc:
         if mode == "strict":
             raise
         logger.warning(f"{cls.__name__}: invalid configuration\n{exc}")
+
+
+_unvalidatable_warned: Set[Any] = set()
+
+
+def _model_or_none(cls: Callable[..., Any]) -> Optional[Type[BaseModel]]:
+    """``to_pydantic(cls)``, or ``None`` — logged ONCE per class — when no mirror can be built.
+
+    A constructor must never fail because confluid could not build its schema mirror (a C
+    extension without a Python signature; an annotation ``get_type_hints`` cannot resolve —
+    ``to_pydantic`` raises ``IntrospectionError`` by contract), so the skip stays. It used to
+    be SILENT — ``except TypeError: return`` — which meant a class ran with validation OFF
+    under the default strict policy and nobody knew (BUGS-2026-08-19 N3/N4); and it caught
+    ``TypeError`` alone, so pydantic's own ``SchemaError`` escaped the constructor (N1). Any
+    failure skips now, and says so once per class at WARNING — the condition is actionable
+    (fix the annotation, add the import, or ``@configurable(validate=False)``).
+    """
+    from confluid.pydantic_export import to_pydantic
+
+    try:
+        return to_pydantic(cls)
+    except Exception as exc:  # IntrospectionError, pydantic's TypeError / SchemaError — any of them
+        if cls not in _unvalidatable_warned:
+            _unvalidatable_warned.add(cls)
+            logger.warning(
+                f"{getattr(cls, '__name__', cls)}: validation is OFF for this class — no schema mirror can be built "
+                f"({type(exc).__name__}: {exc})"
+            )
+        return None
 
 
 def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> Optional[str]:
@@ -309,18 +340,18 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
 
     from pydantic import ValidationError
 
-    from confluid.pydantic_export import to_pydantic
-
-    try:
-        model = to_pydantic(cls)
-    except TypeError:
+    model = _model_or_none(cls)
+    if model is None:
         return None
 
-    if name not in model.model_fields:
+    from confluid.pydantic_export import field_name_for
+
+    field = field_name_for(model, name)
+    if field is None:
         return None
 
     try:
-        model.__pydantic_validator__.validate_assignment(model.model_construct(), name, value)
+        model.__pydantic_validator__.validate_assignment(model.model_construct(), field, value)
     except ValidationError as exc:
         if mode == "strict":
             raise

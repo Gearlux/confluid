@@ -58,9 +58,21 @@ What goes into the generated model:
   `annotated_types` range mark reaches the JSON schema
   (`exclusiveMinimum` / `maximum` …) and is enforced at validation. A range
   mark on a `(min, max)` tuple container is applied per element.
-- **Un-schemable leaf types are coerced to `Any`** (tensors, arrays, exotic
-  enums, `Callable` params) so schema generation never crashes on a
-  registered third-party class — the config still validates structurally.
+- **Un-schemable leaf types never crash schema generation.** Tensors, arrays,
+  exotic enums, `Callable` params (either spelling) and a non-runtime-checkable
+  `Protocol` are coerced to `Any`. Any other plain class pydantic cannot
+  JSON-schema (a helper class, `logging.Logger`, `TextIO` …) keeps its
+  `isinstance` check at validation and gets an opaque `{}` schema — the config
+  still validates, the schema still renders.
+- **A range mark on an `Optional[(min, max)]` container** is applied per element
+  exactly like the bare container (the zero-arg spelling of the same param).
+- **Any legal parameter name is a field.** A name pydantic cannot take as a
+  field — a leading underscore (`_seed`) or a `BaseModel` attribute name
+  (`model_config`, `schema`, `copy` …) — is stored under a mangled field name
+  (`seed_`, `model_config_`) with the real name as its **alias**, so
+  `model_validate({"_seed": 3})` and the JSON schema still use the parameter's
+  name. Consumers iterating `model_fields` see the mangled key; read `.alias`
+  for the parameter name.
 - The internal marker aliases (`Partial[T]`, `Mandatory[T]`, `NoBroadcast[T]`)
   are **stripped** — they shape engine behaviour, not the schema.
 

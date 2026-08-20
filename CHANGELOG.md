@@ -139,6 +139,23 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The schema mirror is built for every legal signature, JSON-schemas, and never switches
+  validation off silently** (BUGS-2026-08-19 N1/N2/N3/N4/N9/N10/N11/N13, 2026-08-19). Measured
+  before: a non-runtime `Protocol`-typed param made `Cls()` raise a raw `pydantic_core.SchemaError`;
+  a `_seed` param made every `Cls()` raise `NameError: Fields must not use names with leading
+  underscores`; a `model_config` param crashed `to_pydantic` (`'FieldInfo' object is not iterable`)
+  and the swallowed `TypeError` left the class UNvalidated under the default strict policy;
+  `Annotated[Optional[Tuple[float, float]], Interval(...)]` raised `TypeError: Unable to apply
+  constraint` on a legal value; any plain class or `logging.Logger` param (and a bare
+  `collections.abc.Callable`) made `model_json_schema()` raise `PydanticInvalidForJsonSchema`;
+  `set_policy(init="stict")` was stored and read as warn-mode. Now: `Protocol` → `Any`; bare
+  `Callable` → `Any`; a plain un-schemable leaf keeps its isinstance check under
+  `Annotated[T, WithJsonSchema({})]`; underscore / `BaseModel`-attribute names are mangled fields with
+  the real name as alias (`field_name_for` is the reverse map, used by `validate_setattr` and the
+  mixed-kwargs path); range marks relocate through `Optional`; `validation._model_or_none` skips an
+  unbuildable mirror with ONE warning per class naming the cause; `set_policy` refuses a typo.
+  Pinned: `tests/test_pydantic_export.py` (the N-group), `tests/test_validation.py`.
+
 - **Kwargs on a reference tune the shared referent instead of vanishing** (BUGS-2026-08-19
   PA10/BC8/SR9; user ruling 2026-08-19). `{_ref_: proto, k: 5}`, `!ref:proto` with a body (the tag
   constructor discarded it at parse) and a dotted path walking through a reference

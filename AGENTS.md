@@ -118,7 +118,17 @@ only when the constructor is intentionally untyped. Express a constraint an
 to `"off"` with one log line, and `to_pydantic` / `confluid_class_of` raise `ImportError` naming
 the extra. A package relying on schema enforcement or export MUST depend on `confluid[pydantic]`.
 
-**Pins.** `tests/test_optional_pydantic.py`. **Docs.** `docs/validation.md`.
+**Rule — the skip is LOUD, the knob is CLOSED (2026-08-19, BUGS-2026-08-19 N4/N13).** A class whose
+mirror cannot be built (`to_pydantic` raises — an `IntrospectionError` by contract, or pydantic's
+own error) is never blocked from constructing, but `validation._model_or_none` — the ONE place the
+validation hooks call `to_pydantic` — logs ONCE per class at WARNING that validation is OFF for it
+and why. It catches `Exception`, not `TypeError`: the narrow clause let pydantic's `SchemaError`
+escape a constructor. `set_policy()` normalizes its modes through `_normalize_mode` exactly like
+the env-var reader — `set_policy(init="stict")` raises `ValidationModeError` instead of being
+stored and read as warn-mode.
+**Pins.** `tests/test_optional_pydantic.py`,
+`tests/test_validation.py::test_a_class_whose_mirror_cannot_be_built_still_constructs_and_says_so_once` /
+`::test_set_policy_refuses_a_typo_like_the_env_var_does`. **Docs.** `docs/validation.md`.
 
 ---
 
@@ -1370,6 +1380,23 @@ TARGET param's — each shield gates deliveries at its OWN key.
 its constraints in the generated schema. A param typed with an un-JSON-schemable leaf
 (`torch.Tensor`, numpy arrays) — or a PARAMETERIZED generic whose ORIGIN is one — is coerced to
 `Any` so schema generation never crashes.
+
+**Rule — the mirror is built for EVERY legal signature, and it JSON-schemas (2026-08-19,
+BUGS-2026-08-19 N1/N2/N3/N9/N10/N11).** Three leaf rules in `_convert_annotation_unwrapped`: a
+bare `collections.abc.Callable` is `Any` like `typing.Callable`; a non-`@runtime_checkable`
+`Protocol` is `Any` (pydantic's is-instance schema raised a raw `SchemaError` from the constructor
+of every class typing a param with one); any other plain leaf class pydantic cannot JSON-schema
+(decided by the cached probe `_json_schemable`) rides as `Annotated[T, WithJsonSchema({})]` —
+the isinstance check is KEPT, only the schema is opaque. Two name rules in `_field_name`: a
+leading-underscore name and a `BaseModel`-attribute name (`model_config`, `schema`, `copy` …) get
+a mangled field name (`seed_`, `model_config_`) with the real name as the field ALIAS — never
+dropped (the alias is what `model_validate(kwargs)` and the JSON schema speak); `field_name_for`
+is the ONE reverse map and `validation.validate_setattr` / the mixed-kwargs path go through it.
+`_spread_range_marks_into_container` looks through `Optional`/`Union` and relocates into each
+container arm. Do NOT "fix" a new un-schemable type by widening `_OPAQUE_TOP_MODULES`: the probe
+answers for any leaf; the allow-list exists only to keep torch/numpy leaves `Any` (pinned).
+**Pins.** `tests/test_pydantic_export.py` — the N1/N2/N3/N9/N10/N11 group (incl. the
+runtime-checkable-Protocol-keeps-its-check and isinstance-kept con cases).
 
 **Rule — container range marks.** The workspace convention puts `annotated_types` marks on the
 OUTER annotation of a `(min, max)` container param, because that is where a GUI reads widget bounds.
