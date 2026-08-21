@@ -32,7 +32,11 @@ load("cache: {_target_: Cache, pathh: /x}")
 
 "Declared" is the accept-list: constructor parameters (or the callable's own
 signature for a registered builder function), public settable class attributes,
-and `__init__`-body slots. The refusal is located — the message names the YAML
+and `__init__`-body slots. A class attribute declares its slot whatever its
+VALUE is — `timeout = None` and an assigned function (`collate_fn =
+default_collate`) count; a METHOD defined in the class body never does, and
+neither does derived state (a `property` without a setter, a
+`functools.cached_property`). The refusal is located — the message names the YAML
 `file:line:col` that wrote the key.
 
 ## What the mark binds — and what it never touches

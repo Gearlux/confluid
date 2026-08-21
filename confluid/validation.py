@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional, Set, Type
 
@@ -205,6 +206,13 @@ def override_init_mode(mode: ValidationMode) -> Iterator[None]:
         _policy = previous
 
 
+#: The YAML location of the marker currently being constructed — set by the
+#: engine around ``target(**ctor)`` so the WARN-mode diagnostic below names the
+#: same ``file:line:col`` the strict path's ``ConstructionError`` names (N16,
+#: BUGS-2026-08-19). Empty outside a document-driven construction.
+_construction_where: ContextVar[str] = ContextVar("confluid_construction_where", default="")
+
+
 def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> None:
     """Validate constructor / call kwargs against ``to_pydantic(cls)`` under ``mode``.
 
@@ -289,7 +297,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning(f"{cls.__name__}: invalid configuration\n{exc}")
+        logger.warning(f"{cls.__name__}: invalid configuration{_construction_where.get()}\n{exc}")
 
 
 _unvalidatable_warned: Set[Any] = set()

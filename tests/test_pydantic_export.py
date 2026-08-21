@@ -1078,3 +1078,54 @@ def test_a_plain_leaf_class_keeps_its_isinstance_check_and_json_schemas() -> Non
 def test_a_bare_collections_abc_callable_param_json_schemas() -> None:
     """N11 — `typing.Callable` was coerced, the PEP 585 spelling was not."""
     assert "fn" in to_pydantic(_BareCallableHost).model_json_schema()["properties"]
+
+
+def test_a_marker_default_reaches_the_schema_in_plain_format_without_a_warning() -> None:
+    """N15 (BUGS-2026-08-19) — the canonical deferred-slot spelling warned on
+    every model_json_schema() and the default vanished; it is published as the
+    plain-format form now, silently."""
+    import warnings as _warnings
+
+    from confluid import Target
+
+    @configurable
+    class AdamN15:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    @configurable
+    class TrainerN15:
+        def __init__(self, optimizer: Partial[AdamN15] = Target(AdamN15, lr=1e-3)) -> None:
+            self.optimizer = optimizer
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        schema = to_pydantic(TrainerN15).model_json_schema()
+    assert schema["properties"]["optimizer"]["default"] == {"_target_": "AdamN15", "lr": 0.001}
+    assert not [w for w in caught if "not JSON serializable" in str(w.message)]
+
+
+def test_a_marker_default_with_non_json_kwargs_is_excluded_silently() -> None:
+    """N15 con — a default the plain form cannot say truthfully is excluded
+    without a warning, never published as a lie."""
+    import warnings as _warnings
+
+    from confluid import Target
+
+    @configurable
+    class SinkN15:
+        def __init__(self, where: object = None) -> None:
+            self.where = where
+
+    opaque = object()
+
+    @configurable
+    class HostN15:
+        def __init__(self, sink: Partial[SinkN15] = Target(SinkN15, where=opaque)) -> None:
+            self.sink = sink
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        schema = to_pydantic(HostN15).model_json_schema()
+    assert "default" not in schema["properties"]["sink"]
+    assert not [w for w in caught if "not JSON serializable" in str(w.message)]

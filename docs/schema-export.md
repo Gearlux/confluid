@@ -96,7 +96,22 @@ parse_param_docs(Trainer)
 ```
 
 The same `Args:` extraction the field descriptions use, for consumers that
-skip pydantic entirely (a `--help` renderer, a lightweight form).
+skip pydantic entirely (a `--help` renderer, a lightweight form). It reads
+Google style (`name: help`, `name (type): help` — a parenthesized type may nest
+parens on its line, and `*args:` / `**kwargs:` are entries of their own, stored
+under the bare name) and NumPy style (an underlined `Parameters` section of
+`name : type` lines — the type stays out of the help text). For a class the
+lookup is MRO-wide, base first with subclass entries winning per key, and a
+constructor docstring with no entries falls back to the class docstring's
+block — a one-line `"""Build the trainer."""` no longer hides it. A body
+slot assigned a LITERAL (`self.batch_size: int = 32`) also reports that literal
+as its default in `get_hierarchy` listings; non-literal values stay unknown.
+
+A slot whose DEFAULT is a marker (`optimizer: Partial[Adam] = Target(Adam,
+lr=1e-3)` — the canonical deferred-slot spelling) publishes the plain-format
+form as its JSON-schema default (`{"_target_": "Adam", "lr": 0.001}`), with no
+serialization warning; a marker whose kwargs are not JSON-clean is excluded
+silently.
 
 ## `validate_model` — re-check under a policy mode
 

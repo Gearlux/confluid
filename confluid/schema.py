@@ -18,7 +18,20 @@ signature walks (``docs/architecture.md`` record 12).
 import inspect
 import re
 import types
-from typing import Annotated, Any, Dict, List, Set, Tuple, TypedDict, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypedDict,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from confluid.introspect import NO_DEFAULT, init_callable, slots
 
@@ -381,34 +394,70 @@ def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
 
 
 def _parse_docstring(docstring: str) -> Dict[str, str]:
-    """
-    Parse Google/NumPy style docstring to extract parameter help.
+    """Extract ``{param: help}`` from a Google- or NumPy-style docstring.
 
-    A parameter's description spans its continuation lines: it runs until the
-    next ``name:`` / ``name (type):`` entry, a blank line, or the end of the
-    string. The terminator deliberately uses ``\\Z`` (end of string), NOT ``$`` —
-    under ``re.MULTILINE`` ``$`` matches at the end of *every* physical line, which
-    would truncate every multi-line description to its first line.
+    Google style: an ``Args:``/``Arguments:``/``Parameters:`` line followed by
+    ``name: description`` / ``name (type): description`` entries — ``*args:`` and
+    ``**kwargs:`` are entries too (stored under their bare name), a parenthesized
+    type may nest parens on its line (``size (tuple(int, int)):``), and an entry
+    ends at the next entry, a blank line, or the end of text. NumPy style: an
+    underlined ``Parameters`` section of ``name : type`` lines with indented
+    descriptions — the type stays out of the help text.
     """
     param_docs: Dict[str, str] = {}
     if not docstring:
         return param_docs
 
-    # Find the Args/Parameters section
+    numpy_section = re.search(
+        r"^[ \t]*Parameters[ \t]*\n[ \t]*-{3,}[ \t]*\n(.*?)(?=\n[ \t]*\w[\w ]*\n[ \t]*-{3,}|\Z)",
+        docstring,
+        re.DOTALL | re.MULTILINE,
+    )
+    if numpy_section:
+        return _parse_numpy_entries(numpy_section.group(1))
+
     section_match = re.search(r"(?:Args|Parameters|Arguments):\s*(.*)", docstring, re.DOTALL | re.IGNORECASE)
     content = section_match.group(1) if section_match else docstring
 
-    # Match "parameter (type): description" or "parameter: description"
+    # ``\*{0,2}`` on the entry AND the lookahead: a ``**kwargs:`` line is an entry
+    # (so it TERMINATES the previous one), never part of a description. The type
+    # group stays on one line (``[^\n]``) so a nested paren cannot eat the entry.
     pattern = re.compile(
-        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|\Z)",
+        r"^\s*(\*{0,2}[\w_]+)\s*(?:\([^\n]*\))?:\s*(.*?)(?=\n\s*\*{0,2}[\w_]+\s*(?:\([^\n]*\))?:|\n\s*\n|\Z)",
         re.MULTILINE | re.DOTALL,
     )
 
     for match in pattern.finditer(content):
         name, description = match.groups()
         clean_desc = " ".join(description.split())
-        param_docs[name] = clean_desc
+        param_docs[name.lstrip("*")] = clean_desc
 
+    return param_docs
+
+
+def _parse_numpy_entries(block: str) -> Dict[str, str]:
+    """One NumPy ``Parameters`` block: ``name : type`` entry lines, deeper-indented
+    description lines under each. The type is dropped from the help text."""
+    param_docs: Dict[str, str] = {}
+    entry_indent: Optional[int] = None
+    current: Optional[str] = None
+    pieces: Dict[str, List[str]] = {}
+    entry_re = re.compile(r"(\*{0,2}[\w_]+)\s*(?::.*)?$")
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        match = entry_re.fullmatch(stripped)
+        if match and (entry_indent is None or indent <= entry_indent):
+            entry_indent = indent if entry_indent is None else entry_indent
+            current = match.group(1).lstrip("*")
+            pieces[current] = []
+            continue
+        if current is not None:
+            pieces[current].append(stripped)
+    for name, lines in pieces.items():
+        param_docs[name] = " ".join(" ".join(lines).split())
     return param_docs
 
 
@@ -432,12 +481,22 @@ def parse_param_docs(obj: Any) -> Dict[str, str]:
         Empty when there is no docstring or no recognizable ``Args:`` entries.
     """
     if isinstance(obj, type):
-        init = obj.__dict__.get("__init__") or getattr(obj, "__init__", None)
-        init_doc = getattr(init, "__doc__", None) if init is not object.__init__ else None
-        docstring = init_doc or obj.__doc__ or ""
-    else:
-        docstring = getattr(obj, "__doc__", "") or ""
-    return _parse_docstring(docstring)
+        # MRO-wide, base first, subclass entries winning per key — an undocumented
+        # subclass inherits its base's help. Per class: the ``__init__`` docstring's
+        # entries, and when it HAS no entries (a one-line "Build the trainer."),
+        # the class docstring's ``Args:`` block — an Args-less init doc no longer
+        # hides it (N12).
+        merged: Dict[str, str] = {}
+        for klass in reversed(obj.__mro__):
+            if klass is object:
+                continue
+            init = klass.__dict__.get("__init__")
+            entries = _parse_docstring(getattr(init, "__doc__", None) or "") if init is not None else {}
+            if not entries:
+                entries = _parse_docstring(klass.__doc__ or "")
+            merged.update(entries)
+        return merged
+    return _parse_docstring(getattr(obj, "__doc__", "") or "")
 
 
 class OutputSpec(TypedDict):

@@ -213,3 +213,30 @@ def test_the_mark_is_inherited_by_a_subclass() -> None:
     assert marks(Narrower).strict_attrs is True
     with pytest.raises(ConfigurationError, match="epochz"):
         load("n:\n  _target_: Narrower\n  epochz: 5\n")
+
+
+def _collate_for_strict(batch: Any) -> Any:
+    return batch
+
+
+def test_strict_accepts_a_none_valued_and_an_assigned_callable_class_attr() -> None:
+    """N6 (BUGS-2026-08-19) — the docs' accept-list ("public settable class
+    attributes") includes `timeout = None` and an assigned function; strict mode
+    refused both while accepting `batch_size = 32` only because its value
+    happened to be a non-None non-callable."""
+
+    @configurable(strict_attrs=True)
+    class StrictLoader:
+        timeout = None
+        collate_fn = _collate_for_strict
+
+        def method(self) -> int:
+            return 1
+
+        def __init__(self, path: str = "") -> None:
+            self.path = path
+
+    loaded = load("l: {_target_: StrictLoader, timeout: 5, collate_fn: len}")["l"]
+    assert loaded.timeout == 5 and loaded.collate_fn == "len"
+    with pytest.raises(ConfigurationError):
+        load("l: {_target_: StrictLoader, method: 5}")

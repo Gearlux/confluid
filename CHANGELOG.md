@@ -139,6 +139,30 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The introspection tail: slots, forward refs, docstrings, schema defaults, located warns**
+  (BUGS-2026-08-19 N5/N6/N7/N8/N12/N14/N15/N16/N17, 2026-08-20). Measured before → after:
+  a body slot `self.optimizer: Partial["Optim"] = None` lost its deferral (the quoted name inside
+  the subscript evals to a ForwardRef; the slot's marker was BUILT eagerly and crashed on the
+  missing runtime arg) → nested ForwardRefs evaluate through public `get_type_hints`, both
+  declaration halves answer alike; `timeout = None` and an assigned function were not slots
+  (`strict_attrs` refused attributes the class HAS) → a public class attribute declares its slot
+  whatever its value is, methods stay invisible; a `@cached_property` was a settable slot (a bare
+  sweep key overwrote derived state, `count=999`) → invisible like the plain property; a
+  `__slots__` body slot read as `class_attr` so `dump()` dropped it (round-trip label `q` → `p`)
+  → the member descriptor steps aside, `body_slot`, round trip holds; `parse_param_docs`
+  swallowed a Google `**kwargs:` entry into the previous help, leaked NumPy types into
+  descriptions, dropped a nested-paren entry, hid the class `Args:` behind a one-line `__init__`
+  docstring, and gave a subclass nothing → all five parse (MRO-wide, subclass wins per key);
+  a `@configurable @dataclass` fired the cannot-scan WARNING with advice that cannot help →
+  debug (dataclass-narrow; exec'd/frozen code keeps the warning); the canonical marker default
+  (`= Target(Adam, lr=1e-3)`) warned on every `model_json_schema()` and vanished → published as
+  `{"_target_": "Adam", "lr": 0.001}` silently (non-JSON kwargs: excluded silently); warn-mode
+  validation now names the marker's `file:line:col`; `get_hierarchy` reports `32`, not `None`,
+  for `self.batch_size: int = 32`. Pinned across `tests/test_introspect.py`,
+  `tests/test_strict_attrs.py`, `tests/test_dumper.py`, `tests/test_parse_param_docs.py`,
+  `tests/test_broadcast_attrs.py`, `tests/test_pydantic_export.py`, `tests/test_validation.py`,
+  `tests/test_all_gaps.py`.
+
 - **Concurrent passes never fault each other; `to_pydantic` is one model per class across
   threads** (BUGS-2026-08-13 X4/X5, 2026-08-20). Measured before → after: a `clear_pass_caches()`
   landing between a cache's `in` check and its indexed read raised `KeyError` out of public

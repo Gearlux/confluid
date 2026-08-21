@@ -8,7 +8,7 @@ Every `@configurable` class has its `__init__` wrapped at decoration time to val
 | YAML materialization | `confluid.flow()` / `load()` instantiating a `_target_` marker | `policy.yaml` | `CONFLUID_VALIDATE_YAML` |
 | Tool entry | An MCP/agent tool server validating a config payload before dispatching a run | `policy.tool` | `CONFLUID_VALIDATE_TOOL` |
 
-All three default to `"strict"` — pydantic `ValidationError` is raised. `"warn"` logs the error to `confluid.validation` and lets the call proceed. `"off"` skips validation entirely. `set_policy()` and the env vars refuse any other spelling with `ValidationModeError` — a typo never silently downgrades a knob.
+All three default to `"strict"` — pydantic `ValidationError` is raised. `"warn"` logs the error to `confluid.validation` and lets the call proceed; for a document-driven construction the warning names the marker's `file:line:col`, the same location the strict path's `ConstructionError` carries. `"off"` skips validation entirely. `set_policy()` and the env vars refuse any other spelling with `ValidationModeError` — a typo never silently downgrades a knob.
 
 **A class whose schema mirror cannot be built is never blocked — and never silently unvalidated.** If `to_pydantic(cls)` fails (a C-extension constructor with no Python signature, an annotation that cannot be resolved at runtime), the constructor still runs and confluid logs **once per class**, at WARNING: `X: validation is OFF for this class — no schema mirror can be built (IntrospectionError: …)`. Fix the annotation, add the import, or opt the class out explicitly with `@configurable(validate=False)`.
 

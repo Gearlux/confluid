@@ -329,6 +329,15 @@ def _warn_if_init_unscannable(target: type) -> None:
         return
     if baked_init_attrs(target) is not None:
         return  # covered by a build-time bake table — packaged mode is healthy
+    if "__dataclass_fields__" in target.__dict__:
+        # A dataclass's ``__init__`` is SYNTHESIZED field-wise — there is no body
+        # source to lose, and ``confluid-bake`` scans source too, so the advice
+        # cannot be followed. Normal dev operation, not a packaged-mode divergence
+        # (N14). Deliberately dataclass-narrow: other sourceless inits (exec'd or
+        # frozen code) CAN carry body slots, and the warning is their one signal.
+        _warned_unscannable_inits.add(name)
+        logger.debug(f"__init__ of {name} is dataclass-generated — no post-init body slots to scan")
+        return
     _warned_unscannable_inits.add(name)
     logger.warning(
         f"cannot scan __init__ body of {name} (source unavailable — compiled/frozen?): "

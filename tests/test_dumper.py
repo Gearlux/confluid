@@ -705,3 +705,19 @@ def test_a_dollar_in_a_mapping_key_round_trips() -> None:
 
     reloaded = load(dump({"a$b": Job(command="x")}))
     assert list(reloaded.keys()) == ["a$b"]
+
+
+def test_a_slots_class_round_trips_its_body_slot() -> None:
+    """N8 (BUGS-2026-08-19) — the member descriptor read as a class_attr, so
+    dump() dropped the configured value and the reload restored the default."""
+
+    @configurable
+    class SlottedPoint:
+        __slots__ = ("x", "label")
+
+        def __init__(self, x: float = 0.0) -> None:
+            self.x = x
+            self.label = "p"
+
+    reloaded = load(dump(load("p: {_target_: SlottedPoint, label: q}")["p"]))
+    assert reloaded.label == "q"
