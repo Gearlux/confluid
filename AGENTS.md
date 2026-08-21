@@ -290,11 +290,20 @@ OBJECT — never on `f"{module}.{qualname}"`. Register a new one with
 a hand-rolled `.clear()` block. Cache ownership follows module ownership — a cache another module
 owns registers itself.
 
+**Rule — cache READS are atomic (2026-08-20, BUGS-2026-08-13 X4).** A concurrent pass's entry
+`clear_pass_caches()` may land between an `in` check and the indexed read — public
+`materialize()` raised `KeyError` out of `_get_acceptable_keys`. Every per-pass cache consult is
+ONE `.get()`; where `None` is a real cached answer (the accept-list's accept-everything, the
+negative-string entry) the miss is `broadcast._CACHE_MISS`, never `None`. A clear landing after
+the read is a benign recomputation — the caches are pure per target.
+
 **Why.** The dotted name is not unique — the registry's `_claim_key` suffixes `~N` for exactly this
 case — so two classes defined in one scope shared an accept-list: the second was built on its
 defaults and had the first one's key setattr'd onto it, silently (2026-08-11).
 
-**Pins.** `tests/test_duplicate_names.py::test_same_qualname_classes_do_not_share_an_accept_list`.
+**Pins.** `tests/test_duplicate_names.py::test_same_qualname_classes_do_not_share_an_accept_list`;
+the X4 hostile-cache group in `tests/test_concurrency.py` (all four sites, the None-answer branch
+included).
 
 ### Tag-based IR — Fluid objects are the ONLY intermediate representation
 
@@ -1558,6 +1567,15 @@ TARGET param's — each shield gates deliveries at its OWN key.
 its constraints in the generated schema. A param typed with an un-JSON-schemable leaf
 (`torch.Tensor`, numpy arrays) — or a PARAMETERIZED generic whose ORIGIN is one — is coerced to
 `Any` so schema generation never crashes.
+
+**Rule — ONE model per class, across THREADS (2026-08-20, BUGS-2026-08-13 X5).** `to_pydantic`'s
+cached-identity contract binds concurrent first calls too: a bare `lru_cache` serialized nothing,
+so ten barrier threads got nine distinct model classes and cross-thread `isinstance` against
+`to_pydantic(cls)` failed. Double-checked publish — a lock-free `_MODEL_CACHE.get()` fast path,
+the build under an `RLock` (REENTRANT on purpose: `_build_model` recurses into `to_pydantic` for
+nested `@configurable` param types — a plain `Lock` deadlocks there). `to_pydantic.cache_clear`
+stays (test fixtures call it). Do not swap back to a bare `lru_cache`.
+**Pins.** `tests/test_concurrency.py::test_concurrent_first_calls_to_to_pydantic_hand_out_ONE_model_class`.
 
 **Rule — the mirror is built for EVERY legal signature, and it JSON-schemas (2026-08-19,
 BUGS-2026-08-19 N1/N2/N3/N9/N10/N11).** Three leaf rules in `_convert_annotation_unwrapped`: a

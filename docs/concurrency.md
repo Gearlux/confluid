@@ -45,3 +45,17 @@ like `load` does.
 [`examples/concurrency.py`](../examples/concurrency.py) resolves a dotted
 `Reference` under `active_context`, shows a raw `threading.Thread` starting
 clean, and fixes it with `contextvars.copy_context()`.
+
+## Concurrent passes never fault each other
+
+Two guarantees hold for threads running isolated passes (each under its own
+context):
+
+- **Per-pass cache reads are atomic.** Another pass's entry `clear_pass_caches()`
+  may land at any instruction; every cache consult is one `.get()` (with a MISS
+  sentinel where `None` is a real cached answer), so the worst case is a benign
+  recomputation — never a `KeyError` out of `materialize()`.
+- **`to_pydantic` hands out ONE model per class, across threads.** Concurrent
+  first calls serialize on a reentrant lock (reentrant because building a model
+  recurses into `to_pydantic` for nested `@configurable` param types); a
+  lock-free fast path keeps the steady state free.

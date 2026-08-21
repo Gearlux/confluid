@@ -26,7 +26,21 @@ import inspect
 import typing
 from copy import copy
 from enum import Enum
-from typing import Annotated, Any, Callable, Dict, FrozenSet, List, Literal, Optional, Protocol, Set, Tuple, TypeVar
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    Set,
+    Tuple,
+    TypeVar,
+    cast,
+)
 
 from loggair import get_active_config, get_logger
 
@@ -335,6 +349,14 @@ _SETTABLE_KINDS: FrozenSet[str] = frozenset({"positional_only", "keyword", "clas
 _DECLARED_KINDS: FrozenSet[str] = _SETTABLE_KINDS
 
 
+# The one MISS sentinel for atomic per-pass cache reads (X4, BUGS-2026-08-13): a
+# concurrent pass's entry `clear_pass_caches()` may land between an `in` check and
+# the indexed read, so a cached answer is read with ONE `.get()` — never two steps.
+# A sentinel, not None: an accept-list of None is a real cached answer
+# (accept-everything).
+_CACHE_MISS: Any = object()
+
+
 def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
     """Return constructor params (+ configurable properties + post-init attrs) for a class.
 
@@ -369,15 +391,17 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
             # name so repeated lookups stay O(1). Two modules with the same
             # unresolvable name collide, but the value is None in both cases
             # so the collision is benign.
-            if cls_or_name in _acceptable_keys_cache:
-                return _acceptable_keys_cache[cls_or_name]
+            negative = _acceptable_keys_cache.get(cls_or_name, _CACHE_MISS)
+            if negative is not _CACHE_MISS:
+                return cast(Optional[FrozenSet[str]], negative)
             _acceptable_keys_cache[cls_or_name] = None
             return None
         target = resolved
 
     cache_key = _cache_key(target)
-    if cache_key in _acceptable_keys_cache:
-        return _acceptable_keys_cache[cache_key]
+    hit = _acceptable_keys_cache.get(cache_key, _CACHE_MISS)
+    if hit is not _CACHE_MISS:
+        return cast(Optional[FrozenSet[str]], hit)
 
     target_slots = slots(target)
     if init_callable(target) is None:
@@ -436,8 +460,9 @@ def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
             return {}
 
     cache_key = _cache_key(target)
-    if cache_key in _param_kind_cache:
-        return _param_kind_cache[cache_key]
+    kinds_hit = _param_kind_cache.get(cache_key)
+    if kinds_hit is not None:
+        return kinds_hit
 
     kinds: Dict[str, Optional[str]] = {slot.name: _classify_annotation(slot.annotation) for slot in slots(target)}
     _param_kind_cache[cache_key] = kinds
