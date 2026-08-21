@@ -299,3 +299,24 @@ def test_flow_coverage() -> None:
     s_marker = Target("S")
     s_marker.kwargs.update({"x": 10})
     assert flow(s_marker).x == 10
+
+
+def test_get_hierarchy_reports_a_literal_body_slot_default() -> None:
+    """N17 (BUGS-2026-08-19) — `self.batch_size: int = 32` listed None as its
+    default; the literal AST value is the default now (non-literals stay None)."""
+
+    @configurable
+    class LoaderN17:
+        """Loader.
+
+        Args:
+            path: Where the data lives.
+            batch_size: Items per batch.
+        """
+
+        def __init__(self, path: str = "data") -> None:
+            self.path = path
+            self.batch_size: int = 32
+
+    hierarchy = get_hierarchy(LoaderN17)
+    assert hierarchy["LoaderN17.batch_size"] == ("int", 32, "Items per batch.")

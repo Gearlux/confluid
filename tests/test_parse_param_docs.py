@@ -104,3 +104,91 @@ def test_to_pydantic_carries_multiline_description() -> None:
 def test_parse_docstring_single_line_unchanged() -> None:
     # Regression pin for the historical behavior.
     assert _parse_docstring("Args:\n  x: d") == {"x": "d"}
+
+
+# --------------------------------------------------------------------------- the N12 rows (BUGS-2026-08-19)
+
+
+def test_a_google_kwargs_entry_terminates_the_previous_one() -> None:
+    class GoogleKwargs:
+        """A model.
+
+        Args:
+            lr: The learning rate.
+            **kwargs: Extra options forwarded to the backend.
+        """
+
+        def __init__(self, lr: float = 0.1, **kwargs: object) -> None: ...
+
+    docs = parse_param_docs(GoogleKwargs)
+    assert docs["lr"] == "The learning rate."
+    assert docs["kwargs"] == "Extra options forwarded to the backend."
+
+
+def test_numpy_style_keeps_the_type_out_of_the_help_text() -> None:
+    class Numpy:
+        """A model.
+
+        Parameters
+        ----------
+        lr : float
+            The learning rate.
+        epochs : int, optional
+            How many passes.
+        """
+
+        def __init__(self, lr: float = 0.1, epochs: int = 1) -> None: ...
+
+    assert parse_param_docs(Numpy) == {"lr": "The learning rate.", "epochs": "How many passes."}
+
+
+def test_a_nested_paren_type_keeps_its_entry() -> None:
+    class NestedParenType:
+        """A model.
+
+        Args:
+            size (tuple(int, int)): Output size.
+            lr (float): The learning rate.
+        """
+
+        def __init__(self, size: tuple = (1, 1), lr: float = 0.1) -> None: ...
+
+    assert parse_param_docs(NestedParenType) == {"size": "Output size.", "lr": "The learning rate."}
+
+
+def test_an_args_less_init_docstring_does_not_hide_the_class_block() -> None:
+    class OneLineInitDoc:
+        """Trainer.
+
+        Args:
+            lr: The learning rate.
+        """
+
+        def __init__(self, lr: float = 0.1) -> None:
+            """Build the trainer."""
+
+    assert parse_param_docs(OneLineInitDoc) == {"lr": "The learning rate."}
+
+
+def test_an_undocumented_subclass_inherits_its_bases_entries() -> None:
+    class Base:
+        """Base.
+
+        Args:
+            lr: The learning rate.
+        """
+
+        def __init__(self, lr: float = 0.1) -> None: ...
+
+    class Sub(Base):
+        pass
+
+    class SubOverrides(Base):
+        """Child.
+
+        Args:
+            lr: The child rate.
+        """
+
+    assert parse_param_docs(Sub) == {"lr": "The learning rate."}
+    assert parse_param_docs(SubOverrides)["lr"] == "The child rate."

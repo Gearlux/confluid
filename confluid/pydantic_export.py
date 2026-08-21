@@ -47,6 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
 from pydantic.json_schema import WithJsonSchema
 
 from confluid.exceptions import IntrospectionError
+from confluid.fluid import Fluid
 from confluid.introspect import NO_DEFAULT, Slot, slots
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
@@ -407,6 +408,15 @@ def _field_for_slot(slot: Slot, description: str) -> Tuple[Any, Any]:
         # Capture by value to avoid the closing-over-loop-variable bug.
         snapshot = type(default)(default)
         return converted_type, Field(default_factory=lambda snapshot=snapshot: type(snapshot)(snapshot), **desc_kw)
+    if isinstance(default, Fluid):
+        # The canonical deferred-slot spelling (`optimizer: Partial[Adam] = Target(Adam, lr=1e-3)`)
+        # is not JSON — pydantic excluded it from the schema WITH a warning on every
+        # model_json_schema() (N15). A factory default is excluded silently, and the
+        # plain-format form of the marker (what the preprocessor emits) is published
+        # as the schema default where its kwargs are JSON-clean.
+        plain = _plain_marker_form(default)
+        extra: Dict[str, Any] = {"json_schema_extra": {"default": plain}} if plain is not None else {}
+        return converted_type, Field(default_factory=lambda captured=default: captured, **desc_kw, **extra)
     return converted_type, Field(default=default, **desc_kw)
 
 
@@ -452,6 +462,49 @@ def _post_init_field_specs(
 
 _MODEL_CACHE: Dict[Any, Type[BaseModel]] = {}
 _MODEL_LOCK = threading.RLock()
+
+
+def _plain_marker_form(marker: Any) -> Optional[Dict[str, Any]]:
+    """A marker's plain-format (reserved-key) dict, for a JSON-schema default.
+
+    ``None`` when any piece is not JSON-clean — the caller then excludes the
+    default silently instead of publishing a lie. The target name asks the
+    registry first, exactly like ``dump()``.
+    """
+    import json
+
+    from confluid.fluid import PartialClass, Reference
+
+    if isinstance(marker, Reference):
+        return {"_ref_": marker.target} if isinstance(marker.target, str) else None
+    target = marker.target
+    name: Optional[str]
+    if isinstance(target, str):
+        name = target
+    else:
+        from confluid.registry import get_registry  # partial: registry pulls broadcast machinery
+
+        registered = get_registry().key_for(target)
+        dunder = getattr(target, "__name__", None)
+        name = registered or (dunder if isinstance(dunder, str) else None)
+    if name is None:
+        return None
+    plain: Dict[str, Any] = {"_target_": name}
+    if isinstance(marker, PartialClass):
+        plain["_partial_"] = True
+    for key, value in marker.kwargs.items():
+        if isinstance(value, Fluid):
+            nested = _plain_marker_form(value)
+            if nested is None:
+                return None
+            plain[key] = nested
+        else:
+            plain[key] = value
+    try:
+        json.dumps(plain)
+    except (TypeError, ValueError):
+        return None
+    return plain
 
 
 def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:

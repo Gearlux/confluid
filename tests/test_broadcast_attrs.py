@@ -216,3 +216,30 @@ def test_scannable_class_never_warns(monkeypatch: pytest.MonkeyPatch) -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_a_dataclass_generated_init_logs_debug_not_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N14 (BUGS-2026-08-19) — a dataclass's __init__ is SYNTHESIZED field-wise:
+    no body source exists to lose and confluid-bake cannot help, so the
+    unscannable diagnostic is debug, not an actionable warning. The sourceless
+    pin above stays the con: exec'd/frozen code CAN carry body slots."""
+    from dataclasses import dataclass
+
+    records: List[tuple] = []
+
+    class _Collector:
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(engine_module, "logger", _Collector(), raising=True)
+
+    @configurable
+    @dataclass
+    class Cfg14:
+        lr: float = 0.1
+
+    load("c: {_target_: Cfg14, lr: 0.5}")
+    warned = [msg for level, msg in records if level == "warning" and "Cfg14" in msg]
+    assert warned == []
+    debugged = [msg for level, msg in records if level == "debug" and "Cfg14" in msg]
+    assert any("dataclass-generated" in msg for msg in debugged)

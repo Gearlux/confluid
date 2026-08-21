@@ -224,6 +224,24 @@ asymmetry is deliberate — it falls through to a post-init `setattr`, which is 
 has always done for it, so both paths agree. `var_keyword` makes the accept-list `None`
 (accept-everything) and is kept by `_ctor_params`; it is never a DECLARED name.
 
+**Rule — what the class-attr scan admits and skips (2026-08-20, BUGS-2026-08-19 N6/N7/N8).**
+A public class attribute declares its slot whatever its VALUE is — `timeout = None` and an
+ASSIGNED callable (`collate_fn = default_collate`) are slots (the docs' accept-list always said
+"public settable class attributes"; the value test refused them and `strict_attrs` bounced keys
+the class has). What stays invisible, each for a stated reason: a METHOD defined in a class body
+(its `__qualname__` ends in `.<its own attribute name>` — the one heuristic edge: another class's
+method assigned under the same name also reads as a method); a `functools.cached_property`
+(memoized derived state — the same rule as a setterless `property`, N7: a bare sweep key used to
+overwrite it); a `__slots__` member descriptor (the BODY scan claims the name as `body_slot`,
+N8 — as a `class_attr` it was outside `_DUMP_KINDS` and `dump()` silently dropped the configured
+value). A body slot assigned a LITERAL carries it as `Slot.default` (N17 — `ast.literal_eval`
+best-effort, `NO_DEFAULT` otherwise), so `get_hierarchy` stops reporting `None` for
+`self.batch_size: int = 32`.
+**Pins.** the N-tail group in `tests/test_introspect.py`,
+`tests/test_strict_attrs.py::test_strict_accepts_a_none_valued_and_an_assigned_callable_class_attr`,
+`tests/test_dumper.py::test_a_slots_class_round_trips_its_body_slot`,
+`tests/test_all_gaps.py::test_get_hierarchy_reports_a_literal_body_slot_default`.
+
 **Rule.** Only a KIND may exclude a slot — a NAME never does (2026-08-13). `to_pydantic`'s
 `_SKIP_PARAMS` name-set dropped an ordinary parameter literally named `args`/`kwargs` from the
 model alone among the readers, and `extra="forbid"` then refused the legal constructor call.
@@ -759,9 +777,14 @@ so one unrelated bad name cost a class its deferral marks AND its container rout
 `get_type_hints` — that private read was a third copy of the same all-or-nothing failure, and the
 "every slot reader projects from `introspect.slots`" rule already said it should not exist. It
 filters `source == "signature"` to stay a parameter scan.
+A ForwardRef NESTED in a subscript (`Partial["Optim"]` — never a plain string, so the
+quoted-annotation re-resolve does not fire) is EVALUATED in the same scope before degrading
+(2026-08-20, N5: `introspect._evaluate_forwardrefs`, public `get_type_hints` through a probe
+function, extras kept) — a body slot spelled identically to a ctor param keeps its deferral.
 **Pins.** the string-annotation group in `tests/test_introspect.py` (fixtures in
 `tests/pep563_helpers.py`), incl. `::test_a_quoted_CONSTRUCTOR_PARAM_annotation_is_unchanged`
-(the half that always worked) and `::test_an_UNRESOLVABLE_quoted_annotation_degrades_to_Any`.
+(the half that always worked), `::test_an_UNRESOLVABLE_quoted_annotation_degrades_to_Any` and
+`::test_a_quoted_forward_ref_INSIDE_a_subscript_keeps_the_deferral` (N5).
 
 **Rule.** `resolve_ast_annotation` MUST `inspect.unwrap` before reading `__globals__` — the
 validation wrapper's globals are confluid's own, which silently typed every body slot `Any`.
@@ -1356,7 +1379,10 @@ scan finds nothing, so the effective set is `scan ∪ declared ∪ baked` and fr
 governs dev. **KEPT by user ruling 2026-08-09** despite no consumer baking yet — do not re-flag it
 as dead surface; wire `confluid-bake --check` into the first frozen consumer's CI when one lands.
 The engine warns ONCE per class per process when it can scan nothing and nothing is declared (the
-warned-set is deliberately NOT cleared per pass).
+warned-set is deliberately NOT cleared per pass) — except a DATACLASS-generated `__init__`, which
+logs at debug (2026-08-20, N14: synthesized field-wise, no body source exists to lose and the bake
+advice cannot be followed; deliberately dataclass-narrow — exec'd/frozen code CAN carry body slots
+and keeps the warning, pinned by the sourceless group).
 
 **Pins.** `tests/test_task_role.py` (incl.
 `::test_marks_is_the_one_public_read_surface_for_the_stamps`), `tests/test_no_broadcast.py`,
@@ -1568,6 +1594,18 @@ its constraints in the generated schema. A param typed with an un-JSON-schemable
 (`torch.Tensor`, numpy arrays) — or a PARAMETERIZED generic whose ORIGIN is one — is coerced to
 `Any` so schema generation never crashes.
 
+**Rule — a marker DEFAULT publishes its plain-format form, silently (2026-08-20, N15).** The
+canonical deferred-slot spelling (`optimizer: Partial[Adam] = Target(Adam, lr=1e-3)`) fired a
+pydantic not-JSON-serializable WARNING on every `model_json_schema()` and the default vanished.
+`_plain_marker_form` renders the reserved-key dict (registry name first, like `dump()`); a marker
+whose kwargs are not JSON-clean is excluded SILENTLY via the factory default — never published as
+a lie. **Pins.** the N15 pair in `tests/test_pydantic_export.py`.
+
+**Rule — warn-mode names the marker's location (2026-08-20, N16).** The engine sets
+`validation._construction_where` (a ContextVar) around `target(**ctor)`, so the warn-mode
+diagnostic carries the same `file:line:col` the strict path's `ConstructionError` names.
+**Pins.** `tests/test_validation.py::test_warn_mode_names_the_yaml_location`.
+
 **Rule — ONE model per class, across THREADS (2026-08-20, BUGS-2026-08-13 X5).** `to_pydantic`'s
 cached-identity contract binds concurrent first calls too: a bare `lru_cache` serialized nothing,
 so ten barrier threads got nine distinct model classes and cross-thread `isinstance` against
@@ -1606,6 +1644,15 @@ skipped, non-range metadata untouched). Scalar marks pass through verbatim.
 set" with `Sequence` / `Mapping` / `Collection` / `Container`: those validate into a real
 `list`/`dict` holding the IDENTICAL objects, so coercing them buys nothing and costs the element
 type. The test to apply when adding a type: does its CONTRACT permit a generator?
+
+**Rule — `parse_param_docs` reads BOTH docstring styles, MRO-wide (2026-08-20, N12).** Google
+entries (`name: help`, `name (type): help` — the type stays on ONE line so nested parens cannot
+eat the entry; `*args:`/`**kwargs:` are entries of their own, stored under the bare name, and
+they TERMINATE the previous entry) and NumPy's underlined `Parameters` section (`name : type`
+lines, indented descriptions — the type never leaks into the help). For a class the lookup walks
+the MRO base-first, subclass entries winning per key, and an ``__init__`` docstring with NO
+entries falls back to the class docstring's block — a one-line `"""Build the trainer."""`
+no longer hides it. **Pins.** the N12 group in `tests/test_parse_param_docs.py`.
 
 **Rule — `sanitize_schema`.** The LLM-safe downgrade (`llm_schema.py`): inline `$ref`/`$defs`
 (cycles truncated), flatten `allOf`, collapse nullable `anyOf` → `T` + `nullable`, `const`→`enum`,

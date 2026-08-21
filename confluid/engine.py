@@ -1156,8 +1156,9 @@ def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: An
     from YAML — a tag carries kwargs only, so positional injection is a
     runtime-only channel (see :func:`flow`).
     """
-    from confluid.validation import get_policy, override_init_mode
+    from confluid.validation import _construction_where, get_policy, override_init_mode
 
+    where_token = _construction_where.set(_at_yaml_loc(obj))
     try:
         with override_init_mode(get_policy().yaml):
             return target(*args, **ctor)
@@ -1168,6 +1169,8 @@ def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: An
             raise type(exc)(msg) from exc
         except TypeError:
             raise ConstructionError(msg) from exc
+    finally:
+        _construction_where.reset(where_token)
 
 
 def _apply_post_init_attrs(

@@ -185,3 +185,114 @@ def test_pep563_body_slots_resolve_too() -> None:
     assert annotations["precision"] is Any
     for name, annotation in annotations.items():
         assert not isinstance(annotation, str), f"{name} leaked a raw string"
+
+
+# --------------------------------------------------------------------------- the N-tail slot rows (BUGS-2026-08-19)
+
+
+def test_a_quoted_forward_ref_INSIDE_a_subscript_keeps_the_deferral() -> None:
+    """N5 — `Partial["OptimN5"]` on a body slot evals to a ForwardRef inside the
+    subscript (never a plain string, so the I4 re-resolve does not fire); it is
+    evaluated in the module scope now, exactly as get_type_hints does for the
+    identical ctor-param spelling."""
+    from confluid import load
+
+    @configurable(validate=False)
+    class TrainerBody:
+        def __init__(self) -> None:
+            self.optimizer: Partial["OptimN5"] = None  # type: ignore[assignment]  # the lazy-slot idiom
+
+    assert partial_param_names(TrainerBody) == {"optimizer"}
+    loaded = load("t: {_target_: TrainerBody, optimizer: {_target_: OptimN5, lr: 0.5}}")["t"]
+    assert isinstance(loaded.optimizer, PartialClass)  # NOT built — OptimN5 needs its runtime arg
+
+
+@configurable(validate=False)
+class OptimN5:
+    def __init__(self, params: Any, lr: float = 0.1) -> None:
+        self.lr = lr
+
+
+def _module_level_collate(batch: Any) -> Any:
+    return batch
+
+
+def test_a_none_valued_or_assigned_callable_class_attribute_is_a_slot() -> None:
+    """N6 — `timeout = None` and `collate_fn = <function>` are public settable
+    class attributes (the documented accept-list); a METHOD stays invisible."""
+
+    @configurable
+    class Loader:
+        timeout = None
+        collate_fn = _module_level_collate
+        batch_size = 32
+
+        def method(self) -> int:
+            return 1
+
+        def __init__(self, path: str = "") -> None:
+            self.path = path
+
+    names = {s.name: s.kind for s in slots(Loader)}
+    assert names["timeout"] == "class_attr"
+    assert names["collate_fn"] == "class_attr"
+    assert names["batch_size"] == "class_attr"
+    assert "method" not in names
+
+
+def test_a_cached_property_is_derived_state_not_a_slot() -> None:
+    """N7 — the memoized variant answers like the plain property: invisible, and
+    a bare sweep key does not overwrite it."""
+    from functools import cached_property
+
+    from confluid import load
+
+    @configurable
+    class Source:
+        def __init__(self, path: str = "data") -> None:
+            self.path = path
+
+        @property
+        def size(self) -> int:
+            return len(self.path)
+
+        @cached_property
+        def count(self) -> int:
+            return len(self.path)
+
+    names = {s.name for s in slots(Source)}
+    assert "count" not in names and "size" not in names
+    swept = load("src: {_target_: Source}\ncount: 999\nsize: 999")["src"]
+    assert swept.count == 4 and swept.size == 4
+
+
+def test_a_slots_class_body_slot_is_a_body_slot_not_a_class_attr() -> None:
+    """N8 — the member descriptor steps aside so the body scan claims the name."""
+
+    @configurable
+    class SlottedPoint:
+        __slots__ = ("x", "label")
+
+        def __init__(self, x: float = 0.0) -> None:
+            self.x = x
+            self.label = "p"
+
+    names = {s.name: s.kind for s in slots(SlottedPoint)}
+    assert names["label"] == "body_slot"
+
+
+def test_a_literal_body_slot_default_reaches_Slot_default() -> None:
+    """N17 — `self.batch_size: int = 32` carries 32, not NO_DEFAULT; a
+    non-literal value stays unknown."""
+    from confluid.introspect import NO_DEFAULT
+
+    @configurable
+    class Loader:
+        def __init__(self, path: str = "data") -> None:
+            self.path = path
+            self.batch_size: int = 32
+            self.derived = path.upper()
+
+    by_name = {s.name: s.default for s in slots(Loader)}
+    assert by_name["batch_size"] == 32
+    assert by_name["derived"] is NO_DEFAULT

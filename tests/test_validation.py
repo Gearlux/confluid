@@ -16,7 +16,7 @@ Coverage targets:
 
 from __future__ import annotations
 
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 import pytest
 from pydantic import ValidationError
@@ -692,3 +692,32 @@ def test_a_class_whose_mirror_cannot_be_built_still_constructs_and_says_so_once(
     warnings = [r for r in records if "validation is OFF" in r]
     assert len(warnings) == 1, records
     assert "Unmirrorable" in warnings[0] and "IntrospectionError" in warnings[0]
+
+
+def test_warn_mode_names_the_yaml_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N16 (BUGS-2026-08-19) — the warn-mode diagnostic names the same
+    file:line:col the strict path's ConstructionError names."""
+    from types import SimpleNamespace
+
+    import confluid.validation as validation_module
+
+    records: list = []
+
+    class _Collector(SimpleNamespace):
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(validation_module, "logger", _Collector())
+
+    @configurable
+    class OptN16:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    confluid.set_policy(yaml="warn")
+    try:
+        confluid.load("o: {_target_: OptN16, lr: not-a-float}")
+    finally:
+        confluid.set_policy(yaml="strict")
+    warned = [msg for level, msg in records if level == "warning" and "OptN16" in msg]
+    assert warned and "at <unicode string>:1:4" in warned[0].splitlines()[0]

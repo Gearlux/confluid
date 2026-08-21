@@ -34,6 +34,7 @@ read ``__code__`` directly. Pinned by
 from __future__ import annotations
 
 import ast
+import functools
 import importlib
 import inspect
 import textwrap
@@ -507,22 +508,43 @@ def _non_signature_slots(target: Any, seen: Set[str]) -> List[Slot]:
         if name.startswith("_") or name in seen:
             continue
         member = getattr(target, name, None)
-        if member is None or callable(member):
-            continue
-        if isinstance(member, property) and member.fset is None:
-            continue  # derived state, per the class-design convention — never a config knob
+        if isinstance(member, functools.cached_property):
+            continue  # memoized derived state — the same rule as a setterless property (N7)
+        if isinstance(member, types.MemberDescriptorType):
+            continue  # a __slots__ member — the body scan claims it as a body slot (N8)
+        if isinstance(member, property):
+            if member.fset is None:
+                continue  # derived state, per the class-design convention — never a config knob
+        elif callable(member):
+            # A METHOD defined in a class body is never a knob; an ASSIGNED callable
+            # (``collate_fn = default_collate``) is a public settable class attribute
+            # like any other value (N6). The qualname tells them apart: a method's
+            # ends in ``.<its own attribute name>``.
+            if getattr(member, "__qualname__", "").endswith(f".{name}"):
+                continue
+        # ``None`` is a real default (``timeout = None`` declares the slot — N6).
         seen.add(name)
         out.append(Slot(name, "class_attr", Any, member, "class_attr", target))
 
-    for name, source, annotation, owner in _body_slot_sources(target):
+    for name, source, annotation, owner, default in _body_slot_sources(target):
         if name in seen:
             continue
         seen.add(name)
-        out.append(Slot(name, "body_slot", annotation, NO_DEFAULT, source, owner))
+        out.append(Slot(name, "body_slot", annotation, default, source, owner))
     return out
 
 
-def _body_slot_sources(target: type) -> List[Tuple[str, Any, Any, Any]]:
+def _literal_default(value_node: Any) -> Any:
+    """``ast.literal_eval`` of an assigned-value node, else ``NO_DEFAULT``."""
+    if value_node is None:
+        return NO_DEFAULT
+    try:
+        return ast.literal_eval(value_node)
+    except (ValueError, SyntaxError, TypeError):
+        return NO_DEFAULT
+
+
+def _body_slot_sources(target: type) -> List[Tuple[str, Any, Any, Any, Any]]:
     """Body-slot ``(name, source, annotation)`` triples, MRO-wide.
 
     The effective NAME set is ``scan ∪ declared ∪ baked`` (the packaged-mode rule):
@@ -542,13 +564,13 @@ def _body_slot_sources(target: type) -> List[Tuple[str, Any, Any, Any]]:
     278 ms materialize. Lazy resolution was considered and rejected for that
     ratio — it would have made ``Slot`` something other than a plain NamedTuple.
     """
-    out: List[Tuple[str, Any, Any, Any]] = []
+    out: List[Tuple[str, Any, Any, Any, Any]] = []
     emitted: Set[str] = set()
 
-    def _add(name: str, source: str, annotation: Any = Any, owner: Any = None) -> None:
+    def _add(name: str, source: str, annotation: Any = Any, owner: Any = None, default: Any = NO_DEFAULT) -> None:
         if name not in emitted:
             emitted.add(name)
-            out.append((name, source, annotation, owner if owner is not None else target))
+            out.append((name, source, annotation, owner if owner is not None else target, default))
 
     for declared in getattr(target, "__confluid_broadcast_attrs__", None) or ():
         _add(declared, "declared")
@@ -564,9 +586,20 @@ def _body_slot_sources(target: type) -> List[Tuple[str, Any, Any, Any]]:
             for slot in scanned
             if slot.kind in ("assign", "annassign") and slot.annotation is not None
         }
+        # A LITERAL assigned value is the slot's default (N17 — a `--docs` listing
+        # showing None for `self.batch_size: int = 32` misreports the class).
+        # Anything non-literal (a call, a param echo) stays NO_DEFAULT; of several
+        # assignments to one name, the last in walk order wins, best-effort.
+        values = {slot.name: slot.value for slot in scanned if slot.kind in ("assign", "annassign")}
         for name in sorted({slot.name for slot in scanned}):
             node = annotations.get(name)
-            _add(name, "body_scan", resolve_ast_annotation(node, init) if node is not None else Any, klass)
+            _add(
+                name,
+                "body_scan",
+                resolve_ast_annotation(node, init) if node is not None else Any,
+                klass,
+                _literal_default(values.get(name)),
+            )
         if not scanned:
             for name in baked_init_attrs(klass) or ():
                 _add(name, "baked", Any, klass)
@@ -588,7 +621,7 @@ def body_slot_names(target: Any) -> Set[str]:
     """
     if not isinstance(target, type):
         return set()
-    return {name for name, _, _, _ in _body_slot_sources(target)}
+    return {name for name, _, _, _, _ in _body_slot_sources(target)}
 
 
 def slot_names(target: Any, kinds: FrozenSet[str]) -> Set[str]:
@@ -616,6 +649,28 @@ def contains_forwardref(anno: Any) -> bool:
     if isinstance(anno, typing.ForwardRef):
         return True
     return any(contains_forwardref(arg) for arg in get_args(anno))
+
+
+def _evaluate_forwardrefs(anno: Any, scope: Dict[str, Any]) -> Any:
+    """Evaluate ForwardRefs nested anywhere inside ``anno`` against ``scope``.
+
+    ``Partial["Optim"]`` evals to a subscript carrying a ``ForwardRef`` — never a
+    plain string — so the I4 re-resolve does not fire, and degrading straight to
+    ``Any`` cost the slot its deferral while the SAME spelling on a ctor param
+    resolved (N5, BUGS-2026-08-19: ``get_type_hints`` evaluates it there). This
+    is the same evaluation, through the public API: a probe function whose one
+    annotation is ``anno``, resolved with extras kept (``Partial``/``Mandatory``
+    are ``Annotated``). ``None`` when a name is genuinely absent — the caller
+    degrades to ``Any`` as before.
+    """
+
+    def _probe() -> None: ...
+
+    _probe.__annotations__ = {"probed": anno}
+    try:
+        return get_type_hints(_probe, globalns=scope, include_extras=True)["probed"]
+    except Exception:  # noqa: BLE001 - an unresolvable hint degrades, never raises
+        return None
 
 
 def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
@@ -662,9 +717,13 @@ def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
         # resolves the string for it, which is exactly the asymmetry class-design
         # rule 4 says must not exist between the two declaration halves.
         return resolve_string_annotation(resolved, init_func)
-    # A string forward ref evals to a ForwardRef instead of raising; pydantic
-    # would build a model it can't finish (see _contains_forwardref). Degrade.
-    return Any if contains_forwardref(resolved) else resolved
+    if contains_forwardref(resolved):
+        # A quoted name INSIDE a subscript evals to a ForwardRef; evaluate it in
+        # the same scope (N5) — pydantic cannot finish a model around a leaked
+        # ForwardRef, so a genuinely absent name still degrades.
+        evaluated = _evaluate_forwardrefs(resolved, scope)
+        return Any if evaluated is None else evaluated
+    return resolved
 
 
 def resolve_string_annotation(text: str, init_func: Any) -> Any:
@@ -693,4 +752,7 @@ def resolve_string_annotation(text: str, init_func: Any) -> Any:
         resolved = eval(text, scope)  # noqa: S307 - trusted: the text is our own annotation
     except Exception:  # noqa: BLE001 - an unresolvable hint degrades, never raises
         return Any
-    return Any if contains_forwardref(resolved) else resolved
+    if contains_forwardref(resolved):
+        evaluated = _evaluate_forwardrefs(resolved, scope)  # N5 — same rule as the AST resolver
+        return Any if evaluated is None else evaluated
+    return resolved

@@ -17,7 +17,9 @@ to construct. Four rules:
    **lazily** (where it is used) with a clear error, not in `__init__`. A class that keeps a
    genuinely required constructor parameter is fully supported and is NOT a defect (see
    [Eager classes](eager-classes.md)); prefer the lazy shape for new classes.
-3. **Derived state → read-only `@property`, recomputed.** State derived from the configurable
+3. **Derived state → read-only `@property`, recomputed.** (`functools.cached_property`
+   counts as the memoized variant of the same rule — equally invisible to the config
+   surface.) State derived from the configurable
    inputs is a read-only property (not a stored attribute), so it never goes stale when the inputs
    change. Read-only properties are invisible to Confluid's config surface — never set by
    `configure`, never `dump`ed, rebuilt after `load()`. Cache (into a private `_field`) **only** an
