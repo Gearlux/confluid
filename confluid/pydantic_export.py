@@ -21,6 +21,7 @@ from __future__ import annotations
 import collections.abc
 import enum
 import inspect
+import threading
 import types
 from functools import lru_cache
 from typing import (
@@ -449,11 +450,41 @@ def _post_init_field_specs(
     return specs
 
 
-@lru_cache(maxsize=None)
-def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
-    """Return a pydantic ``BaseModel`` subclass mirroring ``cls.__init__``.
+_MODEL_CACHE: Dict[Any, Type[BaseModel]] = {}
+_MODEL_LOCK = threading.RLock()
 
-    Each call with the same ``cls`` returns the same model (cached). Nested
+
+def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
+    """Return a pydantic ``BaseModel`` subclass mirroring ``cls.__init__`` — ONE model per class.
+
+    The docstring contract ("each call with the same ``cls`` returns the same
+    model") holds across THREADS too (X5, BUGS-2026-08-13): a bare ``lru_cache``
+    serialized nothing, so concurrent FIRST calls each built and returned their
+    own model class and a later ``isinstance`` against ``to_pydantic(cls)``
+    failed. Double-checked publish: a lock-free ``.get()`` fast path, then the
+    build under an ``RLock`` — REENTRANT on purpose, because building a model
+    recurses into ``to_pydantic`` for nested ``@configurable`` param types.
+    See :func:`_build_model` for what the generated model contains.
+    """
+    hit = _MODEL_CACHE.get(cls)
+    if hit is not None:
+        return hit
+    with _MODEL_LOCK:
+        hit = _MODEL_CACHE.get(cls)
+        if hit is not None:
+            return hit
+        model = _build_model(cls)
+        _MODEL_CACHE[cls] = model
+        return model
+
+
+to_pydantic.cache_clear = _MODEL_CACHE.clear  # type: ignore[attr-defined]  # the lru_cache-era reset, kept
+
+
+def _build_model(cls: Callable[..., Any]) -> Type[BaseModel]:
+    """Build the pydantic ``BaseModel`` subclass mirroring ``cls.__init__``.
+
+    Called only under :func:`to_pydantic`'s lock. Nested
     ``@configurable`` parameter types are recursively wrapped via the same
     function, which gives correct identity for shared sub-types and breaks
     most reference cycles (the cache returns the in-flight class on second

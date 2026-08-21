@@ -139,6 +139,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Concurrent passes never fault each other; `to_pydantic` is one model per class across
+  threads** (BUGS-2026-08-13 X4/X5, 2026-08-20). Measured before → after: a `clear_pass_caches()`
+  landing between a cache's `in` check and its indexed read raised `KeyError` out of public
+  `materialize()` (reproduced deterministically at all four sites — the accept-list, its
+  negative-string branch, the param-kinds map, the parent-attr blacklist) → every consult is one
+  atomic `.get()` with a MISS sentinel where `None` is a real answer, so the worst case is a
+  benign recomputation; ten barrier threads' FIRST calls to `to_pydantic(cls)` returned nine
+  distinct model classes (a bare `lru_cache` serializes nothing, so cross-thread `isinstance`
+  failed) → one model, via a lock-free fast path plus a reentrant-locked double-checked publish
+  (reentrant because model building recurses for nested `@configurable` param types).
+  Pinned in `tests/test_concurrency.py`.
+
 - **The marker spelling of an override tunes; a default instance name matches on load; a literal
   `$` survives the round trip** (BUGS-2026-08-19 CD5/CD19/CD10 + CD21 documented, 2026-08-20).
   Measured before → after: `configure(trainer=t, config="trainer: !class:Trainer {lr: 0.1}\nlayers: 10")`

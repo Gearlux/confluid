@@ -279,8 +279,9 @@ def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
     user (and Confluid's own broadcast machinery) put there.
     """
     cache_key = _cache_key(cls)
-    if cache_key in _parent_blacklist_cache:
-        return _parent_blacklist_cache[cache_key]
+    hit = _parent_blacklist_cache.get(cache_key)
+    if hit is not None:
+        return hit
 
     blacklist: Set[str] = set()
     try:
