@@ -5,6 +5,32 @@ from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, ScopeBlock, Target
 
 
+def _same_marker_target(a: Any, b: Any) -> bool:
+    """Two marker targets name the SAME class: by registered/last-segment name.
+
+    A string spelling may be dotted (``pkg.mod.Trainer``) while the other side
+    holds the class itself; compare the registered name (``__confluid_name__``)
+    or ``__name__`` against the string's last segment. A selector or call
+    spelling (``@axis=$key`` / ``Cls(...)`` remnants) is never "the same" —
+    conservative replace keeps its semantics untouched.
+    """
+
+    def name_of(t: Any) -> Optional[str]:
+        if isinstance(t, str):
+            text: str = t[:-2] if t.endswith("()") else t
+            if "@" in text or "(" in text:
+                return None
+            return text.rsplit(".", 1)[-1]
+        registered = t.__dict__.get("__confluid_name__") if hasattr(t, "__dict__") else None
+        if registered:
+            return str(registered)
+        dunder_name = getattr(t, "__name__", None)
+        return dunder_name if isinstance(dunder_name, str) else None
+
+    name_a, name_b = name_of(a), name_of(b)
+    return name_a is not None and name_a == name_b
+
+
 def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge ``overlay`` into ``base``; returns a NEW dictionary.
 
@@ -72,6 +98,20 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
             # object and tuning it in place would rewrite the included file for every
             # other consumer of it.
             tuned.kwargs = deep_merge(existing.kwargs, value)
+            merged = tuned
+        elif (
+            isinstance(existing, Target)
+            and type(value) is type(existing)
+            and _same_marker_target(existing.target, value.target)
+        ):
+            # A marker merged over a marker of the SAME target TUNES it, exactly as
+            # the mapping spelling above does (CD5, BUGS-2026-08-19): the class-block
+            # and marker spellings of one override must agree, and replacing dropped
+            # the base marker's unmentioned children silently. A DIFFERENT target (or
+            # a different marker kind — partial over class) still replaces: that is a
+            # genuine swap, and the selector spelling (`@axis=$key`) never tunes.
+            tuned = copy(existing)
+            tuned.kwargs = deep_merge(existing.kwargs, value.kwargs)
             merged = tuned
         elif (
             isinstance(existing, ScopeBlock)

@@ -682,6 +682,12 @@ opt: !lazy:Sink()
 `dump()` of the loaded marker emits `/store/exp42` — changing `DATA_ROOT` and reloading the dump
 reproduces the original run.
 
+*Addendum 2026-08-20 — `$$` is the literal-`$` escape (CD10).* Burn-in made a dumped `$NAME`
+re-interpolate on reload, breaking the round-trip rule. `dump()` now emits every `$` as `$$` and
+the loader collapses `$$` to `$` (values via interpolation, mapping keys via the same pass —
+uniform, because a representer cannot tell keys from values). One spelling, borrowed from the
+compose convention, no new resolution semantics.
+
 **What you may change.** Not to a full `load(until="settled")` of kwargs (it changes when deferred values
 bind), and not to flow-time substitution (it re-opens the two-answers problem as a
 *when*-you-flow dependence). A memoized-copy variant — one copy per marker per pass, preserving
@@ -1132,6 +1138,14 @@ class Host:
 
 load("h: {_target_: Host, engine: {power: 50}}")["h"].engine.power   # 50 (was: the slot became {'power': 50})
 ```
+
+*Addendum 2026-08-20 — the assign arm on an EMPTY slot is a documented divergence (CD21).* A
+child built in the constructor's own body exists only after construction, so `load()` classifies
+the slot "assign" (nothing there yet) while `configure()` sees the live child and tunes it. The
+divergence is documented in the configure guide rather than fixed: the alternative — building the
+mapping as the slot's ANNOTATED class — is annotation-driven promotion, which this record
+deliberately rejected; and the class shape that triggers it already violates the
+no-work-in-constructors rule.
 
 **What you may change.** The per-kind effects may be tuned — but only through the ONE classifier
 and with both paths' pins updated together (`tests/test_dict_at_slot.py`). What must not come

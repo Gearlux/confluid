@@ -51,6 +51,12 @@ configure_from_file(*instances, path=..., context=None, **named) -> Configuratio
   #   -> trainer.lr == 0.0001, trainer.model.layers == 10, and trainer.model is the SAME object
   #   -> report: 2 applied (lr, model — the keys the overlay handed "Trainer 'trainer'"), 0 unused
   ```
+
+  The marker spelling of the override (`trainer: !class:Trainer {lr: 0.0001}`) composes
+  exactly like the mapping spelling: a marker merged over the object's marker **of the
+  same class** tunes it, so the object's unmentioned children stay in the document and a
+  bare key written beside the override still reaches them. A marker of a **different**
+  class is a genuine swap and replaces.
 - **`config`** — a mapping, or YAML **text** (markers like `_target_` work — the
   text is parsed with confluid's own loader). A plain file *name* is not YAML
   text: it applies nothing, warns, and points you at `configure_from_file`,
@@ -238,6 +244,26 @@ configure(trainer, config={"lr": 0.7})                        # nothing competes
 
 If you are starting from YAML and have no live objects yet, you want
 `load()` — see [Targets & Deferred Initialization](targets.md).
+
+## One load/configure divergence to know
+
+A child the **constructor builds in its own body** exists only after construction, so a
+dotted write through it behaves differently per path:
+
+```python
+@configurable
+class Trainer:
+    def __init__(self, model=None):
+        self.model = model if model is not None else Model()   # ctor-built child
+```
+
+`trainer.model.layers: 9` on `configure()` finds the live child and tunes it; on `load()`
+the slot holds **nothing** when the mapping arrives, so the mapping-at-slot rule's assign
+arm hands `{'layers': 9}` to the constructor as data — and this ctor shape stores the raw
+dict. The class shape is the cause: building a child in `__init__` also violates the
+no-work-in-constructors rule. Either give the param a marker default
+(`model: Any = None` + a `!class:Model` in the config) or materialize the child lazily —
+both shapes give one answer on both paths.
 
 ## Runnable example
 

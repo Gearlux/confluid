@@ -329,6 +329,11 @@ def to_markers(value: Any, memo: Optional[Dict[int, Any]] = None) -> Any:
     return marker
 
 
+def _represent_escaped_str(dumper: Any, data: str) -> Any:
+    """Emit `$` as `$$` so interpolation-active text survives a round trip."""
+    return dumper.represent_str(data.replace("$", "$$") if "$" in data else data)
+
+
 def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
     """Serialize a (potentially nested) object tree to YAML.
 
@@ -365,6 +370,12 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
 
     for _fluid_cls in (Target, PartialClass, Reference):
         _LocalDumper.add_representer(_fluid_cls, _represent_object)
+
+    # A literal `$` in a string is emitted as `$$` — the loader's escape — so a
+    # value like `echo $RUN_USER` reloads verbatim instead of interpolating
+    # (CD10, BUGS-2026-08-19). Uniform over keys and values (a representer cannot
+    # tell them apart); the loader collapses `$$` in keys during pass 6.
+    _LocalDumper.add_representer(str, _represent_escaped_str)
 
     # Catch-all fallback for opaque non-@configurable objects. PyYAML
     # documents add_representer(None, ...) as the catch-all hook, but

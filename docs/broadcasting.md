@@ -29,7 +29,10 @@ Details that make the grammar predictable:
   `trainer.lr` ≡ `**.trainer.lr`. Segments **after** the first are strict
   one-level hops: `trainer.opt.lr` addresses a *direct* child of trainer
   named `opt`; use `trainer.**.opt.lr` to float `opt` at any depth.
-* Segment matching is by **class name or instance `name`**; containers
+* Segment matching is by **class name or instance `name`** — on the load path the
+  marker's `name` kwarg, falling back to the class's ctor **default** for `name`
+  (the value the built instance will carry, which is what the live path matches);
+  an explicit `name:` kwarg opts out of the default. Containers
   (lists, plain grouping dicts) are transparent — one level = one object
   nesting hop. Transparent for **position** too: a group's entries compete
   from the group key's line, so a marker inside `group:` loses to a bare key,

@@ -671,3 +671,37 @@ def test_a_stamped_function_target_dumps_its_registry_key_not_an_address() -> No
     assert "0x" not in text, text
     assert "_target_: build_widget" in text
     assert load(text).size == 7
+
+
+# --------------------------------------------------------------------------- the $$ escape (CD10)
+
+
+def test_a_literal_dollar_survives_the_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CD10 (BUGS-2026-08-19) — dump() wrote `$RUN_USER` unescaped and the reload
+    interpolated it; the dumper now emits `$$` and the loader collapses it."""
+    monkeypatch.setenv("RUN_USER", "gert")
+
+    @configurable
+    class Job:
+        def __init__(self, command: str = "") -> None:
+            self.command = command
+
+    job = Job(command="echo $RUN_USER")
+    text = dump(job)
+    assert "echo $$RUN_USER" in text
+    assert load(text).command == "echo $RUN_USER"
+    tricky = Job(command="${a.b} and $$ money")
+    assert load(dump(tricky)).command == "${a.b} and $$ money"
+
+
+def test_a_dollar_in_a_mapping_key_round_trips() -> None:
+    """CD10 — the escape is uniform (a representer cannot tell keys from values),
+    so the loader collapses `$$` in keys too."""
+
+    @configurable
+    class Job:
+        def __init__(self, command: str = "") -> None:
+            self.command = command
+
+    reloaded = load(dump({"a$b": Job(command="x")}))
+    assert list(reloaded.keys()) == ["a$b"]

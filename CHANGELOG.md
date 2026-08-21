@@ -139,6 +139,23 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **The marker spelling of an override tunes; a default instance name matches on load; a literal
+  `$` survives the round trip** (BUGS-2026-08-19 CD5/CD19/CD10 + CD21 documented, 2026-08-20).
+  Measured before → after: `configure(trainer=t, config="trainer: !class:Trainer {lr: 0.1}\nlayers: 10")`
+  left `model.layers=3` with `layers` unused (the marker replaced the object's document) →
+  `model.layers=10`, nothing unused — the mapping and marker spellings agree, and an include
+  overlay `model: !class:Model {}` over a base `model: !class:Model {layers: 5}` keeps
+  `layers: 5` (a DIFFERENT class or marker kind still replaces); an instance-name block
+  `m: {layers: 5}` matched only on `configure()` when `name="m"` was a ctor default → the load
+  path reads the same default (an explicit `name:` kwarg opts out); `dump()` of
+  `command: echo $RUN_USER` reloaded as `echo gert` → emitted as `echo $$RUN_USER` and reloads
+  verbatim — `$$` is the literal-`$` escape in every spelling, mapping keys included (an
+  author-written `$$5` now loads as `$5`). The load/configure divergence for a ctor-body-built
+  child (`trainer.model.layers:` on an empty slot) is documented in docs/configure.md rather than
+  fixed — promotion by annotation stays rejected (record 15). Pinned across
+  `tests/test_configurator.py`, `tests/test_merger.py`, `tests/test_includes.py`,
+  `tests/test_broadcast_scoping.py`, `tests/test_dumper.py`, `tests/test_resolver.py`.
+
 - **Interpolation is pass 6, after expansion, and genuinely single-pass** (BUGS-2026-08-19
   PA6/PA7/PA8 + BUGS-2026-08-13 P8/P9, 2026-08-20). Measured before → after: `${train.lr}` beside
   `train.lr: 0.2` and a later `train: {lr: 0.1}` gave `0.2` while the returned tree said `0.1` →
