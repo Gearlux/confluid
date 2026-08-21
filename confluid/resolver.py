@@ -539,9 +539,14 @@ class Resolver:
             self._interpolate_fluid_kwargs(value)
             return value
 
-        # 3. Handle Dictionaries — recurse, passing the current dict as local_context
+        # 3. Handle Dictionaries — recurse, passing the current dict as local_context.
+        #    Keys are never interpolated, but the `$$` escape collapses in them too —
+        #    dump() escapes uniformly, so the loader must collapse uniformly (CD10).
         if isinstance(value, dict):
-            return {k: self.resolve(v, local_context=value) for k, v in value.items()}
+            return {
+                (k.replace("$$", "$") if isinstance(k, str) and "$$" in k else k): self.resolve(v, local_context=value)
+                for k, v in value.items()
+            }
 
         # 4. Handle Lists
         if isinstance(value, list):
@@ -705,6 +710,11 @@ class Resolver:
         ``os.path.expandvars``. (A tag TARGET's ``@axis=$key`` selector is never
         seen here — it lives on the marker, not in a string value.)
         """
+        if "$$" in value:
+            # `$$` is a literal `$` — each side of it interpolates independently
+            # (embedded semantics: results joined as text), so `$$NAME` is `$NAME`
+            # and `$${a.b}` is `${a.b}`, verbatim. This is the escape dump() emits.
+            return "$".join(self._interpolate_embedded(part, local_context) for part in value.split("$$"))
         if "${" not in value:
             return self._expand_bare_env(value)
 
@@ -717,7 +727,13 @@ class Resolver:
             resolved, found = self._resolve_placeholder(whole.group(1), whole.group(2), local_context)
             return resolved if found else value
 
-        # Embedded matches — substitute each occurrence as a string.
+        return self._interpolate_embedded(value, local_context)
+
+    def _interpolate_embedded(self, value: str, local_context: Optional[Dict[str, Any]] = None) -> str:
+        """The embedded pipeline: substitute each ``${...}`` as text, then expand
+        bare ``$VAR`` in the AUTHOR-written segments only (never in substituted
+        results — P8). Also the per-part step of the ``$$`` escape."""
+
         def replacer(match: "re.Match[str]") -> str:
             if match.group(1) in _MARKER_RESOLVERS:
                 # A reference resolves to an OBJECT; there is no meaningful way to

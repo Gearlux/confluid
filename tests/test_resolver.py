@@ -278,3 +278,16 @@ def test_marker_kwargs_interpolate_once_per_resolver(monkeypatch: pytest.MonkeyP
     marker.kwargs["path"] = "${env:CONFLUID_TEST_INDIRECT}x"
     Resolver(context={}).resolve({"proto": marker, "other": marker})
     assert marker.kwargs["path"] == "${env:CONFLUID_TEST_SECRET}x"
+
+
+def test_double_dollar_is_a_literal_dollar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CD10 — `$$` escapes interpolation: `$$NAME` is `$NAME` even when NAME is
+    set, `$${a.b}` is the literal placeholder text, `$$5` is `$5`."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    resolver = Resolver(context={"a": {"b": 7}})
+    assert resolver.resolve("$$CONFLUID_TEST_ROOT/x") == "$CONFLUID_TEST_ROOT/x"
+    assert resolver.resolve("$${a.b}") == "${a.b}"
+    assert resolver.resolve("$$5") == "$5"
+    assert resolver.resolve("a$$b") == "a$b"
+    # beside the escape, live spellings still fire
+    assert resolver.resolve("${a.b} costs $$5") == "7 costs $5"

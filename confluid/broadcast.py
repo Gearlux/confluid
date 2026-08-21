@@ -1292,6 +1292,15 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
         cls_name = cls_name[:-2]
     instance_name = own_kwargs.get("name")
     instance_str = instance_name if isinstance(instance_name, str) else None
+    if instance_str is None:
+        # No `name` kwarg on the marker: the instance the ctor builds will carry the
+        # DEFAULT — which is what configure() matches against (the live attr). Read
+        # the same default here so an instance-name block gives ONE answer on both
+        # paths (CD19, BUGS-2026-08-19). Non-str defaults (None, a sentinel) opt out.
+        default_cls = _settability_target(target or cls_name or None)
+        if default_cls is not None:
+            default_name = next((s.default for s in slots(default_cls) if s.name == "name"), None)
+            instance_str = default_name if isinstance(default_name, str) else None
 
     cache_key = (cls_name, _cache_key(target), instance_str)
     cached = _receiver_cache.get(cache_key)

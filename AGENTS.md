@@ -705,13 +705,28 @@ marker: the commonest composition in the system (a base file defines the model, 
 overrides one knob) silently produced a plain dict with no target and no error, while the DOTTED
 spelling of the same override tuned it correctly. It now tunes, restricted to `Target` to mirror
 the classifier's marker arm — a `Reference` base keeps the replace behaviour, since the
-classifier calls those opaque. It does NOT call `tune_marker`: that helper is single-level by
+classifier calls those opaque. A **marker over a marker of the SAME target** tunes the same way
+(2026-08-20, CD5): `trainer: !class:Trainer {lr: 0.1}` over the object's own marker used to
+REPLACE the document and drop the unmentioned children (a bare `layers:` beside it went unused,
+while the mapping spelling worked); same target + same marker kind → kwargs merge (copy, never
+mutate); a DIFFERENT target or kind (a `!partial:` over a `!class:`) is a genuine swap and still
+replaces. Target sameness is by registered/last-segment name (`merger._same_marker_target`); a
+selector spelling (`@axis=$key`) never tunes. It does NOT call `tune_marker`: that helper is single-level by
 design and lives above this module anyway (`broadcast` imports `merger`, so the reverse is a
 cycle), while composition must RECURSE — the dotted and class-block spellings both reach a marker
 nested inside the overridden one. Recursing through `deep_merge` also keeps the re-anchoring rule
 applying at every depth, and the marker is COPIED, never mutated: `_preserve_identity_copy` shares
 markers with the base document, so tuning in place would rewrite the included file for every other
 consumer.
+**Rule — an instance-name block matches the ctor DEFAULT `name` on load (2026-08-20, CD19).**
+`m: {layers: 5}` matched on `configure()` (the live attr) but selected nothing on `load()` when
+`name="m"` was only the constructor default: the load-path receiver
+(`broadcast._receiver_for_target`) now falls back to the class's ctor default for `name` when the
+marker carries no `name` kwarg — the value the built instance will hold, so both paths give one
+answer. An explicit `name:` kwarg opts out; a non-str default (None, a sentinel) opts out.
+**Pins.** `tests/test_broadcast_scoping.py::test_an_instance_name_block_matches_the_ctor_default_name_on_load`
+(+ the explicit-name con beside it).
+
 **Pins.** `tests/test_dict_at_slot.py` (all nine) and the marker-merge group in
 `tests/test_merger.py`, incl. `::test_the_merge_recurses_into_a_NESTED_marker` and
 `::test_the_merge_does_not_mutate_the_BASE_marker`.
@@ -1461,6 +1476,11 @@ plus `::test_keyed_scope_inside_a_markers_own_kwargs_swaps_the_slot` and the fou
 dotted/bracketed name is a config-key path resolved against the config tree (local context first,
 then global). That test is what keeps every pre-existing `${VAR}` an env var.
 
+**Rule.** `$$` is a literal `$` (2026-08-20, CD10): it suppresses every interpolation spelling
+(`$$NAME` → `$NAME` even when set, `$${a.b}` → the literal text, `$$5` → `$5`), collapses in
+mapping keys too, and is what `dump()` emits — the round-trip escape. Each side of a `$$` split
+interpolates independently with embedded semantics.
+
 **Rule.** Bare `$IDENTIFIER` expands as an ENV-ONLY read after the `${...}` pass — no dotted form,
 no `:default`, no exemptions (a tag TARGET's `@axis=$key` selector lives on the marker, never in a
 string value, so nothing needs a leading-`!` escape) — and on AUTHOR text only: text a `${...}`
@@ -1597,7 +1617,10 @@ pydantic property the split rests on), and
 ## Serialization
 
 **Rule.** `dump()` followed by `load()` MUST reconstruct an identical object graph. Round-trip
-fidelity is non-negotiable.
+fidelity is non-negotiable. A literal `$` is emitted as `$$` — the loader's escape — so
+interpolation-active text (`echo $RUN_USER`) reloads verbatim instead of substituted (2026-08-20,
+CD10); the escape is uniform over keys and values (a representer cannot tell them apart), and the
+loader collapses `$$` in mapping keys during the interpolation pass.
 
 **Rule — a target's dumpable name comes from the REGISTRY, for a marker as well as a live
 instance.** `dumper._target_name` asked neither, emitting a raw `module.qualname`, and both

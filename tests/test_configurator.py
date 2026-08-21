@@ -832,3 +832,25 @@ def test_an_empty_string_value_stays_the_empty_string() -> None:
     obj = Named()
     configure(obj, config={"Named.name": ""})
     assert obj.name == ""
+
+
+def test_the_marker_spelling_of_a_named_override_keeps_the_objects_children() -> None:
+    """CD5 (BUGS-2026-08-19) — `trainer: !class:Trainer {lr: 0.1}` REPLACED the
+    object's document, so the model child vanished and a bare `layers:` beside it
+    went unused; the mapping spelling tuned. The two spellings agree now."""
+
+    @configurable
+    class Model:
+        def __init__(self, layers: int = 3) -> None:
+            self.layers = layers
+
+    @configurable
+    class Trainer:
+        def __init__(self, model: Any = None, lr: float = 0.001) -> None:
+            self.model, self.lr = model, lr
+
+    for config in ("trainer: !class:Trainer {lr: 0.1}\nlayers: 10\n", "trainer: {lr: 0.1}\nlayers: 10\n"):
+        trainer = Trainer(model=Model())
+        report = configure(trainer=trainer, config=config)
+        assert (trainer.model.layers, trainer.lr) == (10, 0.1), config
+        assert report.unused == []

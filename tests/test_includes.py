@@ -400,3 +400,12 @@ def test_a_scope_block_without_an_include_is_unchanged(tmp_path: Path) -> None:
     main.write_text("lr: 0.1\npost_block:\n  _notscope_: { default: }\n  lr: 0.9\n  from_b: 2\n")
 
     assert load(str(main), until="document") == {"lr": 0.9, "from_b": 2}
+
+
+def test_an_include_overlay_marker_of_the_same_class_tunes_the_base_marker(tmp_path: Path) -> None:
+    """CD5 at the include door — `model: !class:Model {}` over a base
+    `model: !class:Model {layers: 5}` used to drop `layers` silently."""
+    (tmp_path / "base.yaml").write_text("model: !class:collections.Counter {layers: 5}\n")
+    (tmp_path / "exp.yaml").write_text(f"include: {tmp_path}/base.yaml\nmodel: !class:collections.Counter {{lr: 1}}\n")
+    document = load(str(tmp_path / "exp.yaml"), until="document")
+    assert document["model"].kwargs == {"layers": 5, "lr": 1}

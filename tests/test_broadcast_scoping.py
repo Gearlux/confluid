@@ -758,3 +758,43 @@ def test_same_target_memo_is_per_pass_and_agrees_with_the_uncached_answer() -> N
 
     clear_pass_caches()
     assert not _same_target_cache
+
+
+def test_an_instance_name_block_matches_the_ctor_default_name_on_load() -> None:
+    """CD19 (BUGS-2026-08-19) — `m: {layers: 5}` matched on configure() (live attr)
+    but not on load() when `name="m"` is only the ctor DEFAULT: the load path now
+    reads the same default the built instance will carry."""
+
+    @configurable
+    class NamedModel:
+        def __init__(self, layers: int = 3, name: str = "m") -> None:
+            self.layers, self.name = layers, name
+
+    @configurable
+    class Holder:
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    loaded = load("t: !class:Holder\n  model: !class:NamedModel {}\nm: {layers: 5}\n")["t"]
+    assert loaded.model.layers == 5
+
+    live = Holder(model=NamedModel())
+    configure(live, config="m: {layers: 5}\n")
+    assert live.model.layers == 5
+
+
+def test_an_explicit_name_kwarg_opts_out_of_the_default_name_block() -> None:
+    """CD19 con — a marker carrying `name: other` is not `m`; the block misses."""
+
+    @configurable
+    class NamedModel:
+        def __init__(self, layers: int = 3, name: str = "m") -> None:
+            self.layers, self.name = layers, name
+
+    @configurable
+    class Holder:
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    loaded = load("t: !class:Holder\n  model: !class:NamedModel {name: other}\nm: {layers: 5}\n")["t"]
+    assert loaded.model.layers == 3

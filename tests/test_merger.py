@@ -272,3 +272,44 @@ def test_containers_are_still_rebuilt_so_the_base_is_never_mutated() -> None:
     assert isinstance(merged["a"]["t"], tuple)
     expanded = expand_dotted_keys({"a": {"x": [1]}, "a.y": 2})
     expanded["a"]["x"].append(5)
+
+
+# --------------------------------------------------------------------------- marker over marker (CD5)
+
+
+def test_a_marker_over_a_marker_of_the_same_target_tunes_it() -> None:
+    """CD5 — the marker spelling of an override must compose like the mapping
+    spelling: same target, kwargs merge (the base marker itself is never mutated)."""
+    from confluid.fluid import Target
+
+    base_marker = Target("Model")
+    base_marker.kwargs["layers"] = 5
+    overlay_marker = Target("Model")
+    overlay_marker.kwargs["lr"] = 0.1
+    merged = deep_merge({"model": base_marker}, {"model": overlay_marker})
+    assert merged["model"].kwargs == {"layers": 5, "lr": 0.1}
+    assert base_marker.kwargs == {"layers": 5}
+
+
+def test_a_marker_over_a_marker_of_a_different_target_still_replaces() -> None:
+    """CD5 con — a different class is a genuine swap, not a tune."""
+    from confluid.fluid import Target
+
+    adam = Target("Adam")
+    adam.kwargs["betas"] = 0.8
+    sgd = Target("SGD")
+    sgd.kwargs["lr"] = 0.5
+    merged = deep_merge({"opt": adam}, {"opt": sgd})
+    assert merged["opt"].target == "SGD" and merged["opt"].kwargs == {"lr": 0.5}
+
+
+def test_a_partial_over_a_class_marker_still_replaces() -> None:
+    """CD5 con — a different marker KIND changes intent (deferral), so it replaces."""
+    from confluid.fluid import PartialClass, Target
+
+    eager = Target("Model")
+    eager.kwargs["layers"] = 5
+    deferred = PartialClass("Model")
+    deferred.kwargs["lr"] = 0.1
+    merged = deep_merge({"model": eager}, {"model": deferred})
+    assert isinstance(merged["model"], PartialClass) and merged["model"].kwargs == {"lr": 0.1}
