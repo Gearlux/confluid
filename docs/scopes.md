@@ -31,8 +31,8 @@ unless_debug: !notscope:debug
   log_level: WARNING
 ```
 
-> **The tag spelling** (`!scope:debug`, `!scope:task=classification`, the
-> equivalent `!scope:task(classification)` call form, `!notscope:…`) produces the
+> **The tag spelling** (`!scope:debug`, `!scope:task=classification`,
+> `!notscope:…`) produces the
 > same markers and is the concise way to write a block — with one limit: a tag
 > suffix is a string, so it carries ONE dimension. A block conditional on several
 > dimensions is written with the `_scope_:` mapping.

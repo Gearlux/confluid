@@ -38,8 +38,8 @@ only and never cascade to descendants. The old leak is fixed by design:
 4. ``test_override_at_wrapper_shields_inner_classes``
    A kwarg set on a wrapper block (even though the wrapper doesn't
    accept it) shields the wrapper's subtree from an outer ``'**'``
-   cascade — the wrapper's own kwargs win the slot in the spliced child
-   view (see ``_splice_kwargs_at_slot``'s collision rules).
+   cascade the wrapper OUT-POSITIONS — a sweep written after the wrapper
+   wins instead (document order, last spec wins; user ruling 2026-08-20).
 """
 
 from typing import Any, List, Optional
@@ -193,26 +193,53 @@ def test_a_LATER_glob_cascade_beats_an_inner_own_value() -> None:
 def test_override_at_wrapper_shields_inner_classes() -> None:
     """A kwarg set on a ``@configurable`` wrapper block shields that
     wrapper's same-class descendants from an ancestor-level ``'**'``
-    cascade.
+    cascade the wrapper OUT-POSITIONS (user ruling 2026-08-20, BC12:
+    document order, last spec wins — a sweep written AFTER the wrapper
+    beats the shield; that half is pinned in
+    ``test_a_shield_only_beats_the_sweeps_it_out_positions``).
 
     The wrapper class itself does not need ``ops`` in its ``__init__``
     accept-list — declaring ``ops: []`` on the wrapper's block is a
     statement about the WRAPPER'S SUBTREE: the wrapper's own kwarg wins the
     slot in the spliced child view (it is not a typed param of the wrapper,
-    so the splice collision rule lets it shadow the outer broadcast), and as
-    an EXACT own kwarg it does not itself cascade — so the inner children
+    so the splice collision rule lets it shadow the earlier broadcast), and
+    as an EXACT own kwarg it does not itself cascade — so the inner children
     fall back to their defaults.
     """
     config = _inst(
         "_Outer",
+        **{"**": {"ops": ["heavy_a", "heavy_b"]}},  # the rider the wrapper out-positions
         source=_inst(
             "_Wrapper",
-            ops=[],  # wrapper-level shield
+            ops=[],  # wrapper-level shield, written AFTER the rider
             children=[_inst("_Outer"), _inst("_Outer")],
         ),
-        **{"**": {"ops": ["heavy_a", "heavy_b"]}},
     )
     root = load(config)
     assert root.ops == ["heavy_a", "heavy_b"]
     assert root.source.children[0].ops == []
     assert root.source.children[1].ops == []
+
+
+def test_a_shield_only_beats_the_sweeps_it_out_positions() -> None:
+    """BC12 (BUGS-2026-08-19; user ruling 2026-08-20 — document order, last spec
+    wins, no shield exemption): a wrapper kwarg the wrapper does not accept
+    shields its subtree from sweeps written ABOVE it; a bare key or rider
+    written BELOW it wins, in both spellings alike."""
+
+    @configurable
+    class OptBC12:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class WrapperBC12:
+        def __init__(self, inner: Any = None) -> None:
+            self.inner = inner
+
+    wrapper = "w: !class:WrapperBC12\n  lr: 1.0\n  inner: !class:OptBC12 {lr: 0.5}\n"
+    assert load(wrapper + "lr: 9.0\n")["w"].inner.lr == 9.0
+    assert load(wrapper + "'**': {lr: 9.0}\n")["w"].inner.lr == 9.0
+    # written ABOVE the wrapper, the sweep loses to inner's own later kwarg
+    assert load("lr: 9.0\n" + wrapper)["w"].inner.lr == 0.5
+    assert load("'**': {lr: 9.0}\n" + wrapper)["w"].inner.lr == 0.5

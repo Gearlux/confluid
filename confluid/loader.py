@@ -19,7 +19,6 @@ imports it. Docs: ``docs/lifecycle.md`` (the nine passes), ``docs/plain-format.m
 
 import importlib
 import os
-import re
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple, Union, cast, get_args, overload
@@ -47,8 +46,8 @@ logger = get_logger("confluid.loader")
 # group accepts a dotted path AND a ``@axis=value`` tag selector
 # (``!class:FourierOp@group=fft/torch``, ``!class:X@framework=$framework``):
 # ``@ = / , $ ~ -`` are all legal YAML tag-suffix characters, so the selector rides
-# an unquoted tag. ``_parse_scope_suffix`` keeps its own pattern on purpose: a scope
-# key is a plain identifier, not a class target.
+# an unquoted tag. ``_parse_scope_suffix`` delegates to ``scopes.parse_scope_arg``
+# (the ONE activation splitter): a scope key is a plain identifier, not a class target.
 
 # Per-context include accumulator (a YAML-side concern — deliberately NOT on
 # the engine's _ENGINE_STATE): populated only inside ``load(..., return_paths=True)``.
@@ -221,13 +220,10 @@ def _parse_scope_suffix(suffix: str) -> tuple[str, Optional[str]]:
 
     * ``debug``                  → ``("debug", None)``   (boolean)
     * ``task=classification``    → ``("task", "classification")``
-    * ``task(classification)``   → ``("task", "classification")``
     """
-    paren = re.match(r"^([\w_.]+)\((.*)\)$", suffix)
-    if paren:
-        return paren.group(1), paren.group(2).strip()
     # ``KEY=VALUE`` / bare ``KEY`` — the same grammar as a CLI activation string,
-    # so the ONE splitter (``scopes.parse_scope_arg``) serves both.
+    # so the ONE splitter (``scopes.parse_scope_arg``) serves every spelling
+    # (the call form is refused there — removed 2026-08-20, SR16).
     return parse_scope_arg(suffix)
 
 

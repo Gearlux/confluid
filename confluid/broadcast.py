@@ -996,20 +996,39 @@ def _splice_kwargs_at_slot(
             _emit_merged(k, v)
         _shield_glob_rider()
         return out
+    seen_self = False
+    rider_after_self = False
     for k, v in parent_context.items():
         if k == self_key:
+            seen_self = True
             for kk, kv in kwargs.items():
                 if _parent_wins(kk, kv):
                     continue
                 _emit_merged(kk, kv)
         elif k in kwargs and k != "**" and not _parent_wins(k, kwargs[k]):
-            # Wrapper's value at this key will win at the self_key slot;
-            # skip parent's value at its original position so the wrapper's
-            # value ends up at the slot.
-            continue
+            if seen_self:
+                # The parent's entry sits LATER than the wrapper's shield value:
+                # document order decides, last spec wins, no shield exemption
+                # (user ruling 2026-08-20 — BC12: a bare `lr: 9.0` written after
+                # the wrapper was silently swallowed and reported unused). Pop
+                # first — the ONE write path keeps an existing key's position,
+                # and this entry must re-anchor at its own, later one.
+                out.pop(k, None)
+                _emit_parent(k, v)
+            else:
+                # Wrapper's value at this key will win at the self_key slot;
+                # skip parent's value at its original position so the wrapper's
+                # value ends up at the slot.
+                continue
         else:
+            if k == "**" and seen_self:
+                rider_after_self = True
             _emit_parent(k, v)
-    _shield_glob_rider()
+    if not rider_after_self:
+        # A rider written AFTER the wrapper out-positions the shield exactly as a
+        # later bare key does (the same ruling) — the shield rewrites only riders
+        # the wrapper's block out-positions.
+        _shield_glob_rider()
     return out
 
 
@@ -1558,6 +1577,34 @@ def _scan_view(
             if accepts_value(bk, bv):
                 if not _dotted_protected(bk, via):
                     apply(bk, bv, origin, _KeyScope.EXACT, False, False, current_pos)
+            elif (
+                isinstance(bv, Fluid)
+                and receiver.target_cls is not None
+                and _same_target(bv.target, receiver.target_cls)
+            ):
+                # The same-target guard, not an unknown attribute (BC17):
+                # broadcasting a marker of the receiver's own class in would
+                # re-materialize forever. The drop stands; the false
+                # "has no attribute" warning and `unknown-attribute` record do not.
+                if _trace_on:
+                    logger.trace(
+                        f"{origin}: same-target marker at {bk!r} skipped for {receiver.cls_name} "
+                        f"(the self-materialization guard)"
+                    )
+            elif isinstance(bv, Fluid) and receiver.acceptable is None:
+                # An ADDRESSED marker is a constructor argument for a ``**kwargs``
+                # target like any other addressed key (BC15) — this chain runs for
+                # non-gated (addressed) deliveries only, so the D3 rule stands: a
+                # Fluid never rides the catchall on a BARE/rider cascade.
+                apply(bk, bv, origin, _KeyScope.EXACT, False, False, current_pos)
+            elif isinstance(bv, list) and (receiver.acceptable is None or bk in receiver.acceptable):
+                # An ADDRESSED list at a DECLARED key is a value whatever the
+                # annotation says — only a MAPPING can be a routing sub-block
+                # (BC16: the own-kwarg and dotted spellings always delivered it,
+                # the block spelling dropped it with a false "has no attribute").
+                # Cascade lists stay filtered: bare/rider deliveries are gated
+                # before this chain (pinned by test_post_init_broadcast).
+                apply(bk, bv, origin, _KeyScope.EXACT, False, False, current_pos)
             else:
                 unknown(bk, bv, origin=origin)
 

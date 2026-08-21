@@ -53,7 +53,9 @@ Details that make the grammar predictable:
   beat, so the artefact replays identically.
 * A marker's **own kwargs follow the same rule** — they configure that marker
   only. A kwarg set on a wrapper block that the wrapper itself does not
-  accept *shields* the wrapper's subtree from an outer `'**'` cascade
+  accept *shields* the wrapper's subtree from an outer `'**'` cascade or bare
+  sweep **it out-positions** — a sweep written after the wrapper wins instead
+  (document order, last spec wins; the shield has no position exemption)
   (the value overrides the rider's entry for that subtree).
 * Glob-delivered keys (`*`/`**`) are cascade keys: they honour the
   NoBroadcast opt-outs below exactly like bare keys. Exact addressed keys

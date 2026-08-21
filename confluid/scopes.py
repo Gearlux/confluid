@@ -30,6 +30,7 @@ cannot be switched off by the caller, so as a default it would be always-on
 (top-level metadata) are stripped at the end of resolution.
 """
 
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loggair import get_logger
@@ -47,10 +48,21 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
     ``"debug"`` → ``("debug", None)``; ``"task=classification"`` → ``("task", "classification")``.
     Whitespace around the ``=`` is stripped.
     """
-    if "=" in arg:
-        key, value = arg.split("=", 1)
+    stripped = arg.strip()
+    call_form = re.match(r"^([\w_.]+)\((.*)\)$", stripped)
+    if call_form:
+        # The call form was REMOVED (user ruling 2026-08-20, BUGS-2026-08-19 SR16):
+        # the tag accepted it while the CLI/default paths silently read it as a
+        # boolean dimension literally named `task(classification)`. One grammar
+        # remains; the dead spelling refuses loudly instead of degrading.
+        raise ScopeError(
+            f"scope activation {stripped!r}: the call form was removed — "
+            f"write '{call_form.group(1)}={call_form.group(2).strip()}'"
+        )
+    if "=" in stripped:
+        key, value = stripped.split("=", 1)
         return key.strip(), value.strip()
-    return arg.strip(), None
+    return stripped, None
 
 
 #: The top-level keys that configure the LOAD rather than the program. Read by the
