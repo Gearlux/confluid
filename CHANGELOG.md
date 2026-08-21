@@ -137,7 +137,39 @@ All notable changes to confluid are documented here. The format follows
   and zero writes (it was registered for a per-pass clear of an always-empty dict). Tests now
   call `body_slot_names` directly.
 
+### Changed
+
+- **The `KEY(VAL)` scope call form is REMOVED** (user ruling 2026-08-20, BUGS-2026-08-19 SR16).
+  The tag accepted `!scope:task(classification)` while a CLI `--scope task(classification)` and a
+  `default_scopes:` entry silently became a boolean dimension literally named
+  `task(classification)`. One activation grammar remains — `dim=value` and bare `dim` — behind the
+  ONE splitter (`scopes.parse_scope_arg`; the tag suffix delegates); the dead form raises a
+  `ScopeError` naming `task=classification`, never degrades.
+
+- **A wrapper shield only beats the sweeps it out-positions** (user ruling 2026-08-20 — document
+  order, last spec wins, no shield exemption; BUGS-2026-08-19 BC12). Measured before → after with
+  `w: !class:Wrapper {lr: 1.0, inner: !class:Opt {lr: 0.5}}` and a LAST line `lr: 9.0` (or
+  `'**': {lr: 9.0}`): bare gave `inner.lr = 0.5` with `lr` reported unused while the rider gave
+  `1.0` (the shield value) → both give `9.0`; written ABOVE the wrapper both still give `0.5`
+  (inner's own kwarg is the latest spec). The
+  `test_override_at_wrapper_shields_inner_classes` pin was re-ruled accordingly (rider now
+  written BEFORE the wrapper, which the shield still beats).
+
 ### Fixed
+
+- **Class-block deliveries stop lying: markers reach `**kwargs` classes, lists reach declared
+  slots, the same-target guard names itself** (BUGS-2026-08-19 BC15/BC16/BC17, 2026-08-20).
+  Measured before → after: `KW: {n: 1, child: !class:T {lr: 1.0}}` on a `**kwargs` class dropped
+  the marker with a false "has no attribute 'child'" warning + a failed record (the own-kwarg
+  spelling delivered) → the ctor receives it, clean report; `Trainer: {items: [1, 2]}` at a
+  declared but unannotated param dropped the list the dotted/own spellings delivered → lands
+  (an UNDECLARED key stays refused; bare lists still never broadcast); the same-target
+  anti-recursion drop (`Node: {child: !class:Node {…}}`) still drops but logs a TRACE naming the
+  guard instead of two false warnings and two `unknown-attribute` records. BC14 (a bare sweep
+  restating an addressed `**kwargs` key moves it to the attribute channel) was CLOSED AS-DESIGNED
+  by the same ruling and is pinned; BC10/BC11/BC13 are deferred to `TASKS.md` with their measured
+  repros — each needs a design round. Pinned in `tests/test_broadcast_scoping.py`,
+  `tests/test_broadcast_wrapper_override.py`, `tests/test_scopes.py`.
 
 - **The introspection tail: slots, forward refs, docstrings, schema defaults, located warns**
   (BUGS-2026-08-19 N5/N6/N7/N8/N12/N14/N15/N16/N17, 2026-08-20). Measured before → after:

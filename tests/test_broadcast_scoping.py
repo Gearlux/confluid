@@ -798,3 +798,94 @@ def test_an_explicit_name_kwarg_opts_out_of_the_default_name_block() -> None:
 
     loaded = load("t: !class:Holder\n  model: !class:NamedModel {name: other}\nm: {layers: 5}\n")["t"]
     assert loaded.model.layers == 3
+
+
+def test_a_sweep_restating_an_addressed_kwargs_key_moves_it_to_the_attribute_channel() -> None:
+    """BC14 closed AS-DESIGNED (user ruling 2026-08-20): on a ``**kwargs`` class,
+    a later bare sweep line wins the key entirely — the value leaves the
+    constructor call and lands as a post-init attribute."""
+
+    @configurable(validate=False)
+    class ForwardsBC14:
+        def __init__(self, **kw: Any) -> None:
+            self.ctor_saw = dict(kw)
+
+    plain = load("node: !class:ForwardsBC14 {n: 1}\n")["node"]
+    assert plain.ctor_saw == {"n": 1}
+    swept = load("node: !class:ForwardsBC14 {n: 1}\nn: 5\n")["node"]
+    assert swept.ctor_saw == {} and swept.n == 5
+
+
+def test_a_class_block_delivers_a_marker_to_a_kwargs_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BC15 (BUGS-2026-08-19) — the block spelling dropped the marker with a
+    false "has no attribute" warning and a failed record, on a class whose
+    accept-list is accept-everything; the own-kwarg spelling always delivered."""
+    from confluid import collect_report
+
+    @configurable
+    class TBC15:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable(validate=False)
+    class KWBC15:
+        def __init__(self, **kw: Any) -> None:
+            self.kw = kw
+
+    with collect_report() as report:
+        built = load("k: !class:KWBC15\nKWBC15: {n: 1, child: !class:TBC15 {lr: 1.0}}\n")["k"]
+    assert built.kw["n"] == 1
+    assert isinstance(built.kw["child"], TBC15) and built.kw["child"].lr == 1.0
+    assert report.failed == []
+
+
+def test_a_class_block_list_lands_at_a_declared_unannotated_slot() -> None:
+    """BC16 — the own-kwarg and dotted spellings delivered the list; the block
+    spelling dropped it claiming the attribute does not exist. An UNDECLARED
+    key stays refused, and a BARE list still never broadcasts (the
+    post-init-broadcast filter pin)."""
+    from confluid import collect_report
+
+    @configurable
+    class TrainerBC16:
+        def __init__(self, items: Any = None) -> None:
+            self.items = items
+
+    with collect_report() as report:
+        built = load("t: !class:TrainerBC16\nTrainerBC16: {items: [1, 2]}\n")["t"]
+    assert built.items == [1, 2]
+    assert report.failed == []
+    with collect_report() as report:
+        load("t: !class:TrainerBC16\nTrainerBC16: {ghost: [1]}\n")
+    assert [(f.key, f.reason) for f in report.failed] == [("ghost", "unknown-attribute")]
+
+
+def test_the_same_target_guard_drop_is_not_reported_as_an_unknown_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BC17 — the anti-recursion drop STANDS (a Node marker broadcast into every
+    Node would re-materialize forever), but it is no longer misreported as
+    "has no attribute 'child'" with unknown-attribute records."""
+    from types import SimpleNamespace
+
+    import confluid.broadcast as broadcast_module
+    from confluid import collect_report
+
+    records: List[Any] = []
+
+    class _Collector(SimpleNamespace):
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(broadcast_module, "logger", _Collector())
+
+    @configurable
+    class NodeBC17:
+        def __init__(self, name: str = "", child: Any = None) -> None:
+            self.name, self.child = name, child
+
+    with collect_report() as report:
+        built = load("root: !class:NodeBC17 {name: root}\nNodeBC17: {child: !class:NodeBC17 {name: delivered}}\n")
+    assert built["root"].child is None  # the guard still drops it
+    assert report.failed == []
+    assert [m for level, m in records if level == "warning" and "child" in m] == []

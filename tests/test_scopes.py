@@ -33,38 +33,21 @@ def setup_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_tag_form_equality(tmp_path: Path) -> None:
-    """``!scope:task=classification`` and ``!scope:task(classification)`` parse identically."""
-    assign_path = tmp_path / "assign.yaml"
+def test_the_call_form_is_refused_in_every_spelling(tmp_path: Path) -> None:
+    """The ``task(classification)`` call form is REMOVED (user ruling 2026-08-20,
+    BUGS-2026-08-19 SR16): it was accepted by the tag but silently became a
+    boolean dimension named ``task(classification)`` on the CLI/default paths.
+    One grammar remains — ``dim=value`` and bare ``dim`` — and the dead form is
+    refused naming it, never degraded."""
     paren_path = tmp_path / "paren.yaml"
-
-    assign_path.write_text(
-        """
-val: 1
-if_task: !scope:task=classification
-  model: ClassifierModel
-"""
-    )
-    paren_path.write_text(
-        """
-val: 1
-if_task: !scope:task(classification)
-  model: ClassifierModel
-"""
-    )
-
-    raw_assign = load(assign_path, until="raw")
-    raw_paren = load(paren_path, until="raw")
-
-    sb_a = raw_assign["if_task"]
-    sb_p = raw_paren["if_task"]
-    assert isinstance(sb_a, ScopeBlock) and isinstance(sb_p, ScopeBlock)
-    assert (sb_a.dims, sb_a.negate) == ({"task": "classification"}, False)
-    assert (sb_p.dims, sb_p.negate) == ({"task": "classification"}, False)
-
-    out_a = load(raw_assign, until="document", scopes=["task=classification"])
-    out_p = load(raw_paren, until="document", scopes=["task=classification"])
-    assert out_a == out_p == {"val": 1, "model": "ClassifierModel"}
+    paren_path.write_text("val: 1\nif_task: !scope:task(classification)\n  model: ClassifierModel\n")
+    with pytest.raises(ScopeError, match=r"task=classification"):
+        load(paren_path, until="raw")
+    doc = "q: !scope:task=classification\n  a: 1\n"
+    with pytest.raises(ScopeError, match=r"task=classification"):
+        load(doc, scopes=["task(classification)"], until="document")
+    # the surviving grammar, untouched
+    assert load(doc, scopes=["task=classification"], until="document") == {"a": 1}
 
 
 def test_boolean_tag_no_value() -> None:
@@ -402,7 +385,7 @@ if_debug: !scope:debug
   v: 1
 if_task: !scope:task=classification
   m: a
-if_env: !scope:env(prod)
+if_env: !scope:env=prod
   e: 1
 """
     )

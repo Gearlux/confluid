@@ -502,8 +502,13 @@ emitting false documentation about itself.
 `::test_the_lone_modifier_error_names_only_the_key_that_works` and
 `::test_a_scope_block_without_the_modifier_is_untouched` (the false-positive guard).
 
-**Rule — scope grammar.** `loader._parse_scope_suffix` is the ONE splitter for every activation
-spelling (the tag suffix, the `_scope_:` value, a CLI `--scope` argument). Never add a second.
+**Rule — scope grammar.** `scopes.parse_scope_arg` is the ONE splitter for every activation
+spelling — the tag suffix (`loader._parse_scope_suffix` delegates to it), the `_scope_:` value,
+a CLI `--scope` argument, a `default_scopes:` entry. Never add a second. The `KEY(VAL)` call
+form is REMOVED (user ruling 2026-08-20, BUGS-2026-08-19 SR16: the tag accepted it while the
+CLI/default paths silently read it as a boolean dimension literally named `task(classification)`);
+it is REFUSED naming `KEY=VAL`, never degraded.
+**Pins.** `tests/test_scopes.py::test_the_call_form_is_refused_in_every_spelling`.
 
 **Rule — a marker is a TAG or a reserved-key MAPPING; a STRING is never parsed as one.** There
 is no third grammar: `Resolver.resolve` does not read markers out of text (user instruction
@@ -1115,12 +1120,24 @@ ADDRESSED key (dotted, nested block, or a marker's own kwargs) applies to the ma
 Globs opt back in: `*` = exactly one level, `**` = zero or more. The first named path segment
 FLOATS (so deeper same-name nodes rematch); later segments are STRICT one-level hops. Glob-delivered
 keys are gated by the NoBroadcast opt-outs like bare keys; exact addressed keys bypass them. A kwarg
-on a wrapper block the wrapper does NOT accept shields its subtree from an outer `**` rider.
+on a wrapper block the wrapper does NOT accept shields its subtree from the sweeps it
+OUT-POSITIONS — a bare key or `**` rider written AFTER the wrapper wins instead, in both
+spellings alike (user ruling 2026-08-20, BC12: document order, last spec wins, no shield
+exemption; the old behaviour silently swallowed a later bare key and reported it unused while
+the rider spelling delivered the shield value).
+**Pins.** `tests/test_broadcast_wrapper_override.py::test_a_shield_only_beats_the_sweeps_it_out_positions`
+(+ the re-ruled `::test_override_at_wrapper_shields_inner_classes`, rider written BEFORE).
 
 **Rule.** A `**kwargs` constructor makes the accept-list `None` = accept-EVERYTHING (announced once
 per class at TRACE). What such a class's CONSTRUCTOR receives follows the ADDRESSING: a key written
-on the marker or delivered by a block naming it is an ARGUMENT; a runtime kwarg is an argument by
-construction; a BARE cascading key stays a post-init ATTRIBUTE. Do NOT feed bare keys to the
+on the marker or delivered by a block naming it is an ARGUMENT — a MARKER value included
+(2026-08-20, BC15: the block spelling dropped it with a false "has no attribute" warning and a
+failed record on a class that is never reported; the relaxation lives in the scanner's
+non-gated chain, so the D3 rule stands — a Fluid never rides the catchall on a bare/rider
+cascade); a runtime kwarg is an argument by
+construction; a BARE cascading key stays a post-init ATTRIBUTE — and a bare sweep RESTATING a
+key the author addressed takes the key with it to the attribute channel (BC14, closed
+AS-DESIGNED by user ruling 2026-08-20; pinned in `tests/test_broadcast_scoping.py`). Do NOT feed bare keys to the
 constructor — every bare key in the document reaches such a class.
 
 **Rule.** `_View` carries the per-key `_KeyScope` tags. `copy()` and `update()` PRESERVE the
@@ -1130,6 +1147,17 @@ root document — construct a `_View` instead.
 **Rule.** A change to the walk is a change to `broadcast._scan_view`. Sinks may NOT grow branches
 on keys or scopes — a new rule goes behind a `_Receiver` predicate in `_receiver_for_target`,
 with a pin.
+
+**Rule — an ADDRESSED list at a DECLARED key is a value; the same-target drop names itself
+(2026-08-20, BC16/BC17).** Only a MAPPING can be a routing sub-block, so a list delivered by a
+block naming the receiver lands at any DECLARED key whatever the annotation says — the own-kwarg
+and dotted spellings always delivered it, and the block spelling dropped it claiming the
+attribute does not exist. Cascade lists stay filtered (bare/rider deliveries are gated before
+the scanner's non-gated chain — the post-init-broadcast filter pin). The same-target guard's
+drop (a marker of the receiver's own class in a class block — it would re-materialize forever)
+STANDS but logs a TRACE naming the guard instead of a false "has no attribute" warning +
+`unknown-attribute` record.
+**Pins.** the BC15/BC16/BC17 group in `tests/test_broadcast_scoping.py`.
 
 **Rule.** Glob keys are routing metadata: they never reach ctor kwargs, post-init setattrs,
 `__confluid_kwargs__`, or `load(until="settled")` marker kwargs.
@@ -1299,8 +1327,8 @@ slow bootstrap of many entry points cannot be interrupted.
 **Detail.** The document-key form is the unbraced `$key` (dotted paths allowed), resolved at FLOW
 time against the active context — `${...}` is impossible in a tag suffix because `{` is not a legal
 YAML tag character. The `Target(...)` grammar is ONE `resolver._TARGET_CALL_RE` serving all four
-spellings; value coercion stays per-caller policy. `_parse_scope_suffix` keeps its own pattern (a
-scope key is an identifier, not a class target).
+spellings; value coercion stays per-caller policy. `_parse_scope_suffix` delegates to
+`scopes.parse_scope_arg` (a scope key is an identifier, not a class target).
 
 **Rule.** Do NOT build scope-aware resolution: the active scope map is a local in `load()` that
 `_EngineState` never carries, and a scope block declaring its own dimension as a plain key already
@@ -1392,7 +1420,7 @@ and keeps the warning, pinned by the sourceless group).
 
 ## Scopes
 
-**Rule.** A scope block is `!scope:KEY[=VAL]` / `!notscope:…` (tag, `KEY(VAL)` ≡ `KEY=VAL`) or
+**Rule.** A scope block is `!scope:KEY[=VAL]` / `!notscope:…` (tag) or
 `_scope_:` / `_notscope_:` taking a MAPPING of dimension → value (reserved key), activated via the
 `scopes=` kwarg on `load()`. Bare dict keys are NEVER treated as scopes. `!notscope:` uses the
 unset-⇒-active convention.
