@@ -70,6 +70,7 @@ from confluid.broadcast import (  # noqa: F401
     refuse_if_undeclared,
     refuse_if_variadic_name,
     register_pass_cache,
+    trace_enabled,
     tune_marker,
 )
 from confluid.exceptions import (
@@ -1261,8 +1262,19 @@ def _apply_post_init_attrs(
         # Say so, in the report's vocabulary; register() the class to accept the key.
         label = getattr(target, "__name__", str(target))
         report = _ENGINE_STATE.get().report
+        # Only a key WRITTEN on the marker can be a typo. A BARE key is offered to every node
+        # and matches nothing on most of them — that is its normal life; the accept-list drops
+        # it before here for any class that declares its parameters, and a `**kwargs` target
+        # (no accept-list) lands it here instead. Measured 2026-08-22: six bare keys reaching
+        # three torchmetrics classes fired 42 warnings + 42 `unknown-attribute` records per
+        # training run. `None` = never merged against a document: every kwarg is its own.
+        addressed = addressed_keys_of(obj)
         for k in merged:
             if _is_glob_key(k) or k in ctor:
+                continue
+            if addressed is not None and k not in addressed:
+                if trace_enabled(logger):
+                    logger.trace(f"{label}: bare key {k!r} matches nothing on an unregistered target — skipped")
                 continue
             logger.warning(
                 f"{label} has no parameter {k!r}{_at_yaml_loc(obj)} — DROPPED: the target is not "

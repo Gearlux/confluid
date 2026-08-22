@@ -139,6 +139,15 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A BARE key reaching an unregistered `**kwargs` target no longer warns** (2026-08-22).
+  Measured before → after on a real training config: six top-level keys (`batch_size`,
+  `max_epochs`, `num_workers`, `experiment_name`, `run_name`, a CLI override) swept into three
+  torchmetrics metric classes — `**kwargs` constructors, so no accept-list drops them — fired 42
+  `… has no parameter 'batch_size' … DROPPED` warnings and 42 `unknown-attribute` records per run
+  → nothing; the ENG-7 warning now fires only for a key WRITTEN on the marker
+  (`addressed_keys_of`), which is the only spelling that can be a typo. A typo on the marker
+  (`{_target_: textwrap.TextWrapper, widht: 9}`) still warns, located, and is still recorded.
+
 - **`$$` is a literal `$` in the final objects — collapsed once, where the document becomes
   objects** (BUGS-2026-08-22 PA14 / CD5, 2026-08-22). Measured before → after:
   `load("command: echo $$RUN_USER", until="document")` gave `echo $RUN_USER` and reloading that
