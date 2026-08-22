@@ -5,7 +5,7 @@ workspace root `TASKS.md`. Completed items are not archived here — git history
 
 - [ ] **`${PLAIN}` interpolation — the env → config-key flip** @design — a bare `${IDENT}` is read as an ENVIRONMENT variable today (`${env:IDENT}` is the explicit spelling; `${a.b}` with a dot or bracket is a config key). Flipping the bare form to a config-key reference would make the three spellings one grammar. The workspace is ready — **0 bare `${IDENT}` interpolations remain** (every one is `${env:VAR}`), so the flip changes no workspace config's meaning — and it stays open because an unmigrated EXTERNAL config would silently change meaning rather than fail. Decide before 1.0; if flipped, it is a breaking minor.
 - [ ] **Triage the open findings of `BUGS-2026-08-13.md`** @bugs — 31 open findings remain in the report (fixed, ruled and not-reproducible ones are pruned; the CHANGELOG and the pinned tests are their record), each with a runnable example and measured output. Open S1: **I1** (tuple-unpacked body slots are invisible to broadcasting — `self.lo, self.hi = 0, 10` and a bare `lo:` silently does nothing), **I3** (a `@configurable` class with NO `__init__` of its own accepts every bare key — `object.__init__`'s `*args/**kwargs` read as an accept-everything signature), **X2** (the validation policy is a process GLOBAL that `override_init_mode` swaps around every YAML construction while the rest of the engine state rides a `ContextVar`), **P4** (sequence-scope constructor edge cases). The S2/S3 tail: P3, P5, P6, P8, P9, P12, P13, P14, I2, I6, I8–I11, E5, E8–E10, X4, X5, C5, C6, C8–C12. Bucket each into fix-now / later / ruled-deliberate.
-- [ ] **Broadcast-ordering deferrals from BUGS-2026-08-19 (BC10 / BC11 / BC13)** @bugs @design —
+- [ ] **Broadcast-ordering deferrals from BUGS-2026-08-19 (BC10 / BC11)** @bugs @design —
   each needs a design round, not a patch (adjudicated 2026-08-20; measured repros in the report):
   (a) **BC10** — a parent `'**'` rider written AFTER a node carrying its OWN rider merges into it
   and inherits the own rider's EARLIER position; two riders collapse into ONE `'**'` view key that
@@ -14,10 +14,11 @@ workspace root `TASKS.md`. Completed items are not archived here — git history
   (`self.optimizer = PartialClass(...)`) is reached by root bare keys and `'**.lr'` only; scoped
   riders (`t.**.lr`), class-name blocks and instance blocks never reach it under `load()` while
   `configure()` applies all of them — the construction-time context reader is deliberately
-  root-pool-only ("never add a third reader"), so extending it is a rule change. (c) **BC13** — a
-  root key that merely shares a slot's NAME (delivers nothing, reported unused) displaces the
-  child marker to its later position via the `_parent_wins` splice + F11 unroll; fixing it needs
-  "would this entry actually deliver?" knowledge the splice does not have.
+  root-pool-only ("never add a third reader"), so extending it is a rule change. (BC13 — a root mapping
+  sharing a slot's name — was closed by ruling 2026-08-20: the shape is refused as ambiguous.)
+  Scope ruling (user, 2026-08-20): neither gets per-key verdict or position bookkeeping built on
+  top of the precedence engine — confluid is a configuration utility, not a compiler; the
+  answer is a refusal or a documented limit, not machinery.
 - [ ] **hydraide — follow-ups** @feature — (a) whether `hydraide check` should ALSO verify both-spellings identity for a given file (`emit(tag form) == emit(plain form)`), not only idempotence; (b) one workspace config is still in the reserved-key spelling (`waivefront/config/predict_yolo26.yaml`, 4 `_target_:` sites) — run `confluid.spelling.convert_file` over it when that tree is clean; (c) the guides' PROSE still names some concepts by their reserved-key spelling (`docs/targets.md`, `docs/broadcasting.md`) — a wording pass, not a codemod.
 - [ ] **Tag and publish v0.3.0** @release @blocked — HELD by user instruction (2026-08-04) until confluid's functionality is verified complete for every downstream consumer. Do not tag on your own initiative. Keep adding to the `[0.3.0]` CHANGELOG section rather than minting a second unreleased minor. Downstream declares `confluid>=0.3.0` (it needs the `ScopeError` on an unmatched keyed scope), so a clean `pip install` of those consumers cannot resolve from PyPI until this ships.
 - [ ] **`AppliedKey.loc` — a clickable `file:line` for the contest** @feature @low — `explain(key)` reports document ORDER, which is what explains a surprise; it cannot report WHERE, because only Fluid markers carry a location (`loader._stamp_loc`). A bare `lr: 0.9` has none: PyYAML's default mapping constructor discards per-key marks. Adding one means a location side-table built in `map_constructor` and carried through `_splice_includes` and `deep_merge`, both of which REORDER keys by design. Worth doing only if reading the index is not enough in practice.

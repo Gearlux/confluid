@@ -139,6 +139,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A bare mapping at a slot that holds a marker is refused as ambiguous** (BUGS-2026-08-19
+  BC13, user ruling 2026-08-20). Measured before → after with `c: !class:C {optimizer:
+  !class:T {name: o, lr: 1.0}}`, `lr: 9.0`, then a last line `optimizer: {x: 1}`: the line
+  delivered nothing (reported `unused`) yet `c.optimizer.lr` became `1.0` — the marker's own
+  kwargs were moved to the last line → a located `ConfigurationError` naming the two working
+  spellings: `c.optimizer.x: 1` (sets the attribute; measured `lr=9.0, x=1`) and
+  `c.optimizer: !class:...` (replaces the slot). `configure()` refuses the same text. When the
+  key is the node's instance name the mapping is an instance-name block and delivers as before;
+  a slot holding plain data is untouched. By the same ruling no per-key verdict or position
+  bookkeeping is added to the precedence engine — BC10 and BC11 stay filed as documented limits.
+  Pinned in `tests/test_broadcast_scoping.py`.
+
 - **The parse-time tail: lists, long paths, tagged merges, `to_tags` equivalence, marker
   placeholders, `import:` parity, `~`, env paths, empty segments** (BUGS-2026-08-19
   PA9/PA17/PA21/PA22/PA23/PA26/PA27/PA29/PA30; PA24 ruled as-designed, 2026-08-20). Measured

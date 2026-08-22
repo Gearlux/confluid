@@ -29,6 +29,12 @@ Details that make the grammar predictable:
   `trainer.lr` ≡ `**.trainer.lr`. Segments **after** the first are strict
   one-level hops: `trainer.opt.lr` addresses a *direct* child of trainer
   named `opt`; use `trainer.**.opt.lr` to float `opt` at any depth.
+* A bare root **mapping** whose key names a slot holding a marker — and is not
+  that node's instance name — is refused as ambiguous: `optimizer: {x: 1}` could
+  mean "set `x` on the optimizer" or "replace the optimizer with a dict". Write
+  the owner-addressed form (`c.optimizer.x: 1` sets the attribute;
+  `c.optimizer: !class:...` replaces the slot). When the key IS the node's name it
+  is an instance-name block and delivers as one.
 * Segment matching is by **class name or instance `name`** — on the load path the
   marker's `name` kwarg, falling back to the class's ctor **default** for `name`
   (the value the built instance will carry, which is what the live path matches);
