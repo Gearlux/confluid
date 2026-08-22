@@ -139,6 +139,18 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **Regressions from the 2026-08-19 cycle, part one** (BUGS-2026-08-22 SR7 / PA20 / CD14 / PA30,
+  2026-08-22). Measured before → after: a dimension declared by a boolean block AND keyed blocks
+  refused its bare activation (`scopes=["debug"]` → `ScopeError … selects nothing`) → the boolean
+  block fires (`{'log': 'DEBUG'}`; keyed-only dimensions stay refused); a malformed activation
+  string in a tag or a `default_scopes:` entry was refused without a location → the tag names its
+  `file:line:col`, the entry leads with its file; `hydraide emit` printed a 50-line traceback for a
+  non-UTF-8 file and a 53-line one for a reference cycle → one line + exit 1 for both (the file is
+  a located `ConfigurationError` from the loader; any other exception is rendered as
+  `internal error while resolving …`); `docs/interpolation.md` still said a re-declared `!class:`
+  node in an overlay "is a replacement" while a same-target marker tunes → the guide states the
+  rule. Pinned in `tests/test_scopes.py`, `tests/test_cli.py`.
+
 - **A bare mapping at a slot that holds a marker is refused as ambiguous** (BUGS-2026-08-19
   BC13, user ruling 2026-08-20). Measured before → after with `c: !class:C {optimizer:
   !class:T {name: o, lr: 1.0}}`, `lr: 9.0`, then a last line `optimizer: {x: 1}`: the line
@@ -175,12 +187,10 @@ All notable changes to confluid are documented here. The format follows
 
 ### Changed
 
-- **The `KEY(VAL)` scope call form is REMOVED** (user ruling 2026-08-20, BUGS-2026-08-19 SR16).
-  The tag accepted `!scope:task(classification)` while a CLI `--scope task(classification)` and a
-  `default_scopes:` entry silently became a boolean dimension literally named
-  `task(classification)`. One activation grammar remains — `dim=value` and bare `dim` — behind the
-  ONE splitter (`scopes.parse_scope_arg`; the tag suffix delegates); the dead form raises a
-  `ScopeError` naming `task=classification`, never degrades.
+- **An activation string is `dim` or `dim=value`; anything else is a located `ScopeError`** in
+  every spelling — the tag suffix (named by `file:line:col`), a CLI `--scope` / `scopes=` entry,
+  a `default_scopes:` entry (led by its file). One splitter, `scopes.parse_scope_arg`, serves all
+  of them; a malformed string is never read as a boolean dimension named by the whole text.
 
 - **A wrapper shield only beats the sweeps it out-positions** (user ruling 2026-08-20 — document
   order, last spec wins, no shield exemption; BUGS-2026-08-19 BC12). Measured before → after with

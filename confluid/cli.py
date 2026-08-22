@@ -139,6 +139,8 @@ def emit(config: Path, scope: Tuple[str, ...], output: Optional[str]) -> None:
         # A YAML syntax error is PyYAML's to raise (its mark carries file:line);
         # the CLI contract is still ONE line + exit 1, never a traceback (CD16).
         raise click.ClickException(" ".join(str(exc).split())) from exc
+    except Exception as exc:  # noqa: BLE001 - the one-line contract holds even for an engine defect (CD14)
+        raise click.ClickException(f"internal error while resolving {config}: {type(exc).__name__}: {exc}") from exc
     if output:
         try:
             Path(output).write_text(text)
@@ -159,6 +161,8 @@ def check(config: Path, scope: Tuple[str, ...]) -> None:
         raise click.ClickException(str(exc)) from exc
     except yaml.YAMLError as exc:
         raise click.ClickException(" ".join(str(exc).split())) from exc
+    except Exception as exc:  # noqa: BLE001 - see emit (CD14)
+        raise click.ClickException(f"internal error while resolving {config}: {type(exc).__name__}: {exc}") from exc
     if diff is not None:
         click.echo(diff, nl=False)
         sys.exit(1)

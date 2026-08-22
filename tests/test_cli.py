@@ -214,3 +214,22 @@ def test_an_unwritable_output_path_is_one_line_and_exit_1(tmp_path: Path) -> Non
     assert result.exit_code == 1
     assert "Traceback" not in result.output
     assert "cannot write" in result.output
+
+
+def test_hydraide_prints_one_line_for_an_undecodable_file_and_for_an_engine_defect(tmp_path: Path) -> None:
+    """CD14 (BUGS-2026-08-22) — a non-UTF-8 file is a located ConfigurationError from the
+    loader, and ANY other exception still honours the one-line + exit 1 contract (a
+    reference cycle currently dies with a RecursionError in the engine)."""
+    import subprocess
+
+    undecodable = tmp_path / "undecodable.yaml"
+    undecodable.write_bytes(b"\xff\xfe\x00garbage: [\n")
+    cycle = tmp_path / "cycle.yaml"
+    cycle.write_text("a: !ref:b\nb: !ref:a\n")
+    for path, needle in ((undecodable, "not a UTF-8 text file"), (cycle, "RecursionError")):
+        run = subprocess.run(
+            [sys.executable, "-m", "confluid.cli", "emit", str(path)], capture_output=True, text=True, cwd=tmp_path
+        )
+        lines = [line for line in run.stderr.splitlines() if "| INFO" not in line]
+        assert run.returncode == 1
+        assert len(lines) == 1 and needle in lines[0], lines

@@ -26,7 +26,7 @@ from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple, Un
 import yaml
 from loggair import get_logger
 
-from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError
+from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError, ScopeError
 from confluid.merger import deep_merge, document_copy, expand_dotted_keys
 from confluid.resolver import (
     _TARGET_CALL_RE,
@@ -223,7 +223,7 @@ def _parse_scope_suffix(suffix: str) -> tuple[str, Optional[str]]:
     """
     # ``KEY=VALUE`` / bare ``KEY`` — the same grammar as a CLI activation string,
     # so the ONE splitter (``scopes.parse_scope_arg``) serves every spelling
-    # (the call form is refused there — removed 2026-08-20, SR16).
+    # (a shape that is neither `dim` nor `dim=value` is refused there, located by the caller).
     return parse_scope_arg(suffix)
 
 
@@ -708,7 +708,10 @@ def _register_constructors() -> None:
         "declares nothing" is a real state, and it is what keeps such a placeholder inert
         rather than splicing an empty string.
         """
-        key, value = _parse_scope_suffix(tag_suffix)
+        try:
+            key, value = _parse_scope_suffix(tag_suffix)
+        except ScopeError as exc:
+            raise ScopeError(f"{exc} (at {_node_where(node, loader)})") from exc  # located (PA20)
         if not key or not key.strip():
             # A positive block on the dimension named '' can never fire, so the body
             # vanished without a word — while the reserved-key spelling refused
@@ -898,8 +901,11 @@ def _load_config_file(
         searched = ", ".join(str(c) for c in _search_candidates(requested, base_dir))
         raise ConfigFileNotFoundError(f"{via}Not found: {requested} (searched: {searched})")
 
-    with open(path, "r") as f:
-        data = yaml.load(f, Loader=ConfluidLoader) or {}
+    try:
+        with open(path, "r") as f:
+            data = yaml.load(f, Loader=ConfluidLoader) or {}
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"{path}: not a UTF-8 text file ({exc.reason} at byte {exc.start})") from exc
 
     return cast(Dict[str, Any], _import_and_include(data, path, _included))
 

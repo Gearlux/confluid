@@ -34,7 +34,9 @@ default — `emit` runs `load()`, so it applies whatever `load()` applies.
 A relative path resolves through the same search tiers `load()` uses (CWD →
 `./config/` → XDG), so `hydraide emit experiment.yaml` finds `./config/experiment.yaml`.
 A malformed document is a located `ConfluidError` — one line on stderr
-(`file:line:col`), exit 1, no traceback; a usage error exits 2.
+(`file:line:col`), exit 1, no traceback; a usage error exits 2. A file that is not UTF-8 text is reported the same
+way (a located `ConfigurationError` from the loader), and any other failure is rendered as one
+`internal error while resolving …` line, exit 1 — a traceback never reaches the terminal.
 
 ### Shell completion
 

@@ -33,21 +33,35 @@ def setup_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_call_form_is_refused_in_every_spelling(tmp_path: Path) -> None:
-    """The ``task(classification)`` call form is REMOVED (user ruling 2026-08-20,
-    BUGS-2026-08-19 SR16): it was accepted by the tag but silently became a
-    boolean dimension named ``task(classification)`` on the CLI/default paths.
-    One grammar remains — ``dim=value`` and bare ``dim`` — and the dead form is
-    refused naming it, never degraded."""
-    paren_path = tmp_path / "paren.yaml"
-    paren_path.write_text("val: 1\nif_task: !scope:task(classification)\n  model: ClassifierModel\n")
-    with pytest.raises(ScopeError, match=r"task=classification"):
-        load(paren_path, until="raw")
-    doc = "q: !scope:task=classification\n  a: 1\n"
-    with pytest.raises(ScopeError, match=r"task=classification"):
-        load(doc, scopes=["task(classification)"], until="document")
-    # the surviving grammar, untouched
-    assert load(doc, scopes=["task=classification"], until="document") == {"a": 1}
+def test_a_malformed_activation_string_is_refused_in_every_spelling(tmp_path: Path) -> None:
+    """An activation is `dim` or `dim=value` — anything else is a LOCATED ScopeError in the
+    tag, the CLI/`scopes=` list and `default_scopes:` alike (PA20, BUGS-2026-08-22: the tag
+    spelling was refused without its line, a `default_scopes` entry without its file)."""
+    bad_tag = tmp_path / "c.yaml"
+    bad_tag.write_text("x: 1\nblk: !scope:task(cls)\n  a: 1\n")
+    with pytest.raises(ScopeError, match=r"c\.yaml:2:6"):
+        load(bad_tag)
+    bad_default = tmp_path / "d.yaml"
+    bad_default.write_text("default_scopes: [task(cls)]\nblk: !scope:task=cls\n  a: 1\n")
+    with pytest.raises(ScopeError, match=r"d\.yaml.*default_scopes"):
+        load(bad_default)
+    doc = "q: !scope:task=cls\n  a: 1\n"
+    with pytest.raises(ScopeError, match=r"task\(cls\)"):
+        load(doc, scopes=["task(cls)"], until="document")
+    # the grammar itself, untouched
+    assert load(doc, scopes=["task=cls"], until="document") == {"a": 1}
+
+
+def test_a_boolean_block_makes_the_bare_activation_legal_beside_keyed_blocks() -> None:
+    """SR7 (BUGS-2026-08-22) — the keyed-only refusal (SR13) must not fire when a BOOLEAN
+    block declares the same dimension: `--scope debug` selects it."""
+    doc = "b: !scope:debug\n  log: DEBUG\nk: !scope:debug=verbose\n  log: TRACE\n"
+    assert load(doc, scopes=["debug"], until="document") == {"log": "DEBUG"}
+    assert load(doc, scopes=["debug=verbose"], until="document") == {"log": "TRACE"}
+    assert load(doc, until="document") == {}
+    # keyed-only stays refused (the SR13 con)
+    with pytest.raises(ScopeError, match=r"bare activation selects nothing"):
+        load("k: !scope:debug=verbose\n  log: TRACE\n", scopes=["debug"], until="document")
 
 
 def test_boolean_tag_no_value() -> None:
