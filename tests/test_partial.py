@@ -273,15 +273,19 @@ def test_materialize_keeps_lazy_post_init_attr_deferred() -> None:
         del sys.modules["_lazy_postinit_probe"]
 
 
-def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any) -> None:
+def test_class_into_lazy_default_slot_is_deferred_SILENTLY(monkeypatch: Any) -> None:
     """A ``!class:`` value landing in a slot whose own default is ``Partial`` is
-    auto-deferred (kept ``!lazy:``) with a warning — not eagerly built.
+    auto-deferred (kept ``!lazy:``) — not eagerly built — and that is NOT a warning.
 
     Guards the minimal-ctor footgun: a deferred ``Target`` (``!class:`` no parens)
     wired into a runtime-injection body slot (e.g. ``optimizer``) would otherwise
     be eagerly materialized on assignment and crash (``Adam()`` with no params).
 
-    The warning is asserted by patching the ENGINE module logger directly —
+    The slot's ``Partial`` declaration is the receiver's contract, and the CONSTRUCTOR path
+    honours it silently; the post-init path used to WARN for the same spelling, so one
+    config's `val_set: !class:…` warned while its `train_set: !class:…` (a ctor param) did
+    not (user ruling 2026-08-22: same contract, same silence — a DEBUG line names the slot
+    and the document location). Asserted by patching the ENGINE module logger directly —
     loggair does not propagate into stdlib logging, so ``caplog`` cannot see it.
     """
     import sys
@@ -292,7 +296,12 @@ def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any)
     from confluid import PartialClass, configurable, flow, load
 
     warnings_seen: list[str] = []
-    monkeypatch.setattr(engine_module, "logger", SimpleNamespace(warning=lambda msg: warnings_seen.append(msg)))
+    debugs_seen: list[str] = []
+    monkeypatch.setattr(
+        engine_module,
+        "logger",
+        SimpleNamespace(warning=warnings_seen.append, debug=debugs_seen.append, trace=lambda m: None),
+    )
 
     mod = types.ModuleType("_lazy_slot_probe")
 
@@ -322,9 +331,10 @@ def test_class_into_lazy_default_slot_is_deferred_with_warning(monkeypatch: Any)
                 "    lr: 0.05\n"
             )["o"]
         )
-        # Auto-deferred — not eagerly built — and a warning was emitted.
+        # Auto-deferred — not eagerly built — silently: a DEBUG line, no warning.
         assert isinstance(owner.optimizer, PartialClass)
-        assert any("deferred runtime-injection" in msg and "_partial_: true" in msg for msg in warnings_seen)
+        assert warnings_seen == [], warnings_seen
+        assert any("'optimizer'" in msg and "deferred" in msg and ":3:" in msg for msg in debugs_seen), debugs_seen
         # The owning code injects the runtime arg and builds it.
         built = flow(owner.optimizer, required=[1])
         assert isinstance(built, _Needsy) and built.lr == 0.05

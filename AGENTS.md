@@ -642,10 +642,14 @@ contract, read via `partial_param_names(target)` in `_flow_target` AND on the po
 an annotation-only slot — `self.optimizer: Partial[Optim] = None` — built its `_target_:` value
 eagerly, and the slot-tune re-resolve built a tuned `Partial[T]` marker whenever ONE later bare
 key existed). That is a slot declaration, not parent-context guessing: static, local to the
-class, and readable. The ONE promotion site (marker → `PartialClass`, with the warning) stays
+class, and readable. The ONE promotion site (marker → `PartialClass`) stays
 `_apply_post_init_attrs` — and the promoted marker KEEPS the original's `_yaml_loc` and merge
-bookkeeping, so a later `flow()` failure still names the document line (ENG-11); the warning
-names it too.
+bookkeeping, so a later `flow()` failure still names the document line (ENG-11). The promotion
+logs at DEBUG, never WARNING (user ruling 2026-08-22): the constructor path honours the same
+declaration silently, and one config's `val_set: !class:…` (a body slot) warned while its
+`train_set: !class:…` (a ctor param) did not — same contract, same silence; the debug line names
+the slot and the document location.
+**Pins.** `tests/test_partial.py::test_class_into_lazy_default_slot_is_deferred_SILENTLY`.
 
 **Rule — a ctor-DEFAULT marker builds ONE child per host (2026-08-19, ENG-16).** A default is
 evaluated once at class definition, so the id()-keyed instance memo handed every host in one pass
