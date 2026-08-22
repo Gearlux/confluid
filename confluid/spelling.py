@@ -184,7 +184,7 @@ def _convert_flow_value(
             return None
         if nested:
             return None  # `{a: !ref:x}` does not scan; the mapping form is legal and stays
-        return f"!ref:{dict(pairs)['_ref_']}"
+        return f"!ref:{dict(pairs)['_ref_'].strip(chr(34) + chr(39))}"  # a quoted flow value unquotes (PA22)
 
     if "_scope_" in keys or "_notscope_" in keys:
         skey = "_scope_" if "_scope_" in keys else "_notscope_"
@@ -211,7 +211,7 @@ def _convert_flow_value(
         return None
     as_dict = dict(pairs)
     target = as_dict["_target_"].strip("\"'")
-    partial = str(as_dict.get("_partial_", "false")).strip().lower() == "true"
+    partial = _yaml_true(as_dict.get("_partial_", "false"))
     tag = ("!partial:" if partial else "!class:") + target
     rest: List[Tuple[str, str]] = []
     for k, v in pairs:
@@ -221,7 +221,7 @@ def _convert_flow_value(
         rest.append((k, inner if inner is not None else v))
     if not rest:
         return f"{tag} {{}}" if nested else tag
-    if not nested and all(_INLINE_SCALAR.match(v) for _, v in rest):
+    if not nested and all(_INLINE_SCALAR.match(v) and _inline_round_trips(v) for _, v in rest):
         return f"{tag}({','.join(f'{k}={v}' for k, v in rest)})"
     return f"{tag} {{{', '.join(f'{k}: {v}' for k, v in rest)}}}"
 
@@ -262,6 +262,35 @@ def _body_indent_after(lines: Sequence[str], index: int) -> Optional[int]:
             continue
         return _indent(lines[j]) if _indent(lines[j]) > here else None
     return None
+
+
+def _yaml_true(text: str) -> bool:
+    """``_partial_``'s truth by YAML's own boolean grammar (PA22: ``yes`` read as
+    False here while the LOADER reads it True — the emitted tag went eager)."""
+    try:
+        return yaml.safe_load(str(text).strip()) is True
+    except yaml.YAMLError:
+        return False
+
+
+def _inline_round_trips(scalar_text: str) -> bool:
+    """May ``scalar_text`` ride the inline ``(k=v)`` form without changing meaning?
+
+    The inline form re-coerces through ``parse_value`` (which reads ``None`` as
+    null); the original document read the text with YAML's grammar (``None`` is
+    a plain STRING). Emit inline only when the two readings agree — otherwise
+    the flow-body form keeps YAML semantics (PA22).
+    """
+    from confluid.resolver import parse_value
+
+    try:
+        original_reading = yaml.safe_load(f"k: {scalar_text}")["k"]
+    except Exception:  # noqa: BLE001 - unparsable inline text never rides the call form
+        return False
+    try:
+        return bool(parse_value(scalar_text) == original_reading)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def to_tags(text: str, *, path: str = "<config>") -> Tuple[str, List[Finding]]:
@@ -411,7 +440,7 @@ def to_tags(text: str, *, path: str = "<config>") -> Tuple[str, List[Finding]]:
             consumed.append(j)
             if "_partial_" in by_key:
                 pj, pv = by_key["_partial_"]
-                partial = pv.strip().lower() == "true"
+                partial = _yaml_true(pv)
                 consumed.append(pj)
             tag = ("!partial:" if partial else "!class:") + target
         else:
@@ -490,6 +519,15 @@ def convert_file(path: Union[str, Path], *, dry_run: bool = False) -> Result:
                     Finding(str(path), 0, "", f"conversion is NOT equivalent under scopes={scopes} — left untouched")
                 )
                 return result
+    except yaml.YAMLError as exc:
+        # The converted text must never surface a third-party parser error from
+        # the equivalence gate — report a Finding and leave the file untouched
+        # (PA22: a quoted `_ref_` value once emitted `!ref:"proto"`, and
+        # `convert_file` raised a raw ScannerError).
+        result.findings.append(
+            Finding(str(path), 0, "", f"converted text does not parse ({type(exc).__name__}) — left untouched")
+        )
+        return result
     finally:
         os.chdir(cwd)
         tmp.unlink(missing_ok=True)

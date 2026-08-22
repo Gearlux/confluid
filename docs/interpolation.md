@@ -18,7 +18,7 @@ data_dir: "${DATA_ROOT}/${train.dataset}/${train.version}/data"   # -> /store/RF
 epochs:   "${train.epochs}"                                        # whole match keeps the native int type
 ```
 
-A whole-string match (`"${train.epochs}"`) returns the value with its real type — a container too: `c: ${a.b}` naming a mapping yields that mapping with its own placeholders resolved (a container that reaches itself through the placeholder is a refused cycle). An embedded match substitutes `str(value)` (scalars only — a container stays the literal text). Local (sibling) keys win over global, mirroring `${ref:}`. On a miss the `:default` applies, else the literal `${...}` is left in place; an environment variable SET to the empty string is a hit — `${EMPTY}` is `""` and `${EMPTY}/x` is `/x`, matching the bare `$EMPTY` spelling. Interpolation is a single pass — text a substitution just produced is never re-scanned, so an env value that itself carries `$HOME` or `${...}`-shaped text arrives verbatim. For wiring a live object into another config slot, use `${ref:}` instead.
+A whole-string match (`"${train.epochs}"`) returns the value with its real type — a container too: `c: ${a.b}` naming a mapping yields that mapping with its own placeholders resolved (a container that reaches itself through the placeholder is a refused cycle). An embedded match substitutes `str(value)` (scalars only — a container stays the literal text). A path that walks INTO a marker (`${model.hidden}` where `model` is a `!class:` node) is refused with the same message `!ref:model.hidden` gets — a marker's kwargs are not addressable by interpolation; reference the whole object with `${ref:model}`. A `:default` on such a placeholder is an authored fallback and still applies. Local (sibling) keys win over global, mirroring `${ref:}`. On a miss the `:default` applies, else the literal `${...}` is left in place; an environment variable SET to the empty string is a hit — `${EMPTY}` is `""` and `${EMPTY}/x` is `/x`, matching the bare `$EMPTY` spelling. Interpolation is a single pass — text a substitution just produced is never re-scanned, so an env value that itself carries `$HOME` or `${...}`-shaped text arrives verbatim. For wiring a live object into another config slot, use `${ref:}` instead.
 
 Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps meaning an environment variable — only names containing a `.` or `[` hit the config tree.
 
@@ -131,7 +131,12 @@ keys above it are overridden by the paste, keys below it override the paste.
   ```
 
   Re-declaring the node instead — writing `!class:` again in the overlay — is a
-  replacement, and the overlay's marker wins outright.
+  replacement, and the overlay's marker wins outright. The same holds within one
+  file for a dotted head: `s.lr: 1` written BEFORE `s: !class:Stage` is the earlier
+  spec of a node the later marker re-declares, so it is replaced (`s.lr` is the
+  class default); written AFTER the marker it tunes, and the class block
+  (`Stage.lr: 1`) is a delivery, not a re-declaration, so it lands wherever it is
+  written.
 - **Between two includes, the later one wins** (`include: [first, second]`) — they
   paste in listed order at the same slot.
 - **A nested block still deep-merges.** Splicing decides *where* a block lands,

@@ -358,3 +358,48 @@ def test_convert_file_is_a_no_op_on_a_tag_form_file(tmp_path: Path) -> None:
     cfg = tmp_path / "tags.yaml"
     cfg.write_text("model: !class:SModel(hidden=1)\n")
     assert convert_file(cfg).written is False
+
+
+# --------------------------------------------------------------------------- the PA22 shapes
+
+
+def test_a_quoted_ref_value_unquotes_into_the_tag() -> None:
+    from confluid import load
+
+    out, findings = to_tags('proto: {_target_: collections.Counter}\nx: {_ref_: "proto"}\n')
+    assert findings == []
+    assert out == "proto: !class:collections.Counter\nx: !ref:proto\n"
+    assert type(load(out, until="raw")["x"]).__name__ == "Reference"
+
+
+def test_partial_yes_emits_the_partial_tag() -> None:
+    from confluid import load
+
+    out, findings = to_tags("x: {_target_: collections.Counter, _partial_: yes}\n")
+    assert findings == []
+    assert out == "x: !partial:collections.Counter\n"
+    assert type(load(out, until="raw")["x"]).__name__ == "PartialClass"
+
+
+def test_a_scalar_the_inline_form_would_recoerce_takes_the_flow_body() -> None:
+    """`a: None` is the STRING "None" under YAML; the inline `(a=None)` form reads it
+    as null — so it rides the flow body instead."""
+    from confluid import load
+
+    out, findings = to_tags("x: {_target_: collections.Counter, a: None}\n")
+    assert findings == []
+    assert out == "x: !class:collections.Counter {a: None}\n"
+    assert load(out, until="raw")["x"].kwargs == {"a": "None"}
+
+
+def test_convert_file_reports_a_parse_failure_as_a_finding(tmp_path: Path, monkeypatch: Any) -> None:
+    """Whatever the emitted text, the equivalence gate never surfaces a raw PyYAML error."""
+    import confluid.spelling as spelling_module
+    from confluid.spelling import convert_file
+
+    target = tmp_path / "b.yaml"
+    target.write_text("proto: {_target_: collections.Counter}\nx: {_ref_: proto}\n")
+    monkeypatch.setattr(spelling_module, "to_tags", lambda text, path="<config>": ('x: !ref:"broken\n', []))
+    result = convert_file(target, dry_run=True)
+    assert result.written is False
+    assert any("does not parse" in f.reason for f in result.findings)

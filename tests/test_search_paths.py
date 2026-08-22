@@ -240,3 +240,10 @@ def test_round_trip_of_xdg_resolved_config(_isolated_env: Path) -> None:
     reloaded = load(dump(built))
     assert isinstance(reloaded["w"], Widget)
     assert reloaded["w"].size == 3
+
+
+def test_tilde_expands_in_the_entry_path_and_in_an_include(tmp_path: Path, _isolated_env: Path) -> None:
+    """PA27 (BUGS-2026-08-19) — `~/x.yaml` was probed as `<cwd>/~/x.yaml`."""
+    _write(tmp_path / "home" / ".cr" / "common.yaml", "from_home: 1\n")
+    assert load("~/.cr/common.yaml") == {"from_home": 1}
+    assert load("include: ~/.cr/common.yaml\n") == {"from_home": 1}

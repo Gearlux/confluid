@@ -313,3 +313,24 @@ def test_a_partial_over_a_class_marker_still_replaces() -> None:
     deferred.kwargs["lr"] = 0.1
     merged = deep_merge({"model": eager}, {"model": deferred})
     assert isinstance(merged["model"], PartialClass) and merged["model"].kwargs == {"lr": 0.1}
+
+
+# --------------------------------------------------------------------------- dotted writes and lists (PA9)
+
+
+def test_a_dotted_write_into_a_list_is_refused() -> None:
+    """PA9 (BUGS-2026-08-19) — `a.0: 99` replaced the whole list with `{'0': 99}`
+    silently while the READ grammar indexes it; now a located refusal."""
+    import pytest
+
+    from confluid import ConfigurationError, load
+
+    with pytest.raises(ConfigurationError, match=r"steps into a LIST at 'a'"):
+        load("a: [10, 20]\na.0: 99\n", until="document")
+
+
+def test_a_dotted_write_into_a_digit_keyed_dict_still_lands() -> None:
+    """PA9 con — a dict keyed by a digit string is a dict: the write lands."""
+    from confluid import load
+
+    assert load("a: {'0': 1}\na.0: 99\n", until="document") == {"a": {"0": 99}}

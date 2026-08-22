@@ -137,6 +137,30 @@ All notable changes to confluid are documented here. The format follows
   and zero writes (it was registered for a per-pass clear of an always-empty dict). Tests now
   call `body_slot_names` directly.
 
+### Fixed
+
+- **The parse-time tail: lists, long paths, tagged merges, `to_tags` equivalence, marker
+  placeholders, `import:` parity, `~`, env paths, empty segments** (BUGS-2026-08-19
+  PA9/PA17/PA21/PA22/PA23/PA26/PA27/PA29/PA30; PA24 ruled as-designed, 2026-08-20). Measured
+  before → after: `a: [10, 20]` + `a.0: 99` gave `{'a': {'0': 99}}` (the list destroyed) → a
+  located refusal; a 379-character `.yaml` path STRING parsed as YAML text and came back as the
+  config → reads the file (the suffix rule has no length clause); `<<: *b` from a `&b !class:…`
+  anchor loaded as an inert dict → refused naming the `_target_:` spelling (a plain anchored dict
+  still merges); `to_tags` emitted `!ref:"proto"` (a raw ScannerError on reload and from
+  `convert_file`), an EAGER `!class:` for `_partial_: yes`, and `(a=None)` for the string "None"
+  → `!ref:proto`, `!partial:`, and the flow body `{a: None}`; `convert_file` reports a parse
+  failure as a finding; `${model.hidden}` through a marker stayed literal while `!ref:model.hidden`
+  was refused → the same refusal (a `:default` still applies; a plain miss still stays literal);
+  an `import:` of a module with a SyntaxError raised raw → warns like any failed import, and a
+  NESTED `import:` no longer stays behind as a data key; `~/x.yaml` and `include: ~/…` were
+  probed as `<cwd>/~/…` → `~` expands; a `require_paths`-only key in `load_workspace_env` was never
+  validated → required and checked; `a..b: 1` minted `{'a': {'': {'b': 1}}}` → refused at the
+  key-shape gate. PA24 (`s.lr: 1` written BEFORE `s: !class:Stage` is replaced by the later
+  marker) is the documented last-wins re-declaration rule and is pinned as such. Pinned across
+  `tests/test_merger.py`, `tests/test_loader.py`, `tests/test_plain_format.py`,
+  `tests/test_spelling.py`, `tests/test_resolver.py`, `tests/test_search_paths.py`,
+  `tests/test_env.py`, `tests/test_document_order.py`.
+
 ### Changed
 
 - **The `KEY(VAL)` scope call form is REMOVED** (user ruling 2026-08-20, BUGS-2026-08-19 SR16).

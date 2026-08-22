@@ -709,3 +709,55 @@ def test_a_malformed_import_directive_is_refused(document: str) -> None:
 
 def test_a_plain_import_still_imports(tmp_path: Path) -> None:
     assert load("import: os\na: 1\n", until="raw") == {"a": 1}
+
+
+# --------------------------------------------------------------------------- the PA tail
+
+
+def test_a_long_yaml_path_string_still_names_a_file(tmp_path: Path) -> None:
+    """PA17 (BUGS-2026-08-19) — a 255+ character `.yaml` str parsed as YAML TEXT and
+    the path came back as the config; the suffix rule has no length clause."""
+    long_dir = tmp_path / ("x" * 200) / ("y" * 60)
+    long_dir.mkdir(parents=True)
+    config = long_dir / "cfg.yaml"
+    config.write_text("lr: 0.5\n")
+    assert len(str(config)) > 255
+    assert load(str(config)) == {"lr": 0.5}
+
+
+def test_an_import_that_fails_with_any_error_warns_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PA26 — the lifecycle contract says a failed import WARNS; a module with a
+    SyntaxError raised raw through load()."""
+    import sys
+    from types import SimpleNamespace
+
+    import confluid.loader as loader_module
+
+    (tmp_path / "bad_mod_syntax_pa26.py").write_text("def (:\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    records: list = []
+
+    class _Collector(SimpleNamespace):
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(loader_module, "logger", _Collector())
+    assert load("import: bad_mod_syntax_pa26\na: 1\n", until="raw") == {"a": 1}
+    assert any(level == "warning" and "SyntaxError" in msg for level, msg in records)
+    sys.modules.pop("bad_mod_syntax_pa26", None)
+
+
+def test_a_nested_import_is_consumed_like_an_include() -> None:
+    """PA26 — `import:` inside a sub-mapping stayed behind as a junk data key."""
+    assert load("sub:\n  import: os\n  a: 1\n", until="raw") == {"sub": {"a": 1}}
+
+
+def test_an_empty_dotted_segment_is_refused(tmp_path: Path) -> None:
+    """PA30 — `a..b: 1` minted a literal '' key nothing can address."""
+    with pytest.raises(ConfigurationError, match=r"EMPTY dotted segment"):
+        load("a..b: 1\n", until="document")
+    with pytest.raises(ConfigurationError, match=r"EMPTY dotted segment"):
+        load("d.: 3\n", until="document")
+    assert load("a.b: 1\n", until="document") == {"a": {"b": 1}}  # the con

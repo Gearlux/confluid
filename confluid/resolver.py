@@ -307,6 +307,41 @@ def _first_segment(target: str) -> str:
     return m.group(1) if m and m.group(1) is not None else target
 
 
+def _path_enters_marker(name: str, context: Dict[str, Any]) -> Optional[str]:
+    """The dotted prefix at which ``name``'s structural walk hits a MARKER, else ``None``.
+
+    The ``${a.b}`` twin of the ``!ref:`` attribute refusal (PA23): a walk that
+    merely MISSES stays a placeholder miss (the ``:default`` applies, else the
+    literal is kept), but a walk whose next step would enter a marker's kwargs
+    is the one-grammar case ``!ref:model.hidden`` refuses — the placeholder must
+    not answer it with silence.
+    """
+    from confluid.fluid import Fluid
+
+    segments = _parse_path_segments(name)
+    if not segments:
+        return None
+    node: Any = context
+    walked: List[str] = []
+    for segment in segments:
+        if isinstance(node, Fluid):
+            return ".".join(walked)
+        kind, value = segment
+        if kind == "key" and isinstance(node, dict) and value in node:
+            node = node[value]
+            walked.append(str(value))
+            continue
+        if kind == "idx" and isinstance(node, list) and isinstance(value, int):
+            try:
+                node = node[value]
+            except IndexError:
+                return None
+            walked.append(str(value))
+            continue
+        return None  # a plain miss, or a segment shape this probe does not chase (idxref)
+    return None
+
+
 def refuse_attribute_reference(target: str, context: Optional[Dict[str, Any]], where: str = "") -> None:
     """Raise the located refusal for a reference that would read an ATTRIBUTE or call a METHOD.
 
@@ -828,6 +863,19 @@ class Resolver:
         if _is_config_path(name):
             for ctx in (local_context, self.context):
                 if ctx:
+                    if default_val is None:
+                        blocked_at = _path_enters_marker(name, ctx)
+                        if blocked_at is not None:
+                            # One grammar, one answer (PA23): `!ref:model.hidden` is
+                            # refused with a message; the placeholder spelling was
+                            # silently left literal. A `:default` still applies —
+                            # an authored fallback outranks the refusal.
+                            raise ConfigurationError(
+                                f"${{{name}}} reads into the marker at `{blocked_at}` — a marker's "
+                                f"kwargs are not addressable by interpolation (the same rule that "
+                                f"refuses !ref:{name}). Reference the whole object with "
+                                f"${{ref:{blocked_at}}}, or read the value where it is declared."
+                            )
                     found = self._lookup_path_found(name, ctx)
                     if found is not PATH_MISS:
                         if isinstance(found, (dict, list)):

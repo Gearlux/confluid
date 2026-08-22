@@ -101,7 +101,10 @@ slow:
 
 A merge key is resolved by the YAML parser *before* confluid sees the document,
 so it copies **keys** — which is also the way to get two independent instances of
-one recipe: write the marker again (`<<:` an anchored base into each).
+one recipe: write the marker again (`<<:` an anchored base into each). Because it
+copies keys and never a TAG, the anchored node must use the reserved-key spelling:
+`<<: *b` from a `&b !class:…` anchor is refused (the merged mapping would silently
+be an inert dict), with the message naming `_target_:`.
 
 ## References: two spellings
 
@@ -294,6 +297,11 @@ And back: a file in this spelling that you want to *edit* again is converted lin
 by line — comments and layout kept — by `confluid.spelling.to_tags`, whose file
 form writes only when hydraide's output is byte-identical before and after (see
 [hydraide — the other direction](hydraide.md#the-other-direction-confluidspellingto_tags)).
+The emitted text means what the source meant: a quoted `_ref_` value unquotes into
+the tag, `_partial_` is read by YAML's own boolean grammar (`yes` defers), and a
+scalar the inline `(k=v)` form would re-coerce (`a: None` is the *string* "None")
+rides the flow body instead; a parser error inside the file form's equivalence
+gate is reported as a finding, never raised.
 
 A fully annotated reference config in this spelling ships at the repository root
 as [`confluid.example.yaml`](https://github.com/Gearlux/confluid/blob/main/confluid.example.yaml).

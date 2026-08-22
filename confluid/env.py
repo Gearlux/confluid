@@ -34,7 +34,8 @@ def load_workspace_env(
     Walks from ``start`` (default: ``Path.cwd()``) up the parent chain,
     loads the first ``.env`` encountered, and returns the values for
     ``require`` keys after validating they are set. Keys also listed in
-    ``require_paths`` must additionally resolve to an existing path.
+    ``require_paths`` are required as well (listed there alone or not) and must
+    additionally resolve to an existing path (PA29).
 
     Raises :class:`confluid.WorkspaceEnvError` (a ``RuntimeError``) with an
     actionable message when no ``.env`` is found, a required key is missing,
@@ -63,7 +64,10 @@ def load_workspace_env(
         raise WorkspaceEnvError(f"No .env file found walking up from {here} -- create one at the workspace root.")
 
     resolved: dict[str, str] = {}
-    for key in require:
+    # A require_paths key is implicitly required (PA29 — one listed ONLY there
+    # was never validated at all: neither presence nor existence).
+    ordered = [*require, *[k for k in require_paths if k not in require]]
+    for key in ordered:
         value = os.environ.get(key)
         if not value:
             raise WorkspaceEnvError(f"{key} is not set -- add it to {env_path} (e.g. {key}=/Volumes/Store).")
