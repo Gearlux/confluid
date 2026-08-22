@@ -180,9 +180,10 @@ functions behind `load` — importable, not exported — and **passes 5–6 run 
 is a DOCUMENT pass — runtime kwargs handed to `flow()` from code keep their text, for a bare type
 exactly as for a code-built marker (`test_runtime_kwargs_of_a_bare_type_are_code_not_document`).
 
-**Rule — a `Path`, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE.** A missing one
-raises `ConfigFileNotFoundError` — a typo'd path must not parse as YAML text and load as
-nothing. Any other `str` keeps the exists-under-the-search-tiers probe and otherwise parses as
+**Rule — a `Path`, or a one-line `str` ending in `.yaml`/`.yml`, NAMES A FILE — at ANY length
+(2026-08-20, PA17: a 255+ character path string parsed as text and came back as the "config").**
+A missing one raises `ConfigFileNotFoundError` — a typo'd path must not parse as YAML text and
+load as nothing. The length guard applies only to the suffix-less existence probe. Any other `str` keeps the exists-under-the-search-tiers probe and otherwise parses as
 text (`loader._names_a_file`).
 
 **Pins.** `tests/test_load_stages.py` (the four stages on one document, the list-root pro/con, the
@@ -347,7 +348,8 @@ handing Fluid markers to unrelated libraries and masking bugs behind import orde
 **Rule.** Every relative config path (the entry path AND each `include:`) resolves through
 `loader.resolve_config_path` — the ONLY path-probe site. Never add a second `.exists()` chain.
 
-**Detail.** Tier order, first existing wins: including file's directory (includes only) → CWD →
+**Detail.** A leading `~` expands first (`Path.expanduser`, 2026-08-20 — PA27: `~/x.yaml` was
+probed as `<cwd>/~/x.yaml`). Tier order, first existing wins: including file's directory (includes only) → CWD →
 `./config/` → XDG base dirs (`$XDG_CONFIG_HOME` then each `$XDG_CONFIG_DIRS`; empty == unset).
 Under an XDG base dir: app name set → `<base>/<app>/` then `<base>/confluid/`; unset → the bare base
 dir (a documented footgun — CLI frameworks set their app name at startup). Absolute paths bypass the
@@ -392,7 +394,11 @@ change and are pinned as CON cases: a PURELY structural resolution still returns
 rich path (pass 7's `_settle_reference` walks it and INLINES the value), and a
 document key literally named `a.b` still wins over the walk. Do NOT "extend" the walker into a
 marker's kwargs (`!ref:model.hidden`) — census 2026-08-17: zero uses; it is refused like an
-attribute, not silently invented.
+attribute, not silently invented — and the PLACEHOLDER spelling refuses it too (2026-08-20,
+PA23: `${model.hidden}` stayed the literal text; `resolver._path_enters_marker` probes the
+structural walk and raises the same message when the next step would enter a marker's kwargs;
+a plain miss still keeps the literal / applies the `:default`, and a `:default` on the marker
+case is an authored fallback that still applies).
 **Pins.** `tests/test_attribute_refs_removed.py` (the refusal on both paths + hydraide, the
 method-call refusal, every CON row, the deletion pin, the OmegaConf-parseability pin),
 `tests/test_list_index_refs.py`,
@@ -461,10 +467,20 @@ made the defect invisible.
 `::test_a_dotted_kwarg_still_merges_into_an_existing_marker` and
 `::test_a_non_reserved_underscore_wrapped_key_is_untouched`.
 
-**Rule — both parse-time key-shape refusals go through `loader._refuse_malformed_keys`**, called
+**Rule — every parse-time key-shape refusal goes through `loader._refuse_malformed_keys`**, called
 from `map_constructor` (untagged mappings, before the reserved-key gate's fast path) and from
 `_str_keyed_mapping` (the four tag constructors). A new key-shape rule is added THERE, never to
-one caller — that is what keeps the two spellings from diverging.
+one caller — that is what keeps the two spellings from diverging. Four live there: duplicate keys,
+a reserved key inside a dotted key, an EMPTY dotted segment (`a..b` / `.c` / `d.` — expansion
+minted a literal `''` key nothing can address, 2026-08-20 PA30), and a `<<:` merge whose anchored
+node carries a confluid TAG (a YAML merge copies keys, never a tag, so `fast: {<<: *b}` from a
+`&b !class:…` anchor silently loaded as an inert dict while the reserved-key anchor merged into a
+marker — PA21; the refusal names `_target_:`). A dotted write INTO a list (`a.0: 99` replaced the
+list with `{'0': 99}` — PA9) is refused at expansion, `merger.expand_dotted_mapping`, beside the
+`${...}`-string refusal.
+**Pins.** `tests/test_loader.py::test_an_empty_dotted_segment_is_refused`,
+`tests/test_plain_format.py::test_a_merge_from_a_TAG_spelled_anchor_is_refused`,
+`tests/test_merger.py::test_a_dotted_write_into_a_list_is_refused` (+ the digit-keyed-dict con).
 
 **Rule — a DUPLICATE mapping key is refused, in BOTH spellings.** The YAML spec restricts a
 mapping's keys to be unique and lists non-unique keys among its loading failure points, leaving
@@ -553,8 +569,14 @@ reads `ref:a,`), so a nested marker takes the flow-body form `!class:X {…}` / 
 `${ref:}` inside `[…]` stays. Generated documents (a `regen_examples` output, a `dump()`, a
 `runs/…/final.yaml`) are the MACHINE form and are NOT converted — a consumer's freshness gate
 compares them byte-for-byte to what its serializer renders.
+The emitted text MEANS what the source meant (2026-08-20, PA22): a quoted flow `_ref_` value
+unquotes (`!ref:"proto"` was a ScannerError on reload), `_partial_` is read by YAML's boolean
+grammar (`spelling._yaml_true` — `yes` used to emit an EAGER `!class:`), and a scalar the inline
+`(k=v)` form would re-coerce rides the flow body (`spelling._inline_round_trips` compares
+`parse_value` against the YAML reading — `a: None` is the STRING "None"); a parser error inside
+`convert_file`'s equivalence gate becomes a `Finding`, never a raw PyYAML exception.
 **Pins.** `tests/test_spelling.py` — the shape matrix, the three findings, idempotence, tag-form
-no-op, and `convert_file`'s activation-gated write.
+no-op, `convert_file`'s activation-gated write, and the PA22 group.
 
 **Rule — `hydraide` is the ONE emitter of the plain form, and it is a WRAPPER over passes 1–7.**
 `hydraide.emit(source, scopes=…)` is `dump(load(source, until="settled"))` plus named anchors AND the
@@ -906,6 +928,11 @@ author's reading order:
   meaningful: lines below it override the paste, lines above it are overridden by it.
 - `merger.deep_merge` re-anchors a key the overlay re-states at the OVERLAY's position, so a key
   written on both sides survives once, at the later position, with the later value.
+- A LATER marker REPLACES an earlier dotted head (PA24, ruled AS-DESIGNED 2026-08-20, option a):
+  `s.lr: 1` written before `s: !class:Stage` is the earlier spec of a node the marker re-declares,
+  so `s.lr` is the class default; written after the marker it tunes, and the class block
+  (`Stage.lr: 1`) is a delivery that lands wherever it is written. Pinned in
+  `tests/test_document_order.py::test_a_later_marker_replaces_an_earlier_dotted_head`.
 - `merger.expand_dotted_mapping` anchors a fresh head where the dotted spelling was WRITTEN, never
   appended at the end — and applies every key in ONE pass, in DOCUMENT ORDER. It used to run two:
   every plain key, then every dotted key sorted by depth and then ALPHABETICALLY, so a dotted LEAF
@@ -1459,6 +1486,13 @@ shape avoids (a scalar body is a one-item list, and `_resolve_list` already exte
 **Rule.** A dimension VALUE that YAML reads as a boolean is REJECTED with a quote-it message.
 `{extra: yes}` becomes `True` and then never matches the `extra=yes` string an activation carries —
 silently never firing. `{debug: }` is the boolean DIMENSION spelling.
+
+**Rule — `import:` is honoured in every mapping position too, and a failed import WARNS whatever
+the failure (2026-08-20, PA26).** `loader._process_imports` walks dicts, lists and marker kwargs
+(a nested `import:` used to stay behind as a junk data key that could broadcast), and catches
+`Exception` — a module with a SyntaxError raised raw through `load()` against the lifecycle
+contract; `KeyboardInterrupt`/`SystemExit` still propagate. **Pins.** the PA26 pair in
+`tests/test_loader.py`.
 
 **Rule — `include:` is honoured in EVERY position, and scopes+includes SETTLE by alternating.**
 A marker's kwargs and a scope block's contents used to be walked VALUE-wise by

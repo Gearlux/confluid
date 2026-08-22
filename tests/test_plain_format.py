@@ -723,3 +723,16 @@ def test_the_well_formed_tag_shapes_still_load() -> None:
     )
     assert (built["a"].a, built["b"].a, built["b"].lr, built["c"].a) == (None, 1, 2, 1)
     assert (built["d"].a, built["d"].lr) == (1, 3)
+
+
+def test_a_merge_from_a_TAG_spelled_anchor_is_refused() -> None:
+    """PA21 (BUGS-2026-08-19) — `<<: *b` copies keys, never a tag, so the merged
+    node silently loaded as an inert dict while the reserved-key anchor merged
+    into a marker. Refused naming the working spelling; a plain anchored dict
+    still merges."""
+    tagged = "base: &b !class:collections.Counter\n  a: 1\nfast:\n  <<: *b\n  a: 2\n"
+    with pytest.raises(ConfigurationError, match=r"merges a node tagged"):
+        load(tagged, until="raw")
+    plain = "base: &b\n  _target_: collections.Counter\n  a: 1\nfast:\n  <<: *b\n  a: 2\n"
+    assert type(load(plain, until="raw")["fast"]).__name__ == "Target"
+    assert load("base: &b {a: 1}\nfast:\n  <<: *b\n  a: 2\n", until="raw") == {"base": {"a": 1}, "fast": {"a": 2}}

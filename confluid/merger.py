@@ -296,6 +296,14 @@ def expand_dotted_mapping(
             if isinstance(nxt, dict):
                 cur = descend(cur, part, nxt)
                 continue
+            if isinstance(nxt, list):
+                # The READ grammar indexes a list (`${a.0}` is element 0); a WRITE
+                # cannot — it used to replace the whole list with `{'0': 99}` silently
+                # (PA9, BUGS-2026-08-19). Refuse instead of destroying data.
+                raise ConfigurationError(
+                    f"the dotted key {key!r} steps into a LIST at {part!r} — a dotted write cannot "
+                    f"index a list. Restate the list wholesale ({part}: [...]) at the position you want."
+                )
             if isinstance(nxt, str) and "${" in nxt:
                 # A `${...}` string is a not-yet-resolved placeholder (expansion runs
                 # before interpolation) — replacing it with a fresh dict would silently

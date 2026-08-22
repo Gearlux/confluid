@@ -3,7 +3,7 @@
 Confluid resolves every relative config-file path — the path handed to
 `load()` at any stage — AND each `include:` entry — through an ordered
 list of locations. Local files always win; the XDG base directories are the
-last resort. An **absolute path bypasses the search entirely** and is used
+last resort. A leading `~` expands to the home directory first; an **absolute path bypasses the search entirely** and is used
 verbatim.
 
 ## Resolution order

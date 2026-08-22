@@ -463,3 +463,20 @@ def test_a_dotted_kwarg_through_TWO_markers_competes_at_its_line_too() -> None:
 def test_the_dotted_position_survives_the_document_stage() -> None:
     document = _BC4_NODE + "power: 99\nt.power: 50\n"
     assert load(load(document, until="document"))["t"].power == 50
+
+
+def test_a_later_marker_replaces_an_earlier_dotted_head() -> None:
+    """PA24, ruled AS-DESIGNED (user ruling 2026-08-20, option a): re-declaring a
+    node replaces it — `s.lr: 1` written BEFORE `s: !class:Stage` is the earlier
+    spec of a node the later marker re-declares; written AFTER, it tunes."""
+
+    @configurable
+    class StagePA24:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    assert load("s.lr: 1\ns: !class:StagePA24\n")["s"].lr == 0.0
+    assert load("s: !class:StagePA24\ns.lr: 1\n")["s"].lr == 1
+    assert (
+        load("StagePA24.lr: 1\ns: !class:StagePA24\n")["s"].lr == 1
+    )  # the class block is a delivery, not a re-declaration

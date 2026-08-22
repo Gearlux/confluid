@@ -127,7 +127,7 @@ def resolve_config_path(path: Union[str, Path], *, base_dir: Optional[Path] = No
     :func:`_search_candidates` wins. On a total miss the path is returned
     as given, so the caller's normal not-found handling fires.
     """
-    rel = Path(path)
+    rel = Path(path).expanduser()  # `~/configs/x.yaml` is a home path, not `<cwd>/~/...` (PA27)
     if rel.is_absolute():
         return rel
     for candidate in _search_candidates(rel, base_dir):
@@ -402,6 +402,52 @@ def _refuse_malformed_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader
     """
     _refuse_duplicate_keys(node, loader)
     _refuse_dotted_reserved_keys(node, loader)
+    _refuse_empty_dotted_segments(node)
+    _refuse_tagged_merge_sources(node)
+
+
+def _refuse_empty_dotted_segments(node: yaml.nodes.MappingNode) -> None:
+    """Refuse a dotted key with an EMPTY segment (``a..b``, ``.c``, ``d.``).
+
+    Expansion would mint a literal ``\'\'`` key nothing can ever address
+    (PA30, BUGS-2026-08-19: ``{'a': {'': {'b': 1}}}``, silently).
+    """
+    for key_node, _ in node.value:
+        if getattr(key_node, "tag", "") == "tag:yaml.org,2002:merge":
+            continue
+        key = getattr(key_node, "value", None)
+        if isinstance(key, str) and "." in key and any(seg == "" for seg in key.split(".")):
+            mark = key_node.start_mark
+            raise ConfigurationError(
+                f"key {key!r} at {mark.name}:{mark.line + 1}:{mark.column + 1} has an EMPTY dotted "
+                f"segment — expansion would create a '' key nothing can address. Remove the stray dot."
+            )
+
+
+def _refuse_tagged_merge_sources(node: yaml.nodes.MappingNode) -> None:
+    """Refuse ``<<: *anchor`` whose anchored node carries a confluid TAG.
+
+    A YAML merge copies KEY/VALUE pairs; a tag is a node property it cannot
+    copy, so the merged mapping silently loaded as an inert plain dict while
+    the reserved-key spelling of the same anchor merged into a marker (PA21,
+    BUGS-2026-08-19). Anchor the reserved-key spelling instead.
+    """
+    for key_node, value_node in node.value:
+        if getattr(key_node, "tag", "") != "tag:yaml.org,2002:merge":
+            continue
+        sources = value_node.value if isinstance(value_node, yaml.nodes.SequenceNode) else [value_node]
+        for source in sources:
+            if str(getattr(source, "tag", "")).startswith(_CONFLUID_TAG_PREFIXES):
+                mark = key_node.start_mark
+                raise ConfigurationError(
+                    f"<<: at {mark.name}:{mark.line + 1}:{mark.column + 1} merges a node tagged "
+                    f"{source.tag!r} — a YAML merge copies keys, never a tag, so the result would "
+                    f"silently be a plain dict, not a marker. Anchor the reserved-key spelling "
+                    f"(_target_: ...) instead."
+                )
+
+
+_CONFLUID_TAG_PREFIXES = ("!class:", "!partial:", "!lazy:", "!ref:", "!scope:", "!notscope:")
 
 
 def _refuse_dotted_reserved_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader) -> None:
@@ -872,8 +918,18 @@ def _import_and_include(data: Any, base_path: Path, _included: "Dict[Path, None]
     return _process_includes_recursive(data, base_path, _included)
 
 
-def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
-    if "import" in data:
+def _process_imports(data: Any) -> Any:
+    """Consume every ``import:`` key — at the top level AND nested (PA26).
+
+    ``include:`` is honoured in every mapping position; ``import:`` used to be
+    top-level only, so a nested one stayed behind as a junk data key that could
+    broadcast. The walk covers dicts, lists and marker kwargs — the same node
+    kinds the include walk covers (a ScopeBlock's contents are gone by now:
+    pass 4 has resolved them).
+    """
+    from confluid.fluid import Fluid
+
+    if isinstance(data, dict) and "import" in data:
         imports = data.pop("import")
         if imports:
             if isinstance(imports, str):
@@ -889,13 +945,22 @@ def _process_imports(data: Dict[str, Any]) -> Dict[str, Any]:
                     accum.append(m)
                 try:
                     importlib.import_module(m)
-                except ImportError as exc:
-                    # Warn instead of raising: an ``import:`` module may be an
-                    # optional dependency of a shared/included config. But a
-                    # TYPO'd module previously failed silently here and only
-                    # surfaced much later as "Cannot resolve class: X" — the
-                    # warning names the real cause at the real moment.
-                    logger.warning(f"import: failed to import {m!r}: {exc}")
+                except Exception as exc:  # noqa: BLE001 - the lifecycle contract: a failed import warns
+                    # Warn instead of raising — for EVERY failure kind (PA26: a module
+                    # with a syntax error raised raw). An ``import:`` module may be an
+                    # optional dependency of a shared/included config; a TYPO'd module
+                    # previously failed silently and only surfaced much later as
+                    # "Cannot resolve class: X" — the warning names the real cause.
+                    logger.warning(f"import: failed to import {m!r}: {type(exc).__name__}: {exc}")
+    if isinstance(data, dict):
+        for value in data.values():
+            _process_imports(value)
+    elif isinstance(data, list):
+        for item in data:
+            _process_imports(item)
+    elif isinstance(data, Fluid):
+        for value in data.kwargs.values():
+            _process_imports(value)
     return data
 
 
@@ -1167,9 +1232,13 @@ def _names_a_file(data: Union[str, Path]) -> bool:
         return True
     if not data.strip():
         return False  # empty text parses to {} — it used to resolve to '.' and open a DIRECTORY (PA13)
-    if "\n" in data or ":" in data or len(data) >= 255:
+    if "\n" in data or ":" in data:
         return False
-    return data.endswith(_CONFIG_SUFFIXES) or resolve_config_path(data).exists()
+    if data.endswith(_CONFIG_SUFFIXES):
+        return True  # a suffix names a file at ANY length (PA17 — a 255+ char path parsed as text)
+    if len(data) >= 255:
+        return False  # too long for a bare (suffix-less) existence probe
+    return resolve_config_path(data).exists()
 
 
 def _load(

@@ -291,3 +291,16 @@ def test_double_dollar_is_a_literal_dollar(monkeypatch: pytest.MonkeyPatch) -> N
     assert resolver.resolve("a$$b") == "a$b"
     # beside the escape, live spellings still fire
     assert resolver.resolve("${a.b} costs $$5") == "7 costs $5"
+
+
+def test_a_placeholder_walking_into_a_marker_is_refused_like_the_ref_spelling() -> None:
+    """PA23 (BUGS-2026-08-19) — `${model.hidden}` stayed the literal text while
+    `!ref:model.hidden` was refused; one grammar, one answer. A `:default` is an
+    authored fallback and still applies; a plain miss still stays literal."""
+    from confluid import load
+
+    doc = "model: {_target_: collections.Counter, hidden: 3}\n"
+    with pytest.raises(ConfigurationError, match=r"reads into the marker at `model`"):
+        load(doc + "x: ${model.hidden}\n", until="document")
+    assert load(doc + "x: ${model.hidden:7}\n", until="document")["x"] == 7
+    assert load("cfg: {a: 1}\nx: ${cfg.nothere}\n", until="document")["x"] == "${cfg.nothere}"
