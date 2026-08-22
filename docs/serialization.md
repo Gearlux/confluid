@@ -68,7 +68,8 @@ dump WARNS once per type that the placeholder reloads default-constructed —
 register the class for a faithful round trip. A literal `$` in any emitted string is
 written as `$$` — the loader's escape — so interpolation-active text
 (`echo $RUN_USER`, a `${...}` kept verbatim) reloads unchanged instead of being
-substituted. This is why the convention asks for a
+substituted: the reload leaves `$$` alone through every document stage and turns
+it back into `$` when the document becomes objects. This is why the convention asks for a
   recomputing `@property` rather than a stored attribute: a property stays out
   of the document, while a stored one is a body slot and is dumped.
 - **Runtime-injected arguments** — the `params=` / positional inputs handed

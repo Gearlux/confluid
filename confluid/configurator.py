@@ -36,7 +36,14 @@ from loggair import get_logger
 
 from confluid.broadcast import accepts_key, clear_pass_caches, dict_at_slot_kind
 from confluid.dumper import to_markers
-from confluid.engine import _ctor_params, _maybe_solidify, _resolve_target_callable, _warn_undeclared, flow
+from confluid.engine import (
+    _ctor_params,
+    _maybe_solidify,
+    _resolve_target_callable,
+    _warn_undeclared,
+    collapse_escapes,
+    flow,
+)
 from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, ScopeBlock, Target
 from confluid.loader import ConfluidLoader, load
@@ -157,6 +164,7 @@ def configure(
     token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), report=report))
     try:
         settled = load(merged, until="settled", scopes=scopes)
+        collapse_escapes(settled)  # the document becomes objects here (PA14/CD5)
 
         # 4. Apply the settled values back onto the live objects. ``visited`` maps id -> the
         #    OBJECT (recording an id pins it for the call — see the id-pinning rule).

@@ -280,17 +280,22 @@ def test_marker_kwargs_interpolate_once_per_resolver(monkeypatch: pytest.MonkeyP
     assert marker.kwargs["path"] == "${env:CONFLUID_TEST_SECRET}x"
 
 
-def test_double_dollar_is_a_literal_dollar(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CD10 — `$$` escapes interpolation: `$$NAME` is `$NAME` even when NAME is
-    set, `$${a.b}` is the literal placeholder text, `$$5` is `$5`."""
+def test_double_dollar_is_left_alone_by_interpolation_and_collapses_in_the_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CD10 + PA14 (BUGS-2026-08-22) — `$$` is a literal `$` in the FINAL objects. Pass 6
+    never expands across it and never rewrites it (so the document stage is idempotent);
+    the collapse happens once, where the document becomes objects."""
+    from confluid import load
+
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
     resolver = Resolver(context={"a": {"b": 7}})
-    assert resolver.resolve("$$CONFLUID_TEST_ROOT/x") == "$CONFLUID_TEST_ROOT/x"
-    assert resolver.resolve("$${a.b}") == "${a.b}"
-    assert resolver.resolve("$$5") == "$5"
-    assert resolver.resolve("a$$b") == "a$b"
-    # beside the escape, live spellings still fire
-    assert resolver.resolve("${a.b} costs $$5") == "7 costs $5"
+    assert resolver.resolve("$$CONFLUID_TEST_ROOT/x") == "$$CONFLUID_TEST_ROOT/x"  # opaque here
+    assert resolver.resolve("$${a.b}") == "$${a.b}"
+    assert resolver.resolve("${a.b} costs $$5") == "7 costs $$5"  # live spellings still fire beside it
+    assert load("v: $$CONFLUID_TEST_ROOT/x\nw: $$5\nq: $${a.b}\n")["v"] == "$CONFLUID_TEST_ROOT/x"
+    assert load("v: $$5\n")["v"] == "$5"
+    assert load("a: {b: 7}\nq: $${a.b}\n")["q"] == "${a.b}"
 
 
 def test_a_placeholder_walking_into_a_marker_is_refused_like_the_ref_spelling() -> None:

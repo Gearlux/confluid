@@ -139,6 +139,17 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`$$` is a literal `$` in the final objects — collapsed once, where the document becomes
+  objects** (BUGS-2026-08-22 PA14 / CD5, 2026-08-22). Measured before → after:
+  `load("command: echo $$RUN_USER", until="document")` gave `echo $RUN_USER` and reloading that
+  result gave `echo gert` (the document stage was not idempotent) → the document stage keeps
+  `echo $$RUN_USER`, reloading it changes nothing, `load()` answers `echo $RUN_USER`; a dict
+  inside a marker's kwargs reloaded its keys as `$$k` → `$k`. Pass 6 treats `$$` as opaque;
+  `engine.collapse_escapes` runs in `instantiate` and after `configure()`'s settle; `hydraide`
+  collapses the settled tree before writing, so the artefact carries `$$` and
+  `emit(emit(x)) == emit(x)`. Pinned in `tests/test_resolver.py`, `tests/test_load_stages.py`,
+  `tests/test_dumper.py`, `tests/test_hydraide.py`, `tests/test_configurator.py`.
+
 - **Regressions from the 2026-08-19 cycle, part one** (BUGS-2026-08-22 SR7 / PA20 / CD14 / PA30,
   2026-08-22). Measured before → after: a dimension declared by a boolean block AND keyed blocks
   refused its bare activation (`scopes=["debug"]` → `ScopeError … selects nothing`) → the boolean

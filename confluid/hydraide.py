@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Union
 from loggair import get_logger
 
 from confluid.dumper import dump
+from confluid.engine import collapse_escapes
 from confluid.fluid import Fluid
 from confluid.loader import load
 
@@ -112,6 +113,10 @@ def emit(source: Union[str, Path], *, scopes: Optional[List[str]] = None) -> str
         _IMPORT_ACCUMULATOR.reset(token)
     if imports and isinstance(tree, dict):
         tree = {"import": imports if len(imports) > 1 else imports[0], **tree}
+    # The settled tree holds the DOCUMENT form (`$$` opaque through passes 1–7); collapse it
+    # exactly as pass 8 would, so dump()'s uniform escape writes `$$` back — the artefact is
+    # a document again, and emit(emit(x)) == emit(x) (PA14, BUGS-2026-08-22).
+    collapse_escapes(tree)
     return dump(tree, anchor_names=_anchor_names(tree))
 
 
