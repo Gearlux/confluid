@@ -246,14 +246,56 @@ def instantiate(data: Any) -> Any:
     used to descend ONE level and hand back an unbuilt marker (F4).
     """
     if isinstance(data, Target):
+        collapse_escapes(data)
         return data if data.partial else flow(data)
     if isinstance(data, Fluid):
+        collapse_escapes(data)
         return flow(data)
     if isinstance(data, dict):
-        return {k: instantiate(v) for k, v in data.items()}
+        return {_unescape(k): instantiate(v) for k, v in data.items()}
     if isinstance(data, list):
         return [instantiate(item) for item in data]
-    return data
+    return _unescape(data)
+
+
+def _unescape(value: Any) -> Any:
+    """`$$` → `$` on a string — the document escape collapsing into the object world."""
+    return value.replace("$$", "$") if isinstance(value, str) and "$$" in value else value
+
+
+def collapse_escapes(node: Any) -> None:
+    """Collapse `$$` in a marker's kwargs / a mapping IN PLACE (keys and values, any depth) —
+    ONCE, at the document→objects boundary (PA14/CD5): pass 6 keeps the escape opaque so the
+    document stage is idempotent, and `dump()` re-escapes live strings, so the round trip holds."""
+    if isinstance(node, Fluid):
+        _collapse_dict(node.kwargs)
+    elif isinstance(node, dict):
+        _collapse_dict(node)
+
+
+def _collapse_dict(mapping: Dict[str, Any]) -> None:
+    for key in list(mapping):
+        value = mapping[key]
+        if isinstance(value, Fluid):
+            collapse_escapes(value)
+        elif isinstance(value, dict):
+            _collapse_dict(value)
+        elif isinstance(value, list):
+            mapping[key] = [_collapse_item(item) for item in value]
+        else:
+            mapping[key] = _unescape(value)
+        new_key = _unescape(key)
+        if new_key != key:
+            mapping[new_key] = mapping.pop(key)
+
+
+def _collapse_item(item: Any) -> Any:
+    if isinstance(item, (Fluid, dict)):
+        collapse_escapes(item)
+        return item
+    if isinstance(item, list):
+        return [_collapse_item(i) for i in item]
+    return _unescape(item)
 
 
 def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:

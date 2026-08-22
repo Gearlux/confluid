@@ -1599,10 +1599,16 @@ plus `::test_keyed_scope_inside_a_markers_own_kwargs_swaps_the_slot` and the fou
 dotted/bracketed name is a config-key path resolved against the config tree (local context first,
 then global). That test is what keeps every pre-existing `${VAR}` an env var.
 
-**Rule.** `$$` is a literal `$` (2026-08-20, CD10): it suppresses every interpolation spelling
-(`$$NAME` → `$NAME` even when set, `$${a.b}` → the literal text, `$$5` → `$5`), collapses in
-mapping keys too, and is what `dump()` emits — the round-trip escape. Each side of a `$$` split
-interpolates independently with embedded semantics.
+**Rule.** `$$` is a literal `$` IN THE FINAL OBJECTS (2026-08-20, CD10; placement fixed
+2026-08-22, BUGS-2026-08-22 PA14/CD5): pass 6 never expands across it and never rewrites it — each
+side of a `$$` split interpolates independently and the parts are re-joined with `$$`, so the
+document stage is idempotent (collapsing there made `load(load(x, until="document"))` re-expand a
+now-bare `$NAME`). The collapse `$$` → `$` happens ONCE, where the document becomes objects:
+`engine.collapse_escapes` in `instantiate` (keys and values, any depth, marker kwargs included —
+the old key-collapse lived in the plain-dict branch only and missed a dict inside a marker's
+kwargs) and in `configure()` after the settle; `hydraide.emit` collapses the settled tree before
+`dump()` so the artefact carries `$$` again. `dump()` of live objects escapes `$` → `$$`. Never
+collapse in the resolver, never add a dump parameter.
 
 **Rule.** Bare `$IDENTIFIER` expands as an ENV-ONLY read after the `${...}` pass — no dotted form,
 no `:default`, no exemptions (a tag TARGET's `@axis=$key` selector lives on the marker, never in a
@@ -1773,7 +1779,8 @@ pydantic property the split rests on), and
 fidelity is non-negotiable. A literal `$` is emitted as `$$` — the loader's escape — so
 interpolation-active text (`echo $RUN_USER`) reloads verbatim instead of substituted (2026-08-20,
 CD10); the escape is uniform over keys and values (a representer cannot tell them apart), and the
-loader collapses `$$` in mapping keys during the interpolation pass.
+loader collapses `$$` — keys and values — once, where the document becomes objects (see the
+`$$` rule under Interpolation).
 
 **Rule — a target's dumpable name comes from the REGISTRY, for a marker as well as a live
 instance.** `dumper._target_name` asked neither, emitting a raw `module.qualname`, and both

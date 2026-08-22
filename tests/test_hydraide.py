@@ -380,3 +380,17 @@ def test_two_paths_folding_to_one_anchor_name_stay_unique(tmp_path: Path, monkey
     reloaded = load(str(tmp_path / "anchors_out.yaml"))
     assert reloaded["use_a"] is reloaded["m"][0]
     assert reloaded["use_b"] is reloaded["m_0"]
+
+
+def test_a_dollar_escape_survives_emit_and_reloads_to_the_same_objects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA14 — the emitted document carries `$$` (document form); emit is idempotent and the
+    artefact reloads to the same strings."""
+    from confluid import load
+    from confluid.hydraide import emit
+
+    monkeypatch.setenv("RUN_USER", "gert")
+    src = "j: !class:collections.Counter\n  command: echo $$RUN_USER\n  opts: {$$k: 1, lit: '$$$$ money'}\n"
+    emitted = emit(src)
+    assert "command: echo $$RUN_USER" in emitted and "$$k: 1" in emitted and "$$$$ money" in emitted
+    assert emit(emitted) == emitted
+    assert load(emitted)["j"] == load(src)["j"]

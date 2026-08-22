@@ -575,13 +575,10 @@ class Resolver:
             return value
 
         # 3. Handle Dictionaries — recurse, passing the current dict as local_context.
-        #    Keys are never interpolated, but the `$$` escape collapses in them too —
-        #    dump() escapes uniformly, so the loader must collapse uniformly (CD10).
+        #    Keys are never interpolated; the `$$` escape stays opaque here and collapses
+        #    once, at the document→objects boundary (engine.collapse_escapes — PA14/CD5).
         if isinstance(value, dict):
-            return {
-                (k.replace("$$", "$") if isinstance(k, str) and "$$" in k else k): self.resolve(v, local_context=value)
-                for k, v in value.items()
-            }
+            return {k: self.resolve(v, local_context=value) for k, v in value.items()}
 
         # 4. Handle Lists
         if isinstance(value, list):
@@ -749,7 +746,10 @@ class Resolver:
             # `$$` is a literal `$` — each side of it interpolates independently
             # (embedded semantics: results joined as text), so `$$NAME` is `$NAME`
             # and `$${a.b}` is `${a.b}`, verbatim. This is the escape dump() emits.
-            return "$".join(self._interpolate_embedded(part, local_context) for part in value.split("$$"))
+            # OPAQUE here — re-joined with `$$`, never collapsed: a second pass 6 over the
+            # document stage must be a no-op (PA14). The collapse happens once, where the
+            # document becomes objects (`engine.instantiate` / `configure()`).
+            return "$$".join(self._interpolate_embedded(part, local_context) for part in value.split("$$"))
         if "${" not in value:
             return self._expand_bare_env(value)
 

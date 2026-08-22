@@ -854,3 +854,17 @@ def test_the_marker_spelling_of_a_named_override_keeps_the_objects_children() ->
         report = configure(trainer=trainer, config=config)
         assert (trainer.model.layers, trainer.lr) == (10, 0.1), config
         assert report.unused == []
+
+
+def test_configure_collapses_the_dollar_escape_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA14 — the settled document becomes objects in configure(); `$$` is `$` there too."""
+
+    @configurable
+    class JobPA14:
+        def __init__(self, command: str = "") -> None:
+            self.command = command
+
+    monkeypatch.setenv("RUN_USER", "gert")
+    live = JobPA14()
+    configure(j=live, config="j: {command: echo $$RUN_USER}\n")
+    assert live.command == "echo $RUN_USER"

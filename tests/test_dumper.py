@@ -721,3 +721,16 @@ def test_a_slots_class_round_trips_its_body_slot() -> None:
 
     reloaded = load(dump(load("p: {_target_: SlottedPoint, label: q}")["p"]))
     assert reloaded.label == "q"
+
+
+def test_dollar_keys_nested_in_a_markers_kwargs_round_trip() -> None:
+    """CD5 (BUGS-2026-08-22) — the key collapse lived in the plain-dict branch only, so a
+    dict INSIDE a marker's kwargs reloaded with `$$k`."""
+
+    @configurable
+    class BoxCD5:
+        def __init__(self, a: Any = None) -> None:
+            self.a = a
+
+    reloaded = load(dump(BoxCD5(a={"$k": 1, "a$b": 2, "lit": "$$ money"})))
+    assert reloaded.a == {"$k": 1, "a$b": 2, "lit": "$$ money"}

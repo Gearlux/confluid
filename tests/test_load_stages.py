@@ -417,3 +417,14 @@ def test_a_dotted_write_through_a_plain_placeholder_is_refused() -> None:
     sharing spelling instead."""
     with pytest.raises(ConfigurationError, match=r"\$\{a\.b\}"):
         load("a:\n  b: {v: 1}\nuse: ${a.b}\nuse.k: 5\n", until="document")
+
+
+def test_the_dollar_escape_survives_the_document_stage_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA14 (BUGS-2026-08-22) — collapsing `$$` at pass 6 made `load(load(x, until="document"))`
+    re-expand the now-bare `$NAME`; the escape is opaque through the document stage now."""
+    monkeypatch.setenv("RUN_USER", "gert")
+    text = "command: echo $$RUN_USER\n"
+    once = load(text, until="document")
+    assert once == {"command": "echo $$RUN_USER"}
+    assert load(once, until="document") == once
+    assert load(once) == load(text) == {"command": "echo $RUN_USER"}

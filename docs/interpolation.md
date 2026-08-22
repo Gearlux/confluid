@@ -48,11 +48,15 @@ on a front-end re-implementing `os.path.expandvars` before handing the file to t
 - **Author text only.** The bare-`$` pass runs on the text the author wrote —
   never on text a `${...}` substitution just produced. An env value that contains
   `$HOME` arrives as `$HOME`.
-- **`$$` is a literal `$`.** The escape suppresses every interpolation spelling:
-  `$$NAME` is `$NAME` even when `NAME` is set, `$${a.b}` is the literal placeholder
-  text, `price: $$5` is `$5`. It collapses in mapping **keys** too — this is the
-  escape `dump()` emits, so a value like `command: echo $RUN_USER` survives a
-  dump → load round trip verbatim.
+- **`$$` is a literal `$` in the final objects.** The escape suppresses every
+  interpolation spelling — `$$NAME` never expands, `$${a.b}` stays placeholder text —
+  and it is left exactly as written through every document stage (`until="raw"`,
+  `"document"`, `"settled"`, and the file `hydraide` writes), so reloading a
+  document-stage result changes nothing. It becomes a single `$` once, when the
+  document turns into objects: `load(...)` answers `$NAME` / `${a.b}` / `$5`, in
+  mapping **keys** as well as values, at any depth. This is the escape `dump()`
+  emits, so a value like `command: echo $RUN_USER` survives a dump → load round
+  trip verbatim.
 - **Burn-in.** Like every interpolation, the substitution is a single load-time
   pass: a marker kwarg `"$DATA_ROOT/x"` carries the expanded value from then on
   (`dump()` emits it; a deferred slot flowed later sees it).
