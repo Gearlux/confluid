@@ -49,16 +49,11 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
     Whitespace around the ``=`` is stripped.
     """
     stripped = arg.strip()
-    call_form = re.match(r"^([\w_.]+)\((.*)\)$", stripped)
-    if call_form:
-        # The call form was REMOVED (user ruling 2026-08-20, BUGS-2026-08-19 SR16):
-        # the tag accepted it while the CLI/default paths silently read it as a
-        # boolean dimension literally named `task(classification)`. One grammar
-        # remains; the dead spelling refuses loudly instead of degrading.
-        raise ScopeError(
-            f"scope activation {stripped!r}: the call form was removed — "
-            f"write '{call_form.group(1)}={call_form.group(2).strip()}'"
-        )
+    if not re.fullmatch(r"[\w_.]*\s*(=.*)?", stripped):  # empty → the caller refuses it, located (PA19)
+        # The activation grammar is `dim` or `dim=value` — nothing else parses, and a
+        # shape that does not is refused rather than read as a boolean dimension
+        # named by the whole string (PA20, BUGS-2026-08-22).
+        raise ScopeError(f"scope activation {stripped!r} is not `dim` or `dim=value`")
     if "=" in stripped:
         key, value = stripped.split("=", 1)
         return key.strip(), value.strip()
@@ -88,7 +83,10 @@ def parse_default_scopes(value: Any, where: str = "") -> Dict[str, str]:
         )
     defaults: Dict[str, str] = {}
     for raw in value:
-        key, val = parse_scope_arg(raw)
+        try:
+            key, val = parse_scope_arg(raw)
+        except ScopeError as exc:
+            raise ScopeError(f"{where}`default_scopes`: {exc}") from exc  # leads with the file (PA20)
         if val is None:
             raise ScopeError(
                 f"{where}`default_scopes` entry {raw!r} names no value: a default names the value a "
@@ -184,6 +182,7 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
 #: declared — read ONLY by `_check_active_values_are_declared` for its error message
 #: (the walker's public return stays a pair; discovery has no use for locations).
 #: Reset per walk; single-threaded within one load like the rest of pass 4.
+_BOOLEAN_DIMS: Set[str] = set()  # dimensions a BOOLEAN block declares — a bare activation selects it (SR7)
 _DECLARATION_LOCS: Dict[str, List[str]] = {}
 
 
@@ -201,11 +200,13 @@ def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
     """
     positive: Dict[str, Set[str]] = {}
     negated: Set[str] = set()
+    _BOOLEAN_DIMS.clear()
 
     def walk(node: Any) -> None:
         if isinstance(node, ScopeBlock):
             for key, value in node.dims.items():
                 if value is None:
+                    _BOOLEAN_DIMS.add(key)  # a bare activation DOES select this block (SR7)
                     continue  # boolean dimension — no selectable value to report
                 values = positive.setdefault(key, set())
                 if node.negate:
@@ -294,6 +295,8 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
     for key, value in active.items():
         if key in negated or not positive.get(key):
             continue
+        if value is None and key in _BOOLEAN_DIMS:
+            continue  # a boolean block fires on the bare name; the keyed siblings stay off (SR7)
         if value is None:
             # A BARE activation of a KEYED dimension (`--scope framework` against
             # `framework=keras|lightning` blocks) can never select a variant — and it

@@ -520,11 +520,11 @@ emitting false documentation about itself.
 
 **Rule — scope grammar.** `scopes.parse_scope_arg` is the ONE splitter for every activation
 spelling — the tag suffix (`loader._parse_scope_suffix` delegates to it), the `_scope_:` value,
-a CLI `--scope` argument, a `default_scopes:` entry. Never add a second. The `KEY(VAL)` call
-form is REMOVED (user ruling 2026-08-20, BUGS-2026-08-19 SR16: the tag accepted it while the
-CLI/default paths silently read it as a boolean dimension literally named `task(classification)`);
-it is REFUSED naming `KEY=VAL`, never degraded.
-**Pins.** `tests/test_scopes.py::test_the_call_form_is_refused_in_every_spelling`.
+a CLI `--scope` argument, a `default_scopes:` entry. Never add a second. The grammar is `dim`
+(boolean) or `dim=value`; any other shape is refused with a LOCATED `ScopeError` in every spelling
+— the tag site names its `file:line:col`, a `default_scopes:` entry leads with its file (2026-08-22,
+BUGS-2026-08-22 PA20) — never read as a boolean dimension named by the whole string.
+**Pins.** `tests/test_scopes.py::test_a_malformed_activation_string_is_refused_in_every_spelling`.
 
 **Rule — a marker is a TAG or a reserved-key MAPPING; a STRING is never parsed as one.** There
 is no third grammar: `Resolver.resolve` does not read markers out of text (user instruction
@@ -589,7 +589,11 @@ including an unresolvable STRING target, which pass 7 refuses since 2026-08-19 (
 sail through settle with the accept-EVERYTHING list and absorb every bare key, and `check` blessed
 the typo with exit 0; nothing imports between pass 7 and pass 8 inside one load, so the refusal
 loses nothing). Anchor names are deterministically UNIQUE (`&m_0`, `&m_0-2` — CD15), and the
-COMMAND renders PyYAML's own syntax errors and output-write failures as one line + exit 1 (CD16).
+COMMAND renders PyYAML's own syntax errors and output-write failures as one line + exit 1 (CD16) —
+and, since 2026-08-22 (BUGS-2026-08-22 CD14), ANY other exception too (`internal error while
+resolving <config>: <Type>: <msg>`, exit 1): the one-line contract holds even for an engine defect,
+the traceback never reaches a user. A non-UTF-8 config file is a located `ConfigurationError`
+raised by the loader (`<path>: not a UTF-8 text file (...)`).
 **The `hydraide` COMMAND is `confluid/cli.py` — Click, the OPTIONAL `confluid[cli]` extra,
 console script `hydraide = confluid.cli:main` (user instruction 2026-08-17).** Three verbs — `emit CONFIG [--scope DIM=VALUE]… [-o FILE]`,
 `check CONFIG`, `completion bash|zsh|fish` — and the contract: a located `ConfluidError` is ONE
@@ -1550,9 +1554,12 @@ MAPPING slot raises a located `ScopeError`, but ONLY when the block is ACTIVE (a
 dropped without its contents being examined).
 
 **Rule.** An ACTIVE keyed scope MUST name a value the document declares, else `ScopeError` —
-and a BARE activation of a dimension declared with keyed values alone is refused the same way,
+and a BARE activation of a dimension declared with keyed values ALONE is refused the same way,
 naming the values and their lines (2026-08-19, SR13: it selected nothing AND suppressed the
-`default_scopes:` value, so the run silently used neither). Three
+`default_scopes:` value, so the run silently used neither). A dimension that ALSO carries a
+boolean block (`!scope:debug` beside `!scope:debug=verbose`) accepts the bare name — it selects
+the boolean block (2026-08-22, BUGS-2026-08-22 SR7; `scopes._BOOLEAN_DIMS`, filled by the one
+`_walk_dimensions` walk). Three
 exemptions are load-bearing: an UNDECLARED dimension is an inert no-op; an UNSET dimension resolves
 to defaults; a dimension carrying ANY `!notscope:` block accepts EVERY value. Consequently
 `discover_dimension_values` reports POSITIVE values only and maps a negation-only dimension to an

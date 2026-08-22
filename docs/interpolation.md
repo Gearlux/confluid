@@ -130,8 +130,11 @@ keys above it are overridden by the paste, keys below it override the paste.
                                       blue: 3      # -> Counter(red=1, blue=3)
   ```
 
-  Re-declaring the node instead — writing `!class:` again in the overlay — is a
-  replacement, and the overlay's marker wins outright. The same holds within one
+  Re-declaring the node — writing `!class:` again in the overlay — tunes it too when
+  the target is the SAME class (`model: !class:Counter {blue: 3}` over a base
+  `model: !class:Counter {red: 1}` gives `Counter(red=1, blue=3)`); a marker of a
+  DIFFERENT class replaces the node outright. There is no spelling that resets a
+  same-class node's kwargs from an overlay — restate the node in the base file. The same holds within one
   file for a dotted head: `s.lr: 1` written BEFORE `s: !class:Stage` is the earlier
   spec of a node the later marker re-declares, so it is replaced (`s.lr` is the
   class default); written AFTER the marker it tunes, and the class block
