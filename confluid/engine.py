@@ -1319,12 +1319,15 @@ def _apply_post_init_attrs(
                     # used to be built eagerly here, crashing a runtime-injection ctor —
                     # BUGS-2026-08-19 ENG-17). The promoted marker KEEPS the original's
                     # location and merge bookkeeping: a fresh PartialClass dropped them,
-                    # so the eventual flow() error named no file:line (ENG-11).
-                    logger.warning(
-                        f"Config slot {k!r} on {getattr(target, '__name__', target)} received an "
-                        f"eager '_target_:' value{_at_yaml_loc(v)} but the slot is a deferred "
-                        "runtime-injection slot; deferring it. Add '_partial_: true' to the marker "
-                        "to make the intent explicit and silence this."
+                    # so the eventual flow() error named no file:line (ENG-11). DEBUG, not a
+                    # warning (user ruling 2026-08-22): the declaration is the receiver's
+                    # contract and the CONSTRUCTOR path honours it silently — the same
+                    # `!class:` spelling warned here for a body slot (`val_set`) and not for
+                    # its ctor-param sibling (`train_set`).
+                    logger.debug(
+                        f"Config slot {k!r} on {getattr(target, '__name__', target)} is declared deferred; "
+                        f"its '_target_:' value{_at_yaml_loc(v)} is kept as a marker for the owning "
+                        "class to build."
                     )
                     promoted = PartialClass(v.target)
                     promoted.__dict__.update({dk: dv for dk, dv in v.__dict__.items() if dk != "partial"})

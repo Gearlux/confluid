@@ -139,6 +139,14 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **An eager marker landing in a deferred body slot is kept deferred SILENTLY** (2026-08-22,
+  user ruling). `val_set: !class:recordstream.Stream` on a runnable whose `val_set` is a
+  `Partial[...]` body slot logged `Config slot 'val_set' … received an eager '_target_:' value …
+  deferring it. Add '_partial_: true' …` at WARNING on every run, while the identical spelling on
+  the ctor-param sibling `train_set` was honoured without a word. The declaration is the
+  receiver's contract on both paths: the post-init promotion now logs at DEBUG (slot + document
+  location), and the outcome — the marker stays unbuilt for the owning class — is unchanged.
+
 - **A BARE key reaching an unregistered `**kwargs` target no longer warns** (2026-08-22).
   Measured before → after on a real training config: six top-level keys (`batch_size`,
   `max_epochs`, `num_workers`, `experiment_name`, `run_name`, a CLI override) swept into three
@@ -404,7 +412,7 @@ All notable changes to confluid are documented here. The format follows
   alone (`self.optimizer: Partial[Optim] = None`) built its `_target_:` value eagerly and crashed
   the runtime-injection constructor → stays a `PartialClass` (both deferral signals gate the
   promotion), and the tuned marker of a `Partial[T]` slot no longer builds because ONE later bare
-  key exists; the promoted marker keeps `_yaml_loc` and the promotion warning names the line
+  key exists; the promoted marker keeps `_yaml_loc` and the promotion's DEBUG line names the line
   (ENG-11); a `Reference` kwarg whose REFERENT failed to construct was silently left in the slot
   (`except ValueError` also caught `ConfigurationError`) → the referent's own error propagates,
   only a genuine `ReferenceResolutionError` defers; a ctor-DEFAULT marker
