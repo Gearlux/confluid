@@ -1330,6 +1330,21 @@ class _Receiver:
         self.skip_bare_value = skip_bare_value
 
 
+def _instance_name_of(marker: Any) -> Optional[str]:
+    """The instance name a marker's built object will carry: its ``name`` kwarg, else
+    the class's ctor DEFAULT for ``name`` (the CD19 rule — what a name block matches)."""
+    kwargs = getattr(marker, "kwargs", None)
+    if isinstance(kwargs, dict):
+        named = kwargs.get("name")
+        if isinstance(named, str):
+            return named
+    target_cls = _settability_target(getattr(marker, "target", None))
+    if target_cls is None:
+        return None
+    default_name = next((s.default for s in slots(target_cls) if s.name == "name"), None)
+    return default_name if isinstance(default_name, str) else None
+
+
 def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any = None) -> _Receiver:
     """The MARKER-path receiver: a class/callable target being materialized.
 
@@ -1671,6 +1686,25 @@ def _scan_view(
             continue
         if scope is _KeyScope.STRICT:
             continue  # routing block for a sibling name — not mine
+        if (
+            isinstance(v, dict)
+            and own_kwargs is not None
+            and isinstance(own_kwargs.get(k), Fluid)
+            and _instance_name_of(own_kwargs[k]) != k
+        ):
+            # A BARE mapping whose key names a slot that holds a MARKER — and is NOT
+            # that node's instance name (then it is an instance-name block, a documented
+            # delivery) — is ambiguous (user ruling 2026-08-20, BUGS-2026-08-19 BC13):
+            # set an attribute on the node (`c.optimizer.x: 1`), or replace the slot
+            # with a marker of your own (`c.optimizer: !class:...`). Refused, never
+            # guessed — it used to be dropped as `unused` AND still moved the marker's
+            # own kwargs to its line.
+            owner = f"{self_key}." if self_key else "<owner>."
+            raise ConfigurationError(
+                f"{k}: {{...}} is ambiguous{_at_yaml_loc(self_obj) if self_obj is not None else ''} — the slot "
+                f"`{k}` of {receiver.cls_name} holds a marker. To set an attribute on that node write "
+                f"`{owner}{k}.<attr>: <value>`; to replace the slot write a marker (`{owner}{k}: !class:...`)."
+            )
         # Plain broadcast — the only path the NoBroadcast opt-out gates.
         if blocked is not None and k not in blocked and accepts_value(k, v) and not _dotted_protected(k, k):
             apply(k, v, "bare", _KeyScope.BARE, False, True, pos)

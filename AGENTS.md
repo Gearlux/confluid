@@ -1175,6 +1175,25 @@ root document — construct a `_View` instead.
 on keys or scopes — a new rule goes behind a `_Receiver` predicate in `_receiver_for_target`,
 with a pin.
 
+**Rule — a bare mapping at a marker-holding slot is AMBIGUOUS and refused (user ruling
+2026-08-20, BUGS-2026-08-19 BC13).** `optimizer: {x: 1}` at the root, where `optimizer` names a
+slot holding a marker and is NOT that node's instance name, could mean "set an attribute on the
+node" or "replace the slot with a dict" — it used to be dropped as `unused` AND still move the
+marker's own kwargs to its line (F11's displacement, which fires on the attribute key alone). The
+scanner raises a located `ConfigurationError` naming both working spellings: `c.optimizer.x: 1`
+(the owner-addressed dotted write — `lr: 9.0` still wins, `x` lands) and `c.optimizer: !class:...`
+(replace). The root-dotted `optimizer.x: 1` without an owner expands to the SAME mapping and is
+refused alike (it delivered nothing before either). The ONE exemption: when the key IS the node's
+instance name (`_instance_name_of` — the kwarg or the ctor default, the CD19 rule) the mapping is
+an instance-name block, a documented delivery, unchanged. This is the full extent of the BC13
+fix by ruling: no per-key verdict or position bookkeeping is built on top of the precedence
+engine (the user's scope ruling 2026-08-20 — confluid is a configuration utility, not a
+compiler); the matching-name-block displacement (F11's move) and the block-position verdict stay
+as they are.
+**Pins.** the BC13 group in `tests/test_broadcast_scoping.py` (the refusal on both paths, the
+root-dotted twin, the two owner-addressed spellings, the instance-name exemption, the plain-data
+con).
+
 **Rule — an ADDRESSED list at a DECLARED key is a value; the same-target drop names itself
 (2026-08-20, BC16/BC17).** Only a MAPPING can be a routing sub-block, so a list delivered by a
 block naming the receiver lands at any DECLARED key whatever the annotation says — the own-kwarg

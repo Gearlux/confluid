@@ -889,3 +889,79 @@ def test_the_same_target_guard_drop_is_not_reported_as_an_unknown_attribute(
     assert built["root"].child is None  # the guard still drops it
     assert report.failed == []
     assert [m for level, m in records if level == "warning" and "child" in m] == []
+
+
+# --------------------------------------------------------------------------- BC13: the ambiguous bare mapping
+
+
+@configurable
+class _OptBC13:
+    def __init__(self, lr: float = 0.0, name: str = "o") -> None:
+        self.lr, self.name = lr, name
+
+
+@configurable
+class _HostBC13:
+    def __init__(self, optimizer: Any = None) -> None:
+        self.optimizer = optimizer
+
+
+_BC13 = "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: o, lr: 1.0}\nlr: 9.0\n"
+
+
+def test_a_bare_mapping_at_a_marker_slot_is_refused_as_ambiguous() -> None:
+    """BC13 (BUGS-2026-08-19; user ruling 2026-08-20) — `optimizer: {x: 1}` at the
+    root names a slot holding a marker and no node: it is ambiguous (set an
+    attribute? replace the slot?) and is refused naming both working spellings.
+    It used to be dropped as unused AND still move the marker's own `lr: 1.0`
+    past the bare `lr: 9.0`."""
+    import pytest
+
+    from confluid import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match=r"is ambiguous.*`c\.optimizer\.<attr>: <value>`"):
+        load(_BC13 + "optimizer: {x: 1}\n")
+    with pytest.raises(ConfigurationError, match=r"is ambiguous"):
+        load(_BC13 + "optimizer: {lr: 5}\n")
+    # the root-dotted spelling without an owner expands to the same mapping
+    with pytest.raises(ConfigurationError, match=r"is ambiguous"):
+        load(_BC13 + "optimizer.x: 1\n")
+
+
+def test_the_owner_addressed_spellings_do_what_the_bare_mapping_could_not() -> None:
+    """The two spellings the refusal names: an attribute on the node, or a marker
+    replacing the slot."""
+    loaded = load(_BC13 + "c.optimizer.x: 1\n")["c"].optimizer
+    assert loaded.lr == 9.0 and loaded.x == 1  # the bare `lr: 9.0` still wins; x lands
+    replaced = load(
+        "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: o}\nc.optimizer: !class:builtins.dict {x: 1}\n"
+    )
+    assert replaced["c"].optimizer == {"x": 1}
+
+
+def test_an_instance_name_block_that_matches_the_node_is_not_ambiguous() -> None:
+    """The exemption: when the key IS the node's instance name the mapping is an
+    instance-name block — a documented delivery, not a slot write."""
+    named = "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: optimizer, lr: 1.0}\nlr: 9.0\n"
+    assert load(named + "optimizer: {lr: 5}\n")["c"].optimizer.lr == 5
+
+
+def test_a_bare_mapping_at_a_slot_holding_plain_data_is_untouched() -> None:
+    """Con — no marker at the slot, no ambiguity: the mapping is a name block that
+    matches nothing (unused), exactly as before."""
+    from confluid import collect_report
+
+    with collect_report() as report:
+        loaded = load("c: !class:_HostBC13\n  optimizer: {lr: 1.0}\noptimizer: {x: 1}\n")
+    assert loaded["c"].optimizer == {"lr": 1.0}
+    assert report.unused == ["optimizer"]
+
+
+def test_configure_refuses_the_ambiguous_bare_mapping_too() -> None:
+    import pytest
+
+    from confluid import ConfigurationError
+
+    live = _HostBC13(optimizer=_OptBC13(name="o", lr=1.0))
+    with pytest.raises(ConfigurationError, match=r"is ambiguous"):
+        configure(c=live, config="lr: 9.0\noptimizer: {x: 1}\n")
