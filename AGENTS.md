@@ -654,10 +654,19 @@ code outside a pass both build per host. `_broadcast_onto_instance` copies a mar
 DEFAULT it is (identity against `slots()`' defaults) before resolving, so the memo keys a
 per-host object. Sharing keeps its one spelling, `!ref:` — pinned as the con.
 
-**Rule — a typo'd key on an UNREGISTERED target is DROPPED, audibly (2026-08-19, ENG-7).**
-An unregistered target does not participate in the config graph, so nothing is applied — but the
-drop warns (located) and records `unknown-attribute`, instead of vanishing with an empty report
-while the same typo on a `@configurable` class warned. `register()` the class to accept extra keys.
+**Rule — a typo'd key on an UNREGISTERED target is DROPPED, audibly; a BARE key silently
+(2026-08-19, ENG-7; narrowed 2026-08-22).** An unregistered target does not participate in the
+config graph, so nothing is applied — but a key WRITTEN on the marker (`addressed_keys_of`; `None`
+= a hand-built marker, every kwarg its own) warns (located) and records `unknown-attribute`,
+instead of vanishing with an empty report while the same typo on a `@configurable` class warned.
+`register()` the class to accept extra keys. A BARE key that lands on such a target (only a
+`**kwargs` target, which has no accept-list to drop it first) is never a typo — it is offered to
+every node and matches nothing on most — so it is skipped at TRACE: measured 2026-08-22, six bare
+keys (`batch_size`, `max_epochs`, …) reaching three torchmetrics classes fired 42 warnings per
+training run. **Pins.**
+`tests/test_instantiate.py::test_a_typo_on_an_unregistered_target_is_dropped_AUDIBLY` /
+`::test_the_unregistered_drop_warning_names_the_documents_location` /
+`::test_a_BARE_key_reaching_an_unregistered_kwargs_target_is_dropped_SILENTLY`.
 
 **Rule — the reference-kwarg deferral catch is `ReferenceResolutionError`, never `ValueError`
 (2026-08-19, ENG-3).** `ConfigurationError` dual-inherits `ValueError`, so the broad catch also

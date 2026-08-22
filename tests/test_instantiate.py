@@ -283,6 +283,39 @@ def test_the_unregistered_drop_warning_names_the_documents_location(monkeypatch:
     assert any("widht" in r and "DROPPED" in r and ":1:" in r for r in records), records
 
 
+class _KwargsThirdParty:
+    """Unregistered AND `**kwargs` — the `torchmetrics.Metric` shape: no accept-list, so every
+    BARE key of the document lands on it instead of being dropped by the accept-list."""
+
+    def __init__(self, top_k: int = 1, **kwargs: Any) -> None:
+        self.top_k = top_k
+        self.kwargs = kwargs
+
+
+def test_a_BARE_key_reaching_an_unregistered_kwargs_target_is_dropped_SILENTLY(monkeypatch: Any) -> None:
+    """A bare key is offered to every node and matches nothing on most of them — never a typo.
+    Measured 2026-08-22 on a real training config: six bare keys (`batch_size`, `max_epochs`, …)
+    reaching three torchmetrics classes fired 42 ENG-7 warnings and 42 `unknown-attribute`
+    records per run. Only a key WRITTEN on the marker (`addressed_keys_of`) can be a typo."""
+    from types import SimpleNamespace
+
+    import confluid.engine as engine_mod
+    from confluid import collect_report
+
+    warnings: list = []
+    traces: list = []
+    monkeypatch.setattr(
+        engine_mod, "logger", SimpleNamespace(warning=warnings.append, debug=lambda m: None, trace=traces.append)
+    )
+    with collect_report() as rep:
+        built = load({"batch_size": 32, "max_epochs": 3, "m": Target(_KwargsThirdParty, top_k=2)})
+    assert built["m"].top_k == 2
+    assert "batch_size" not in built["m"].kwargs and not hasattr(built["m"], "batch_size")
+    assert warnings == [], warnings
+    assert rep.failed == [], [f.key for f in rep.failed]
+    assert any("batch_size" in r for r in traces), traces
+
+
 @configurable
 class _DefaultEngine:
     def __init__(self, power: int = 1) -> None:
