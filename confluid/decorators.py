@@ -1,6 +1,6 @@
 import functools
 import inspect
-from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar, Union, cast, overload
+from typing import Any, Callable, Dict, Literal, Optional, Sequence, Tuple, Type, TypeVar, Union, cast, overload
 
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.registry import get_registry
@@ -11,6 +11,31 @@ T = TypeVar("T")
 # function (both are callable), returning the same type. See the "A Target May
 # Be ANY Callable" mandate.
 C = TypeVar("C", bound=Callable[..., Any])
+
+#: The cascade knob shared by :func:`configurable` and :func:`register` — a
+#: closed three-state set: ``True`` (bare/glob keys cascade in), ``False``
+#: (they never land), ``"declared"`` (they land only on declared/scanned
+#: slots, which is what closes a ``**kwargs`` constructor's accept-list).
+Broadcast = Union[bool, Literal["declared"]]
+
+
+def _broadcast_flags(broadcast: Broadcast) -> Tuple[bool, bool]:
+    """``(no_broadcast, broadcast_declared)`` for ``register_class`` — the ONE conversion site.
+
+    Refuses any other value: a misspelled string is truthy, so without the
+    refusal ``broadcast="declred"`` would silently register a fully OPEN class.
+    """
+    if broadcast is True:
+        return (False, False)
+    if broadcast is False:
+        return (True, False)
+    if broadcast == "declared":
+        return (False, True)
+    raise ConfigurableDefinitionError(
+        f"broadcast={broadcast!r} is not a setting — use True (bare keys cascade in), "
+        f"False (they never land), or 'declared' (they land only on declared slots, "
+        f"closing a **kwargs constructor's accept-list)"
+    )
 
 
 @overload
@@ -31,7 +56,7 @@ def configurable(
     random: bool = False,
     constant: bool = False,
     eager: bool = False,
-    broadcast: bool = True,
+    broadcast: Broadcast = True,
     capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
@@ -54,7 +79,7 @@ def configurable(
     random: bool = False,
     constant: bool = False,
     eager: bool = False,
-    broadcast: bool = True,
+    broadcast: Broadcast = True,
     capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
@@ -135,6 +160,15 @@ def configurable(
             ``ClassName:`` / instance-name blocks and ``configure()`` still set
             attributes normally. The param-level counterpart is the
             ``NoBroadcast[T]`` annotation (``confluid.no_broadcast``).
+            When ``"declared"``, stamp ``__confluid_broadcast_declared__``: the
+            accept-list is built from the declared/scanned slots even when the
+            constructor takes ``**kwargs`` — bare/glob keys land only on names
+            the class hierarchy declares (signature params, public class
+            attributes, ``__init__``-body assignments MRO-wide), instead of the
+            accept-EVERYTHING degradation. Constructor routing is untouched:
+            addressed keys still ride ``**kwargs`` into the constructor. A
+            no-op for a class without ``**kwargs``. Any other value raises
+            :class:`ConfigurableDefinitionError`.
         capture: When ``False``, stamp ``__confluid_no_capture__`` on the
             class: constructor kwargs are NOT captured into
             ``__confluid_kwargs__`` — neither by the validation wrap on direct
@@ -181,6 +215,8 @@ def configurable(
             "configurable(): 'constant=True' and 'random=True' are contradictory — "
             "a constant's outputs are a pure function of its config, a random class's are not."
         )
+
+    no_broadcast_flag, broadcast_declared_flag = _broadcast_flags(broadcast)
 
     if cls is not None and not callable(cls) and not isinstance(cls, (staticmethod, classmethod)):
         # `@configurable("Named")` — the positional slot is the TARGET; a string here
@@ -238,7 +274,8 @@ def configurable(
             strict_typing=strict_typing,
             strict_attrs=strict_attrs,
             display_name=display_name,
-            no_broadcast=not broadcast,
+            no_broadcast=no_broadcast_flag,
+            broadcast_declared=broadcast_declared_flag,
             no_capture=not capture,
             broadcast_attrs=broadcast_attrs,
         )
@@ -264,7 +301,7 @@ def register(
     lazy: bool = False,
     eager: bool = False,
     capture: bool = True,
-    broadcast: bool = True,
+    broadcast: Broadcast = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_attrs: bool = False,
 ) -> C:
@@ -307,6 +344,13 @@ def register(
             permissive and every bare key in the document reaches it — and its
             author never chose that, because they never saw confluid. This is
             the control that lets the person registering it decide.
+            ``broadcast="declared"`` is the middle setting for exactly that
+            ``**kwargs`` case: the accept-list is built from the declared and
+            scanned slots (signature params, public class attributes,
+            ``__init__``-body assignments MRO-wide — a base consuming
+            ``kwargs.pop("x")`` into ``self.x`` keeps ``x`` broadcastable), so
+            bare/glob keys land only on names the class hierarchy declares.
+            Constructor routing is untouched; a no-op without ``**kwargs``.
         broadcast_attrs: Explicit ``__init__``-body attribute names to treat as
             broadcast targets, UNIONED with the AST scan (declaring can never
             lose scanned names). Same rationale: the scan reads ``__init__``
@@ -314,6 +358,7 @@ def register(
             you cannot add a decorator to a class you do not own.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
+    no_broadcast_flag, broadcast_declared_flag = _broadcast_flags(broadcast)
     # ``register_class`` stamps the discovery markers (incl. ``__confluid_partial__``)
     # on the class — it tolerates immutable built-ins via try/except.
     get_registry().register_class(
@@ -327,7 +372,8 @@ def register(
         lazy=lazy,
         eager=eager,
         no_capture=not capture,
-        no_broadcast=not broadcast,
+        no_broadcast=no_broadcast_flag,
+        broadcast_declared=broadcast_declared_flag,
         broadcast_attrs=broadcast_attrs,
         strict_attrs=strict_attrs,
     )

@@ -759,6 +759,24 @@ walkers. **Deferral withholds CONSTRUCTION only: a `PartialClass` IS broadcast i
 slot already holding a deferred marker TUNES it, never replaces it. A marker kwarg set in CODE is a
 DEFAULT and does not block a bare key.
 
+**Rule — repeat flows of a deferred marker are CACHED: one recipe + one argument set = ONE object
+(user ruling 2026-08-24).** A `PartialClass` remembers its LAST build (`engine._PARTIAL_BUILD_CACHE`,
+a `WeakKeyDictionary` keyed by the marker): a repeat `flow()` with an unchanged recipe and the same
+arguments returns it; a tuned recipe, a different argument, or a different call shape rebuilds and
+REPLACES the entry — one entry per marker, never a table. The fingerprint compares scalars by VALUE
+and everything else by IDENTITY (`==` on a tensor returns a tensor — "provably the same" is the
+bar; a fresh generator/list always rebuilds), recurses into a NESTED marker's kwargs (a
+`configure()` tune mutates them in place and must invalidate), and includes the ambient
+solidify-suppression flag. Exemptions, each pinned: a `random=True` class re-executes always; a
+marker COPY is a new weak key so copies never share a build (structural — no copy-site exclusion
+code exists or may be added); an EAGER `Target` keeps its per-pass-only memoization. The store is
+deliberately NOT a `register_pass_cache` member — it is persistent semantic state, and the
+snapshot's strong references ARE its id()-pin. Sharing across DIFFERENT markers keeps its one
+spelling, `!ref:`.
+**Pins.** `tests/test_partial_cache.py` (13 — every line of the ruling's example plus the
+exemptions). **Docs.** `docs/targets.md` → "Repeat flows are cached";
+`examples/tags_deferred.py`; `docs/architecture.md` record 24.
+
 **Rule — dict-at-slot has ONE dispatch, `broadcast.dict_at_slot_kind`, on BOTH paths (2026-08-13).**
 A mapping addressed at a slot means, by what the slot HOLDS: a MARKER → tune (`tune_marker`); a
 live `@configurable` object → walk into it (`engine._apply_mapping_onto_live` on the load path,
@@ -1184,6 +1202,20 @@ key the author addressed takes the key with it to the attribute channel (BC14, c
 AS-DESIGNED by user ruling 2026-08-20; pinned in `tests/test_broadcast_scoping.py`). Do NOT feed bare keys to the
 constructor — every bare key in the document reaches such a class.
 
+**Rule — `broadcast="declared"` closes the list, per registration (2026-08-24, user request).**
+The registrar's opt-in middle setting between open and `broadcast=False`: the `var_keyword`
+early-return in `_get_acceptable_keys` is skipped and the accept-list is built from `slots()`
+exactly as for a class without `**kwargs` — so bare/glob keys land only on declared/scanned
+names (a base's `self.x = kwargs.pop("x", …)` keeps `x` broadcastable), while ctor ROUTING is
+untouched (the addressing rule — `engine._var_keyword_extras` — never reads the accept-list).
+Consequences, each pinned: a block-delivered UNDECLARED key takes the normal declared-class
+route (warn + drop) instead of riding `**kwargs` into a ctor crash; the predicates answer
+per-key (`accepts_any_key` → False); an unmarked class keeps every behaviour above. The knob is
+the closed three-state `Broadcast` type, converted at the ONE site `decorators._broadcast_flags`
+(a typo'd string raises, never registers open).
+**Pins.** `tests/test_broadcast_declared.py`. **Docs.** `docs/broadcasting.md` →
+"`broadcast=\"declared\"`"; `examples/broadcasting.py::declared_kwargs`.
+
 **Rule.** `_View` carries the per-key `_KeyScope` tags. `copy()` and `update()` PRESERVE the
 side-table; plain-dict syntax (`dict(view)` / `{**view}`) FLATTENS it and is correct only for the
 root document — construct a `_View` instead.
@@ -1458,6 +1490,7 @@ INTERNAL. In-repo stamp pins may keep raw reads (they pin the mechanism).
 | `constant=True` | a PURE value producer; foldable into an exported document. Mutually exclusive with `random` (raises at decoration time). Currently ZERO producers; the consuming machinery remains. |
 | `eager=True` | a plain constructor doing real work from its params; read by `configure()`'s staleness warning |
 | `broadcast=False` | no bare or glob-delivered key ever lands; addressed blocks and `configure()` still work |
+| `broadcast="declared"` | closes a `**kwargs` accept-list to the declared/scanned slots (params + class attrs + body slots MRO-wide) instead of accept-EVERYTHING; ctor routing untouched (addressing rule); no-op without `**kwargs`; a typo'd string raises at registration. The knob is the three-state `Broadcast = Union[bool, Literal["declared"]]`, converted at the ONE site `decorators._broadcast_flags` |
 | `capture=False` | skips ctor-kwargs capture on BOTH stamp paths, for heavy/disposable ctor args. Costs dump fidelity for transformed params. |
 | `broadcast_attrs=[...]` | declares post-init body-slot names, UNIONED with the AST scan — never a replacement. `[]` declares "none" and silences the cannot-scan warning. |
 | `strict_attrs=True` | a key the class declares NOWHERE is REFUSED, not absorbed as a post-init attribute. Opt-in; binds the load path AND `configure()`; `register()` carries it too |
@@ -1795,6 +1828,14 @@ CD10); the escape is uniform over keys and values (a representer cannot tell the
 loader collapses `$$` — keys and values — once, where the document becomes objects (see the
 `$$` rule under Interpolation).
 
+**Rule — `dump(qualified=True)` names classes by their IMPORTABLE dotted path (2026-08-24,
+user request).** The default stays the registry key; `qualified` swaps in `module.qualname`
+(`dumper._importable_path`) so the emitted document reloads in a COLD process with no
+registrations — the run-artifact spelling (matrainer's manifest passes it). A `<locals>`
+factory class and a `__main__` class keep the registry key (their path imports to nothing).
+The flag rides the per-dump `_LocalDumper` class attribute; `hydraide` never passes it.
+**Pins.** the qualified group in `tests/test_dumper.py`.
+
 **Rule — a target's dumpable name comes from the REGISTRY, for a marker as well as a live
 instance.** `dumper._target_name` asked neither, emitting a raw `module.qualname`, and both
 targets whose qualname is not importable broke (F3): a FACTORY-built class kept the `<locals>`
@@ -1819,6 +1860,30 @@ new attributes and fired the eager staleness warning for keys the config never m
 **Pins.** the F3 group in `tests/test_dumper.py`, incl.
 `::test_a_marker_targeting_a_registered_FUNCTION_reloads` (which asserts no `0x` in the document)
 and `::test_a_marker_and_a_live_instance_name_the_same_class_alike`.
+
+**Rule — a registered dump spelling is THE document spelling of its type (2026-08-24, user
+request).** `register_dump_spelling(cls, spell)` (public, `dumper._DUMP_SPELLINGS`) generalizes
+the built-in faithful spellings: `spell(value)` returns a `Target` marker (rebuilt by the
+ordinary load machinery — no load-side change exists or may be added) or a plain YAML-clean
+value, or `None` to DECLINE (placeholder + warning stay). Precedence, each half pinned: the
+BUILT-INS win over a registered spelling; a registered spelling wins over the GENERIC
+reconstruction even for a registered/discovered instance (consulted in `_represent_object`
+after the Fluid branches AND in `_represent_opaque` before the placeholder — a spelling exists
+precisely where the generic slot walk gets the type wrong). Lookup walks `type(value).__mro__`,
+exact class first. `to_markers()`/`configure()` are deliberately untouched — live values stay
+live in the in-memory document. Test isolation: the store is snapshotted by conftest's
+`_dump_spelling_isolation`, like the class registry.
+**Pins.** `tests/test_dump_spellings.py`. **Docs.** `docs/serialization.md` → "Registering a
+document spelling"; `docs/architecture.md` record 23.
+
+**Rule — a body slot rebinding one of the object's OWN methods is never dumped (2026-08-24).**
+`self.update = self._wrap_update(self.update)` (a library idiom) makes the method name a body
+slot whose value is the bound method or a `functools.wraps` closure over it — machinery, not
+configuration: the constructor re-creates it, and a `**kwargs` reload fed it back as a REFUSED
+constructor argument. `dumpable_kwargs` unwraps a callable value (`inspect.unwrap`) and skips it
+when the unwrapped form is a bound method whose `__self__` IS the object; another object's bound
+method (a callback slot) still dumps.
+**Pins.** `tests/test_dumper.py::test_a_body_slot_rebinding_the_objects_own_method_is_not_dumped`.
 
 **Rule — BODY SLOTS are dumped, and every value is dumped ALWAYS.** `dump()` modelled the
 constructor alone, so an `__init__`-body attribute vanished from the document — `self.epochs = 1`

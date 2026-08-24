@@ -1560,3 +1560,178 @@ use.k: 5              # …so this folds into proto's own kwargs: {v: 1, k: 5}
 lookup (it must stay syntactic: resolution before scope-settled data would bind against a tree
 that still has inactive blocks). The dotted-write refusal may gain located positions when mapping
 keys ever carry them; it must not become a silent clobber again.
+
+---
+
+## 22. The cascade knob has three settings — the middle one closes a `**kwargs` list to what the scan already reads
+
+*2026-08-24*
+
+**Context.** A `**kwargs` constructor makes the accept-list `None` = accept-EVERYTHING, so every
+bare document key cascades onto every instance of the class. The knob had two settings: `True`
+(the permissive default) and `False` (no cascade key ever lands). Neither fits the commonest
+third-party shape — a library metric family whose base class consumes its kwargs with
+`self.x = kwargs.pop("x", default)` and then refuses the leftovers. `broadcast=False` cuts off
+the legitimate sweeps (`average:` meant for every metric); leaving it open let a training
+config's `batch_size:` / `max_epochs:` / `run_name:` land on every metric instance (measured:
+three unrelated keys absorbed into one metric's marker per run).
+
+**Decision.** `broadcast` becomes the closed three-state `Union[bool, Literal["declared"]]`, on
+`@configurable` and `register` alike, converted at the ONE site `decorators._broadcast_flags`
+(any other string raises — a misspelled setting is truthy and would otherwise register a fully
+OPEN class). `"declared"` stamps a mark that makes `_get_acceptable_keys` skip its
+`var_keyword` early-return: the accept-list is built from `introspect.slots()` exactly as for a
+class without `**kwargs`. Nothing is hand-listed and no new parser exists — the body-slot scan
+already reads the base's `self.x = kwargs.pop("x", …)` assignments MRO-wide, so the parsed list
+is precisely "what the class hierarchy declares".
+
+A dataflow analysis of where `**kwargs` flows (following `super().__init__(**kwargs)` chains,
+subtracting keywords the child re-binds) was rejected: confluid is a configuration utility, not
+a compiler, and the scan's answer is already correct for the motivating shape because a
+consuming base ASSIGNS what it accepts.
+
+**Consequences.** Constructor ROUTING is deliberately untouched — which keys ride `**kwargs`
+into the constructor follows the addressing rule (`engine._var_keyword_extras` never reads the
+accept-list) — so marker-own kwargs and runtime kwargs behave identically with and without the
+mark, and the base's own "unexpected keyword" refusal still fires for an addressed typo. What
+DOES change beyond the bare-key cutoff: a block-delivered undeclared key takes the normal
+declared-class route (a located warning, value dropped) instead of riding into a constructor
+crash, and the settability predicates answer per-key (`accepts_any_key` → `False`). The closed
+list is a strict SUBSET of accept-everything, so no key that did not land before starts landing.
+
+**Example.**
+
+```python
+class MetricBase:
+    def __init__(self, **kwargs):
+        self.on_cpu = kwargs.pop("on_cpu", False)   # the scan reads this assignment
+        if kwargs:
+            raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+class F1(MetricBase):
+    def __init__(self, average: str = "macro", **kwargs):
+        super().__init__(**kwargs)
+        self.average = average
+
+register(F1, broadcast="declared")
+# on_cpu: true   (bare)  -> still lands (a scanned base body slot)
+# batch_size: 32 (bare)  -> no longer lands (declared nowhere in the hierarchy)
+# !class:F1 {average: micro} -> the constructor, unchanged
+```
+
+**What you may change.** The set of slot kinds the closed list projects follows record 12's one
+enumeration — change it there, never here. What must not come back: a second parser for
+"kwargs-reachable names" beside the slot scan, or a per-class hand-written accept-list argument
+(the declaration already exists in the class's own source; restating it is the drift record 12
+removed).
+
+---
+
+## 23. A value's document spelling is registrable — dump-side only, the load side already exists
+
+*2026-08-24*
+
+**Context.** `dump()` degrades a value it cannot respell to a bare `{_target_: <module.qualname>}`
+placeholder that reloads DEFAULT-constructed — a lie about the run the artifact records. Three
+faithful spellings were hardcoded (a PathLike as its string, an Enum as its value, a numpy scalar
+as `.item()`), and the next cases were framework values no hardcoded rule should know about: a
+small tensor (a class-weights vector reloading as an EMPTY tensor), a metric collection (whose
+required ctor argument is not reconstructible from live attributes — the reload CRASHED). Measured
+in a real training run's resolved-config artifact: three placeholder types per run, one of them
+unable to reload at all.
+
+**Decision.** `register_dump_spelling(cls, spell)` — a per-type registry the emission consults.
+`spell(value)` returns the value's document form: a `Target` marker or a plain YAML-clean value,
+or `None` to decline (placeholder + warning stay, e.g. a tensor above a size cap). The load side
+is deliberately NOT extensible: a spelling that emits an ordinary marker is rebuilt by the
+existing build pass, so round-trip fidelity comes from machinery that already exists rather than
+from a second, mirrored registry that could drift from it.
+
+Two precedence rules close the holes the first implementation measured: a registered spelling is
+THE document spelling of its type — it wins over the generic slot-walk reconstruction even for a
+registered instance, because a spelling exists precisely where the generic walk gets the type
+wrong (a `**kwargs` base whose body slots the constructor chain refuses back — torchmetrics'
+`beta`); and a stamped instance that ESCAPES the discovery pre-walk (it surfaces only inside a
+spelling's marker) renders via the object representer instead of degrading to a placeholder.
+
+**Consequences.** The in-memory document (`to_markers()` / `configure()`) keeps live values
+live — identity is what `configure()` maps settled values back onto; only text emission respells.
+A recipe that lies (kwargs that do not rebuild the value) is invisible at dump time, so a recipe's
+test MUST be a dump→load→equivalence round trip. The registry is a process-global like the class
+registry; the test suite snapshots it per test.
+
+**Example.**
+
+```python
+def tensor_from_values(values, dtype="float32"):     # the reload target — a plain callable
+    return torch.tensor(values, dtype=getattr(torch, dtype))
+
+register_dump_spelling(
+    torch.Tensor,
+    lambda t: None if t.numel() > CAP else Target(
+        tensor_from_values, values=t.tolist(), dtype=str(t.dtype).removeprefix("torch.")),
+)
+# class_weights: {_target_: torch.Tensor}            # before — reloads as an EMPTY tensor
+# class_weights: {_target_: ...tensor_from_values,   # after — reloads as the exact vector
+#                 values: [1.03, 0.86, ...], dtype: float32}
+```
+
+**What you may change.** The set of built-in spellings (they win over the registry and may grow);
+the consult sites may not shrink to one — both emission branches reach values the other cannot.
+What must not come back: a LOAD-side hook mirroring this registry (the marker IS the load path),
+or respelling inside `to_markers()` (it would hand `configure()` a rebuilt value where identity
+is the contract).
+
+---
+
+## 24. A deferred marker remembers its last build — one recipe + one argument set = one object
+
+*2026-08-24*
+
+**Context.** A `PartialClass` was a pure factory: every explicit `flow()` built a fresh object,
+and build-once semantics were the caller's job (flow, then write the live object back into the
+slot). Measured in a real training stack, that idiom was applied inconsistently — some slots
+wrote back, others quietly rebuilt their loss or optimizer on every call — and the factory
+semantics contradicted the intuitive reading of a marker: one recipe, one object, unless
+something about the call changes. The user ruled for the intuitive reading, runtime arguments
+included: `flow(t, logger=x)` twice must build once.
+
+**Decision.** The marker remembers its LAST build in a `WeakKeyDictionary` keyed by the marker
+itself, as a `(fingerprint, object)` pair. The fingerprint is the full call shape — recipe
+kwargs, positional runtime args, runtime kwargs, the ambient solidify-suppression flag — with
+scalars compared by value and everything else by identity (`==` on an arbitrary object is not
+safe: a tensor answers with a tensor). A marker-valued recipe entry is fingerprinted
+recursively, because `configure()` tunes nested recipes in place and a tune must always
+invalidate. One entry per marker, replaced on any change — a keyed table would grow unboundedly
+and need hashing of arbitrary objects.
+
+The weak keying makes two properties structural rather than rules: a marker COPY is a new key,
+so copies never share a build (the per-host ctor-default copy, the document copy and
+`to_markers` needed zero exclusion code), and the entry dies with its marker. The snapshot's
+strong references to the compared values are the id()-pinning rule satisfied by construction —
+identity is compared between live objects, never raw addresses. `random=True` classes are
+exempt (their contract is re-execution), and EAGER `Target` markers keep their per-pass-only
+memoization — the cache is the DEFERRED marker's contract.
+
+**Consequences.** The write-back idiom becomes unnecessary but stays harmless. A caller wanting
+a cache hit passes the same objects — which is also the honest definition of "same arguments";
+`params=model.parameters()` yields a fresh generator per call and therefore always rebuilds.
+Sharing across DIFFERENT markers keeps its one spelling, `!ref:`. The store is deliberately not
+a per-pass cache: clearing it per pass would defeat the contract.
+
+**Example.**
+
+```python
+t = PartialClass(Trainer, max_epochs=3)
+d = flow(t, logger=x)
+e = flow(t, logger=x)        # e is d — built ONCE
+f = flow(t, logger=y)        # different argument -> fresh build, replaces the entry
+t.kwargs["max_epochs"] = 5   # a tune
+h = flow(t, logger=y)        # recipe changed -> fresh build
+```
+
+**What you may change.** The scalar set may grow (a frozen dataclass of scalars, say) — by-value
+comparison is safe exactly where equality is total and returns a bool. What must not come back:
+equality comparison of arbitrary objects in the fingerprint, a multi-entry table, a cache that
+survives its marker, or respelling this as a second sharing mechanism — `!ref:` remains the one
+spelling of sharing between config sites.

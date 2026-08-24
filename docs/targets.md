@@ -170,6 +170,34 @@ There is no context-dependent build rule: broadcasting is pass 7 and constructio
 is pass 8, so a built node already receives every cascading key before its
 constructor runs — nothing needs to stay unbuilt "so a key can still reach it".
 
+### Repeat flows are cached — one recipe + one argument set = one object
+
+A deferred marker remembers its **last** build. Flowing it again with an
+unchanged recipe and the same arguments returns the same object; anything
+else — a tuned recipe, a different argument, a different call shape — rebuilds,
+and the new build replaces the remembered one (one entry per marker, never a
+table):
+
+```python
+t = PartialClass(Trainer, max_epochs=3)
+d = flow(t, logger=x)
+e = flow(t, logger=x)        # same marker, same arguments -> e is d, built ONCE
+f = flow(t, logger=y)        # different argument -> fresh build (replaces the entry)
+g = flow(t)                  # different call shape -> fresh build
+t.kwargs["max_epochs"] = 5   # a tune (what configure() does)
+h = flow(t)                  # recipe changed -> fresh build
+```
+
+Arguments compare the way "the same" can be *proven*: scalars (`str`, `int`,
+`float`, `bool`, `None`) by value, everything else by identity — so passing the
+same object again is a hit, while a freshly built list or generator
+(`params=model.parameters()`) rebuilds. A marker-valued recipe entry is compared
+recursively, so tuning a nested recipe always invalidates. Three exemptions:
+a `random=True` class re-executes every time, a marker **copy** never shares a
+build (the cache is keyed on the marker's identity), and `solidify=False` builds
+are distinct from finalized ones. Sharing across *different* markers keeps its
+one spelling, `!ref:`.
+
 **1. The RECEIVER declares the slot deferred.** The contract is static, local to
 the class, and readable — instead of the document having to guess. Annotate the
 slot `Partial[T]`, or give a body slot a `PartialClass(...)` value; either signal

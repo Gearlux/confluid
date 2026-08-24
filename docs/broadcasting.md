@@ -220,6 +220,53 @@ controls for exactly that reason: see
 register(SomeLibraryClass, name="Sink", broadcast=False)
 ```
 
+### `broadcast="declared"` — close the accept-list without losing the real knobs
+
+`broadcast=False` is all-or-nothing: it also cuts off the bare sweeps the class
+*should* receive. The middle setting, `broadcast="declared"`, builds the
+accept-list from the declared and scanned slots exactly as for a class without
+`**kwargs` — signature parameters, public class attributes, and
+`__init__`-body assignments **MRO-wide** — so the catch-all stops meaning
+"accept everything" while every name the class hierarchy genuinely declares
+stays broadcastable. Nothing is hand-listed: a base class that consumes its
+kwargs the common library way,
+
+```python
+class MetricBase:                     # the shape of many library base classes
+    def __init__(self, **kwargs):
+        self.on_cpu = kwargs.pop("on_cpu", False)   # <- the scan reads this
+        if kwargs:
+            raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+class F1(MetricBase):
+    def __init__(self, average: str = "macro", **kwargs):
+        super().__init__(**kwargs)
+        self.average = average
+
+register(F1, broadcast="declared")
+```
+
+keeps `on_cpu` in the accept-list because the body-slot scan reads the
+`self.on_cpu = kwargs.pop(...)` assignment:
+
+```python
+graph = load("""
+on_cpu: true        # a declared name — still cascades in
+batch_size: 32      # aimed at something else — no longer lands
+meter: !class:F1
+""")
+graph["meter"].on_cpu               # True
+hasattr(graph["meter"], "batch_size")  # False (lands with plain register(F1))
+```
+
+Constructor **routing is untouched**: which keys ride `**kwargs` into the
+constructor still follows the addressing table above, so a key written on the
+marker reaches the constructor (and the base's own "Unexpected keyword
+arguments" refusal still fires for an addressed typo). The setting is a no-op
+for a class without `**kwargs`, and any other string raises
+`ConfigurableDefinitionError` at registration. Both spellings carry it:
+`@configurable(broadcast="declared")` and `register(cls, broadcast="declared")`.
+
 ## Asking whether a key may land
 
 The rules above — the accept-list, plus the two opt-outs — are also available

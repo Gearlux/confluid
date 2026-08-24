@@ -35,6 +35,7 @@ imports engine names from ``confluid.engine`` or, better, the real home
 modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
+import weakref
 from copy import copy
 from dataclasses import replace
 from typing import Any, Dict, FrozenSet, Optional, Set, Tuple, Type
@@ -655,6 +656,73 @@ def _first_key(target: str) -> str:
     return _first_segment(target)
 
 
+#: The DEFERRED-build cache — ONE remembered ``(fingerprint, object)`` per
+#: ``PartialClass`` marker. "One recipe + one argument set = one object" (user
+#: ruling 2026-08-24): a repeat ``flow()`` of an unchanged marker with the same
+#: arguments returns the remembered build; a tuned recipe, a different argument,
+#: or a different call shape rebuilds and REPLACES the entry (never a table —
+#: a keyed table would grow unboundedly and need hashing of arbitrary objects).
+#:
+#: Keyed WEAKLY by the marker itself, which makes two properties structural
+#: rather than rules: a marker COPY is a new key (copies never share a build —
+#: the per-host ctor-default copy, the document copy and ``to_markers`` stay
+#: correct with no exclusion code), and the entry dies with its marker.
+#: Deliberately NOT registered with ``register_pass_cache``: this is persistent
+#: semantic state, not a per-pass memo — clearing it per pass would defeat the
+#: contract. The fingerprint holds STRONG references to the compared values
+#: (the id()-pinning rule satisfied by construction: identity is compared
+#: between live objects, never raw addresses).
+_PARTIAL_BUILD_CACHE: "weakref.WeakKeyDictionary[Any, Tuple[Any, Any]]" = weakref.WeakKeyDictionary()
+
+#: Fingerprint atoms compared by VALUE; everything else compares by IDENTITY —
+#: equality on an arbitrary object is not safe (``==`` on a tensor returns a
+#: tensor, not a bool), so "provably the same" is the bar a cache hit must meet.
+_CACHE_SCALARS = (str, int, float, bool, type(None))
+
+
+class _ById:
+    """An identity-compared fingerprint wrapper for a non-scalar value (and its pin)."""
+
+    __slots__ = ("obj",)
+
+    def __init__(self, obj: Any) -> None:
+        self.obj = obj
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ById) and self.obj is other.obj
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+def _cache_snapshot_value(value: Any) -> Any:
+    """A value's fingerprint atom: scalars raw, a nested MARKER recursed, else identity.
+
+    The recursion into a nested marker's kwargs is what makes a TUNE invalidate:
+    ``configure()`` mutates nested recipes in place, so identity alone would keep
+    serving the pre-tune build.
+    """
+    if isinstance(value, Fluid):
+        return ("fluid", _ById(value), _cache_snapshot_kwargs(value.kwargs))
+    if isinstance(value, _CACHE_SCALARS):
+        return value
+    return _ById(value)
+
+
+def _cache_snapshot_kwargs(kwargs: Dict[str, Any]) -> Tuple[Tuple[str, Any], ...]:
+    return tuple((key, _cache_snapshot_value(value)) for key, value in kwargs.items())
+
+
+def _cache_fingerprint(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Tuple[Any, ...]:
+    """The full call shape: recipe kwargs, positional args, runtime kwargs, and the
+    ambient solidify suppression (a build-without-finalize is not the finalized build)."""
+    return (
+        _cache_snapshot_kwargs(obj.kwargs),
+        tuple(_cache_snapshot_value(a) for a in runtime_args),
+        _cache_snapshot_kwargs(runtime_kwargs),
+        _ENGINE_STATE.get().suppress_solidify,
+    )
+
+
 def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     """Instantiate a deferred object (a ``Target`` / ``Reference`` marker) into a live instance.
 
@@ -740,6 +808,20 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
         if cached is not None:
             return cached
 
+    if isinstance(obj, Target) and obj.partial:
+        # The deferred-build cache: ONE remembered build per marker. A repeat
+        # flow with an unchanged recipe and the SAME arguments (scalars by
+        # value, everything else by identity) returns the remembered object;
+        # anything else rebuilds and replaces it. See ``_PARTIAL_BUILD_CACHE``.
+        fingerprint = _cache_fingerprint(obj, runtime_args, runtime_kwargs)
+        entry = _PARTIAL_BUILD_CACHE.get(obj)
+        if entry is not None and entry[0] == fingerprint:
+            return entry[1]
+        instance = _flow_target(obj, context, instance_memo, runtime_args, runtime_kwargs)
+        if not getattr(type(instance), "__confluid_random__", False):
+            # A ``random=True`` class must re-execute every time — never remembered.
+            _PARTIAL_BUILD_CACHE[obj] = (fingerprint, instance)
+        return instance
     if isinstance(obj, Target):
         return _flow_target(obj, context, instance_memo, runtime_args, runtime_kwargs)
     if isinstance(obj, type):

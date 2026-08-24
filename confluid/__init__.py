@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key, declares_key
 from confluid.configurator import configure, configure_from_file
 from confluid.decorators import configurable, output, register
-from confluid.dumper import dump
+from confluid.dumper import dump, register_dump_spelling
 from confluid.engine import cast, flow, get_configurable_attrs
 from confluid.exceptions import (
     AmbiguousClassError,
@@ -98,6 +98,7 @@ __all__ = [
     "expand_dotted_keys",
     "parse_value",
     "dump",
+    "register_dump_spelling",
     "configure",
     "configure_from_file",
     "ConfigurationReport",

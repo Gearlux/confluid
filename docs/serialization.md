@@ -80,13 +80,61 @@ it back into `$` when the document becomes objects. This is why the convention a
   `param: null`, because omitting it would silently restore the default on
   reload.
 
+## Registering a document spelling
+
+The three built-in value spellings above are the hardcoded cases of a general
+extension point: `register_dump_spelling(cls, spell)` declares how a
+third-party value type is written into a document. `spell(value)` returns the
+value's document form — a `Target` marker (rebuilt by the ordinary load
+machinery, so the round trip needs no load-side change) or a plain YAML-clean
+value — or `None` to *decline*, keeping the placeholder and its warning (a
+recipe declines when the value is faithful only up to a point, e.g. a tensor
+above a size cap):
+
+```python
+from confluid import Target, register_dump_spelling
+
+def vector_from_values(values):          # the reload target — a plain callable
+    return MyVector(values)
+
+register_dump_spelling(
+    MyVector,
+    lambda v: Target(vector_from_values, values=list(v)),
+)
+```
+
+The rules, each pinned:
+
+- **A registered spelling is THE document spelling of its type.** It wins over
+  the generic slot-walk reconstruction even for a registered/`@configurable`
+  instance — a spelling exists precisely where the generic walk gets the type
+  wrong (a `**kwargs` base whose body slots the constructor chain refuses
+  back).
+- **The built-ins win over a registered spelling** (a `Path` always dumps as
+  its string), and the lookup walks the value's MRO, exact class first — a
+  subclass hits its base's recipe unless it registers its own.
+- **A marker's kwargs may carry live objects** (a collection's members): each
+  is rendered by the dumper's ordinary rules, registered spellings included.
+- **The in-memory document is untouched.** `to_markers()` / `configure()` keep
+  live values live — identity is what `configure()` maps settled values back
+  onto; only the text emission respells.
+- A body slot rebinding one of the object's **own methods**
+  (`self.update = wrap(self.update)` — a common library idiom, stored either
+  as the bound method or a `functools.wraps` closure over it) is machinery,
+  not configuration, and is never dumped.
+
 ## Two things to know
 
-- **Class names are registry handles.** A dump names each class by its public
-  registry key — the bare name while unique, the module-dotted key once a
-  namesake is registered ([Discovery](discovery.md)). Either way the
-  reloading process must have the class registered/importable; the trade-offs
-  are recorded in [Architecture Decisions](architecture.md) §4.
+- **Class names are registry handles — unless you ask for importable paths.**
+  By default a dump names each class by its public registry key — the bare name
+  while unique, the module-dotted key once a namesake is registered
+  ([Discovery](discovery.md)) — so the reloading process must have the class
+  registered or importable. `dump(obj, qualified=True)` names each class by its
+  importable dotted path (`module.qualname`) instead, so the document reloads
+  in a **cold** process with no registrations at all — the spelling a run
+  artifact wants. A class whose path imports to nothing (a `<locals>` factory
+  class, `__main__`) keeps the registry key. Trade-offs in
+  [Architecture Decisions](architecture.md) §4.
 - **Interpolation is burned in.** A `${DATA_ROOT}`-style placeholder is
   substituted at load time, and `dump()` emits the substituted value — so
   reloading the dump in a different environment reproduces *this* run rather

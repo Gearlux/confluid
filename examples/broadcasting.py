@@ -26,6 +26,7 @@ from confluid import (
     configure,
     flow,
     load,
+    register,
 )
 
 
@@ -105,6 +106,7 @@ Reporter:
 
     scoped_broadcasting()
     kwargs_catch_all()
+    declared_kwargs()
     settability_predicates()
 
 
@@ -185,6 +187,52 @@ strength: 0.75
     assert "name" not in sink.options, "a bare cascading key did not"
     print(f"Passthrough (**kwargs): received name={sink.name!r} strength={sink.strength} (unfiltered)")
     print(f"Passthrough (**kwargs): ctor got the ADDRESSED kwarg only: {sink.options}")
+
+
+class _MetricBase:
+    """The common library base shape: consume ``**kwargs`` via ``pop``, refuse the rest."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.on_cpu = kwargs.pop("on_cpu", False)  # <- the body-slot scan reads this assignment
+        if kwargs:
+            raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+
+class _F1(_MetricBase):
+    def __init__(self, average: str = "macro", **kwargs: Any) -> None:
+        """One metric of that family.
+
+        Args:
+            average: How per-class scores reduce.
+            kwargs: Forwarded to the base.
+        """
+        super().__init__(**kwargs)
+        self.average = average
+
+
+def declared_kwargs() -> None:
+    """``broadcast="declared"`` — the middle setting between open and ``broadcast=False``.
+
+    The accept-list is built from the declared/scanned slots even though the
+    constructor takes ``**kwargs``: signature params AND the base's
+    ``self.on_cpu = kwargs.pop(...)`` body slot stay broadcastable, while a bare
+    key aimed at some other node stops landing (docs/broadcasting.md →
+    "``broadcast='declared'``").
+    """
+    register(_F1, name="DeclaredF1", broadcast="declared")
+    graph = load(
+        """
+on_cpu: true
+batch_size: 32
+meter: !class:DeclaredF1
+  average: micro
+"""
+    )
+    meter = graph["meter"]
+    assert meter.average == "micro", "the addressed kwarg reached the constructor"
+    assert meter.on_cpu is True, "a declared name (parsed off the BASE's kwargs.pop) still cascades"
+    assert not hasattr(meter, "batch_size"), "an unrelated bare key no longer lands"
+    print(f"DeclaredF1 (broadcast='declared'): on_cpu={meter.on_cpu} swept in, batch_size did not")
 
 
 def settability_predicates() -> None:

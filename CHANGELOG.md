@@ -8,6 +8,52 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`dump(obj, qualified=True)` — importable dotted paths instead of registry keys.** The
+  emitted document names each class `module.qualname`, so it reloads in a COLD process with no
+  registrations (the spelling a run artifact wants); a `<locals>` factory class or a
+  `__main__` class keeps the registry key. Default unchanged. The qualified pins in
+  `tests/test_dumper.py`; `docs/serialization.md`.
+
+- **Repeat flows of a deferred marker are cached — one recipe + one argument set = one object.**
+  A `PartialClass` remembers its LAST build: `flow(t, logger=x)` twice returns one object;
+  a tuned recipe (what `configure()` does — nested markers included, compared recursively), a
+  different argument, or a different call shape rebuilds and replaces the entry (one per marker,
+  never a table). Scalars compare by value, everything else by identity — a fresh
+  generator/list always rebuilds, because "provably the same" is the bar a hit must meet.
+  `random=True` classes always re-execute; a marker copy never shares a build (the cache is a
+  `WeakKeyDictionary` on the marker itself, so entries also die with their marker); eager
+  `Target` markers keep per-pass-only memoization. `tests/test_partial_cache.py`;
+  `docs/targets.md` → "Repeat flows are cached"; architecture record 24.
+
+- **`register_dump_spelling(cls, spell)` — registered document spellings for third-party VALUE
+  types.** The three built-in faithful spellings (PathLike → string, Enum → value, numpy scalar
+  → item) become the hardcoded cases of a general extension point: `spell(value)` returns the
+  value's document form — a `Target` marker (rebuilt by the ordinary load machinery, so the
+  round trip needs no load-side change) or a plain YAML-clean value — or `None` to decline,
+  keeping the placeholder + warning. A registered spelling is THE document spelling of its type
+  and wins over the generic reconstruction even for a registered instance; the built-ins win
+  over it; lookup walks the MRO, exact class first; `to_markers()`/`configure()` keep live
+  values live. Two emission fixes landed with it, both previously silent: a stamped instance
+  that ESCAPES the discovery pre-walk (it surfaces only inside a spelling's marker or an opaque
+  container) now renders via the object representer instead of degrading to a placeholder, and
+  a body slot rebinding one of the object's OWN methods (`self.update = wrap(self.update)` — a
+  library idiom; the stored value may be the bound method or a `functools.wraps` closure over
+  it) is never dumped — it rode a `**kwargs` reload back into the constructor as a refused
+  argument. `tests/test_dump_spellings.py`, the self-wrap group in `tests/test_dumper.py`;
+  `docs/serialization.md` → "Registering a document spelling";
+  `examples/reproducible_experiment.py::dump_spellings`.
+
+- **`broadcast="declared"` — close a `**kwargs` accept-list to the declared/scanned slots.** The
+  cascade knob on `@configurable` / `register` is now three-state: `True` (open), `False` (no
+  bare/glob key ever lands), `"declared"` (the accept-list is built from `introspect.slots()`
+  even when the constructor takes `**kwargs` — signature params, public class attributes, and
+  `__init__`-body assignments MRO-wide, so a base consuming `self.x = kwargs.pop("x", …)` keeps
+  `x` broadcastable while unrelated document keys stop landing). Constructor routing is
+  untouched (addressed keys still ride `**kwargs` in, per the addressing rule); a no-op without
+  `**kwargs`; any other value raises `ConfigurableDefinitionError` at registration.
+  `marks(cls).broadcast_declared` reads the stamp. `tests/test_broadcast_declared.py`;
+  `docs/broadcasting.md` → "`broadcast=\"declared\"`"; `examples/broadcasting.py`.
+
 - **`default_scopes:` — the value a keyed dimension takes when the caller names none.** A
   top-level `default_scopes: [framework=lightning]` fills the activation map per dimension
   (a caller `scopes=` value for that dimension wins), goes through the declared-value check

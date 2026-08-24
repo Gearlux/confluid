@@ -95,6 +95,7 @@ plugs into the passes, and from the eight names most configs need:
 | Name | One line |
 |---|---|
 | `dump` | A live object graph → reloadable YAML |
+| `register_dump_spelling` | The document spelling of a third-party value type — a marker or plain value, or decline to the placeholder |
 
 ## Scopes — [Scopes](scopes.md)
 
