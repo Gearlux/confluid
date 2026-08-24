@@ -115,17 +115,11 @@ print("OK")
 
 
 def test_lazy_exports_resolve_when_pydantic_present() -> None:
-    """With pydantic installed, the PEP 562 exports resolve to the real API.
-
-    ``lazy_param_names_of`` is no longer re-exported at the top level (2026-07
-    API pruning) — it lives in ``confluid.pydantic_export``.
-    """
+    """With pydantic installed, the PEP 562 exports resolve to the real API."""
     import confluid
-    from confluid.pydantic_export import lazy_param_names_of
 
     model_cls = confluid.to_pydantic(_Record)
     assert confluid.confluid_class_of(model_cls) is not None
-    assert lazy_param_names_of(model_cls) == frozenset()
 
 
 class _Record:

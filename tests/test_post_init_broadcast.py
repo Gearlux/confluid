@@ -11,8 +11,9 @@ class's block.
 
 import pytest
 
-from confluid import Instance, configurable, flow, load, materialize
-from confluid.loader import _get_acceptable_keys, _get_post_init_attrs
+from confluid import Target, configurable, flow, load
+from confluid.broadcast import _get_acceptable_keys
+from confluid.introspect import body_slot_names
 
 # ---------------------------------------------------------------------------
 # Fixtures: module-level @configurable classes (AST source must be importable,
@@ -22,7 +23,7 @@ from confluid.loader import _get_acceptable_keys, _get_post_init_attrs
 
 @configurable
 class _Trainerish:
-    """Mirrors the marainer.Trainer pattern: ctor has ``model`` only, but the
+    """Mirrors the matrainer.Trainer pattern: ctor has ``model`` only, but the
     body wires several post-init attributes that users may want to override."""
 
     def __init__(self, model: str = "default_model") -> None:
@@ -62,26 +63,26 @@ class _FauxLoss:
 
 
 # ---------------------------------------------------------------------------
-# _get_post_init_attrs — direct surface
+# body_slot_names — the direct body-slot surface
 # ---------------------------------------------------------------------------
 
 
 def test_post_init_attrs_detected_from_body_assignments() -> None:
-    attrs = _get_post_init_attrs(_Trainerish)
+    attrs = body_slot_names(_Trainerish)
     # All four body assignments are detected, including model (which also
     # happens to be a ctor param; the union happens in _get_acceptable_keys).
     assert {"model", "loss_fn", "val_metrics", "experiment_name"}.issubset(attrs)
 
 
 def test_post_init_attrs_detects_both_branches_of_conditional_assign() -> None:
-    attrs = _get_post_init_attrs(_NestedAssigns)
+    attrs = body_slot_names(_NestedAssigns)
     assert "flag" in attrs
     assert "branch_a" in attrs
     assert "branch_b" in attrs
 
 
 def test_post_init_attrs_skips_private_names() -> None:
-    attrs = _get_post_init_attrs(_PrivatesIgnored)
+    attrs = body_slot_names(_PrivatesIgnored)
     assert "public" in attrs
     assert "_private_cache" not in attrs
 
@@ -89,8 +90,8 @@ def test_post_init_attrs_skips_private_names() -> None:
 def test_post_init_attrs_empty_for_classes_without_source() -> None:
     # Built-ins have no Python source for __init__ — must not raise, just
     # return an empty set.
-    attrs = _get_post_init_attrs(dict)
-    assert attrs == frozenset()
+    attrs = body_slot_names(dict)
+    assert attrs == set()
 
 
 # ---------------------------------------------------------------------------
@@ -141,13 +142,13 @@ def test_post_init_broadcast_coexists_with_ctor_param_broadcast() -> None:
 def test_post_init_broadcast_via_materialize() -> None:
     # The materialize entry point (what Liquify uses) must honor the same
     # broadcast rule.
-    trainer_marker = Instance(f"{_Trainerish.__module__}.{_Trainerish.__qualname__}")
+    trainer_marker = Target(f"{_Trainerish.__module__}.{_Trainerish.__qualname__}")
     trainer_marker.kwargs.update({"model": "m"})
     config = {
         "loss_fn": "custom_loss",
         "trainer": trainer_marker,
     }
-    result = materialize(config, context=config)
+    result = load(config, context=config)
     trainer = result["trainer"]
     assert trainer.loss_fn == "custom_loss"
 

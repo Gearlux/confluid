@@ -6,7 +6,7 @@ last write wins), addressed keys stopping exactly at their node, the ``*`` /
 ``NoBroadcast[str]`` marker and the class-level
 ``@configurable(broadcast=False)``), the ``**kwargs``-constructor caveat
 (an unknowable accept-list broadcasts permissively), and the two public
-predicates (``accepts_key`` / ``accepts_broadcast``) that let code outside a
+predicates (``accepts_key`` / ``accepts_broadcast`` / ``accepts_any_key``) that let code outside a
 YAML document ask the same question the engine asks.
 
 For the same rules applied at scenario scale — a four-level service tree
@@ -16,7 +16,36 @@ configured with zero parameter-threading code — see
 
 from typing import Any, Optional
 
-from confluid import NoBroadcast, accepts_broadcast, accepts_key, configurable, load
+from confluid import (
+    NoBroadcast,
+    PartialClass,
+    accepts_any_key,
+    accepts_broadcast,
+    accepts_key,
+    configurable,
+    configure,
+    flow,
+    load,
+    register,
+)
+
+
+@configurable
+class Optimizer:
+    """A runtime-injection dependency: it needs `params=` that only the run has."""
+
+    def __init__(self, lr: float = 1e-4, params: Any = None) -> None:
+        self.lr = lr
+        self.params = params
+
+
+@configurable
+class Fitter:
+    """Declares its optimizer slot in CODE — the minimal-constructor pattern."""
+
+    def __init__(self, name: str = "fit") -> None:
+        self.name = name
+        self.optimizer: Any = PartialClass(Optimizer, lr=1e-4)
 
 
 @configurable
@@ -51,8 +80,8 @@ def main() -> None:
 Transform:                # class-name block, first in document order
   strength: 0.25
 name: global-label        # blocked by NoBroadcast[str] on Transform.name
-transform: !class:Transform()
-reporter: !class:Reporter()
+transform: !class:Transform
+reporter: !class:Reporter
 strength: 0.75            # bare broadcast, LATER in document order -> last write wins
 """
     )
@@ -67,7 +96,7 @@ strength: 0.75            # bare broadcast, LATER in document order -> last writ
     # Addressed blocks always keep working, even for opted-out classes/params.
     addressed = load(
         """
-reporter: !class:Reporter()
+reporter: !class:Reporter
 Reporter:
   strength: 9.0
 """
@@ -77,6 +106,7 @@ Reporter:
 
     scoped_broadcasting()
     kwargs_catch_all()
+    declared_kwargs()
     settability_predicates()
 
 
@@ -96,11 +126,11 @@ class Stage:
 
 
 _TREE = """
-outer: !class:Stage()
+outer: !class:Stage
   name: trainer
-  child: !class:Stage()
+  child: !class:Stage
     name: inner
-    child: !class:Stage()
+    child: !class:Stage
       name: leaf
 """
 
@@ -141,14 +171,68 @@ def kwargs_catch_all() -> None:
     """
     graph = load(
         """
-sink: !class:Passthrough()
+sink: !class:Passthrough
+  tag: addressed
 name: run-42
 strength: 0.75
 """
     )
     sink = graph["sink"]
     assert sink.name == "run-42" and sink.strength == 0.75, "every bare key broadcast in"
+    # WHERE a key lands follows the addressing: one written on the marker is an
+    # argument (the constructor would take it either way), one that merely cascaded
+    # past is an attribute — otherwise the ctor would be called with whatever the
+    # document happens to contain.
+    assert sink.options == {"tag": "addressed"}, "the marker's own kwarg reached **kwargs"
+    assert "name" not in sink.options, "a bare cascading key did not"
     print(f"Passthrough (**kwargs): received name={sink.name!r} strength={sink.strength} (unfiltered)")
+    print(f"Passthrough (**kwargs): ctor got the ADDRESSED kwarg only: {sink.options}")
+
+
+class _MetricBase:
+    """The common library base shape: consume ``**kwargs`` via ``pop``, refuse the rest."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.on_cpu = kwargs.pop("on_cpu", False)  # <- the body-slot scan reads this assignment
+        if kwargs:
+            raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+
+class _F1(_MetricBase):
+    def __init__(self, average: str = "macro", **kwargs: Any) -> None:
+        """One metric of that family.
+
+        Args:
+            average: How per-class scores reduce.
+            kwargs: Forwarded to the base.
+        """
+        super().__init__(**kwargs)
+        self.average = average
+
+
+def declared_kwargs() -> None:
+    """``broadcast="declared"`` — the middle setting between open and ``broadcast=False``.
+
+    The accept-list is built from the declared/scanned slots even though the
+    constructor takes ``**kwargs``: signature params AND the base's
+    ``self.on_cpu = kwargs.pop(...)`` body slot stay broadcastable, while a bare
+    key aimed at some other node stops landing (docs/broadcasting.md →
+    "``broadcast='declared'``").
+    """
+    register(_F1, name="DeclaredF1", broadcast="declared")
+    graph = load(
+        """
+on_cpu: true
+batch_size: 32
+meter: !class:DeclaredF1
+  average: micro
+"""
+    )
+    meter = graph["meter"]
+    assert meter.average == "micro", "the addressed kwarg reached the constructor"
+    assert meter.on_cpu is True, "a declared name (parsed off the BASE's kwargs.pop) still cascades"
+    assert not hasattr(meter, "batch_size"), "an unrelated bare key no longer lands"
+    print(f"DeclaredF1 (broadcast='declared'): on_cpu={meter.on_cpu} swept in, batch_size did not")
 
 
 def settability_predicates() -> None:
@@ -175,8 +259,64 @@ def settability_predicates() -> None:
     assert accepts_broadcast(Passthrough, "anything_at_all")
     assert not accepts_key(Transform, "typo")
 
+    # DECLARING a key is not the same as being unable to REFUSE it, and the two
+    # above cannot tell them apart: both say yes to every key on a **kwargs class.
+    # A front-end needs the difference to decide HOW to deliver the key — writing
+    # it into a marker's own kwargs makes it a CONSTRUCTOR ARGUMENT, which is only
+    # justified when the class actually declares it.
+    assert accepts_key(Passthrough, "run_name"), "it cannot refuse the key ..."
+    assert accepts_any_key(Passthrough), "... precisely because it has no accept-list"
+    assert not accepts_any_key(Transform), "a declared signature IS an accept-list"
+
     print("predicates: Reporter.strength addressed=True bare=False; Transform.name bare=False")
+    print("predicates: Passthrough has no accept-list (accepts_any_key=True) — deliver bare, never as an argument")
+
+
+def deferred_slot_ordering() -> None:
+    """A deferred slot is ordered against a bare key like anything else.
+
+    The knob lives in CODE (`PartialClass(Optimizer, lr=1e-4)`), which is the shape a
+    consumer's trainer uses so the slot can be flowed later with a runtime argument.
+    A code-set kwarg has no position in the document, so it is a DEFAULT; the two
+    document sources compete on position alone. Every way of aiming a value at the
+    slot behaves the same — the marker form is shown, the mapping / dotted /
+    class-block forms order identically.
+    """
+    slot = "runnable: !class:Fitter\n  optimizer: !partial:Optimizer\n    lr: 0.5"
+    bare = "lr: 0.9"
+
+    def built(document: str) -> float:
+        return float(flow(load(document)["runnable"].optimizer).lr)
+
+    assert built(f"{slot}\n") == 0.5, "nothing competes — the slot value stands"
+    assert built(f"{bare}\n{slot}\n") == 0.5, "the slot is written later — it wins"
+    assert built(f"{slot}\n{bare}\n") == 0.9, "the bare key is written later — it wins"
+
+    print("deferred slot: code default 1e-4; document order decides 0.5 vs 0.9 — no priority tiers")
+
+
+def rider_content_reaches_deferred_slots() -> None:
+    """A ``'**'`` rider tunes a declared deferred slot — both shapes, both paths.
+
+    ``Fitter`` declares its optimizer slot in its ``__init__`` body (see above);
+    ``'**.lr'`` (scalar: cascades to the slot's TARGET) and ``'**.optimizer.lr'``
+    (mapping: tunes every declared ``optimizer`` slot) reach the deferred marker
+    under ``load()`` AND under post-construction ``configure()`` — adjudicated
+    2026-08-09; before, each shape worked on exactly one path and was silently
+    ignored on the other.
+    """
+    for rider in ("'**.lr': 0.9", "'**.optimizer.lr': 0.9"):
+        built = flow(load(f"runnable: !class:Fitter\n{rider}\n")["runnable"].optimizer)
+        assert float(built.lr) == 0.9, f"load path dropped {rider!r}"
+
+        live = Fitter()
+        configure(live, config=rider)
+        assert float(flow(live.optimizer).lr) == 0.9, f"configure path dropped {rider!r}"
+
+    print("rider content: '**.lr' and '**.optimizer.lr' tune the deferred slot on both paths")
 
 
 if __name__ == "__main__":
     main()
+    deferred_slot_ordering()
+    rider_content_reaches_deferred_slots()

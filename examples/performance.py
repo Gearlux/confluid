@@ -8,7 +8,7 @@ scoped-broadcasting machinery (the ``_View`` context wrappers threading
 Print-only by design: CI executes every example, so this script never asserts
 on timings — runner variance would make that flaky. It exists as a baseline to
 eyeball across engine changes; set ``CONFLUID_BENCH_PROFILE=1`` to add a
-cProfile breakdown of one ``materialize`` pass.
+cProfile breakdown of one ``load`` pass.
 """
 
 import cProfile
@@ -19,12 +19,12 @@ from typing import Any, Callable, List
 
 import yaml
 
-from confluid import configurable, configure, materialize, resolve
+from confluid import configurable, configure, load
 from confluid.loader import ConfluidLoader
 
 GROUPS = 10
 SUBGROUPS = 10
-MARKERS = 20  # per subgroup; every 4th carries a nested child Instance
+MARKERS = 20  # per subgroup; every 4th carries a nested child marker
 REPEATS = 3
 
 
@@ -67,10 +67,10 @@ def build_yaml() -> str:
         for s in range(SUBGROUPS):
             lines.append(f"    s{s}:")
             for m in range(MARKERS):
-                lines.append(f"      m{m}: !class:Stage()")
+                lines.append(f"      m{m}: !class:Stage")
                 lines.append(f"        tag: g{g}s{s}m{m}")
                 if m % 4 == 0:
-                    lines.append("        child: !class:Stage()")
+                    lines.append("        child: !class:Stage")
     return "\n".join(lines) + "\n"
 
 
@@ -95,13 +95,13 @@ def main() -> None:
     markers = top + nested
     print(f"tree: {GROUPS}x{SUBGROUPS} groups, {top} top markers + {nested} nested = {markers} markers")
 
-    # Each phase re-parses: flow() memoizes Instance markers, so a re-used parse
+    # Each phase re-parses: flow() memoizes Target markers, so a re-used parse
     # would measure the memo hit, not the engine.
     timed("parse", markers, lambda: yaml.load(text, Loader=ConfluidLoader))
-    timed("materialize", markers, lambda: materialize(yaml.load(text, Loader=ConfluidLoader)))
-    timed("resolve", markers, lambda: resolve(yaml.load(text, Loader=ConfluidLoader)))
+    timed("load", markers, lambda: load(yaml.load(text, Loader=ConfluidLoader)))
+    timed("load(settled)", markers, lambda: load(yaml.load(text, Loader=ConfluidLoader), until="settled"))
 
-    tree = materialize(yaml.load(text, Loader=ConfluidLoader))
+    tree = load(yaml.load(text, Loader=ConfluidLoader))
     reconf = {"lr": 0.002, "Stage": {"momentum": 0.7}, "**": {"tag": "reconf"}}
     timed("configure", markers, lambda: configure(tree, config=reconf))
 
@@ -109,7 +109,7 @@ def main() -> None:
         parsed = yaml.load(text, Loader=ConfluidLoader)
         profiler = cProfile.Profile()
         profiler.enable()
-        materialize(parsed)
+        load(parsed)
         profiler.disable()
         pstats.Stats(profiler).sort_stats("cumulative").print_stats(25)
 

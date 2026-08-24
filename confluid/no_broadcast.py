@@ -24,19 +24,19 @@ Example::
 
 Type-checkers see ``NoBroadcast[T]`` as ``T`` — the marker only affects runtime
 inspection (see :func:`is_no_broadcast_annotation`). It mirrors
-:data:`confluid.Lazy` / :data:`confluid.Mandatory` in shape and composes with
+:data:`confluid.Partial` / :data:`confluid.Mandatory` in shape and composes with
 them; ``to_pydantic`` strips it so it never leaks into JSON schemas.
 
-Unlike ``Lazy[T]`` / ``Mandatory[T]``, this alias deliberately does NOT union a
+Unlike ``Partial[T]`` / ``Mandatory[T]``, this alias deliberately does NOT union a
 ``Fluid`` arm into ``T``: those two mark *dependency* slots (which legitimately
 hold a deferred ``Fluid`` stub pre-flow), whereas ``NoBroadcast`` is a routing
 gate for generically-NAMED scalar knobs (``name``, ``path``, ``size``) whose
 values are plain scalars — a ``Fluid`` arm would misdescribe them.
 """
 
-from typing import Annotated, Any, FrozenSet, TypeVar, get_type_hints
+from typing import Annotated, Any, FrozenSet, TypeVar
 
-from confluid.introspect import annotation_has_marker
+from confluid.introspect import annotation_has_marker, marked_param_names
 
 T = TypeVar("T")
 
@@ -47,7 +47,7 @@ NoBroadcast = Annotated[T, _NO_BROADCAST_MARKER]
 
 Type-checkers see ``NoBroadcast[T]`` as ``T``; the marker only affects runtime
 inspection (see :func:`is_no_broadcast_annotation`). No ``Fluid`` union arm —
-see the module docstring for why this deliberately differs from ``Lazy`` /
+see the module docstring for why this deliberately differs from ``Partial`` /
 ``Mandatory``.
 """
 
@@ -58,26 +58,14 @@ def is_no_broadcast_annotation(annotation: Any) -> bool:
 
 
 def no_broadcast_param_names(cls: Any) -> FrozenSet[str]:
-    """Return the ``__init__`` parameter names of ``cls`` declared ``NoBroadcast[...]``.
+    """Return the signature parameter names of ``cls`` declared ``NoBroadcast[...]``.
 
-    Cached per-class on ``cls.__confluid_no_broadcast_params__``. Returns the
-    empty set for targets without a resolvable ``__init__`` / hints (plain
-    callables included — a builder function's params can carry the marker too,
-    resolved via the callable's own hints).
+    The scan is :func:`confluid.introspect.marked_param_names` — the ONE
+    scan-plus-cache behind all three marker helpers (this module used to carry
+    the only callable-correct copy of the class-vs-callable dispatch by hand;
+    the helper routes through ``init_callable`` for everyone). Cached per-target
+    on ``cls.__confluid_no_broadcast_params__``. Returns the empty set for
+    targets without a resolvable signature / hints (plain callables included —
+    a builder function's params can carry the marker too).
     """
-    cached = getattr(cls, "__confluid_no_broadcast_params__", None)
-    if cached is not None:
-        return cached  # type: ignore[no-any-return]
-    target = getattr(cls, "__init__", None) if isinstance(cls, type) else cls
-    if target is None:
-        return frozenset()
-    try:
-        hints = get_type_hints(target, include_extras=True)
-    except Exception:
-        return frozenset()
-    names = frozenset(name for name, ann in hints.items() if is_no_broadcast_annotation(ann))
-    try:
-        cls.__confluid_no_broadcast_params__ = names
-    except (AttributeError, TypeError):
-        pass
-    return names
+    return frozenset(marked_param_names(cls, _NO_BROADCAST_MARKER, "__confluid_no_broadcast_params__"))

@@ -120,11 +120,11 @@ def test_is_mandatory_annotation_and_param_names() -> None:
 
 def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
     """``Mandatory[T]`` == ``Annotated[Union[T, Fluid], marker]`` — the typed form
-    admits a deferred ``Class(...)`` default under strict mypy (no ignore needed:
-    that absence is the static pin, like the ``Lazy`` twin)."""
+    admits a deferred ``Target(...)`` default under strict mypy (no ignore needed:
+    that absence is the static pin, like the ``Partial`` twin)."""
     from typing import get_args
 
-    from confluid import Class
+    from confluid import Target
     from confluid.fluid import Fluid
 
     class Base:
@@ -137,7 +137,7 @@ def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
     assert get_args(ann)[0] == Union[Base, Fluid]
 
     class Runner:
-        def __init__(self, model: Mandatory[Base] = Class(Impl)) -> None:
+        def __init__(self, model: Mandatory[Base] = Target(Impl)) -> None:
             self.model = model
 
     assert mandatory_param_names(Runner) == {"model"}
@@ -146,11 +146,11 @@ def test_mandatory_typed_alias_unions_fluid_and_accepts_fluid_default() -> None:
 
 
 def test_marker_composition_detected_in_both_orders() -> None:
-    """``Mandatory[Lazy[T]]`` AND ``Lazy[Mandatory[T]]`` carry both markers — the
+    """``Mandatory[Partial[T]]`` AND ``Partial[Mandatory[T]]`` carry both markers — the
     union-carrying aliases bury the inner marker in a Union arm, so detection
     walks nested Annotated/Union layers (``annotation_has_marker``)."""
-    from confluid import Class, Lazy
-    from confluid.lazy import lazy_param_names
+    from confluid import Partial, Target
+    from confluid.partial import partial_param_names
 
     class Dep:
         pass
@@ -158,14 +158,14 @@ def test_marker_composition_detected_in_both_orders() -> None:
     class Runner:
         def __init__(
             self,
-            a: Mandatory[Lazy[Dep]] = Class(Dep),
-            b: Lazy[Mandatory[Dep]] = Class(Dep),
+            a: Mandatory[Partial[Dep]] = Target(Dep),
+            b: Partial[Mandatory[Dep]] = Target(Dep),
         ) -> None:
             self.a = a
             self.b = b
 
     assert mandatory_param_names(Runner) == {"a", "b"}
-    assert lazy_param_names(Runner) == {"a", "b"}
+    assert partial_param_names(Runner) == {"a", "b"}
 
 
 def test_input_specs_three_way_required_and_nullable() -> None:
@@ -257,3 +257,39 @@ def test_mandatory_marker_does_not_leak_into_pydantic_schema() -> None:
     schema = to_pydantic(Runner).model_json_schema()
     # The marker string must not appear anywhere in the generated JSON Schema.
     assert "__confluid_mandatory__" not in str(schema)
+
+
+def test_mandatory_param_cache_is_per_class_never_inherited() -> None:
+    """Twin of the lazy/no-broadcast cache pins: the MRO ``getattr`` read served
+    the parent's stamped answer to every subclass; the read is now the class's
+    OWN ``__dict__``."""
+    from confluid import Mandatory, mandatory_param_names
+
+    class _Base:
+        def __init__(self, x: Mandatory[int] = 0) -> None: ...
+
+    class _Sub(_Base):
+        def __init__(self, y: int = 1) -> None: ...
+
+    assert mandatory_param_names(_Base) == {"x"}  # parent primed FIRST
+    assert mandatory_param_names(_Sub) == set()
+
+
+def test_input_specs_and_mandatory_read_a_builder_functions_signature() -> None:
+    """The I/O contract of a registered builder FUNCTION is its OWN signature.
+
+    ``input_specs`` / ``mandatory_param_names`` used to reach for
+    ``__init__`` — ``object.__init__`` on a function — and reported an EMPTY
+    contract for every function target. Both now dispatch through
+    ``introspect.init_callable`` (the marker scan via
+    ``introspect.marked_param_names``).
+    """
+
+    def builder(weights: Mandatory[str] = "d", num_classes: int = 91) -> object:
+        return object()
+
+    assert mandatory_param_names(builder) == {"weights"}
+    specs = {s["name"]: s for s in input_specs(builder)}
+    assert set(specs) == {"weights", "num_classes"}
+    assert specs["weights"]["required"] is True
+    assert specs["num_classes"]["required"] is False

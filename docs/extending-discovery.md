@@ -10,15 +10,23 @@ Companions: [Discovery](discovery.md) (tag mechanics + `examples/discovery.py`),
 
 ## 0. One registry, many consumers
 
-`@configurable(task=…, role=…, category=…, group=…)` populates `ConfluidRegistry` (indices
-`_by_category` / `_by_task` / `_by_role` / `_by_group`), bootstrapped by importing every module
-listed under `[project.entry-points."confluid.configurables"]`. An **MCP discovery service** offers
-classes and validates *values*; a **visual node editor** offers nodes and enforces *socket types*.
+`@configurable(task=…, role=…, framework=…, category=…, group=…)` populates `ConfluidRegistry`
+(indices `_by_category` / `_by_task` / `_by_role` / `_by_framework` / `_by_group`) as a side effect of the
+decorated module being **imported** — and confluid ships the loader for that convention: each
+package lists its configurable modules under `[project.entry-points."confluid.configurables"]`,
+and a consuming service calls `confluid.load_configurables()` once at its own startup — the
+blessed bootstrap. It imports every declared module with per-entry error tolerance (a broken
+package is skipped with one warning and reported in the returned dict as the exception instance,
+so it never blanks the other packages' registrations), and it is explicit-only — never invoked
+at confluid import. A consumer may still iterate the group itself, and any import mechanism
+fills the registry equally.
+An **MCP discovery service** offers classes and validates *values*; a **visual node editor** offers
+nodes and enforces *socket types*.
 
 | Concern | File |
 |---|---|
 | `@configurable` / `register` | `confluid/decorators.py` |
-| `list_classes(category=, task=, role=, group=)` | `confluid/registry.py` |
+| `list_classes(category=, task=, role=, framework=, group=)` | `confluid/registry.py` |
 | Validation policy | `confluid/validation.py` |
 | Class → pydantic schema | `confluid/pydantic_export.py` (`to_pydantic`) |
 | Docstring `Args:` → field help | `confluid/schema.py` (`parse_param_docs`) |
@@ -31,7 +39,7 @@ classes and validates *values*; a **visual node editor** offers nodes and enforc
 2. **Entry-point the module** so importing it runs the decorators:
    ```toml
    [project.entry-points."confluid.configurables"]
-   recordstream-ops-numpy = "recordstream.ops.numpy"   # key arbitrary; value = module path
+   mypkg-ops-numpy = "mypkg.ops.numpy"                 # key arbitrary; value = module path
    ```
 3. **Reinstall the editable after touching entry points** — they freeze into `*.dist-info` at
    install time; a stale install shows an empty palette / missing class with no error. **Never**
@@ -47,12 +55,14 @@ classes and validates *values*; a **visual node editor** offers nodes and enforc
 
 A task-scoped category is **derived**, never typed by hand. Declare `task` + `role`; confluid stamps
 `__confluid_task__` / `__confluid_role__` **and** derives `category = f"{task}_{role}"`
+(the derivation fires on every registration that restates `task=` or `role=` — a subclass
+re-tagging `role=` gets a re-derived category; an explicit `category=` argument wins)
 (`decorators.py`: `effective_category = category or (f"{task}_{role}" if task and role else None)`),
 so task/role queries and the category-driven form-spec both work from one declaration.
 
 ```python
 @configurable(task="classification", role="model")
-class TimmModel: ...        # → __confluid_category__ == "classification_model"
+class VisionModel: ...      # → __confluid_category__ == "classification_model"
 ```
 
 Tasks: `classification` / `segmentation` / `detection`. Roles: `model` / `loss` / `dataset` /
@@ -104,12 +114,12 @@ the constructor stays the validation authority.
 | Annotation / condition | Rendered as |
 |---|---|
 | closed `Literal[...]` (incl. `Optional[...]`) | combo dropdown (first) |
-| `recordstream.Record` (== `Dict[str, Any]`; also `Optional`/`Iterator` of it) | `RECORDSTREAM_RECORD` wire — alias **equality**, before the container branch |
+| the dataset library's `Record` alias (== `Dict[str, Any]`; also `Optional`/`Iterator` of it) | `DATASET_RECORD` wire — alias **equality**, before the container branch |
 | `datasets.Dataset` | `HF_DATASET` wire |
 | `pathlib.Path`, or a name containing `path`/`dir`/`root`/`folder` | directory picker (the one deliberate name-based rule) |
 | a `(min, max)` numeric tuple | a `__lo` / `__hi` widget pair |
 | any other container (`List`/`Dict`/`Sequence`) | `STRING`, parsed back by the coercion step |
-| a NESTED container in any union arm | a wired `RECORDSTREAM_VALUE` socket |
+| a NESTED container in any union arm | a wired `DATASET_VALUE` socket |
 | `int`/`float`/`str`/`bool` (incl. `Optional`/`Union` arms) | `INT`/`FLOAT`/`STRING`/`BOOLEAN` |
 | anything else | `STRING` fallback |
 
@@ -133,7 +143,7 @@ Full text in [Class Design](class-design.md); the four rules discovery depends o
    for expensive external materialization whose inputs are stable by first use.
 4. **Params stay introspectable** — in the signature, or as **annotated** `__init__`-body attributes
    (`to_pydantic` surfaces them as optional fields). A runtime-injected body slot (`params=`,
-   `dataset=`) MUST hold a `LazyClass(...)` (`!lazy:`), not a bare `!class:`.
+   `dataset=`) MUST hold a `PartialClass(...)` (`_partial_: true`), not a plain `_target_`.
 
 This is *why* validation is on by default: fully-defaulted params validate cleanly, and
 required-at-use values are checked by your code, not by pydantic at construction time.
@@ -158,7 +168,7 @@ opts out with `@configurable(validate=False)`.
 
 It enumerates classes (`list_configurable_classes`), generates schemas (`get_node_pydantic_schema`,
 `get_node_form_spec`, `config_to_yaml`), and composes/executes task configs — every execution tool
-spawning `recordstream run <config.yaml>`. `sanitize_schema` downgrades each advertised tool schema to
+spawning the dataset runner (`run <config.yaml>`) as a subprocess. `sanitize_schema` downgrades each advertised tool schema to
 the OpenAPI-3.0 subset that strict LLM function-calling APIs accept.
 
 **Slot options are TYPE-compatible, with `task`/`role` ranked FIRST.** A config-valued slot becomes
@@ -179,7 +189,7 @@ fill a model slot). Slots are located by param name (`model`, `loss_fn`,
 `lightning`) get curated configs.
 
 **Naming discipline:** `Download*` / `*To*` / `*Trainer` / `*Evaluator` are auto-wrappable as MCP
-tools. There is ONE runner — `recordstream run <config.yaml>` — and what used to be a CLI verb is now
+tools. There is ONE runner — `<runner> run <config.yaml>` — and what used to be a CLI verb is now
 encoded in the config (the runnable's class + its `task:`). Adding a CLI subcommand? Sketch its MCP
 tool in the same change; if the tool would be awkward, the CLI is too.
 
@@ -195,10 +205,10 @@ Everything else is excluded **by construction** — the raw-callable op wrappers
 
 | Signal | Node kind | Output socket(s) |
 |---|---|---|
-| no-arg `run(self)` | **Runnable** — itself the terminal `OUTPUT_NODE` (there is no separate Run node) | `RECORDSTREAM_RUNNABLE` + `@output` sockets |
-| `@configurable(category="op")` with a carrier-taking `__call__` | **Op** (dual-mode) | `(RECORDSTREAM_RECORD, RECORDSTREAM_OP)` |
-| `__getitem__`/`__iter__` yielding records, name ends `Source`, or `role="dataset"` | **Source** | `RECORDSTREAM_SOURCE` |
-| `role ∈ {model, loss, metric, logger}`, `lazy=True`, or `category="sink"` | **Object member** | `(instance, class)` on `RECORDSTREAM_OBJECT[:role]` |
+| no-arg `run(self)` | **Runnable** — itself the terminal `OUTPUT_NODE` (there is no separate Run node) | `DATASET_RUNNABLE` + `@output` sockets |
+| `@configurable(category="op")` with a carrier-taking `__call__` | **Op** (dual-mode) | `(DATASET_RECORD, DATASET_OP)` |
+| `__getitem__`/`__iter__` yielding records, name ends `Source`, or `role="dataset"` | **Source** | `DATASET_SOURCE` |
+| `role ∈ {model, loss, metric, logger}`, `lazy=True`, or `category="sink"` | **Object member** | `(instance, class)` on `DATASET_OBJECT[:role]` |
 | no-arg `__call__(self)` | **Value producer** | `@output` sockets |
 | anything else | **Generic** | `STRING` (or `HF_DATASET`) |
 
@@ -206,20 +216,20 @@ Op classification is the **positive `category="op"` tag**, not an annotation sni
 carrier is a plain `dict` (no marker class to identity-match) and a kernel-only `Transform` subclass
 *inherits* its `__call__`, so a `vars(cls)` scan would misclassify it as generic; the signature is
 resolved through the MRO. Engines (`Stream`/`JointStream`) and source-views (`DatasetSplit`) render
-source-typed ctor params as **wired sockets** — `source` → one `RECORDSTREAM_SOURCE`;
+source-typed ctor params as **wired sockets** — `source` → one `DATASET_SOURCE`;
 `streams`/`sources` → dynamic `source_N`; `ops`/`transforms` → dynamic `op_N`; `op`/`target` → one
-`RECORDSTREAM_OP`. Detection is by **param name**, never per class.
+`DATASET_OP`. Detection is by **param name**, never per class.
 
-**Object sockets are ROLE-qualified and TASK-AGNOSTIC** — `RECORDSTREAM_OBJECT:<role>` for
-`role ∈ {model, loss, metric, sink}`, since ComfyUI connects sockets on string equality. A
-classification model and a segmentation model both produce `RECORDSTREAM_OBJECT:model` and dock into
+**Object sockets are ROLE-qualified and TASK-AGNOSTIC** — `DATASET_OBJECT:<role>` for
+`role ∈ {model, loss, metric, sink}`, since the canvas engine connects sockets on string equality. A
+classification model and a segmentation model both produce `DATASET_OBJECT:model` and dock into
 *any* trainer's `model` slot; the role still guards *kind* (a loss is refused by a model slot).
-Role-less infra (optimizer / loader / lightning / logger) stays bare `RECORDSTREAM_OBJECT`. Output
+Role-less infra (optimizer / loader / lightning / logger) stays bare `DATASET_OBJECT`. Output
 side and slot side gate on the same role set so they always agree — a one-sided qualifier silently
 refuses a valid wire. Task survives only as guidance (palette folder + MCP slot ranking); the
 hand-written **Retag** node is the per-instance escape hatch.
 
-**Record wires are NOT type-checked at connection time.** A `RECORDSTREAM_RECORD` wire keeps one
+**Record wires are NOT type-checked at connection time.** A `DATASET_RECORD` wire keeps one
 socket string, so any op *can* be wired; the record is self-describing (a plain `dict` of typed
 items each carrying its own metadata), so an op given an incompatible record raises naturally when
 applied. An op's `handles` / `consumes` / `optional` / `produces` attributes are **declarative graph
@@ -227,16 +237,16 @@ metadata** — nothing validates them against behaviour, and the base `Transform
 kernel registry, not on `handles`. Declare them truthfully or not at all.
 
 **Palette, label, key.** The palette path reuses the taxonomy, NOT the package: a role-bearing class
-→ `Taidal/<Role>[/<Task>]` (`Taidal/Model/Classification`, `Taidal/Logger`); an op/source/engine/sink
-→ `Taidal/<Category>[/<group>]` (`Taidal/Op/numpy`). The label is an uppercased `[PKG]` distribution
+→ `Acme/<Role>[/<Task>]` (`Acme/Model/Classification`, `Acme/Logger`); an op/source/engine/sink
+→ `Acme/<Category>[/<group>]` (`Acme/Op/numpy`). The label is an uppercased `[PKG]` distribution
 tag + the verbatim callable name with `_`→space (never `str.title()`, which mangles
 `HuggingFaceSource` → `Huggingfacesource`). The key
-`Taidal_<package>_<category>[_<group>]_<callable>` is globally unique, so two same-named classes in
+`Acme_<package>_<category>[_<group>]_<callable>` is globally unique, so two same-named classes in
 different modules can't clobber each other. Widget coercion casts widget `STRING`s back to
 constructor types (numeric strings → `int`/`float`, comma-lists → `List[str]`, empty → `None`), so
 the canvas never feeds the constructor a value the schema (§5) would reject.
 
-**Hand-written adapters are ComfyUI *execution-model* bridges only** — Walk Dataset, Extract from
+**Hand-written adapters are canvas *execution-model* bridges only** — Walk Dataset, Extract from
 Record / Extract Metadata, Compose Record, Mix Records, Retag, Value, Math, Yaml Dump, Subgraph Op,
 and the viewers. A missing op or visualizer is added to its home package, never here.
 
@@ -245,18 +255,18 @@ and the viewers. A missing op or visualizer is added to its home package, never 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Class missing, **no error** | stale `*.dist-info` after an entry-point change | reinstall the editable; confirm the entry-point count |
-| Op/source tagged but absent from the canvas | category not in `_NODE_CATEGORIES`, or no `@configurable` | tag `category ∈ {op, source, engine, sink, …}` upstream |
+| Op/source tagged but absent from the canvas | category outside the editor's allowlist, or no `@configurable` | tag `category ∈ {op, source, engine, sink, …}` upstream |
 | Submodule class missing (package-root entry point) | not in `__all__` | add it to `__all__` |
-| A bare library transform (albumentations, torchvision v2) has no node | it is not `@configurable` — libraries run AS-IS via the engine's op-family dispatch | drop it into an `ops:` list (`!class:albumentations.HorizontalFlip {p: 0.5}`); teach a new library with one `register_op_family(...)` call |
+| A bare library transform (albumentations, torchvision v2) has no node | it is not `@configurable` — libraries run AS-IS via the engine's op-family dispatch | drop it into an `ops:` list (`{_target_: albumentations.HorizontalFlip, p: 0.5}`); the engine's op-family dispatch is the consumer's extension point for a new library |
 | Model/loss not offered in a trainer slot | wrong/missing `task`/`role` | tag `@configurable(task=…, role=…)` to match the slot (§6) |
-| Canvas wire between two object nodes refused | role-qualified socket mismatch (correct) | wire compatible roles, or use the **Retag** node |
+| Canvas wire between two object nodes refused | role-qualified socket mismatch (correct) | wire compatible roles, or re-tag the value with the editor's retag facility |
 | Op raises mid-run on an incompatible record | there is no connection-time type filter, by design (§7) | fix the pipeline order / key names |
 | MCP tool rejects a config with `ValidationError` | `extra="forbid"` / type / enum mismatch (correct) | match the schema; `CONFLUID_VALIDATE_TOOL=warn` for debugging only |
 | Numeric field renders as `STRING`, ctor chokes | bad annotation | annotate `int`/`float`/`Optional[int]`/`Literal[...]` |
 | Fixed-choice param is free text | typed as `str` | type it `Literal[...]` |
 | Numeric widget clamps to `[0, 2048]` | no `Interval` mark | annotate `Annotated[float, Interval(...)]` (§3) |
 | Body slot becomes an OBJECT socket | un-annotated `self.x = …` | write `self.x: bool = …` |
-| Runtime-injected body slot crashes on materialize | bare `!class:` instead of `!lazy:` | hold a `LazyClass(...)` |
+| Runtime-injected body slot crashes on materialize | plain `_target_` instead of `_partial_: true` | hold a `PartialClass(...)` |
 | Body slots vanish in a frozen/zipped deployment | `inspect.getsource` fails, the AST scan is empty | run `confluid-bake <package>`, or declare `@configurable(broadcast_attrs=[...])` |
 | Discovery log shows a skipped module | optional dependency missing | expected; degrades at `debug` |
 
@@ -284,12 +294,12 @@ class Threshold(Transform):
 ```
 
 A task-scoped model — ranked first in classification trainer `model` slots (still offered to any
-other `role="model"` slot), canvas socket `RECORDSTREAM_OBJECT:model`, and `lazy=True` so a config
-wires it `!lazy:` and the trainer injects the dataset-derived `num_classes` at flow time:
+other `role="model"` slot), canvas socket `DATASET_OBJECT:model`, and `lazy=True` so a config
+wires it `_partial_: true` and the trainer injects the dataset-derived `num_classes` at flow time:
 
 ```python
 @configurable(task="classification", role="model", lazy=True)   # → "classification_model"
-class TimmModel(nn.Module):
+class VisionModel(nn.Module):
     def __init__(self, model_name: str = "", num_classes: int = 0):
         """A timm-backed classifier.
 
@@ -321,8 +331,9 @@ mypkg-classification = "mypkg.classification"   # import the module so register(
     category=None,         # bare category; PREFER task+role, which derives f"{task}_{role}"
     task=None,             # classification / segmentation / detection
     role=None,             # model / loss / dataset / metric / trainer / evaluator / logger
+    framework=None,        # which engine API the class belongs to (torch / keras / sklearn / …)
     group=None,            # palette sub-folder ONLY (presentation, not a filter)
-    lazy=False,            # value stays deferred (LazyClass / runtime-injection slot)
+    lazy=False,            # value stays deferred (PartialClass / runtime-injection slot)
     validate=True,         # wrap __init__ to validate kwargs against to_pydantic(cls)
     random=False,          # non-deterministic → editors re-execute the node every run
     constant=False,        # pure value producer → exporters fold it into the static config

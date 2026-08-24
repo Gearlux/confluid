@@ -11,16 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from confluid import (
-    ConfigFileNotFoundError,
-    dump,
-    load,
-    load_config,
-    load_config_with_paths,
-    materialize,
-    resolve_config_path,
-    set_app_name,
-)
+from confluid import ConfigFileNotFoundError, dump, load, resolve_config_path, set_app_name
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +46,7 @@ def test_sibling_beats_every_other_tier(tmp_path: Path, _isolated_env: Path) -> 
     _write(_isolated_env / "common.yaml", "who: xdg")
     main = _write(sub / "main.yaml", "include: common.yaml")
 
-    assert load_config(main)["who"] == "sibling"
+    assert load(main, until="raw")["who"] == "sibling"
 
 
 def test_cwd_beats_cwd_config_and_xdg(tmp_path: Path, _isolated_env: Path) -> None:
@@ -64,7 +55,7 @@ def test_cwd_beats_cwd_config_and_xdg(tmp_path: Path, _isolated_env: Path) -> No
     _write(_isolated_env / "common.yaml", "who: xdg")
     main = _write(tmp_path / "sub" / "main.yaml", "include: common.yaml")
 
-    assert load_config(main)["who"] == "cwd"
+    assert load(main, until="raw")["who"] == "cwd"
 
 
 def test_cwd_config_beats_xdg(tmp_path: Path, _isolated_env: Path) -> None:
@@ -72,14 +63,14 @@ def test_cwd_config_beats_xdg(tmp_path: Path, _isolated_env: Path) -> None:
     _write(_isolated_env / "common.yaml", "who: xdg")
     main = _write(tmp_path / "sub" / "main.yaml", "include: common.yaml")
 
-    assert load_config(main)["who"] == "cwd_config"
+    assert load(main, until="raw")["who"] == "cwd_config"
 
 
 def test_xdg_is_last_resort_for_includes(tmp_path: Path, _isolated_env: Path) -> None:
     _write(_isolated_env / "common.yaml", "who: xdg")
     main = _write(tmp_path / "sub" / "main.yaml", "include: common.yaml\nlocal: 1")
 
-    data = load_config(main)
+    data = load(main, until="raw")
     assert data["who"] == "xdg"
     assert data["local"] == 1
 
@@ -91,28 +82,28 @@ def test_xdg_is_last_resort_for_includes(tmp_path: Path, _isolated_env: Path) ->
 
 def test_top_level_found_in_cwd_config(tmp_path: Path) -> None:
     _write(tmp_path / "config" / "exp.yaml", "val: 7")
-    assert load_config("exp.yaml")["val"] == 7
+    assert load("exp.yaml", until="raw")["val"] == 7
 
 
 def test_top_level_found_in_xdg(_isolated_env: Path) -> None:
     _write(_isolated_env / "exp.yaml", "val: 8")
-    assert load_config("exp.yaml")["val"] == 8
+    assert load("exp.yaml", until="raw")["val"] == 8
 
 
 def test_absolute_path_bypasses_search(tmp_path: Path, _isolated_env: Path) -> None:
     """An absolute path is used verbatim — even when an XDG twin exists."""
     _write(_isolated_env / "exp.yaml", "val: 8")
     target = _write(tmp_path / "elsewhere" / "exp.yaml", "val: 9")
-    assert load_config(target)["val"] == 9
+    assert load(target, until="raw")["val"] == 9
 
     missing = tmp_path / "nope" / "exp.yaml"
     with pytest.raises(ConfigFileNotFoundError):
-        load_config(missing)
+        load(missing, until="raw")
 
 
 def test_miss_raises_with_searched_locations(tmp_path: Path) -> None:
     with pytest.raises(ConfigFileNotFoundError, match="searched:"):
-        load_config("does_not_exist.yaml")
+        load("does_not_exist.yaml", until="raw")
 
 
 def test_resolve_config_path_returns_input_on_total_miss(tmp_path: Path) -> None:
@@ -127,13 +118,13 @@ def test_resolve_config_path_returns_input_on_total_miss(tmp_path: Path) -> None
 def test_xdg_config_home_unset_falls_back_to_home_dot_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME")
     _write(tmp_path / "home" / ".config" / "exp.yaml", "val: 10")
-    assert load_config("exp.yaml")["val"] == 10
+    assert load("exp.yaml", until="raw")["val"] == 10
 
 
 def test_empty_xdg_config_home_treated_as_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", "")
     _write(tmp_path / "home" / ".config" / "exp.yaml", "val: 11")
-    assert load_config("exp.yaml")["val"] == 11
+    assert load("exp.yaml", until="raw")["val"] == 11
 
 
 def test_xdg_config_dirs_multi_entry_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,10 +133,10 @@ def test_xdg_config_dirs_multi_entry_order(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("XDG_CONFIG_DIRS", f"{first}:{second}")
 
     _write(second / "exp.yaml", "who: second")
-    assert load_config("exp.yaml")["who"] == "second"
+    assert load("exp.yaml", until="raw")["who"] == "second"
 
     _write(first / "exp.yaml", "who: first")
-    assert load_config("exp.yaml")["who"] == "first"
+    assert load("exp.yaml", until="raw")["who"] == "first"
 
 
 def test_xdg_config_home_beats_config_dirs(
@@ -154,7 +145,7 @@ def test_xdg_config_home_beats_config_dirs(
     sys_dir = tmp_path / "xdg_sys"
     _write(sys_dir / "exp.yaml", "who: system")
     _write(_isolated_env / "exp.yaml", "who: home")
-    assert load_config("exp.yaml")["who"] == "home"
+    assert load("exp.yaml", until="raw")["who"] == "home"
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +156,10 @@ def test_xdg_config_home_beats_config_dirs(
 def test_app_name_dir_beats_confluid_dir(_isolated_env: Path) -> None:
     set_app_name("myapp")
     _write(_isolated_env / "confluid" / "exp.yaml", "who: confluid")
-    assert load_config("exp.yaml")["who"] == "confluid"
+    assert load("exp.yaml", until="raw")["who"] == "confluid"
 
     _write(_isolated_env / "myapp" / "exp.yaml", "who: myapp")
-    assert load_config("exp.yaml")["who"] == "myapp"
+    assert load("exp.yaml", until="raw")["who"] == "myapp"
 
 
 def test_app_name_set_skips_bare_base_dir(_isolated_env: Path) -> None:
@@ -176,7 +167,7 @@ def test_app_name_set_skips_bare_base_dir(_isolated_env: Path) -> None:
     set_app_name("myapp")
     _write(_isolated_env / "exp.yaml", "who: bare")
     with pytest.raises(ConfigFileNotFoundError):
-        load_config("exp.yaml")
+        load("exp.yaml", until="raw")
 
 
 def test_no_app_name_uses_bare_base_dir_only(_isolated_env: Path) -> None:
@@ -184,10 +175,10 @@ def test_no_app_name_uses_bare_base_dir_only(_isolated_env: Path) -> None:
     _write(_isolated_env / "myapp" / "exp.yaml", "who: myapp")
     _write(_isolated_env / "confluid" / "exp.yaml", "who: confluid")
     with pytest.raises(ConfigFileNotFoundError):
-        load_config("exp.yaml")
+        load("exp.yaml", until="raw")
 
     _write(_isolated_env / "exp.yaml", "who: bare")
-    assert load_config("exp.yaml")["who"] == "bare"
+    assert load("exp.yaml", until="raw")["who"] == "bare"
 
 
 # ---------------------------------------------------------------------------
@@ -198,19 +189,19 @@ def test_no_app_name_uses_bare_base_dir_only(_isolated_env: Path) -> None:
 def test_load_string_with_colon_never_triggers_lookup(_isolated_env: Path) -> None:
     """A scalar YAML string containing ':' parses as YAML, not as a file path."""
     _write(_isolated_env / "val" / "x.yaml", "should: never_load")
-    assert load("who: inline", flow=False) == {"who": "inline"}
+    assert load("who: inline", until="document") == {"who": "inline"}
 
 
 def test_load_bare_name_resolves_via_xdg(_isolated_env: Path) -> None:
     _write(_isolated_env / "exp.yaml", "val: 12")
-    assert load("exp.yaml", flow=False) == {"val": 12}
+    assert load("exp.yaml", until="document") == {"val": 12}
 
 
-def test_load_config_with_paths_records_xdg_resolved_path(_isolated_env: Path) -> None:
+def test_return_paths_records_xdg_resolved_path(_isolated_env: Path) -> None:
     xdg_file = _write(_isolated_env / "common.yaml", "base: 1")
     main = _write(Path.cwd() / "main.yaml", "include: common.yaml\nlocal: 2")
 
-    data, paths = load_config_with_paths(main)
+    data, paths = load(main, until="raw", return_paths=True)
     assert data == {"base": 1, "local": 2}
     assert paths == [main.resolve(), xdg_file.resolve()]
 
@@ -222,7 +213,7 @@ def test_circular_include_across_tiers(tmp_path: Path, _isolated_env: Path) -> N
     _write(_isolated_env / "b.yaml", "include: a.yaml")
 
     with pytest.raises(ValueError, match="Circular include"):
-        load_config("a.yaml")
+        load("a.yaml", until="raw")
 
 
 def test_round_trip_of_xdg_resolved_config(_isolated_env: Path) -> None:
@@ -242,10 +233,17 @@ def test_round_trip_of_xdg_resolved_config(_isolated_env: Path) -> None:
 
     _write(_isolated_env / "widget.yaml", "w: !class:Widget()\nsize: 3")
 
-    built = materialize(load_config("widget.yaml"))
+    built = load("widget.yaml")
     assert isinstance(built["w"], Widget)
     assert built["w"].size == 3
 
-    reloaded = materialize(load(dump(built), flow=False))
+    reloaded = load(dump(built))
     assert isinstance(reloaded["w"], Widget)
     assert reloaded["w"].size == 3
+
+
+def test_tilde_expands_in_the_entry_path_and_in_an_include(tmp_path: Path, _isolated_env: Path) -> None:
+    """PA27 (BUGS-2026-08-19) — `~/x.yaml` was probed as `<cwd>/~/x.yaml`."""
+    _write(tmp_path / "home" / ".cr" / "common.yaml", "from_home: 1\n")
+    assert load("~/.cr/common.yaml") == {"from_home": 1}
+    assert load("include: ~/.cr/common.yaml\n") == {"from_home": 1}

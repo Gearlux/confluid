@@ -51,19 +51,19 @@ class Embedder:
 
 def main() -> None:
     # --- Loading just works: required params go straight to __init__ --------------------
-    cfg = load("resampler: !class:Resampler()\n  rate: 48000")
+    cfg = load("resampler: !class:Resampler\n  rate: 48000")
     resampler = cfg["resampler"]
     assert resampler._taps == [1.0 / 48000] * 4
     print(f"loaded eager class, filter designed at construction: {resampler._taps[0]:.2e}")
 
     # --- A missing required param fails with a located, legible error -------------------
     try:
-        load("resampler: !class:Resampler()")
+        load("resampler: !class:Resampler")
     except ConfluidError as exc:
         print(f"missing required param -> {type(exc).__name__}: {exc}")
 
     # --- Dump round-trip: live attribute preferred, captured kwargs as fallback ---------
-    mixed = load("mixed: !class:Mixed()\n  kept: 5\n  transformed: 7")["mixed"]
+    mixed = load("mixed: !class:Mixed\n  kept: 5\n  transformed: 7")["mixed"]
     mixed.kept = 99  # post-construction change to a stored param survives the dump
     text = dump(mixed)
     assert "kept: 99" in text and "transformed: 7" in text

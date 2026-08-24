@@ -3,7 +3,15 @@ from typing import Any
 
 import pytest
 
-from confluid import ConfigFileNotFoundError, configurable, configure, configure_from_file, get_registry, load_config
+from confluid import (
+    ConfigFileNotFoundError,
+    ConfigurationError,
+    configurable,
+    configure,
+    configure_from_file,
+    get_registry,
+    load,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +150,7 @@ def test_configure_from_file_accepts_str_path(tmp_path: Path) -> None:
     assert model.val == 7
 
 
-def test_configure_from_file_equivalent_to_load_config_plus_configure(tmp_path: Path) -> None:
+def test_configure_from_file_equivalent_to_load_raw_plus_configure(tmp_path: Path) -> None:
     @configurable
     class Model:
         def __init__(self, val: int = 1):
@@ -153,7 +161,7 @@ def test_configure_from_file_equivalent_to_load_config_plus_configure(tmp_path: 
 
     a, b = Model(), Model()
     configure_from_file(a, path=cfg)
-    configure(b, config=load_config(cfg))
+    configure(b, config=load(cfg, until="raw"))
     assert a.val == b.val == 42
 
 
@@ -230,10 +238,16 @@ def test_configure_unknown_block_key_warns(monkeypatch: pytest.MonkeyPatch) -> N
     """
     from types import SimpleNamespace
 
-    import confluid.configurator as configurator_module
+    import confluid.broadcast as broadcast_module
 
+    # Since configure() goes through the document (record 19, phase 4) the typo is caught by
+    # the ONE scanner, so the warning is broadcast's — the same line the load path emits.
     warnings_seen: list[str] = []
-    monkeypatch.setattr(configurator_module, "logger", SimpleNamespace(warning=lambda msg: warnings_seen.append(msg)))
+    monkeypatch.setattr(
+        broadcast_module,
+        "logger",
+        SimpleNamespace(warning=lambda msg: warnings_seen.append(msg), trace=lambda msg: None, debug=lambda msg: None),
+    )
 
     @configurable
     class Model:
@@ -286,3 +300,571 @@ def test_configure_last_write_wins_document_order() -> None:
     m2 = Model()
     configure(m2, config={"lr": 0.9, "Model": {"lr": 0.5}})
     assert m2.lr == 0.5
+
+
+def test_configure_applies_values_before_solidify_fires() -> None:
+    """``configure()`` finalizes AFTER applying — never with pre-configure values.
+
+    ``_walk``'s ``flow(obj)`` fires ``solidify()`` on live objects since the
+    record-2 pass-through change; unsuppressed it ran BEFORE ``_apply``, so an
+    unsolidified object was finalized from its PRE-configure state and — the
+    hook being idempotent by contract — never rebuilt. The walk now flows with
+    ``solidify=False`` and re-fires the hook post-order, once the object and
+    its subtree carry the new values (the load path's ordering: config final,
+    then finalize).
+    """
+
+    @configurable
+    class Model:
+        def __init__(self, width: int = 8):
+            self.width = width
+            self.backbone: object = None
+
+        def solidify(self) -> None:
+            if self.backbone is None:
+                self.backbone = f"backbone(width={self.width})"
+
+    m = Model()
+    configure(m, config={"width": 32})
+    assert m.width == 32
+    assert m.backbone == "backbone(width=32)"
+
+
+def test_configure_does_not_rebuild_an_already_solidified_object() -> None:
+    """An object solidified BEFORE ``configure()`` keeps its built state.
+
+    The idempotency contract (build-once-and-cache) is the object author's;
+    configure() re-fires the hook but must not force a rebuild — reconfiguring
+    a built object and expecting fresh derived state is what the recompute-
+    property convention exists for, not solidify().
+    """
+
+    @configurable
+    class Model:
+        def __init__(self, width: int = 8):
+            self.width = width
+            self.backbone: object = None
+            self.builds = 0
+
+        def solidify(self) -> None:
+            if self.backbone is None:
+                self.builds += 1
+                self.backbone = f"backbone(width={self.width})"
+
+    m = Model()
+    from confluid import flow as _flow
+
+    _flow(m)  # domain code finalized it first — width=8 is the built state
+    configure(m, config={"width": 32})
+    assert m.width == 32
+    assert m.builds == 1
+    assert m.backbone == "backbone(width=8)"
+
+
+def test_configure_warns_when_config_is_not_a_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-mapping config is a no-op — but never a SILENT one.
+
+    The canonical miss: ``configure(model, config="overrides.yaml")`` — a plain
+    filename fails the YAML heuristic (no ``:`` / newline), stays a ``str``,
+    and an empty report came back with no diagnostic anywhere, reading as
+    "configured fine". The warning names the actual fix for the string case.
+    """
+    from types import SimpleNamespace
+
+    import confluid.configurator as configurator_module
+
+    seen: list = []
+    monkeypatch.setattr(
+        configurator_module,
+        "logger",
+        SimpleNamespace(warning=seen.append, debug=lambda m: None, trace=lambda m: None),
+    )
+
+    @configurable
+    class Model:
+        def __init__(self, lr: float = 0.01):
+            self.lr = lr
+
+    m = Model()
+    report = configure(m, config="overrides.yaml")
+
+    assert not report.applied
+    assert any("configure_from_file" in msg for msg in seen), seen
+    assert m.lr == 0.01
+
+    # A mapping stays quiet — the warning must not fire on the ordinary path.
+    seen.clear()
+    configure(m, config={"lr": 0.5})
+    assert not seen and m.lr == 0.5
+
+
+# ---------------------------------------------------------------------------
+# configure() must not write to objects nobody keeps (BUGS-2026-08-13 C3, C4)
+# ---------------------------------------------------------------------------
+
+
+def test_configure_recurses_into_a_callable_child() -> None:
+    """C3: the walk skipped every child defining ``__call__`` — which is every op
+    and every framework module in a real tree.
+
+    ``capture=False`` on the parent is load-bearing HERE: with the default, the
+    ctor-kwargs capture sitting in ``__dict__`` is a plain dict the walk recurses
+    into, which reaches the child by accident and hides the defect.
+    """
+
+    @configurable
+    class CallableOp:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+        def __call__(self, x: Any) -> Any:
+            return x
+
+    @configurable(capture=False)
+    class Trainer:
+        def __init__(self, op: Any = None) -> None:
+            self.op = op
+
+    trainer = Trainer(op=CallableOp())
+    report = configure(trainer, config="lr: 0.5")
+
+    assert trainer.op.lr == 0.5
+    assert ("lr", "CallableOp") in [(a.key, a.target) for a in report.applied]
+    assert "lr" not in report.unused
+
+
+def test_a_transforming_constructor_configures_the_LIVE_child_not_the_capture() -> None:
+    """C3's silent-wrong half: when the constructor stores something OTHER than
+    what it captured, the walk configured the discarded object and reported success."""
+
+    @configurable
+    class CallableOp:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+        def __call__(self, x: Any) -> Any:
+            return x
+
+    @configurable
+    class Wrapper:
+        def __init__(self, op: Any = None) -> None:
+            self.op = CallableOp(lr=op.lr)  # a DIFFERENT object from the captured kwarg
+
+    handed = CallableOp()
+    wrapper = Wrapper(op=handed)
+    assert getattr(wrapper, "__confluid_kwargs__")["op"] is not wrapper.op
+
+    configure(wrapper, config="lr: 0.5")
+
+    assert wrapper.op.lr == 0.5, "the LIVE child must be configured"
+
+
+def test_a_function_attribute_is_still_skipped() -> None:
+    """The filter narrows from ``callable()`` to routines-and-classes: a stored
+    function has no configuration surface and must stay untouched."""
+    import math
+
+    @configurable(capture=False)
+    class Holder:
+        def __init__(self) -> None:
+            self.fn = math.sqrt
+            self.lr = 0.0
+
+    holder = Holder()
+    configure(holder, config="lr: 0.5")
+
+    assert holder.lr == 0.5
+    assert holder.fn is math.sqrt
+
+
+def test_a_CLASS_attribute_is_still_skipped() -> None:
+    """The reason ``isclass`` is in the predicate: a class object's ``__dict__``
+    is a TRUTHY mappingproxy of its own attributes, so recursing into one would
+    walk class internals."""
+
+    @configurable
+    class Op:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable(capture=False)
+    class Holder:
+        def __init__(self) -> None:
+            self.op_cls = Op
+            self.lr = 0.0
+
+    holder = Holder()
+    configure(holder, config="lr: 0.5")
+
+    assert holder.lr == 0.5
+    assert holder.op_cls is Op
+    assert "lr" not in vars(Op), "no key may be written onto the CLASS"
+
+
+def test_a_functools_partial_attribute_does_not_break_the_walk() -> None:
+    """It stops being skipped (it is neither a routine nor a class), so pin that
+    walking it is harmless — it carries no configuration surface."""
+    import functools
+
+    @configurable(capture=False)
+    class Holder:
+        def __init__(self) -> None:
+            self.fn = functools.partial(max, 0)
+            self.lr = 0.0
+
+    holder = Holder()
+    configure(holder, config="lr: 0.5")
+
+    assert holder.lr == 0.5
+    assert holder.fn(5) == 5
+
+
+def test_a_plain_Target_body_slot_is_TUNED_not_flowed_into_a_throwaway() -> None:
+    """C4: the walk flowed the marker into a temporary, applied the config to the
+    temporary, discarded it, and recorded the key as applied — so a later
+    ``flow(obj.opt)`` built with the DEFAULTS.
+
+    The ``Partial`` early return names this exact hazard in its own comment; the
+    next line committed it for every non-partial marker.
+    """
+    from confluid import Target, flow
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.opt = Target(Opt)
+
+    host = Host()
+    configure(host, config="lr: 0.75")
+
+    assert host.opt.kwargs == {"lr": 0.75}, "the marker itself must carry the value"
+    assert flow(host.opt).lr == 0.75
+
+
+def test_a_PartialClass_body_slot_is_unchanged() -> None:
+    """The shape C4 aligns with — it already worked and must keep working."""
+    from confluid import PartialClass, flow
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.opt = PartialClass(Opt)
+
+    host = Host()
+    configure(host, config="lr: 0.75")
+
+    assert host.opt.kwargs == {"lr": 0.75}
+    assert flow(host.opt).lr == 0.75
+
+
+def test_a_Reference_body_slot_still_raises() -> None:
+    """The scope guard: ``Partial`` IS a ``Target`` but ``Reference`` is
+    NOT, so widening the check to ``Target`` must leave them on the flow path.
+
+    Swallowing them into the tune path would turn this loud failure into a silent
+    no-op — the exact degradation this whole family is about.
+    """
+    from confluid.exceptions import ReferenceResolutionError
+    from confluid.fluid import Reference
+
+    @configurable
+    class HostRef:
+        def __init__(self) -> None:
+            self.opt = Reference("nowhere")
+
+    with pytest.raises(ReferenceResolutionError):
+        configure(HostRef(), config="lr: 0.75")
+
+
+def test_a_marker_body_slot_IS_emitted_by_dump() -> None:
+    """The C4 tuning reaches a dumped document (BUGS-2026-08-13 F2).
+
+    This test asserted the opposite when C4 landed: ``dump()`` modelled the
+    constructor alone, so the value configure() merged into a marker lived on the
+    object but never in the artifact. Fixed by adding ``body_slot`` to the
+    dumper's kind projection.
+    """
+    import yaml as _yaml
+
+    from confluid import PartialClass, Target, dump
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class HostTarget:
+        def __init__(self) -> None:
+            self.opt = Target(Opt)
+
+    @configurable
+    class HostPartial:
+        def __init__(self) -> None:
+            self.opt = PartialClass(Opt)
+
+    for cls in (HostTarget, HostPartial):
+        host = cls()
+        configure(host, config="lr: 0.75")
+        assert host.opt.kwargs == {"lr": 0.75}, "the marker itself carries the value"
+        assert _yaml.safe_load(dump(host))["opt"]["lr"] == 0.75, "and the document carries it too"
+
+
+# --- live objects are assigned, never copied (BUGS-2026-08-19 CD3 / CD4) -------
+
+
+class _Dataset:
+    """Not a marker, not @configurable — the thing a trainer is handed."""
+
+
+@configurable
+class _Model:
+    def __init__(self, lr: float = 0.0) -> None:
+        self.lr = lr
+
+
+@configurable
+class _Trainer:
+    def __init__(self, dataset: Any = None, model: Any = None, lr: float = 0.001) -> None:
+        self.dataset = dataset
+        self.model = model
+        self.lr = lr
+
+
+def test_the_named_spelling_keeps_an_unmentioned_live_child_by_identity() -> None:
+    """CD3 — `configure(trainer=t, config={"trainer": {...}})` folds the overlay
+    into the object's marker; the marker's OTHER kwargs (a live dataset) must not
+    come back as copies, and an uncopyable one must not crash the call."""
+    import threading
+
+    get_registry().register_class(_Trainer)
+    ds = _Dataset()
+    t = _Trainer(dataset=ds)
+    configure(trainer=t, config={"trainer": {"lr": 0.1}})
+    assert t.dataset is ds
+    assert t.lr == 0.1
+
+    t2 = _Trainer(dataset=threading.Lock())
+    configure(trainer=t2, config={"trainer": {"lr": 0.2}})  # used to raise TypeError: cannot pickle
+    assert t2.lr == 0.2
+
+
+def test_a_live_object_handed_through_config_is_assigned_by_identity() -> None:
+    """CD4 — wiring a pre-built dataset / model: the object on the trainer must
+    be THE object the caller passed (an optimizer built on `m` trains `m`)."""
+    get_registry().register_class(_Trainer)
+    get_registry().register_class(_Model)
+    ds, m = _Dataset(), _Model()
+    t = _Trainer()
+    configure(t, config={"dataset": ds, "model": m})
+    assert t.dataset is ds
+    assert t.model is m
+
+
+# --- children beyond __dict__, and B1 on the named-overlay path (BUGS-2026-08-19
+# CD1 / CD2-apply / CD6) ---------------------------------------------------------
+
+
+def test_configure_reaches_a_child_that_lives_outside_dict() -> None:
+    """CD1 — an nn.Module-style host keeps children in a parallel store resolved by
+    __getattr__, not __dict__; _apply read __dict__ only, missed the child, and
+    REPLACED it with a fresh build (identity lost, the original never configured)."""
+
+    @configurable
+    class _StoreChild:
+        def __init__(self, dropout: float = 0.0) -> None:
+            self.dropout = dropout
+
+    @configurable
+    class _StoreHost:
+        def __init__(self, backbone: Any = None, dropout: float = 0.0) -> None:
+            object.__setattr__(self, "_children", {})
+            self.backbone = backbone
+            self.dropout = dropout
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            if isinstance(value, _StoreChild):
+                self._children[name] = value  # the nn.Module pattern: NOT in __dict__
+            else:
+                object.__setattr__(self, name, value)
+
+        def __getattr__(self, name: str) -> Any:
+            children = self.__dict__.get("_children", {})
+            if name in children:
+                return children[name]
+            raise AttributeError(name)
+
+    child = _StoreChild()
+    host = _StoreHost(backbone=child)
+    assert "backbone" not in vars(host), "the fixture must model the outside-__dict__ shape"
+    report = configure(host, config={"dropout": 0.5})
+    assert host.backbone is child, "the child is configured, never replaced"
+    assert host.dropout == 0.5
+    assert child.dropout == 0.5, "the recursion reaches the live child"
+    assert not report.failed
+
+
+def test_configure_keeps_a_slots_hosts_child_and_tunes_it_via_a_block() -> None:
+    """CD1 — a __slots__ host has no __dict__ at all; the child used to be rebuilt."""
+
+    @configurable
+    class _SlotModel:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class _SlotHost:
+        __slots__ = ("model",)
+
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    child = _SlotModel()
+    host = _SlotHost(model=child)
+    configure(host, config={"_SlotHost": {"model": {"lr": 0.7}}})
+    assert host.model is child
+    assert child.lr == 0.7
+
+
+def test_configure_survives_a_ctor_param_behind_a_read_only_property() -> None:
+    """CD1 — the class-design convention's private-backing shape crashed the whole
+    call with `AttributeError: property has no setter`; the property slot is derived
+    state and is neither read nor written (F1's ruled semantics for the capture)."""
+
+    @configurable
+    class _Held:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class _BackingHost:
+        def __init__(self, model: Any = None, lr: float = 0.0) -> None:
+            self._model = model
+            self.lr = lr
+
+        @property
+        def model(self) -> Any:
+            return self._model
+
+    held = _Held()
+    host = _BackingHost(model=held)
+    configure(host, config={"lr": 0.9})
+    assert host.lr == 0.9
+    assert host.model is held, "the backing slot is untouched"
+
+
+def test_a_named_overlay_typo_is_audible_and_strict_attrs_refuses() -> None:
+    """CD6 — `configure(trainer=t, config={"trainer": {"ghost": 1}})` silently set
+    the attribute with an empty report; strict_attrs was not honoured at all."""
+
+    @configurable(strict_attrs=True)
+    class _StrictTrainer:
+        def __init__(self, lr: float = 0.001) -> None:
+            self.lr = lr
+
+    strict = _StrictTrainer()
+    with pytest.raises(ConfigurationError, match="ghost.*strict_attrs"):
+        configure(trainer=strict, config={"trainer": {"ghost": 1}})
+
+    @configurable
+    class _LooseTrainer:
+        def __init__(self, lr: float = 0.001) -> None:
+            self.lr = lr
+
+    loose = _LooseTrainer()
+    report = configure(trainer=loose, config={"trainer": {"ghost": 1}})
+    assert loose.ghost == 1, "B1: the value still applies on a permissive class"  # type: ignore[attr-defined]
+    assert [(f.key, f.reason) for f in report.failed] == [("ghost", "unknown-attribute")]
+
+
+def test_configure_does_not_replant_captured_ctor_params_it_did_not_change() -> None:
+    """CD8 (BUGS-2026-08-19) — the capture fallback is the DOCUMENT's value, not a
+    config change: re-setting it grew a `width` attribute the class never stores and
+    fired the eager staleness warning for keys the config never mentioned."""
+    from types import SimpleNamespace
+
+    import confluid.configurator as configurator_mod
+
+    @configurable(eager=True)
+    class _EagerBox:
+        def __init__(self, width: int = 3, lr: float = 0.1) -> None:
+            self.w2 = width * 2
+            self.lr = lr
+
+    records: list = []
+    original = configurator_mod.logger
+    configurator_mod.logger = SimpleNamespace(  # type: ignore[assignment]  # the documented log-assert pattern
+        warning=records.append, debug=lambda m: None, trace=lambda m: None
+    )
+    try:
+        box = _EagerBox(width=5)
+        configure(box, config={"lr": 0.5})
+    finally:
+        configurator_mod.logger = original
+    public = {k: v for k, v in vars(box).items() if not k.startswith("__")}
+    assert public == {"w2": 10, "lr": 0.5}, "width must not be re-planted as a new attribute"
+    assert not any("width" in r for r in records), records
+
+    changed = _EagerBox(width=5)
+    configure(changed, config={"width": 7})
+    assert vars(changed)["width"] == 7, "the con: a config that CHANGES the param still applies it"
+
+
+def test_an_empty_string_value_stays_the_empty_string() -> None:
+    """PA7 ripple — parse_value("") is "" now; a {"name": ""} override used to set
+    None (yaml.safe_load("") parses empty text to null)."""
+
+    @configurable
+    class Named:
+        def __init__(self, name: str = "default") -> None:
+            self.name = name
+
+    obj = Named()
+    configure(obj, config={"Named.name": ""})
+    assert obj.name == ""
+
+
+def test_the_marker_spelling_of_a_named_override_keeps_the_objects_children() -> None:
+    """CD5 (BUGS-2026-08-19) — `trainer: !class:Trainer {lr: 0.1}` REPLACED the
+    object's document, so the model child vanished and a bare `layers:` beside it
+    went unused; the mapping spelling tuned. The two spellings agree now."""
+
+    @configurable
+    class Model:
+        def __init__(self, layers: int = 3) -> None:
+            self.layers = layers
+
+    @configurable
+    class Trainer:
+        def __init__(self, model: Any = None, lr: float = 0.001) -> None:
+            self.model, self.lr = model, lr
+
+    for config in ("trainer: !class:Trainer {lr: 0.1}\nlayers: 10\n", "trainer: {lr: 0.1}\nlayers: 10\n"):
+        trainer = Trainer(model=Model())
+        report = configure(trainer=trainer, config=config)
+        assert (trainer.model.layers, trainer.lr) == (10, 0.1), config
+        assert report.unused == []
+
+
+def test_configure_collapses_the_dollar_escape_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA14 — the settled document becomes objects in configure(); `$$` is `$` there too."""
+
+    @configurable
+    class JobPA14:
+        def __init__(self, command: str = "") -> None:
+            self.command = command
+
+    monkeypatch.setenv("RUN_USER", "gert")
+    live = JobPA14()
+    configure(j=live, config="j: {command: echo $$RUN_USER}\n")
+    assert live.command == "echo $RUN_USER"

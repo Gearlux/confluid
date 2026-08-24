@@ -23,11 +23,11 @@ Four phases are timed independently (best/mean of 3 runs, plus throughput):
 | Phase | What it isolates |
 |---|---|
 | `parse` | PyYAML + tag construction only — the floor to subtract from the rest |
-| `materialize` | The full engine pass: broadcasting, context splicing, construction |
-| `resolve` | Broadcasting/reference resolution **without** constructing objects |
+| `load` | The full engine pass: broadcasting, context splicing, construction |
+| `load(until="settled")` | Broadcasting/reference resolution **without** constructing objects |
 | `configure` | The post-construction mirror walking the live object graph |
 
-Each phase re-parses the document because `flow()` memoizes `Instance`
+Each phase re-parses the document because `flow()` memoizes `Target`
 markers — re-using one parse would measure the memo hit, not the engine.
 
 ## Running it
@@ -40,15 +40,34 @@ Typical output (Apple M-series, Python 3.12):
 
 ```
 tree: 10x10 groups, 2000 top markers + 500 nested = 2500 markers
-parse         2500 markers   best    105.0 ms   mean    106.6 ms      23805 markers/s
-materialize   2500 markers   best    216.4 ms   mean    218.5 ms      11550 markers/s
-resolve       2500 markers   best    219.5 ms   mean    220.4 ms      11387 markers/s
-configure     2500 markers   best     37.1 ms   mean     48.9 ms      67340 markers/s
+parse         2500 markers   best    100.4 ms   mean    101.1 ms      24894 markers/s
+load          2500 markers   best    273.6 ms   mean    290.8 ms       9138 markers/s
+load(settled) 2500 markers   best    245.3 ms   mean    248.2 ms      10191 markers/s
+configure     2500 markers   best    188.4 ms   mean    190.5 ms      13268 markers/s
 ```
+
+Recorded 2026-08-17, after the runtime started consuming the settled document
+([Architecture Decisions](architecture.md) record 19). Two things moved
+and both are the SAME cause: the benchmark's 2,500 markers sit under plain
+mappings (`groups.g0.s0.m0`), and construction used to descend one level only,
+so `load` built **none** of them and `configure` then walked a tree of
+unbuilt markers (`12.7 ms`). Now every marker is built (`instantiate` recurses
+through plain containers), so `load` includes 2,500 constructions at the
+same wall time as before — the second broadcast into each marker's own kwargs at
+construction is gone, which is what paid for it — and `configure` walks 2,500
+live objects (`162 ms`) — the number it always claimed to measure.
+
+Since `configure()` runs through the document (record 19) it costs
+`188 ms` on the same tree: the objects become a marker document, the FULL
+resolution pass runs over it, and the settled values are written back — the
+price of not having a second implementation of the rule. `load` /
+`load(until="settled")` are unchanged (the slot key is threaded through the pass rather than
+searched for, which is what kept the ordering fixes free).
+
 
 ## Profiling mode
 
-Set `CONFLUID_BENCH_PROFILE=1` to additionally run one `materialize` pass
+Set `CONFLUID_BENCH_PROFILE=1` to additionally run one `load` pass
 under `cProfile` and print the top 25 functions by cumulative time — the
 engine's context-splicing functions should appear near the top, which is how
 you confirm a profile run is watching the right code:

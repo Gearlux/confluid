@@ -6,18 +6,16 @@ import pytest
 import yaml
 
 from confluid import (
-    Class,
+    ConfigurationError,
     Fluid,
-    Instance,
     Reference,
+    Target,
     configurable,
     dump,
     flow,
     get_hierarchy,
     get_registry,
     load,
-    load_config,
-    materialize,
 )
 from confluid.configurator import configure
 from confluid.resolver import Resolver
@@ -52,8 +50,8 @@ def test_fluid_proxy_logic() -> None:
     assert instance.__class__ == T
     assert instance.val == 5
 
-    # flow line 50-54: handle string tag !class: or !ref:
-    assert flow("!class:T").__class__ == T
+    # a string is a value: flow() passes it through (a marker is a tag or a reserved-key mapping)
+    assert flow("!class:T") == "!class:T"
 
     # flow line 57: fallback for primitives
     assert flow(42) == 42
@@ -128,8 +126,8 @@ def test_decorators_coverage() -> None:
 
 
 def test_dumper_coverage() -> None:
-    f = Class("M", x=1)
-    assert "!class:M" in dump(f)
+    f = Target("M", x=1)
+    assert "_target_: M" in dump(f)
     assert "- 1" in dump([1, (2,)])
     assert "42" in dump(42)
 
@@ -151,9 +149,9 @@ def test_dumper_coverage() -> None:
 def test_loader_coverage(tmp_path: Path) -> None:
     from confluid.loader import ConfluidLoader, _process_imports
 
-    # 39: ScalarNode class tag — now returns Class object
+    # 39: ScalarNode class tag — now returns Target object
     result = yaml.load("!class:Model", Loader=ConfluidLoader)
-    assert isinstance(result, Class)
+    assert isinstance(result, Target)
     assert result.target == "Model"
     # 45: ref_compat
     ref_result = yaml.load("!ref r", Loader=ConfluidLoader)
@@ -161,17 +159,17 @@ def test_loader_coverage(tmp_path: Path) -> None:
     assert ref_result.target == "r"
     # 48-61: class compat variants
     compat_result = yaml.load("!class Model(x=1)", Loader=ConfluidLoader)
-    assert isinstance(compat_result, Instance)
+    assert isinstance(compat_result, Target)
     assert compat_result.target == "Model"
     assert compat_result.kwargs["x"] == 1  # inline scalars are coerced (parse_value)
-    # Legacy !class tag also returns Class object
+    # Legacy !class tag also returns Target object
     legacy_result = yaml.load("!class Model", Loader=ConfluidLoader)
-    assert isinstance(legacy_result, Class)
+    assert isinstance(legacy_result, Target)
     assert legacy_result.target == "Model"
 
     # 89-90, 94: smart fallback
     with pytest.raises(FileNotFoundError):
-        load_config("missing_xyz.yaml")
+        load("missing_xyz.yaml", until="raw")
 
     # 110, 114-115: process imports
     _process_imports({"import": None})
@@ -181,16 +179,20 @@ def test_loader_coverage(tmp_path: Path) -> None:
     inc = tmp_path / "inc.yaml"
     inc.write_text("v: 1")
     main = tmp_path / "main.yaml"
-    main.write_text("include: [ 123 ]")  # non-string inc_path
-    load_config(main)
+    # A non-string entry is REFUSED, not skipped (BUGS-2026-08-13 P15): skipping it
+    # dropped a file silently among its siblings. Pinned in full by
+    # tests/test_includes.py::test_a_non_string_include_entry_is_refused.
+    main.write_text("include: [ 123 ]")
+    with pytest.raises(ConfigurationError, match="include"):
+        load(main, until="raw")
     main.write_text(f"include: [ {inc.name} ]")
-    assert load_config(main)["v"] == 1
+    assert load(main, until="raw")["v"] == 1
 
     # 168, 200: load fallbacks
     assert load(42) == 42
 
     # 224: flow_recursive ref
-    assert materialize(Reference("v"), context={"v": 10}) == 10
+    assert load(Reference("v"), context={"v": 10}) == 10
 
     # 218-219: global_settings not dict
     @configurable
@@ -198,7 +200,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
         def __init__(self, x: int = 1):
             self.x = x
 
-    assert materialize(Instance("G"), context={"G": 42}).x == 1
+    assert load(Target("G"), context={"G": 42}).x == 1
 
 
 # --- 6. parser.py ---
@@ -226,9 +228,6 @@ def test_registry_coverage() -> None:
 
     r.register_class(D)  # 22: duplicate
     assert "D" in r.list_classes()  # 27-31
-    obj: Dict[str, Any] = {}
-    r.register_object(obj, "o")
-    assert r.get_object("o") is obj
 
     # coverage for is_configurable with non-str name
     class E:
@@ -243,18 +242,15 @@ def test_registry_coverage() -> None:
 
 
 def test_resolver_coverage() -> None:
-    r = Resolver(context={"a": {"b": 1}, "r": "!ref:a"})
+    r = Resolver(context={"a": {"b": 1}})
     # 24: non-str
     assert r.resolve(None) is None
-    # 31: recursion
-    assert r.resolve("!ref:r") == {"b": 1}
-    # 49, 53: !class string → eager Instance Fluids (a malformed arg is skipped)
-    m_eager = r.resolve("!class:M()")
-    assert isinstance(m_eager, Instance) and m_eager.target == "M" and m_eager.kwargs == {}
-    m_malformed = r.resolve("!class:M(x)")
-    assert isinstance(m_malformed, Instance) and m_malformed.target == "M" and m_malformed.kwargs == {}
+    # a marker written as a quoted STRING is refused, naming the lines to write instead
+    for quoted in ("!ref:a", "!class:M()", "!partial:M", "!lazy:M(x=1)", "!scope:k=v"):
+        with pytest.raises(ConfigurationError, match="quoted STRING"):
+            r.resolve(quoted)
     # 103-104, 109: lookup miss
-    assert r._resolve_ref("m", local_context={"x": 1}) == "!ref:m"
+    assert r._resolve_ref("m", local_context={"x": 1}) is None
     # 121, 124, 130-132: navigate miss
     assert r._lookup_path("a.c", {"a": 1}) is None
     # 144, 152, 156, 158, 160, 164: interpolate
@@ -299,7 +295,28 @@ def test_flow_coverage() -> None:
         def __init__(self, x: int = 1) -> None:
             self.x = x
 
-    # flow an Instance marker (the marker-dict IR is gone — Fluids only)
-    s_marker = Instance("S")
+    # flow an Target marker (the marker-dict IR is gone — Fluids only)
+    s_marker = Target("S")
     s_marker.kwargs.update({"x": 10})
     assert flow(s_marker).x == 10
+
+
+def test_get_hierarchy_reports_a_literal_body_slot_default() -> None:
+    """N17 (BUGS-2026-08-19) — `self.batch_size: int = 32` listed None as its
+    default; the literal AST value is the default now (non-literals stay None)."""
+
+    @configurable
+    class LoaderN17:
+        """Loader.
+
+        Args:
+            path: Where the data lives.
+            batch_size: Items per batch.
+        """
+
+        def __init__(self, path: str = "data") -> None:
+            self.path = path
+            self.batch_size: int = 32
+
+    hierarchy = get_hierarchy(LoaderN17)
+    assert hierarchy["LoaderN17.batch_size"] == ("int", 32, "Items per batch.")

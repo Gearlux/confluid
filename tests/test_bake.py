@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List
 
 import pytest
 
-import confluid.engine as engine_module
+import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 import confluid.introspect as introspect_module
 from confluid import flow, load
 from confluid.bake import bake_broadcast_attrs, baked_module_path, main, render_baked_module, scan_package
@@ -106,8 +106,8 @@ def _freeze_package(pkg_dir: Path) -> None:
     """Simulate a frozen deployment: source gone, linecache cold, caches cleared."""
     (pkg_dir / "mod.py").unlink()
     linecache.clearcache()
-    engine_module._post_init_attrs_cache.clear()
     engine_module._acceptable_keys_cache.clear()
+    introspect_module._slots_cache.clear()  # the ONE enumeration caches the scan too
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ def test_baked_lookup_covers_class_and_engine_unions_it_without_source(
     assert baked_init_attrs(mod.BakedTrainer) == ("loss_fn", "model")
     assert baked_init_attrs(mod.EmptyInit) == ()
 
-    attrs = engine_module._get_post_init_attrs(mod.BakedTrainer)
+    attrs = introspect_module.body_slot_names(mod.BakedTrainer)
     assert {"loss_fn", "model"}.issubset(attrs)
     assert warnings_seen == []  # covered -> the cannot-scan warning stays quiet
 
@@ -224,8 +224,18 @@ def test_unbaked_sourceless_class_still_warns_and_mentions_bake(
     mod = importlib.import_module("bakepkg_unbaked.mod")
     _freeze_package(pkg_dir)  # NO bake step ran
 
-    attrs = engine_module._get_post_init_attrs(mod.BakedTrainer)
-    assert "loss_fn" not in attrs  # the divergence the warning is about
+    # The scan finds nothing (the divergence the warning is about) ...
+    assert "loss_fn" not in introspect_module.body_slot_names(mod.BakedTrainer)
+
+    # ... and the warning fires from the ACCEPT-LIST, which is where the
+    # consequence lands: an unscannable ``__init__`` means the post-init slots are
+    # absent from that set, so broadcasting silently stops reaching them. It used
+    # to fire from inside the body scan; the scan moved to ``introspect``, which is
+    # stdlib-only and has no logger, so the diagnostic sits at its consequence
+    # instead. Every path that broadcasts into a class consults the accept-list, so
+    # nothing that warned before stops warning.
+    engine_module._get_acceptable_keys(mod.BakedTrainer)
+
     mine = [msg for msg in warnings_seen if "bakepkg_unbaked" in msg]
     assert len(mine) == 1
     assert "confluid-bake" in mine[0]
@@ -241,8 +251,7 @@ def test_stale_baked_names_do_not_override_a_readable_scan(pkg_factory: Callable
     baked_module_path("bakepkg_stale").write_text(f"BROADCAST_ATTRS = {doctored!r}\n")
     introspect_module._baked_tables.pop("bakepkg_stale", None)
 
-    engine_module._post_init_attrs_cache.clear()
-    attrs = engine_module._get_post_init_attrs(mod.BakedTrainer)
+    attrs = introspect_module.body_slot_names(mod.BakedTrainer)
     assert "loss_fn" in attrs  # live scan
     assert "ghost_slot" not in attrs  # stale bake ignored while source exists
 
@@ -253,3 +262,45 @@ def test_baked_lookup_returns_none_without_bake_module() -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_a_frozen_packages_baked_body_slots_reach_the_generated_schema(pkg_factory: Any) -> None:
+    """`to_pydantic` surfaces BAKED body slots in packaged mode — no separate fallback needed.
+
+    A TASKS entry claimed `_post_init_field_specs` "still reads scan_init_body only", so a
+    frozen deployment would lose body-slot schema fields even with a bake table. That premise
+    went stale when the walk consolidated onto ``introspect.slots()`` (2026-08-12): the
+    enumeration's own per-MRO-class fallback (scan empty → baked names, source ``"baked"``,
+    annotation ``Any``) feeds every projection, the schema included. Baked names become
+    untyped OPTIONAL fields — exactly what the entry asked for.
+    """
+    pytest.importorskip("pydantic")
+    from confluid.pydantic_export import to_pydantic
+
+    pkg_dir = pkg_factory("bakepkg_schema")
+    bake_broadcast_attrs(["bakepkg_schema"])
+    importlib.invalidate_caches()
+    mod = importlib.import_module("bakepkg_schema.mod")
+    _freeze_package(pkg_dir)
+
+    Model = to_pydantic(mod.BakedTrainer)
+    assert "model" in Model.model_fields  # the ctor param — signature, source-independent
+    assert "loss_fn" in Model.model_fields  # the BAKED body slot — the packaged-mode fix
+    assert Model().model_dump()["loss_fn"] is None  # optional, untyped — no annotation baked
+
+
+def test_a_frozen_package_WITHOUT_a_bake_table_loses_body_slot_schema_fields(pkg_factory: Any) -> None:
+    """The negative control: with no bake table, a frozen class's body slots are
+    invisible to the scan and therefore absent from the schema — which is the
+    documented packaged-mode divergence the bake step exists to close."""
+    pytest.importorskip("pydantic")
+    from confluid.pydantic_export import to_pydantic
+
+    pkg_dir = pkg_factory("bakepkg_schemaless")
+    importlib.invalidate_caches()
+    mod = importlib.import_module("bakepkg_schemaless.mod")
+    _freeze_package(pkg_dir)  # NO bake step ran
+
+    Model = to_pydantic(mod.BakedTrainer)
+    assert "model" in Model.model_fields
+    assert "loss_fn" not in Model.model_fields

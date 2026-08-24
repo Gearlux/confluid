@@ -1,14 +1,23 @@
+import enum
+import pathlib as _pathlib
 from typing import Any
 
 import pytest
 import yaml
 
-from confluid import configurable, dump, get_registry
+from confluid import configurable, configure, dump, get_registry, load, register
 
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
     get_registry().clear()
+
+
+class _UnregisteredWidget:
+    """Deliberately NOT @configurable — the registry has no key for it."""
+
+    def __init__(self, size: int = 1) -> None:
+        self.size = size
 
 
 def test_basic_dump() -> None:
@@ -21,7 +30,7 @@ def test_basic_dump() -> None:
     output = dump(model)
 
     # Instances dump with () for instant construction on reload
-    assert "!class:Model()" in output
+    assert "_target_: Model" in output
     assert "layers: 10" in output
 
     # Round-trip via confluid.load produces a live instance
@@ -49,8 +58,8 @@ def test_hierarchical_dump() -> None:
 
     output = dump(trainer)
 
-    assert "!class:Trainer" in output
-    assert "!class:Model" in output
+    assert "_target_: Trainer" in output
+    assert "_target_: Model" in output
     assert "lr: 0.001" in output
     assert "layers: 5" in output
 
@@ -69,7 +78,7 @@ def test_opaque_fallback_emits_class_marker() -> None:
 
     model = Model(thing=InternalThing())
     output = dump(model)
-    assert "!class:" in output
+    assert "_target_:" in output
     assert "InternalThing" in output
 
 
@@ -98,7 +107,7 @@ def test_dump_list_and_dict() -> None:
     obj = Container(items=[1, 2], mapping={"a": 1})
     output = dump(obj)
 
-    assert "!class:Container" in output
+    assert "_target_: Container" in output
     assert "- 1" in output
     assert "a: 1" in output
 
@@ -110,32 +119,67 @@ def test_dump_no_init() -> None:
 
     obj = Simple()
     output = dump(obj)
-    assert "!class:Simple" in output
+    assert "_target_: Simple" in output
 
 
 def test_dump_none() -> None:
     assert "null" in dump(None)
 
 
+def test_dump_emits_params_in_signature_order() -> None:
+    """Dump-key order is round-trip-pinned to SIGNATURE order — the property the
+    dumper's ``slots()`` projection must preserve (``slots()`` returns signature
+    order by construction)."""
+
+    @configurable
+    class Ordered:
+        def __init__(self, beta: int = 2, alpha: int = 1, gamma: int = 3) -> None:
+            self.beta = beta
+            self.alpha = alpha
+            self.gamma = gamma
+
+    text = dump(Ordered(beta=5, alpha=6, gamma=7))
+    assert text.index("beta") < text.index("alpha") < text.index("gamma")
+
+
+def test_a_stored_variadic_bundle_is_not_dumped() -> None:
+    """A ``*args`` name can never be passed by keyword and a ``**kwargs`` name is
+    never a declared slot, so neither belongs in a dumped config — a ``kwargs: {...}``
+    line never round-tripped anyway (on reload it lands INSIDE the catchall as a
+    literal ``"kwargs"`` key, doubly nested)."""
+
+    @configurable
+    class StoresVariadics:
+        def __init__(self, *args: int, lr: float = 0.5, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.lr = lr
+
+    text = dump(StoresVariadics(lr=0.9))
+    assert "lr" in text
+    assert "args" not in text
+    assert "kwargs" not in text
+
+
 def test_dump_non_configurable_with_confluid_origin() -> None:
-    """Objects created via Instance/flow() retain origin metadata for dump."""
-    from confluid.fluid import Instance, flow
+    """Objects created via Target/flow() retain origin metadata for dump."""
+    from confluid import Target, flow
 
     class Metric:
         def __init__(self, num_classes: int = 10) -> None:
             self.num_classes = num_classes
 
-    inst = Instance(Metric, num_classes=5)
+    inst = Target(Metric, num_classes=5)
     live = flow(inst)
 
     output = dump(live)
-    assert "!class:" in output
+    assert "_target_:" in output
     assert "num_classes: 5" in output
 
 
 def test_dump_non_configurable_in_configurable_parent() -> None:
     """Non-configurable objects nested inside configurable ones serialize correctly."""
-    from confluid.fluid import Instance, flow
+    from confluid import Target, flow
 
     class Metric:
         def __init__(self, average: str = "macro") -> None:
@@ -146,25 +190,25 @@ def test_dump_non_configurable_in_configurable_parent() -> None:
         def __init__(self, metrics: Any = None) -> None:
             self.metrics = metrics
 
-    metric = Instance(Metric, average="weighted")
+    metric = Target(Metric, average="weighted")
     trainer = Trainer(metrics=[flow(metric)])
 
     output = dump(trainer)
-    assert "!class:Trainer" in output
-    assert "!class:" in output
+    assert "_target_: Trainer" in output
+    assert "_target_:" in output
     assert "average: weighted" in output
 
 
 def test_dump_non_configurable_round_trip() -> None:
     """Dump/load round-trip for non-configurable objects preserves kwargs."""
-    from confluid.fluid import Instance, flow
+    from confluid import Target, flow
 
     class Widget:
         def __init__(self, size: int = 3, color: str = "red") -> None:
             self.size = size
             self.color = color
 
-    inst = Instance(Widget, size=7, color="blue")
+    inst = Target(Widget, size=7, color="blue")
     live = flow(inst)
 
     output = dump(live)
@@ -173,7 +217,11 @@ def test_dump_non_configurable_round_trip() -> None:
 
 
 def test_dump_function_reference_round_trip() -> None:
-    """Module-level callables dump as ``!ref:module.qualname`` and reload as the live function."""
+    """Module-level callables dump as ``${ref:module.qualname}`` and reload as the live function.
+
+    The spelling is a plain STRING, not a tag: a tag anywhere in the document costs the whole
+    file its ``yaml.safe_load`` readability, which is the property the plain format exists for.
+    """
     import os.path
 
     from confluid import load
@@ -186,7 +234,8 @@ def test_dump_function_reference_round_trip() -> None:
     obj = Loader(joiner=os.path.join)
     output = dump(obj)
 
-    assert "!ref 'posixpath.join'" in output or "!ref 'ntpath.join'" in output
+    assert "${ref:posixpath.join}" in output or "${ref:ntpath.join}" in output
+    yaml.safe_load(output)  # the point of the spelling: a plain reader can still parse it
 
     reloaded = load(output)
     assert isinstance(reloaded, Loader)
@@ -207,7 +256,7 @@ def test_dump_lambda_rejected() -> None:
 
 
 def test_dump_builtin_function_reference() -> None:
-    """Built-in callables (e.g., ``len``) dump as ``!ref:builtins.len``."""
+    """Built-in callables (e.g., ``len``) dump as ``${ref:builtins.len}``."""
 
     @configurable
     class Holder:
@@ -216,4 +265,598 @@ def test_dump_builtin_function_reference() -> None:
 
     obj = Holder(fn=len)
     output = dump(obj)
-    assert "!ref 'builtins.len'" in output
+    assert "${ref:builtins.len}" in output
+
+
+def test_a_nested_non_configurable_class_value_dumps_its_qualname() -> None:
+    """A class-valued kwarg dumps ``module.QualName``. The ``__name__`` spelling dumped
+    ``pkg.Inner`` for a NESTED class — a path that resolves to nothing, or silently to
+    an UNRELATED top-level class that happens to share the short name."""
+
+    class Holder:
+        class Inner:
+            pass
+
+    @configurable
+    class HoldsClass:
+        def __init__(self, activation: type = Holder.Inner) -> None:
+            self.activation = activation
+
+    text = dump(HoldsClass())
+    assert "Holder.Inner" in text
+
+
+# ---------------------------------------------------------------------------
+# BODY SLOTS are dumped too (BUGS-2026-08-13 F2)
+#
+# `dump()` reconstructed a node from its CONSTRUCTOR params only, so an
+# `__init__`-body attribute — a first-class configurable slot that `configure()`
+# sets, `to_pydantic` types and the accept-list admits — was silently absent
+# from the document. A config written beside a checkpoint as a reproducibility
+# artifact therefore omitted every body-slot value the run actually used.
+#
+# The rule matches the one already applied to ctor params: dump the value
+# ALWAYS, never "only when it differs from the default". That is what makes a
+# dumped document self-contained — a later edit to a default in the source
+# cannot change what an existing dump reloads to.
+# ---------------------------------------------------------------------------
+
+
+def test_a_body_slot_survives_dump_and_reload() -> None:
+    from confluid import configure, load
+
+    @configurable
+    class BodyHost:
+        def __init__(self) -> None:
+            self.epochs = 1
+
+    host = BodyHost()
+    configure(host, config="epochs: 50")
+    assert host.epochs == 50
+
+    assert load(dump(host)).epochs == 50
+
+
+def test_a_body_slot_is_dumped_even_when_it_equals_its_default() -> None:
+    """The lose-nothing property, and the reason "dump only what changed" is wrong.
+
+    A dumped document must reload to the value it RECORDS. If the value were
+    omitted because it happened to match the default, then editing that default
+    in the source later would silently change what every existing dump means.
+    Constructor params already work this way; body slots now match.
+    """
+    import yaml as _yaml
+
+    @configurable
+    class BodyHost:
+        def __init__(self) -> None:
+            self.epochs = 1
+
+    emitted = _yaml.safe_load(dump(BodyHost()))
+    assert emitted["epochs"] == 1, "an untouched body slot is still recorded"
+
+
+def test_a_body_slot_rebinding_the_objects_own_method_is_not_dumped() -> None:
+    """``self.step = self._wrap(self.step)`` is MACHINERY, not configuration.
+
+    The method-wrapping idiom (torchmetrics wraps ``update``/``compute`` this way)
+    makes the method name a body slot whose value is a bound method of the object
+    itself — no document can carry it, the constructor re-creates it, and on a
+    ``**kwargs`` class the reload fed it back as a REFUSED constructor argument
+    (`Unexpected keyword arguments: compute, update`). The same rule the
+    class-attr scan applies to methods, one enumeration over.
+    """
+    import functools
+    from typing import Any, Callable
+
+    _ = Callable  # the annotation lives on the methods below
+
+    @configurable(name="SelfWrapHost")
+    class SelfWrapHost:
+        def __init__(self, **kwargs: Any) -> None:
+            self.rate = float(kwargs.pop("rate", 1.0))
+            # BOTH shapes seen in the wild: the plain rebinding, and the
+            # ``functools.wraps`` closure torchmetrics actually stores (a plain
+            # FUNCTION whose ``__wrapped__`` is the bound method).
+            self.recompute = self.recompute  # type: ignore[has-type, method-assign, no-redef]
+            self.restep = self._wrap(self.restep)  # type: ignore[has-type, method-assign, no-redef]
+            if kwargs:
+                raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+        def recompute(self) -> int:  # type: ignore[no-redef]
+            return 1
+
+        def restep(self) -> int:  # type: ignore[no-redef]
+            return 2
+
+        def _wrap(self, fn: Callable[[], int]) -> Callable[[], int]:
+            @functools.wraps(fn)
+            def wrapped() -> int:
+                return fn()
+
+            return wrapped
+
+    text = dump(SelfWrapHost(rate=2.0))
+    assert "recompute" not in text and "restep" not in text, "neither shape reaches the document"
+    reloaded = load(text)
+    assert reloaded.rate == 2.0
+    assert reloaded.recompute() == 1 and reloaded.restep() == 2, "the constructor re-created both"
+
+
+def test_a_MARKER_body_slot_survives_dump_and_reload() -> None:
+    """The C4 round trip: a marker tuned by configure() must come back tuned."""
+    import yaml as _yaml
+
+    from confluid import PartialClass, Target, configure
+
+    @configurable
+    class Opt:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable
+    class TargetHost:
+        def __init__(self) -> None:
+            self.opt = Target(Opt)
+
+    @configurable
+    class PartialHost:
+        def __init__(self) -> None:
+            self.opt = PartialClass(Opt)
+
+    for cls in (TargetHost, PartialHost):
+        host = cls()
+        configure(host, config="lr: 0.75")
+        assert host.opt.kwargs == {"lr": 0.75}
+
+        emitted = _yaml.safe_load(dump(host))
+        assert emitted["opt"]["lr"] == 0.75, f"{cls.__name__} lost its tuning"
+        assert emitted["opt"]["_target_"].endswith("Opt")
+        # `_partial_` rides along so the slot comes back DEFERRED, not built.
+        assert emitted["opt"].get("_partial_", False) is (cls is PartialHost)
+
+    # The reload half is asserted on a module-level class: a marker's target is
+    # emitted as a raw dotted path (F3), which a `<locals>` test class cannot
+    # resolve — an artifact of defining the class in a function, not of F2.
+
+
+def test_a_constructor_param_is_unchanged_by_the_body_slot_dump() -> None:
+    """The con case: params keep dumping exactly as before, in signature order."""
+    import yaml as _yaml
+
+    @configurable
+    class Params:
+        def __init__(self, epochs: int = 1, lr: float = 0.5, name: str = "base") -> None:
+            self.epochs, self.lr, self.name = epochs, lr, name
+
+    emitted = _yaml.safe_load(dump(Params(epochs=50)))
+    assert emitted == {"_target_": "Params", "epochs": 50, "lr": 0.5, "name": "base"}
+
+
+def test_a_setterless_property_is_still_not_dumped() -> None:
+    """Derived state recomputes on reload; dumping it would be noise at best.
+
+    Body slots are dumped, properties are not — the class-design convention's
+    answer for derived state stays out of the document.
+    """
+    import yaml as _yaml
+
+    @configurable
+    class Derived:
+        def __init__(self, frac: float = 0.8) -> None:
+            self.frac = frac
+
+        @property
+        def n_train(self) -> int:
+            return int(1000 * self.frac)
+
+    emitted = _yaml.safe_load(dump(Derived(frac=0.6)))
+    assert emitted == {"_target_": "Derived", "frac": 0.6}
+
+
+# ---------------------------------------------------------------------------
+# A MARKER's target is named by the REGISTRY, like a live instance's
+# (BUGS-2026-08-13 F3)
+#
+# The live-instance branch asks `registry.key_for()` so the emitted name
+# re-resolves to THIS class rather than to whichever namesake wins a bare
+# lookup. `_target_name` bypassed it and emitted a raw dotted qualname, which
+# fails outright for the two targets whose qualname is not importable.
+# ---------------------------------------------------------------------------
+
+
+def test_a_marker_targeting_a_factory_built_class_reloads() -> None:
+    """A class built by a factory carries `<locals>` in its qualname, which the
+    registry strips for its key and a raw dotted path keeps."""
+    from confluid import Target, load
+
+    def _make() -> type:
+        @configurable
+        class Widget:
+            def __init__(self, size: int = 2) -> None:
+                self.size = size
+
+        return Widget
+
+    Widget = _make()
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target(Widget, size=9)
+
+    reloaded = load(dump(Host()))
+    assert reloaded.child.size == 9
+
+
+def test_a_marker_targeting_a_registered_FUNCTION_reloads() -> None:
+    """It used to emit `<function build at 0x…>` — a memory address, so the
+    document neither reloaded nor compared equal between two dumps."""
+    from confluid import Target, load
+
+    @configurable
+    def build(size: int = 1) -> dict:
+        return {"size": size}
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target(build, size=7)
+
+    text = dump(Host())
+    assert "0x" not in text, "a dumped document must not contain a memory address"
+    assert load(text).child == {"size": 7}
+
+
+def test_a_marker_and_a_live_instance_name_the_same_class_alike() -> None:
+    """The two dumper branches must agree; the live one was already correct."""
+    import yaml as _yaml
+
+    from confluid import Target
+
+    @configurable(name="CustomName")
+    class Renamed:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    @configurable
+    class LiveHost:
+        def __init__(self) -> None:
+            self.child = Renamed(lr=0.5)
+
+    @configurable
+    class MarkerHost:
+        def __init__(self) -> None:
+            self.child = Target(Renamed, lr=0.5)
+
+    live = _yaml.safe_load(dump(LiveHost()))["child"]["_target_"]
+    marker = _yaml.safe_load(dump(MarkerHost()))["child"]["_target_"]
+    assert live == marker == "CustomName"
+
+
+def test_a_marker_targeting_an_UNREGISTERED_class_keeps_its_dotted_path() -> None:
+    """The fallback: no registry key, so the importable dotted path is still the
+    best available spelling."""
+    import yaml as _yaml
+
+    from confluid import Target
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target(_UnregisteredWidget, size=3)
+
+    emitted = _yaml.safe_load(dump(Host()))["child"]["_target_"]
+    assert emitted.endswith("_UnregisteredWidget")
+    assert "0x" not in emitted
+
+
+def test_a_STRING_marker_target_passes_through_verbatim() -> None:
+    """A target written as a name in YAML is already the spelling to emit."""
+    import yaml as _yaml
+
+    from confluid import Target
+
+    @configurable
+    class Host:
+        def __init__(self) -> None:
+            self.child = Target("SomeName", size=3)
+
+    assert _yaml.safe_load(dump(Host()))["child"]["_target_"] == "SomeName"
+
+
+# --- a property-shadowed ctor param dumps the CAPTURED value, getter never runs
+# (BUGS-2026-08-19 CD2) ----------------------------------------------------------
+
+
+def test_a_property_shadowed_ctor_param_dumps_the_captured_value_without_running_the_getter() -> None:
+    getter_runs: list = []
+
+    @configurable
+    class _Loop:
+        def __init__(self, device: str = "auto", max_epochs: int = 1) -> None:
+            self.device_choice = device  # the ctor param is TRANSFORMED, stored elsewhere
+            self.max_epochs = max_epochs
+
+        @property
+        def device(self) -> object:
+            getter_runs.append(1)
+            return object()  # derived, not serializable — dumping it broke the round trip
+
+    loop = _Loop(device="cpu")
+    text = dump(loop)
+    assert getter_runs == [], f"the getter ran during dump:\n{text}"
+    assert "device: cpu" in text, text
+    reloaded = load(text)
+    assert reloaded.device_choice == "cpu"
+    assert reloaded.max_epochs == 1
+
+
+def test_configure_of_a_property_shadowed_param_class_touches_nothing_derived() -> None:
+    getter_runs: list = []
+
+    @configurable
+    class _Loop2:
+        def __init__(self, device: str = "auto", max_epochs: int = 1) -> None:
+            self.device_choice = device
+            self.max_epochs = max_epochs
+
+        @property
+        def device(self) -> object:
+            getter_runs.append(1)
+            return object()
+
+    loop = _Loop2()
+    configure(loop, config={"max_epochs": 2})
+    assert loop.max_epochs == 2
+    assert getter_runs == [], "configure() must not execute nor write back the getter"
+
+
+# --- value-faithful opaque spellings, **kwargs extras, and the F3 rule's second
+# branch (BUGS-2026-08-19 CD9 / CD11 / CD12) --------------------------------------
+
+
+def test_a_path_valued_attribute_round_trips_as_its_string() -> None:
+    """CD9 — `{_target_: pathlib.PosixPath}` reloaded as `PosixPath('.')`, silently:
+    a sink pointing at the launch directory instead of the run's output."""
+
+    @configurable
+    class _Sink:
+        def __init__(self, path: str = ".") -> None:
+            self.path = _pathlib.Path(path)
+
+    sink = load("_target_: _Sink\npath: /data/run42/out\n")
+    text = dump(sink)
+    assert "path: /data/run42/out" in text, text
+    assert "_target_: pathlib" not in text
+    assert load(text).path == _pathlib.Path("/data/run42/out")
+
+
+def test_numpy_scalars_and_enums_round_trip_by_value() -> None:
+    np = pytest.importorskip("numpy")  # optional in the dev env — the house convention (omegaconf, pydantic)
+
+    class _Color(enum.Enum):
+        RED = "red"
+        BLUE = "blue"
+
+    @configurable
+    class _Host:
+        def __init__(self, scale: Any = None, color: Any = None) -> None:
+            self.scale = scale
+            self.color = color
+
+    host = _Host(scale=np.float32(1.5), color=_Color.RED)
+    text = dump(host)
+    assert "scale: 1.5" in text, text
+    assert "color: red" in text, text
+    reloaded = load(text)
+    assert reloaded.scale == 1.5
+    assert reloaded.color == "red"
+
+
+def test_a_genuinely_opaque_value_still_emits_the_placeholder_but_AUDIBLY(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The con + the loudness: the placeholder keeps a dump complete, and the lie it
+    tells on reload (a default-constructed object) is now announced once per type."""
+    from types import SimpleNamespace
+
+    import confluid.dumper as dumper_mod
+
+    class _Callback:
+        pass
+
+    @configurable
+    class _Trainer:
+        def __init__(self, callback: Any = None) -> None:
+            self.callback = callback
+
+    records: list = []
+    monkeypatch.setattr(
+        dumper_mod, "logger", SimpleNamespace(warning=records.append, debug=lambda m: None, trace=lambda m: None)
+    )
+    dumper_mod._OPAQUE_WARNED.discard(_Callback)
+    trainer = _Trainer(callback=_Callback())
+    text = dump(trainer)
+    assert "_Callback" in text
+    assert any("DEFAULT-constructed" in r for r in records), records
+    records.clear()
+    dump(trainer)
+    assert not records, "once per type"
+
+
+def test_a_kwargs_classes_captured_extras_survive_the_round_trip() -> None:
+    """CD11 — `Wrap(a=2, foo=3)` dumped as `{a: 2}`; the reload lost `foo`."""
+
+    @configurable
+    class _Wrap:
+        def __init__(self, a: int = 1, **kwargs: Any) -> None:
+            self.a = a
+            self.kwargs = dict(kwargs)
+
+    wrapped = load("_target_: _Wrap\na: 2\nfoo: 3\n")
+    assert wrapped.kwargs == {"foo": 3}
+    text = dump(wrapped)
+    assert "foo: 3" in text, text
+    assert load(text).kwargs == {"foo": 3}
+
+
+def test_a_stamped_function_target_dumps_its_registry_key_not_an_address() -> None:
+    """CD12 — the `__confluid_class__` branch carried its own inline copy of the
+    naming rule and emitted `<function build_widget at 0x…>` for a registered
+    FUNCTION target (F3 fixed the marker branch only)."""
+
+    class _Widget:
+        def __init__(self, size: int) -> None:
+            self.size = size
+
+    def build_widget(size: int = 1) -> _Widget:
+        return _Widget(size)
+
+    register(build_widget, name="build_widget")
+    widget = load("_target_: build_widget\nsize: 7\n")
+    text = dump(widget)
+    assert "0x" not in text, text
+    assert "_target_: build_widget" in text
+    assert load(text).size == 7
+
+
+# --------------------------------------------------------------------------- the $$ escape (CD10)
+
+
+def test_a_literal_dollar_survives_the_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CD10 (BUGS-2026-08-19) — dump() wrote `$RUN_USER` unescaped and the reload
+    interpolated it; the dumper now emits `$$` and the loader collapses it."""
+    monkeypatch.setenv("RUN_USER", "gert")
+
+    @configurable
+    class Job:
+        def __init__(self, command: str = "") -> None:
+            self.command = command
+
+    job = Job(command="echo $RUN_USER")
+    text = dump(job)
+    assert "echo $$RUN_USER" in text
+    assert load(text).command == "echo $RUN_USER"
+    tricky = Job(command="${a.b} and $$ money")
+    assert load(dump(tricky)).command == "${a.b} and $$ money"
+
+
+def test_a_dollar_in_a_mapping_key_round_trips() -> None:
+    """CD10 — the escape is uniform (a representer cannot tell keys from values),
+    so the loader collapses `$$` in keys too."""
+
+    @configurable
+    class Job:
+        def __init__(self, command: str = "") -> None:
+            self.command = command
+
+    reloaded = load(dump({"a$b": Job(command="x")}))
+    assert list(reloaded.keys()) == ["a$b"]
+
+
+def test_a_slots_class_round_trips_its_body_slot() -> None:
+    """N8 (BUGS-2026-08-19) — the member descriptor read as a class_attr, so
+    dump() dropped the configured value and the reload restored the default."""
+
+    @configurable
+    class SlottedPoint:
+        __slots__ = ("x", "label")
+
+        def __init__(self, x: float = 0.0) -> None:
+            self.x = x
+            self.label = "p"
+
+    reloaded = load(dump(load("p: {_target_: SlottedPoint, label: q}")["p"]))
+    assert reloaded.label == "q"
+
+
+def test_dollar_keys_nested_in_a_markers_kwargs_round_trip() -> None:
+    """CD5 (BUGS-2026-08-22) — the key collapse lived in the plain-dict branch only, so a
+    dict INSIDE a marker's kwargs reloaded with `$$k`."""
+
+    @configurable
+    class BoxCD5:
+        def __init__(self, a: Any = None) -> None:
+            self.a = a
+
+    reloaded = load(dump(BoxCD5(a={"$k": 1, "a$b": 2, "lit": "$$ money"})))
+    assert reloaded.a == {"$k": 1, "a$b": 2, "lit": "$$ money"}
+
+
+# --- qualified=True: names are importable paths, so the artifact reloads COLD ------------------
+
+
+class _QualifiedWidget:
+    def __init__(self, size: int = 1) -> None:
+        self.size = size
+
+
+_DOTTED = f"{_QualifiedWidget.__module__}.{_QualifiedWidget.__qualname__}"
+
+
+def test_a_qualified_dump_names_the_importable_path_and_reloads() -> None:
+    from confluid import Target, flow
+
+    register(_QualifiedWidget, name="QualifiedPinned")
+    live = flow(Target(_QualifiedWidget, size=3))
+    text = dump(live, qualified=True)
+    assert f"_target_: {_DOTTED}" in text, text
+    reloaded = load(text)
+    assert isinstance(reloaded, _QualifiedWidget) and reloaded.size == 3
+
+
+def test_a_qualified_dump_of_a_marker_names_the_importable_path() -> None:
+    from confluid import Target
+
+    register(_QualifiedWidget, name="QualifiedPinned")
+    text = dump(Target(_QualifiedWidget, size=3), qualified=True)
+    assert f"_target_: {_DOTTED}" in text, text
+
+
+def test_qualified_off_keeps_the_registry_key() -> None:
+    from confluid import Target, flow
+
+    register(_QualifiedWidget, name="QualifiedPinned")
+    text = dump(flow(Target(_QualifiedWidget, size=3)))
+    assert "_target_: QualifiedPinned" in text, text
+
+
+def test_a_locals_class_falls_back_to_the_registry_key() -> None:
+    """A factory-built class's dotted path carries ``<locals>`` and imports to nothing —
+    the registry key stays the best available spelling."""
+
+    def _factory() -> Any:
+        @configurable(name="LocalsPinned")
+        class Widget:
+            def __init__(self, size: int = 1) -> None:
+                self.size = size
+
+        return Widget
+
+    built = _factory()(size=2)
+    text = dump(built, qualified=True)
+    assert "LocalsPinned" in text and "<locals>" not in text, text
+    assert load(text).size == 2
+
+
+def test_a_main_module_class_falls_back_to_the_registry_key() -> None:
+    """``__main__.X`` names whatever module the READING process happens to run —
+    not importable in any useful sense, so the registry key wins."""
+    main_widget = type("MainWidget", (), {"__init__": lambda self, size=1: setattr(self, "size", size)})
+    main_widget.__module__ = "__main__"
+    register(main_widget, name="MainPinned")
+    text = dump(main_widget(size=4), qualified=True)
+    assert "MainPinned" in text and "__main__" not in text, text
+
+
+def test_a_class_valued_kwarg_is_qualified_too() -> None:
+    register(_QualifiedWidget, name="QualifiedPinned")
+
+    @configurable
+    class Holder:
+        def __init__(self, factory: Any = None) -> None:
+            self.factory = factory
+
+    text = dump(Holder(factory=_QualifiedWidget), qualified=True)
+    assert _DOTTED in text, text

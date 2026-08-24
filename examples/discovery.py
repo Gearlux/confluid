@@ -55,6 +55,22 @@ class StaticConfig:
         self.level = level
 
 
+@configurable(task="classification", role="loss", framework="torch")
+class TorchStyleLoss:
+    """A loss belonging to one engine's API."""
+
+    def __init__(self, gamma: float = 2.0) -> None:
+        self.gamma = gamma
+
+
+@configurable(task="classification", role="loss", framework="keras")
+class KerasStyleLoss:
+    """The same slot, a different engine — not interchangeable with the above."""
+
+    def __init__(self, from_logits: bool = True) -> None:
+        self.from_logits = from_logits
+
+
 def main() -> None:
     registry = get_registry()
 
@@ -82,11 +98,76 @@ def main() -> None:
     else:
         raise AssertionError("contradictory marks should raise ConfigurableDefinitionError")
 
+    # `framework` is what makes a picker OFFERABLE: task+role alone would hand a
+    # torch loss to a Keras trainer. The unit is the API, not the tensor runtime.
+    torch_losses = registry.list_classes(task="classification", role="loss", framework="torch")
+    keras_losses = registry.list_classes(task="classification", role="loss", framework="keras")
+    assert torch_losses == {"TorchStyleLoss"}, torch_losses
+    assert keras_losses == {"KerasStyleLoss"}, keras_losses
+    both = registry.list_classes(task="classification", role="loss")
+    assert {"TorchStyleLoss", "KerasStyleLoss"} <= both, both
+    print(f"framework='torch' finds: {sorted(torch_losses)}")
+    print(f"framework='keras' finds: {sorted(keras_losses)}")
+    print(f"unfiltered finds both:   {sorted(both & {'TorchStyleLoss', 'KerasStyleLoss'})}")
+
+    # Two classes may share a NAME when a tag tells them apart — here the same op
+    # implemented for two engines. Both stay discoverable; the shared name simply
+    # publishes each under its canonical dotted key.
+    def _variant(engine: str) -> type:
+        @confluid.configurable(category="op", group=f"fft/{engine}")
+        class FourierOp:
+            """The same op, per engine."""
+
+        return FourierOp
+
+    numpy_op, torch_op = _variant("numpy"), _variant("torch")
+    keys = registry.list_classes(category="op")
+    assert registry.key_for(numpy_op) in keys and registry.key_for(torch_op) in keys
+    assert registry.get_class("FourierOp", group="fft/torch") is torch_op
+    try:
+        registry.get_class("FourierOp")
+    except confluid.AmbiguousClassError:
+        print("a shared name needs a tag filter, a selector, or the dotted key")
+    else:
+        raise AssertionError("a bare lookup of a shared name should raise")
+
     # One docstring, every GUI: the Args: block is machine-readable.
     docs = parse_param_docs(StandardizeOp)
     assert docs["mean"] == "Channel mean."
     print(f"parse_param_docs(StandardizeOp): {docs}")
 
 
+def registering_a_class_you_do_not_own() -> None:
+    """`register()` carries the accept-list controls, because a decorator cannot reach here.
+
+    A class you own can be shielded from cascade keys by declaring its parameters
+    or adding a decorator argument. A third-party class can be shielded by
+    neither — and a `**kwargs` constructor is exactly the case with no accept-list
+    at all, so every bare key in the document would otherwise reach it.
+    """
+
+    class Vendor:  # imagine this comes from a library you cannot edit
+        def __init__(self, path: str = "out") -> None:
+            self.path = path
+
+    class VendorFrozen:
+        def __init__(self) -> None:
+            self.scanned = 1
+
+    confluid.register(Vendor, name="ExampleVendor", broadcast=False)
+    confluid.register(VendorFrozen, name="ExampleVendorFrozen", broadcast_attrs=["declared"])
+
+    # Addressed writes still land; only the cascade is shut off.
+    assert confluid.accepts_key(Vendor, "path")
+    assert not confluid.accepts_broadcast(Vendor, "path")
+
+    # A declaration UNIONS with the scan — it can only add.
+    assert confluid.accepts_key(VendorFrozen, "declared")
+    assert confluid.accepts_key(VendorFrozen, "scanned")
+
+    print("register(broadcast=False): addressed yes, bare no — for a class you cannot decorate")
+
+
 if __name__ == "__main__":
     main()
+    registering_a_class_you_do_not_own()

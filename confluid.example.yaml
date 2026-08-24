@@ -1,8 +1,22 @@
 # Confluid: Example Configuration File
 # This file illustrates the configuration options confluid handles directly.
-# Scope overlays (!scope:NAME, !scope:KEY=VAL, !notscope:...) live at the
+# Scope overlays (_scope_: {NAME: }, _scope_: {KEY: VAL}, _notscope_: ...) live at the
 # bottom of this file. Activate them via `confluid.load(path, scopes=[...])`
-# or, in a liquifai CLI, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
+# or, in a CLI layer built on confluid, `--scope NAME` / `--scope KEY=VAL` / `--KEY VAL`.
+#
+# ---------------------------------------------------------------------------
+# This file is written in the PLAIN-YAML spelling: ordinary YAML that
+# `yaml.safe_load`, `yq` and editor schemas can all read — the form `hydraide`
+# EMITS. The concise TAG spelling is the preferred form to WRITE; both are
+# first-class input and may be mixed (docs/hydraide.md, docs/targets.md,
+# docs/plain-format.md). The equivalences:
+#
+#   _target_: Model            ==  !class:Model
+#   _partial_: true            ==  !lazy:Name   (deferred; the receiver flow()s it)
+#   ${ref:model}               ==  !ref:model
+#   _scope_: {task: cls}       ==  !scope:task=cls
+#   ${env:DATA_ROOT}           ==  an explicit environment-variable read
+# ---------------------------------------------------------------------------
 
 # --- 1. Module Imports ---
 # Dynamically import Python modules to populate the class registry.
@@ -20,18 +34,19 @@ include:
 # Standard top-level settings and object configurations.
 base_lr: 0.001
 
-# String interpolation (${...}). The name decides the source:
-#   plain name              -> environment variable  (${HOME}, ${PORT:8080})
-#   dotted / bracketed name -> another CONFIG KEY     (${train.dataset}, ${items[0]})
+# String interpolation (${...}):
+#   ${env:NAME} / ${env:NAME,default} -> an ENVIRONMENT variable
+#   ${train.dataset} / ${items[0]}    -> another CONFIG KEY
+#   ${ref:name}                        -> a live OBJECT (shared)
 # A whole-string match keeps the value's native type; embedded matches
-# substitute str(value). On a miss the :default applies, else the literal
-# ${...} is left in place. (For wiring a live OBJECT into a slot, use !ref:.)
+# substitute str(value). On a miss the default applies, else the literal
+# ${...} is left in place.
 train:
   dataset: RFUAV
   version: v3
-data_dir: "${HOME}/data/${train.dataset}/${train.version}"
+data_dir: "${env:HOME}/data/${train.dataset}/${train.version}"
 
-# Dotted Notation (Helios Style)
+# Dotted Notation
 # These are expanded into nested dicts: {"Model": {"layers": 3, "dropout": 0.1}}
 # Addressed keys are EXACT: they configure the matched node only, never its
 # descendants. A bare key (like base_lr above, if a class accepted it) is the
@@ -43,44 +58,74 @@ data_dir: "${HOME}/data/${train.dataset}/${train.version}"
 Model.layers: 3
 Model.dropout: 0.1
 
-# --- 4. Reference Syntax ---
-# Reference tags are used for late resolution and dependency injection.
-# !ref key -> Lookup in config (dotted paths supported)
-# !class Class -> Lookup in registry
-# !class Class(args) -> Instantiate with arguments
+# --- 4. Object wiring ---
+# _target_ names the callable to build; every sibling key is a constructor kwarg.
+# _partial_: true withholds construction for a slot the receiver flows itself
+# (an optimizer needing params=, a model needing num_classes). ${ref:key} wires
+# the SAME object into another slot; write the marker again for an independent one.
 Trainer:
-  lr: !ref base_lr
-  model: !class Model(layers=10)
+  lr: ${ref:base_lr}
+  model:
+    _target_: Model
+    layers: 10
   # Environment variable resolution
-  log_dir: "${HOME}/logs/my_app"
+  log_dir: "${env:HOME}/logs/my_app"
 
 # --- 5. Scopes ---
 # Optional aliases let one CLI name expand to multiple boolean scopes.
 scope_aliases:
   dev: [debug, local]
 
+# Optional defaults: the value a KEYED dimension takes when the caller names none
+# (`load(..., scopes=[])` / no `--env` flag). A caller value wins per dimension; the
+# value must be one a block below declares (a typo raises like a typo'd flag); a
+# boolean scope is refused here (nothing could switch it off — use _notscope_).
+default_scopes: [env=prod]
+
 # A scope wrapper lives at an arbitrary key whose VALUE carries the
-# !scope:/!notscope: tag. The key itself is inert — it's just YAML
-# scaffolding because top-level mappings can't hold bare tags. Pick a
+# _scope_ / _notscope_ entry. The key itself is inert — it's just YAML
+# scaffolding, because a mapping cannot be its own condition. Pick a
 # descriptive label; on activation the key disappears and its contents
 # are spliced in at that slot.
 
 # Boolean scope: fires when the user passes `--scope debug`.
-if_debug: !scope:debug
+if_debug:
+  _scope_: {debug: }
   log_level: DEBUG
   base_lr: 0.0001
 
 # Keyed scope (assignment form): fires for `--scope task=classification`
 # or, equivalently, `--task classification` / `--task=classification`.
-if_classification: !scope:task=classification
-  model: !class Model(layers=3)
+if_classification:
+  _scope_: {task: classification}
+  model:
+    _target_: Model
+    layers: 3
 
 # Keyed scope (function-call form) — semantically identical to the
 # assignment form above. Use whichever reads better in context.
-if_prod: !scope:env(prod)
+if_prod:
+  _scope_: {env: prod}
   log_level: WARNING
 
 # Negative scope. Active when no `--task ...` is supplied at all OR when
 # the supplied value differs from `segmentation` (the unset-⇒-active rule).
-unless_segmentation: !notscope:task=segmentation
-  postproc: !class DefaultPost()
+unless_segmentation:
+  _notscope_: {task: segmentation}
+  postproc:
+    _target_: DefaultPost
+
+# A LIST whose FIRST item is the marker is a scope block whose body is the
+# remaining items — the only way to write a conditional list ITEM, since a YAML
+# node is a mapping or a sequence and never both. An active block splices its
+# items into the surrounding list; a one-item body is the scalar case.
+# Note the QUOTES on `"yes"`: unquoted, YAML reads it as the boolean True, which
+# would never match the `extra=yes` an activation passes (confluid rejects it).
+ops:
+  - always_first
+  - - _scope_: {extra: "yes"}
+    - extra_a
+    - extra_b
+  - - _scope_: {verbose: }
+    - 42
+  - always_last

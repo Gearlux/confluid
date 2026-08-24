@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from confluid import configurable, configure, get_registry, ignore_config
+from confluid import configurable, configure, get_registry
 
 
 @pytest.fixture(autouse=True)
@@ -37,8 +37,9 @@ class ClassWithProperty:
         self._value = val
 
     @property
-    @ignore_config
     def computed(self) -> int:
+        # Read-only: excluded from every reader surface by the setter-less-property
+        # rule, which is what made `@ignore_config` redundant (removed 0.3.0).
         return self._value * 2
 
 
@@ -102,16 +103,16 @@ CustomName:
 
 def test_flow_in_configurator() -> None:
     """Verify that the configurator flows deferred objects before inspection."""
-    from confluid import Class, flow
+    from confluid import Target, flow
 
     @configurable
     class Container:
         def __init__(self, model: Any = None) -> None:
             self.model = model
 
-    container = Container(model=Class(SimpleModel, layers=5))
+    container = Container(model=Target(SimpleModel, layers=5))
     configure(container, config={"SimpleModel": {"layers": 100}})
-    # After configure, model should still be a Class (configure doesn't flow children)
-    # But the Class should have picked up context
+    # After configure, model should still be a Target (configure doesn't flow children)
+    # But the Target should have picked up context
     result = flow(container.model)
     assert isinstance(result, SimpleModel)

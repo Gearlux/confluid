@@ -4,7 +4,2362 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
-## [Unreleased]
+## [0.3.0] - 2026-08-24
+
+### Added
+
+- **`dump(obj, qualified=True)` — importable dotted paths instead of registry keys.** The
+  emitted document names each class `module.qualname`, so it reloads in a COLD process with no
+  registrations (the spelling a run artifact wants); a `<locals>` factory class or a
+  `__main__` class keeps the registry key. Default unchanged. The qualified pins in
+  `tests/test_dumper.py`; `docs/serialization.md`.
+
+- **Repeat flows of a deferred marker are cached — one recipe + one argument set = one object.**
+  A `PartialClass` remembers its LAST build: `flow(t, logger=x)` twice returns one object;
+  a tuned recipe (what `configure()` does — nested markers included, compared recursively), a
+  different argument, or a different call shape rebuilds and replaces the entry (one per marker,
+  never a table). Scalars compare by value, everything else by identity — a fresh
+  generator/list always rebuilds, because "provably the same" is the bar a hit must meet.
+  `random=True` classes always re-execute; a marker copy never shares a build (the cache is a
+  `WeakKeyDictionary` on the marker itself, so entries also die with their marker); eager
+  `Target` markers keep per-pass-only memoization. `tests/test_partial_cache.py`;
+  `docs/targets.md` → "Repeat flows are cached"; architecture record 24.
+
+- **`register_dump_spelling(cls, spell)` — registered document spellings for third-party VALUE
+  types.** The three built-in faithful spellings (PathLike → string, Enum → value, numpy scalar
+  → item) become the hardcoded cases of a general extension point: `spell(value)` returns the
+  value's document form — a `Target` marker (rebuilt by the ordinary load machinery, so the
+  round trip needs no load-side change) or a plain YAML-clean value — or `None` to decline,
+  keeping the placeholder + warning. A registered spelling is THE document spelling of its type
+  and wins over the generic reconstruction even for a registered instance; the built-ins win
+  over it; lookup walks the MRO, exact class first; `to_markers()`/`configure()` keep live
+  values live. Two emission fixes landed with it, both previously silent: a stamped instance
+  that ESCAPES the discovery pre-walk (it surfaces only inside a spelling's marker or an opaque
+  container) now renders via the object representer instead of degrading to a placeholder, and
+  a body slot rebinding one of the object's OWN methods (`self.update = wrap(self.update)` — a
+  library idiom; the stored value may be the bound method or a `functools.wraps` closure over
+  it) is never dumped — it rode a `**kwargs` reload back into the constructor as a refused
+  argument. `tests/test_dump_spellings.py`, the self-wrap group in `tests/test_dumper.py`;
+  `docs/serialization.md` → "Registering a document spelling";
+  `examples/reproducible_experiment.py::dump_spellings`.
+
+- **`broadcast="declared"` — close a `**kwargs` accept-list to the declared/scanned slots.** The
+  cascade knob on `@configurable` / `register` is now three-state: `True` (open), `False` (no
+  bare/glob key ever lands), `"declared"` (the accept-list is built from `introspect.slots()`
+  even when the constructor takes `**kwargs` — signature params, public class attributes, and
+  `__init__`-body assignments MRO-wide, so a base consuming `self.x = kwargs.pop("x", …)` keeps
+  `x` broadcastable while unrelated document keys stop landing). Constructor routing is
+  untouched (addressed keys still ride `**kwargs` in, per the addressing rule); a no-op without
+  `**kwargs`; any other value raises `ConfigurableDefinitionError` at registration.
+  `marks(cls).broadcast_declared` reads the stamp. `tests/test_broadcast_declared.py`;
+  `docs/broadcasting.md` → "`broadcast=\"declared\"`"; `examples/broadcasting.py`.
+
+- **`default_scopes:` — the value a keyed dimension takes when the caller names none.** A
+  top-level `default_scopes: [framework=lightning]` fills the activation map per dimension
+  (a caller `scopes=` value for that dimension wins), goes through the declared-value check
+  (a typo'd default raises the same `ScopeError` a typo'd flag does), is keyed only (a boolean
+  scope or an alias is refused — nothing the caller passes could switch it off; `!notscope:` is
+  the spelling for "active while unset"), is read beside `scope_aliases:` before pass 4 (never
+  a `${...}` value) and is stripped from the result with it. `hydraide emit` with no `--scope`
+  emits the defaulted variant. `confluid.default_scopes(raw)` is the public reader (what a CLI
+  shows beside `discover_dimension_values`); `confluid.scopes.parse_default_scopes` /
+  `normalize_active(..., defaults=)`; `tests/test_scopes.py` (the `default_scopes` group);
+  `docs/scopes.md` → "Default scopes"; `docs/architecture.md` record 1.
+
+- **The `hydraide` command line** (`confluid/cli.py`, Click, the optional `confluid[cli]` extra,
+  console script `hydraide`). `hydraide emit CONFIG [--scope DIM=VALUE]… [-o FILE]` prints or
+  writes the resolved plain-YAML document; `hydraide check CONFIG` exits 1 with a unified diff
+  unless the file is its own resolution; `hydraide completion bash|zsh|fish` prints the shell
+  activation script (`eval "$(hydraide completion zsh)"`). Verbs and options complete, CONFIG
+  completes file names, and `--scope` completes `dimension=value` from what the named document
+  declares. A relative CONFIG resolves through the loader's search tiers; a located
+  `ConfluidError` is one line on stderr, exit 1; a usage error exits 2. `tests/test_cli.py`.
+
+- **`confluid.spelling.to_tags` / `convert_file` — the reserved-key spelling → the tag spelling**
+  (record 19). Line-based, because these files are mostly comments and a parse-and-rewrite
+  would reformat them: it puts the tag on the KEY line, deletes the `_target_:` / `_partial_:` / `_scope_:`
+  line, and touches nothing else (comments, order, spacing, quoting). A flow marker becomes
+  `!class:X(k=v)` when every kwarg is a plain scalar, else `!class:X {…}`; nested inside a flow
+  container it takes the flow-body form (`{a: !class:X {}}` — measured: a tag directly before
+  `}` / `]` / `,` does not scan); `${ref:x}` ending a line becomes `!ref:x` (a quoted one inside a
+  flow container stays); a single-dimension `_scope_` becomes `!scope:k=v` / `!scope:k`, the
+  list-form scope block `- - _scope_: {k: v}` becomes `- !scope:k=v` with its body items kept.
+  What it cannot convert it REPORTS with `file:line` (a multi-dimension `_scope_`, a `<<:` merged
+  into a marker) and leaves in place. `convert_file` writes only when `hydraide.emit(before) ==
+  hydraide.emit(after)` under every scope activation the document declares. First corpus: 26
+  workspace configs (chainwind · sonair · traidwind — waivefront's 25 wait for a clean tree),
+  confluid's own examples and guides. `tests/test_spelling.py`.
+- **`hydraide` — the preprocessor** (architecture record 19). `confluid.hydraide.emit(source,
+  scopes=…)` resolves a config — either spelling — to ONE plain-YAML document: includes spliced,
+  scopes applied, dotted keys expanded, interpolation burned in, broadcasting settled, shared
+  markers emitted as NAMED anchors (`&preprocess_0`, not `&id001`), deferral kept as
+  `_partial_: true`; `check(path)` is `None` when a file is its own resolution, else a unified
+  diff. Both spellings of one document emit byte-identical output, and `emit` is idempotent — the
+  property `check` rests on. A malformed document is refused exactly as `load()` refuses it (a
+  located `ConfigurationError`). It is a WRAPPER: `dump(resolve(source))` plus a
+  `dump(anchor_names=…)` hook; no engine pass changed. Guide: `docs/hydraide.md`; example:
+  `examples/hydraide.py`.
+- **`!partial:`** — the tag for a deferred marker, the same name as the key it emits. `!lazy:`
+  stays as an alias.
+
+### Changed
+
+- **`configure()`: a marker at a slot holding a live child of the same class tunes the child;
+  naming an object is a reported delivery.** `model: !class:Model {layers: 10}` applied to a
+  Trainer whose `model` is a live `Model` configures that object in place (identity kept), as a
+  mapping at the slot always did; a marker of a different class is built, an empty slot is
+  filled. And `configure(trainer=t, config=load("experiment.yaml", until="raw"))` — the same
+  document `load()` builds from, applied by name (dotted `trainer.model.lr` included) —
+  reports each key the overlay hands the object as applied at `"Trainer 'trainer'"`, origin
+  `addressed`, and the naming key as used. `tests/test_configure_live_child.py`.
+
+- **A marker is a YAML tag or a reserved-key mapping — never a string.** A string value that
+  starts with a marker prefix (`"!class:Adam(lr=0.1)"`, `"!ref:x"`, `"!partial:…"`, …) is
+  refused with a `ConfigurationError` naming the tag to write unquoted (block body for nested
+  values) and the reserved-key line; nothing is parsed out of text, at the top level or inside a
+  marker's kwargs. `flow()` of a string is a pass-through. The bare-`$VAR` env pass has no
+  leading-`!` exemption any more.
+
+- **`load()` is the ONE door — every stop point is `until=<stage>`** (architecture record 20,
+  2026-08-17). `load(data, *, until="raw" | "document" | "settled" | "objects", context, scopes,
+  solidify, return_paths)`: `"raw"` is passes 1–3 (parsed, imported, includes spliced — scope
+  blocks intact), `"document"` 1–6, `"settled"` 1–7 (markers with final kwargs, nothing built),
+  `"objects"` (the default) 1–9; `return_paths=True` returns `(result, paths)` — every file read
+  for the call, a scope-spliced include included. An unknown stage raises `ConfigurationError`
+  rather than defaulting. `load` accepts a path, YAML text or already-parsed data of any shape
+  (a list root builds) and runs the passes the input still needs —
+  `load(load(x, until="document")) == load(x)`. A `Path`, or a one-line `str` ending in
+  `.yaml`/`.yml`, names a FILE: a missing one raises `ConfigFileNotFoundError`. The engine works
+  on prepared data only (`engine.materialize` 7–9, `engine.settle` 7): passes 5–6 (interpolation,
+  dotted-key expansion) run once, in `load`, for the data and for an explicit `context` — so
+  runtime kwargs handed to `flow()` from code keep their text, for a bare type exactly as for a
+  code-built marker. The engine imports nothing from the loader. `tests/test_load_stages.py`.
+
+- **`PartialClass` is the marker class's name in source too** (`confluid.fluid.PartialClass`,
+  2026-08-17) — the class (defers a VALUE) and the `Partial[T]` annotation (defers a SLOT) no
+  longer share a name across modules; `docs/targets.md` → "Deferred initialization" states the
+  three-way split with `partial_param_names` (the reader a live-object walker asks). The
+  `confluid.fluid` module-level `__getattr__` is gone; `flow` is imported from `confluid`.
+
+- **Tags are the preferred AUTHORING form; the reserved keys are the MACHINE form; neither
+  warns** (user ruling 2026-08-15, record 19): both spellings are first-class input and may be
+  mixed in one file. Two engine facts are
+  pinned by the tool's suite because the tool exposes them: identity is per MARKER, not per
+  container (a list reached via `${ref:}` is emitted twice with its elements anchored), and an
+  anchor does NOT follow an include-overlay tune (the key gets the tuned copy, alias sites keep
+  the original — use `${ref:}` for a cross-file reference).
+
+### Documentation
+
+- **The docs-truth pass (2026-08-13).** The refactor's documentation debt, closed in one sweep:
+  `strict_attrs` — shipped and pinned but documented nowhere — got its topic guide
+  (`docs/strict-attrs.md`), an asserting example (`examples/strict_attrs.py`) and its README /
+  marks-table rows. Stale docstrings were brought back in line with the code: `report.py` still
+  claimed the engine path records no failures (false since B1), `introspect.py` still described
+  the pre-consolidation module and named a consumer of a function it no longer consumes,
+  `resolve()` named two deleted marker classes. The deleted `Class` / `Instance` names were
+  purged from every current-API doc sample (`io-contract.md`'s "canonical spellings" raised
+  `NameError` when copied). `docs/performance.md`'s baseline was re-measured (~30 % stale).
+  The README now lists all nine passes (`import` was missing). `docs/class-design.md` rule 2 now states zero-arg
+  construction as RECOMMENDED (the 2026-08-11 ruling); the body-slot `owner` filter is stated
+  in `class-design.md` / `schema-export.md`. Consumer-project names were genericized out of
+  every docstring and the two `docs/` violations (a named consumer in `serialization.md` /
+  `errors.md`). `loader` / `resolver` / `schema` gained module docstrings. The two unreleased
+  CHANGELOG sections were merged into this one. Public docstrings teaching the tag spelling
+  (16 objects, `load` / `flow` / `materialize` / `configurable` / `configure_from_file`
+  included) were rewritten to the reserved keys. User-facing hint/warning texts
+  that taught the tag spelling (the ambiguous-name hint, the auto-defer warning, the scope
+  mismatch message) now teach the reserved keys.
+
+### Removed
+
+- **`pydantic_export.partial_param_names_of` and the `_confluid_lazy_params` model stamp** — a
+  parallel answer to "which slots are deferred", computed onto every generated model and read by
+  nobody outside confluid's own tests (workspace census 2026-08-13: zero consumers; the surface
+  was never in `__all__`). The ONE authority is the class-side
+  `confluid.partial.partial_param_names(cls)`, which is what serializers already consult.
+- **`broadcast._get_post_init_attrs` and `_post_init_attrs_cache`** — the wrapper was a one-line
+  alias for `introspect.body_slot_names` kept alive only by tests, and the cache had zero reads
+  and zero writes (it was registered for a per-pass clear of an always-empty dict). Tests now
+  call `body_slot_names` directly.
+
+### Fixed
+
+- **An eager marker landing in a deferred body slot is kept deferred SILENTLY** (2026-08-22,
+  user ruling). `val_set: !class:recordstream.Stream` on a runnable whose `val_set` is a
+  `Partial[...]` body slot logged `Config slot 'val_set' … received an eager '_target_:' value …
+  deferring it. Add '_partial_: true' …` at WARNING on every run, while the identical spelling on
+  the ctor-param sibling `train_set` was honoured without a word. The declaration is the
+  receiver's contract on both paths: the post-init promotion now logs at DEBUG (slot + document
+  location), and the outcome — the marker stays unbuilt for the owning class — is unchanged.
+
+- **A BARE key reaching an unregistered `**kwargs` target no longer warns** (2026-08-22).
+  Measured before → after on a real training config: six top-level keys (`batch_size`,
+  `max_epochs`, `num_workers`, `experiment_name`, `run_name`, a CLI override) swept into three
+  torchmetrics metric classes — `**kwargs` constructors, so no accept-list drops them — fired 42
+  `… has no parameter 'batch_size' … DROPPED` warnings and 42 `unknown-attribute` records per run
+  → nothing; the ENG-7 warning now fires only for a key WRITTEN on the marker
+  (`addressed_keys_of`), which is the only spelling that can be a typo. A typo on the marker
+  (`{_target_: textwrap.TextWrapper, widht: 9}`) still warns, located, and is still recorded.
+
+- **`$$` is a literal `$` in the final objects — collapsed once, where the document becomes
+  objects** (BUGS-2026-08-22 PA14 / CD5, 2026-08-22). Measured before → after:
+  `load("command: echo $$RUN_USER", until="document")` gave `echo $RUN_USER` and reloading that
+  result gave `echo gert` (the document stage was not idempotent) → the document stage keeps
+  `echo $$RUN_USER`, reloading it changes nothing, `load()` answers `echo $RUN_USER`; a dict
+  inside a marker's kwargs reloaded its keys as `$$k` → `$k`. Pass 6 treats `$$` as opaque;
+  `engine.collapse_escapes` runs in `instantiate` and after `configure()`'s settle; `hydraide`
+  collapses the settled tree before writing, so the artefact carries `$$` and
+  `emit(emit(x)) == emit(x)`. Pinned in `tests/test_resolver.py`, `tests/test_load_stages.py`,
+  `tests/test_dumper.py`, `tests/test_hydraide.py`, `tests/test_configurator.py`.
+
+- **Regressions from the 2026-08-19 cycle, part one** (BUGS-2026-08-22 SR7 / PA20 / CD14 / PA30,
+  2026-08-22). Measured before → after: a dimension declared by a boolean block AND keyed blocks
+  refused its bare activation (`scopes=["debug"]` → `ScopeError … selects nothing`) → the boolean
+  block fires (`{'log': 'DEBUG'}`; keyed-only dimensions stay refused); a malformed activation
+  string in a tag or a `default_scopes:` entry was refused without a location → the tag names its
+  `file:line:col`, the entry leads with its file; `hydraide emit` printed a 50-line traceback for a
+  non-UTF-8 file and a 53-line one for a reference cycle → one line + exit 1 for both (the file is
+  a located `ConfigurationError` from the loader; any other exception is rendered as
+  `internal error while resolving …`); `docs/interpolation.md` still said a re-declared `!class:`
+  node in an overlay "is a replacement" while a same-target marker tunes → the guide states the
+  rule. Pinned in `tests/test_scopes.py`, `tests/test_cli.py`.
+
+- **A bare mapping at a slot that holds a marker is refused as ambiguous** (BUGS-2026-08-19
+  BC13, user ruling 2026-08-20). Measured before → after with `c: !class:C {optimizer:
+  !class:T {name: o, lr: 1.0}}`, `lr: 9.0`, then a last line `optimizer: {x: 1}`: the line
+  delivered nothing (reported `unused`) yet `c.optimizer.lr` became `1.0` — the marker's own
+  kwargs were moved to the last line → a located `ConfigurationError` naming the two working
+  spellings: `c.optimizer.x: 1` (sets the attribute; measured `lr=9.0, x=1`) and
+  `c.optimizer: !class:...` (replaces the slot). `configure()` refuses the same text. When the
+  key is the node's instance name the mapping is an instance-name block and delivers as before;
+  a slot holding plain data is untouched. By the same ruling no per-key verdict or position
+  bookkeeping is added to the precedence engine — BC10 and BC11 stay filed as documented limits.
+  Pinned in `tests/test_broadcast_scoping.py`.
+
+- **The parse-time tail: lists, long paths, tagged merges, `to_tags` equivalence, marker
+  placeholders, `import:` parity, `~`, env paths, empty segments** (BUGS-2026-08-19
+  PA9/PA17/PA21/PA22/PA23/PA26/PA27/PA29/PA30; PA24 ruled as-designed, 2026-08-20). Measured
+  before → after: `a: [10, 20]` + `a.0: 99` gave `{'a': {'0': 99}}` (the list destroyed) → a
+  located refusal; a 379-character `.yaml` path STRING parsed as YAML text and came back as the
+  config → reads the file (the suffix rule has no length clause); `<<: *b` from a `&b !class:…`
+  anchor loaded as an inert dict → refused naming the `_target_:` spelling (a plain anchored dict
+  still merges); `to_tags` emitted `!ref:"proto"` (a raw ScannerError on reload and from
+  `convert_file`), an EAGER `!class:` for `_partial_: yes`, and `(a=None)` for the string "None"
+  → `!ref:proto`, `!partial:`, and the flow body `{a: None}`; `convert_file` reports a parse
+  failure as a finding; `${model.hidden}` through a marker stayed literal while `!ref:model.hidden`
+  was refused → the same refusal (a `:default` still applies; a plain miss still stays literal);
+  an `import:` of a module with a SyntaxError raised raw → warns like any failed import, and a
+  NESTED `import:` no longer stays behind as a data key; `~/x.yaml` and `include: ~/…` were
+  probed as `<cwd>/~/…` → `~` expands; a `require_paths`-only key in `load_workspace_env` was never
+  validated → required and checked; `a..b: 1` minted `{'a': {'': {'b': 1}}}` → refused at the
+  key-shape gate. PA24 (`s.lr: 1` written BEFORE `s: !class:Stage` is replaced by the later
+  marker) is the documented last-wins re-declaration rule and is pinned as such. Pinned across
+  `tests/test_merger.py`, `tests/test_loader.py`, `tests/test_plain_format.py`,
+  `tests/test_spelling.py`, `tests/test_resolver.py`, `tests/test_search_paths.py`,
+  `tests/test_env.py`, `tests/test_document_order.py`.
+
+### Changed
+
+- **An activation string is `dim` or `dim=value`; anything else is a located `ScopeError`** in
+  every spelling — the tag suffix (named by `file:line:col`), a CLI `--scope` / `scopes=` entry,
+  a `default_scopes:` entry (led by its file). One splitter, `scopes.parse_scope_arg`, serves all
+  of them; a malformed string is never read as a boolean dimension named by the whole text.
+
+- **A wrapper shield only beats the sweeps it out-positions** (user ruling 2026-08-20 — document
+  order, last spec wins, no shield exemption; BUGS-2026-08-19 BC12). Measured before → after with
+  `w: !class:Wrapper {lr: 1.0, inner: !class:Opt {lr: 0.5}}` and a LAST line `lr: 9.0` (or
+  `'**': {lr: 9.0}`): bare gave `inner.lr = 0.5` with `lr` reported unused while the rider gave
+  `1.0` (the shield value) → both give `9.0`; written ABOVE the wrapper both still give `0.5`
+  (inner's own kwarg is the latest spec). The
+  `test_override_at_wrapper_shields_inner_classes` pin was re-ruled accordingly (rider now
+  written BEFORE the wrapper, which the shield still beats).
+
+### Fixed
+
+- **Class-block deliveries stop lying: markers reach `**kwargs` classes, lists reach declared
+  slots, the same-target guard names itself** (BUGS-2026-08-19 BC15/BC16/BC17, 2026-08-20).
+  Measured before → after: `KW: {n: 1, child: !class:T {lr: 1.0}}` on a `**kwargs` class dropped
+  the marker with a false "has no attribute 'child'" warning + a failed record (the own-kwarg
+  spelling delivered) → the ctor receives it, clean report; `Trainer: {items: [1, 2]}` at a
+  declared but unannotated param dropped the list the dotted/own spellings delivered → lands
+  (an UNDECLARED key stays refused; bare lists still never broadcast); the same-target
+  anti-recursion drop (`Node: {child: !class:Node {…}}`) still drops but logs a TRACE naming the
+  guard instead of two false warnings and two `unknown-attribute` records. BC14 (a bare sweep
+  restating an addressed `**kwargs` key moves it to the attribute channel) was CLOSED AS-DESIGNED
+  by the same ruling and is pinned; BC10/BC11/BC13 are deferred to `TASKS.md` with their measured
+  repros — each needs a design round. Pinned in `tests/test_broadcast_scoping.py`,
+  `tests/test_broadcast_wrapper_override.py`, `tests/test_scopes.py`.
+
+- **The introspection tail: slots, forward refs, docstrings, schema defaults, located warns**
+  (BUGS-2026-08-19 N5/N6/N7/N8/N12/N14/N15/N16/N17, 2026-08-20). Measured before → after:
+  a body slot `self.optimizer: Partial["Optim"] = None` lost its deferral (the quoted name inside
+  the subscript evals to a ForwardRef; the slot's marker was BUILT eagerly and crashed on the
+  missing runtime arg) → nested ForwardRefs evaluate through public `get_type_hints`, both
+  declaration halves answer alike; `timeout = None` and an assigned function were not slots
+  (`strict_attrs` refused attributes the class HAS) → a public class attribute declares its slot
+  whatever its value is, methods stay invisible; a `@cached_property` was a settable slot (a bare
+  sweep key overwrote derived state, `count=999`) → invisible like the plain property; a
+  `__slots__` body slot read as `class_attr` so `dump()` dropped it (round-trip label `q` → `p`)
+  → the member descriptor steps aside, `body_slot`, round trip holds; `parse_param_docs`
+  swallowed a Google `**kwargs:` entry into the previous help, leaked NumPy types into
+  descriptions, dropped a nested-paren entry, hid the class `Args:` behind a one-line `__init__`
+  docstring, and gave a subclass nothing → all five parse (MRO-wide, subclass wins per key);
+  a `@configurable @dataclass` fired the cannot-scan WARNING with advice that cannot help →
+  debug (dataclass-narrow; exec'd/frozen code keeps the warning); the canonical marker default
+  (`= Target(Adam, lr=1e-3)`) warned on every `model_json_schema()` and vanished → published as
+  `{"_target_": "Adam", "lr": 0.001}` silently (non-JSON kwargs: excluded silently); warn-mode
+  validation now names the marker's `file:line:col`; `get_hierarchy` reports `32`, not `None`,
+  for `self.batch_size: int = 32`. Pinned across `tests/test_introspect.py`,
+  `tests/test_strict_attrs.py`, `tests/test_dumper.py`, `tests/test_parse_param_docs.py`,
+  `tests/test_broadcast_attrs.py`, `tests/test_pydantic_export.py`, `tests/test_validation.py`,
+  `tests/test_all_gaps.py`.
+
+- **Concurrent passes never fault each other; `to_pydantic` is one model per class across
+  threads** (BUGS-2026-08-13 X4/X5, 2026-08-20). Measured before → after: a `clear_pass_caches()`
+  landing between a cache's `in` check and its indexed read raised `KeyError` out of public
+  `materialize()` (reproduced deterministically at all four sites — the accept-list, its
+  negative-string branch, the param-kinds map, the parent-attr blacklist) → every consult is one
+  atomic `.get()` with a MISS sentinel where `None` is a real answer, so the worst case is a
+  benign recomputation; ten barrier threads' FIRST calls to `to_pydantic(cls)` returned nine
+  distinct model classes (a bare `lru_cache` serializes nothing, so cross-thread `isinstance`
+  failed) → one model, via a lock-free fast path plus a reentrant-locked double-checked publish
+  (reentrant because model building recurses for nested `@configurable` param types).
+  Pinned in `tests/test_concurrency.py`.
+
+- **The marker spelling of an override tunes; a default instance name matches on load; a literal
+  `$` survives the round trip** (BUGS-2026-08-19 CD5/CD19/CD10 + CD21 documented, 2026-08-20).
+  Measured before → after: `configure(trainer=t, config="trainer: !class:Trainer {lr: 0.1}\nlayers: 10")`
+  left `model.layers=3` with `layers` unused (the marker replaced the object's document) →
+  `model.layers=10`, nothing unused — the mapping and marker spellings agree, and an include
+  overlay `model: !class:Model {}` over a base `model: !class:Model {layers: 5}` keeps
+  `layers: 5` (a DIFFERENT class or marker kind still replaces); an instance-name block
+  `m: {layers: 5}` matched only on `configure()` when `name="m"` was a ctor default → the load
+  path reads the same default (an explicit `name:` kwarg opts out); `dump()` of
+  `command: echo $RUN_USER` reloaded as `echo gert` → emitted as `echo $$RUN_USER` and reloads
+  verbatim — `$$` is the literal-`$` escape in every spelling, mapping keys included (an
+  author-written `$$5` now loads as `$5`). The load/configure divergence for a ctor-body-built
+  child (`trainer.model.layers:` on an empty slot) is documented in docs/configure.md rather than
+  fixed — promotion by annotation stays rejected (record 15). Pinned across
+  `tests/test_configurator.py`, `tests/test_merger.py`, `tests/test_includes.py`,
+  `tests/test_broadcast_scoping.py`, `tests/test_dumper.py`, `tests/test_resolver.py`.
+
+- **Interpolation is pass 6, after expansion, and genuinely single-pass** (BUGS-2026-08-19
+  PA6/PA7/PA8 + BUGS-2026-08-13 P8/P9, 2026-08-20). Measured before → after: `${train.lr}` beside
+  `train.lr: 0.2` and a later `train: {lr: 0.1}` gave `0.2` while the returned tree said `0.1` →
+  both say `0.1` (expansion runs first; whole-string `${ref:...}` strings hoist to markers before
+  it, so `use: ${ref:proto}` + `use.k: 5` still tunes the shared referent, and a dotted write
+  through any other unresolved `${...}` string is refused instead of silently clobbered);
+  `c: ${a.b}` handed back the RAW subtree, unresolved placeholders and all → the resolved
+  container (a container reaching itself through the placeholder is a refused cycle);
+  an env var SET to the empty string read as unset (`${EMPTY}` → `None`, `${EMPTY}/x` literal) →
+  `""` / `/x` in every spelling; an env value carrying `$HOME` was re-scanned and expanded by the
+  bare-`$` pass (`pa$HOME` → `pa/Users/gert`) → substituted text is never re-scanned; an anchored
+  marker aliased at two slots had its kwargs interpolated twice (`${env:INDIRECT}x` → `hunter2x`)
+  → walked once per resolver, same answer as the un-aliased document. Pinned across
+  `tests/test_resolver.py`, `tests/test_load_stages.py`, `tests/test_configurator.py`.
+
+- **`load()` never mutates parsed input; found-null is a hit; int-keyed tables are addressable;
+  a bare keyed activation is refused** (BUGS-2026-08-19 SR3/SR6/SR7/SR13, 2026-08-19). Measured
+  before → after: a raw document loaded twice answered with the FIRST call's activation and
+  `discover_dimension_values(raw)` went empty (pass 4 rewrote the caller's marker kwargs in
+  place; `import:` was popped from the caller's dict — PA26's caller half, BC20's kwarg write) →
+  parsed data is structurally copied on entry (markers through a memo, an explicit `context` on
+  the SAME memo, leaves by identity), each load answers for itself and discovery survives;
+  `!ref:cfg.x` on `cfg: {x: null}` was refused as an attribute reference and `${a.b}` to the same
+  null stayed literal text → the walker's MISS is a sentinel, found-null resolves to `None`
+  (falsy-but-present and the genuine attribute refusal pinned as cons); `${class_names.1}` /
+  `!ref:class_names[1]` on `{1: DJI}` were literal/refused → `DJI` (int key first, digit-string
+  fallback; list indexing unchanged); `scopes=["framework"]` against keyed blocks selected
+  nothing and suppressed `default_scopes` → a located `ScopeError` naming the declared values
+  (defaults and boolean dimensions pinned unchanged). Pinned across `tests/test_load_stages.py`,
+  `tests/test_resolver.py`, `tests/test_ref_identity.py`, `tests/test_scopes.py`.
+
+- **The tag spelling refuses what it silently degraded, and legal-but-odd inputs stop crashing
+  raw** (BUGS-2026-08-19 PA11/PA13/PA14/PA19/PA20/PA28, 2026-08-19). Measured before → after:
+  `!class:Foo bar` and a sequence body dropped their data whole → located refusals naming the
+  shape; `!class:Foo(a=1, b=2)` (one space — the AGENTS-cited motivating failure) surfaced as
+  `Cannot resolve class: Foo(a=1,` → refused at parse naming the space rule; `(a)` and `(a=[1,2])`
+  silently dropped/corrupted kwargs → refused naming the fragment; `_target_:` inside a
+  `!class:` body became a ctor kwarg literally named `_target_` → refused as one spelling too
+  many; an empty `!scope:` suffix was silently inert → refused like the reserved-key spelling;
+  `_scope_: {f: 0.10}` minted `'0.1'` (never matching the CLI string or the tag's text) → the
+  boolean quote-it refusal covers every non-string; `import: 42`/`[os, 42]`/`{os: x}` crashed
+  raw or imported dict KEYS → one shape refusal like `include:`'s; `load("")`, `load(Path("."))`,
+  a directory named `d.yaml`, and `include: ''` crashed with raw `IsADirectoryError` → empty text
+  is `{}` and a directory is a located `ConfigFileNotFoundError`. Five con pins: the bare tag,
+  well-formed inline, mapping body, quoted dim values and `import: os` are untouched. Pinned:
+  `tests/test_plain_format.py`, `tests/test_scopes.py`, `tests/test_loader.py`.
+
+- **The dump round trip holds for opaque values, `**kwargs` extras and stamped function
+  targets — and `configure()` stops replanting the capture** (BUGS-2026-08-19
+  CD8/CD9/CD11/CD12, 2026-08-19). Measured before → after: a `Path` attribute dumped as
+  `{_target_: pathlib.PosixPath}` and reloaded as `PosixPath('.')` — a sink silently pointing at
+  the launch directory → dumps as its string and reloads intact; a numpy scalar reloaded as
+  `np.float32(0.0)` → dumps `1.5`; an `Enum` member raised on reload → dumps its value; any other
+  opaque keeps the placeholder but WARNS once per type that it reloads default-constructed;
+  `Wrap(a=2, foo=3)` dumped `{a: 2}` and reloaded with `kwargs == {}` → the captured extras are
+  emitted (`foo: 3`); a registered FUNCTION target under `__confluid_class__` emitted
+  `_target_: <function build_widget at 0x…>` → the registry key, via the ONE `_target_name`;
+  `configure(e, {"lr": 0.5})` on an eager class planted a new `width` attribute and warned about
+  keys the config never mentioned → the capture-equal fallback is skipped, while a config that
+  CHANGES the param still applies it (pinned con). Pinned: `tests/test_dumper.py`,
+  `tests/test_configurator.py`.
+
+- **`configure()` reaches children beyond `__dict__`, never runs a property getter, gates the
+  named-overlay path, and takes `scopes=`** (BUGS-2026-08-19 CD1/CD2/CD6/CD18 + SR4's channel
+  half, 2026-08-19). Measured before → after: an `nn.Module` child (kept in `_modules`) was
+  REPLACED by a fresh build — the original never configured (`net.backbone is bb → False`) → found
+  via `getattr` and configured in place (`True`, recursion reaches it); a `__slots__` host's child
+  likewise; a ctor param behind a read-only property crashed the whole call
+  (`AttributeError: property has no setter`) → the property slot is neither read nor written;
+  `dump()` of a property-shadowed ctor param emitted the getter's derived object (running the
+  getter 4×, and the artefact neither reloaded nor re-applied) → dumps the CAPTURED ctor value,
+  getter runs 0× (discovery walk included); a typo'd key in a named overlay
+  (`configure(trainer=t, config={"trainer": {"ghost": 1}})`) was set in silence with an empty
+  report and `strict_attrs` ignored → warns, records `unknown-attribute`, still applies (B1), and
+  `strict_attrs` refuses located; scope blocks in a config resolved with NO activation (blocks
+  vanished, `!notscope:` fired, the caller's intent silently discarded) → `configure()` /
+  `configure_from_file()` take `scopes=` and resolve exactly as `load()` does, with consumed
+  wrappers never reported unused. Pinned: `tests/test_configurator.py`, `tests/test_dumper.py`,
+  `tests/test_configure_via_document.py`.
+
+- **The emitted artefact is self-contained, honest, and always parses back** (BUGS-2026-08-19
+  CD13/CD14/CD15/CD16, 2026-08-19). `hydraide emit` re-emits every `import:` the load consumed
+  (the include accumulator's sibling), so a fresh process reloads the artefact — it used to fail
+  with `UnknownClassError` because the classes were registered only as a side effect of the
+  emitting process; pass 7 refuses an unresolvable STRING target with a located
+  `UnknownClassError` (it used to take the accept-everything list, absorb every bare key, and
+  `check` blessed a typo'd class with exit 0 — nothing imports between pass 7 and pass 8, so
+  settle refuses exactly what construction would); anchor names are deterministically unique
+  (`&m_0` / `&m_0-2` where two shortest paths folded to one spelling and emitted a duplicate
+  anchor no parser could read); and the `hydraide` command renders PyYAML syntax errors (with
+  their file:line mark) and `-o` write failures as ONE line + exit 1 instead of a traceback.
+  Pinned: `tests/test_hydraide.py` (incl. the fresh-process subprocess reload and emit
+  idempotence with the import line), `tests/test_cli.py`.
+
+- **The located-error sweep — five raises that had the location in hand and dropped it**
+  (BUGS-2026-08-19 SR14/SR15/ENG-4/ENG-10/PA25, 2026-08-19). A `@axis=$key` selector whose key is
+  missing now names the marker's line (`… or write the value literally. at <file>:1:7`); the
+  undeclared-scope-value `ScopeError` lists where the values are declared (`declares fw with: x, y
+  (declared at dims.yaml:1:4, dims.yaml:3:4)`); a malformed `default_scopes:` leads with its file;
+  `flow()` of an unresolvable `Reference` names its line like `load()` always did; a validating
+  `__setattr__`'s `TypeError` (torch's "cannot assign 'int' as child module") becomes the same
+  located `ConstructionError` the `AttributeError` path raises, at both post-init setattr sites; an
+  include miss reads `sub/a.yaml includes missing.yaml: Not found … (searched: sub/missing.yaml, …)`
+  — the including file and the tier actually probed first — and a circular include renders the
+  whole chain (`c1.yaml -> c2.yaml -> c1.yaml`). Pinned by message in `tests/test_exceptions.py`.
+
+- **Four construction-time silences and one eager build** (BUGS-2026-08-19
+  ENG-3/ENG-7/ENG-11/ENG-16/ENG-17, 2026-08-19). Measured before → after:
+  a typo'd key on an UNREGISTERED target (`_target_: torch.optim.Adam` shape) vanished with an
+  empty report → still not applied (unregistered targets take no post-init attributes) but a
+  located WARNING plus an `unknown-attribute` report record; a body slot deferred by ANNOTATION
+  alone (`self.optimizer: Partial[Optim] = None`) built its `_target_:` value eagerly and crashed
+  the runtime-injection constructor → stays a `PartialClass` (both deferral signals gate the
+  promotion), and the tuned marker of a `Partial[T]` slot no longer builds because ONE later bare
+  key exists; the promoted marker keeps `_yaml_loc` and the promotion's DEBUG line names the line
+  (ENG-11); a `Reference` kwarg whose REFERENT failed to construct was silently left in the slot
+  (`except ValueError` also caught `ConfigurationError`) → the referent's own error propagates,
+  only a genuine `ReferenceResolutionError` defers; a ctor-DEFAULT marker
+  (`engine: Engine = Target(Engine)`) was ONE object through the id()-keyed memo, so two Cars in
+  one pass shared one Engine → one child per host (the default is copied per instance before
+  resolving; `!ref:` stays the one sharing spelling, pinned). Pinned across
+  `tests/test_instantiate.py`, `tests/test_deferred_broadcasting.py`, `tests/test_ref_identity.py`.
+
+- **The registry refuses what it cannot name or bind, derives `category` at its one authority,
+  enumerates safely, and stays interruptible** (BUGS-2026-08-19 R1/R2/R3/R4/R5/R6/R9/R10,
+  2026-08-19). Measured before: `@configurable("Named")` and `register(functools.partial(...))`
+  crashed with a raw `AttributeError` from an unrelated line; a nameless callable silently
+  registered under the literal name `wrapper`, every second one clobbering the first;
+  `@configurable` above `@staticmethod`/`@classmethod` registered a broken target (instance calls
+  raised, a classmethod object is not callable); `get_class(UnregisteredSub)` answered the PARENT
+  class via the inherited name mark; a subclass restating `role="metric"` kept the parent's
+  `classification_loss` category (a metric in every loss picker) and `register_class(task=, role=)`
+  derived nothing; `list_classes()` during a concurrent registration raised `RuntimeError:
+  dictionary changed size during iteration`; and `except BaseException` in `load_configurables`
+  swallowed Ctrl-C. Now: located `ConfigurableDefinitionError`s naming the fix (a provided `name=`
+  still suffices — a named partial registers and flows; a function genuinely named `wrapper` is
+  untouched; `@staticmethod` ABOVE `@configurable` keeps working); the read side of `get_class`
+  uses the own-`__dict__` mark like the write side; `category` derivation lives in
+  `register_class` and fires whenever the taxonomy is restated (explicit `category=` wins);
+  enumeration iterates `list(...)` snapshots (no lock — `list(dict)` copies under the GIL);
+  `load_configurables` catches `Exception`. Pinned: `tests/test_registry.py` (refusals, cons, the
+  switch-interval race), `tests/test_duplicate_names.py`, `tests/test_task_role.py`,
+  `tests/test_load_configurables.py`.
+
+- **A dotted key landing directly on a marker's kwarg competes at the dotted line's position**
+  (BUGS-2026-08-19 BC4; user ruling 2026-08-19, per-key "option B"). Pass 6 folded `t.lr: 9.0`
+  into the marker's kwargs, silently moving the value to the MARKER's line: written as the last
+  line it lost to a bare `lr: 5.0` between (`explain` reported "own 9.0 — beaten, earlier"), and
+  to a class block or `'**'` rider the same way, while the instance-block spelling of the same
+  override won. The fold now stamps the marker (kwarg → the sibling keys the line out-positioned),
+  the scanner skips a cascade delivery arriving via an out-positioned key (one written after the
+  line still wins), and `dump()` re-emits a stamped kwarg as a dotted line after the keys it beat —
+  so `load(emit(x)) == load(x)` and `emit(emit(x)) == emit(x)` hold. Per key by ruling: the
+  marker's other kwargs keep the marker's position, so the dotted and block spellings of one
+  override agree on every key. Pinned: the BC4 group in `tests/test_document_order.py`,
+  `tests/test_hydraide.py`.
+
+- **A grouping dict is transparent for position, not only for nesting** (BUGS-2026-08-19
+  BC2/BC9, 2026-08-19). Pass 7's dict branch appended a group's entries after every inherited
+  key, so a marker inside `group:` held an unbeatable position — its own kwargs beat a LATER
+  bare key, class block and `'**'` rider alike (`group: {node: !class:T {lr: 1.0}}` + `lr: 9.0`
+  answered `1.0`; the same marker at a direct slot or in a list kwarg answered `9.0`) — and a
+  key restated inside a group kept an EARLIER same-named root key's position, so adding an
+  earlier LOSING line flipped a later contest (re-opens 2026-08-13's E4, whose probe had no own
+  kwarg on the node). The group's entries are now SPLICED at the group key's slot, rebuilt fresh
+  in document order with per-key re-anchoring — the same rule `_splice_kwargs_at_slot` applies at
+  a marker boundary. Pinned: the grouping-dict group in `tests/test_document_order.py` (three
+  later-spec spellings, the dict-valued-kwarg case, BC9's flip with both cons).
+
+- **A class block's C2 verdict protects the addressed node, not its subtree** (BUGS-2026-08-19
+  BC5, 2026-08-19 — a regression from the phase-4 C2 fix). `_view_for` popped the bare keys the
+  block out-positioned from the view used for the WHOLE descent below the slot, so a grandchild
+  the block never addressed lost the cascade: `lr: 9.0` + a later `Trainer: {optimizer: {lr: 5.0}}`
+  gave `optimizer.lr = 5.0` (right) but `optimizer.sched.lr = 1.0` — without the block line it is
+  `9.0`. The narrowed view still protects the tuned marker's own kwargs; its child view is now
+  rebuilt from the un-narrowed context (`_flow_recursive(descend_context=…)`), so `sched.lr = 9.0`
+  either way. Same fix for the `'**'` rider variant. Pinned:
+  `tests/test_cross_path_pins.py::test_a_block_verdict_protects_the_slot_but_not_its_descendants`
+  (all four orderings, cons included).
+
+- **The schema mirror is built for every legal signature, JSON-schemas, and never switches
+  validation off silently** (BUGS-2026-08-19 N1/N2/N3/N4/N9/N10/N11/N13, 2026-08-19). Measured
+  before: a non-runtime `Protocol`-typed param made `Cls()` raise a raw `pydantic_core.SchemaError`;
+  a `_seed` param made every `Cls()` raise `NameError: Fields must not use names with leading
+  underscores`; a `model_config` param crashed `to_pydantic` (`'FieldInfo' object is not iterable`)
+  and the swallowed `TypeError` left the class UNvalidated under the default strict policy;
+  `Annotated[Optional[Tuple[float, float]], Interval(...)]` raised `TypeError: Unable to apply
+  constraint` on a legal value; any plain class or `logging.Logger` param (and a bare
+  `collections.abc.Callable`) made `model_json_schema()` raise `PydanticInvalidForJsonSchema`;
+  `set_policy(init="stict")` was stored and read as warn-mode. Now: `Protocol` → `Any`; bare
+  `Callable` → `Any`; a plain un-schemable leaf keeps its isinstance check under
+  `Annotated[T, WithJsonSchema({})]`; underscore / `BaseModel`-attribute names are mangled fields with
+  the real name as alias (`field_name_for` is the reverse map, used by `validate_setattr` and the
+  mixed-kwargs path); range marks relocate through `Optional`; `validation._model_or_none` skips an
+  unbuildable mirror with ONE warning per class naming the cause; `set_policy` refuses a typo.
+  Pinned: `tests/test_pydantic_export.py` (the N-group), `tests/test_validation.py`.
+
+- **Kwargs on a reference tune the shared referent instead of vanishing** (BUGS-2026-08-19
+  PA10/BC8/SR9; user ruling 2026-08-19). `{_ref_: proto, k: 5}`, `!ref:proto` with a body (the tag
+  constructor discarded it at parse) and a dotted path walking through a reference
+  (`a.optimizer.lr: 9.0` where `a.optimizer` is `!ref:shared`) all dropped their kwargs silently,
+  report `unused=[]`. `resolver.fold_reference_kwargs` now folds them into the referent marker's own
+  kwargs before pass 7 (`loader._load` runs it before pass 5 and after pass 6), so they compete at
+  the referent's position like any own kwarg — a later bare key still wins — and every alias sees
+  them; of two references tuning one referent the later wins per key; a reference to a plain value
+  with kwargs is a located `ConfigurationError`. Pinned: the reference-kwargs group in
+  `tests/test_ref_identity.py`, `tests/test_hydraide.py`.
+
+- **A live value in a document keeps its identity through every merge** (BUGS-2026-08-19
+  PA5/PA12/CD3/CD4, 2026-08-19). `merger._preserve_identity_copy` kept markers by identity and
+  `deepcopy`d every OTHER leaf, and it runs under `deep_merge` (include paste, CLI overlays,
+  `configure()`'s named-key fold, the scope splice) and `expand_dotted_keys` (pass 6 of every
+  `load()`, `configure()`). Measured: a dataset handed through `load({"x": ds})` or
+  `configure(t, config={"dataset": ds})` came out as a silent copy (`t.dataset is ds → False`);
+  the named spelling `configure(trainer=t, config={"trainer": {"lr": 0.1}})` copied every
+  attribute it did not mention; an uncopyable value raised a raw `TypeError: cannot pickle
+  '_thread.lock' object`; and any `include:` line duplicated an anchored marker aliased inside a
+  scope block (one instance became two). The copy is structural now — dicts, lists, tuples and
+  `ScopeBlock`s are rebuilt (a merge still never mutates its inputs), markers AND live leaves are
+  kept by identity. Pinned: `tests/test_merger.py` (identity through `deep_merge` /
+  `expand_dotted_keys`, the uncopyable leaf, the ScopeBlock's inner marker, the containers-still-
+  rebuilt con case), `tests/test_configurator.py` (CD3, CD4), `tests/test_load_stages.py`
+  (PA12), `tests/test_scopes.py` (PA5 end to end).
+
+- **A scope block splices by the include-paste rule** (BUGS-2026-08-19 SR1/SR2/PA2/PA3/PA4,
+  2026-08-19). `scopes._resolve_dict` landed a block's keys — and a plain key written after a
+  block — by plain assignment, while `docs/lifecycle.md` and `_splice_includes` said scopes follow
+  the include paste. Measured: an active block re-stating a marker slot with a mapping DELETED the
+  marker (`Model(name=a, depth=3)` → `{'name': 'b'}`); a nested block lost its other keys
+  (`{lr: 0.1, epochs: 5}` → `{lr: 0.9}`); a spliced key kept the EARLIER writer's position, so
+  `s.lr` was 0.1 with the scope active and 0.5 written flat, and a later `lr: 2` lost to an
+  earlier `Stage: {lr: 7}` ONLY when a scope supplying a default was active; two active blocks
+  each carrying `include:` read only the second file. Now every key goes through
+  `scopes._splice_key` → `merger.deep_merge` per key (tune a marker, deep-merge a nested block,
+  replace a scalar, re-anchor at the later position), and colliding `include:` values combine into
+  a list. `deep_merge` also merges two `ScopeBlock`s under one key with identical `dims`/`negate`
+  (the same wrapper on both sides of an include kept only the including file's keys); a different
+  condition still replaces. Pinned: the splice group in `tests/test_scopes.py`,
+  `tests/test_merger.py`, `tests/test_includes.py`.
+
+- **The pass-7 `flow_memo` pins the marker it keys on** (BUGS-2026-08-19 BC1, 2026-08-19). The
+  memo keyed on `id()` of the marker `_flow_recursive` was handed; since the pass-7 dict-at-slot
+  tune (C1, 2026-08-14) that marker is often a `tune_marker` COPY that dies with the enclosing
+  `merged_kwargs`, and a recycled address read as a memo HIT — measured: one class block
+  `Trainer: {optimizer: {lr: 9.0}}` over 300 trainers left 22 trainers holding ANOTHER trainer's
+  optimizer (278 distinct objects for 300 slots). The write now appends to
+  `_EngineState.memo_keepalive` like the three `instance_memo` writes (architecture record 16).
+  Pinned: `tests/test_memo_pinning.py::test_a_class_block_tune_never_hands_one_node_anothers_settled_child`.
+
+- **Four pass-7 ordering defects, exposed by running `configure()` through the document and fixed
+  IN pass 7 (`load()` gets them too), each measured before/after** — F7: a same-named child slot
+  (`child:` inside `child:`) lost its slot, so a later bare `lr` reached depths 1 and 2 and not 3;
+  F8: `tune_marker` was single-level, so `root: {child: {child: {lr: 0.5}}}` replaced the
+  second-level marker with the plain dict `{lr: 0.5}` (`root.child.child` came back as a dict);
+  F10: a marker nested in a LIST kwarg had no slot, so its own kwargs always beat a later block or
+  bare key; F11: an instance-name block whose name equals the marker's attribute key (`middle:`
+  for the marker at `.middle`) displaced the marker from its slot, so neither the block nor a
+  later bare key reached it. Plus: the C2 block-vs-bare verdict is now applied inside pass 7 for
+  the descent into a block-delivered slot, so the settled (emitted) document carries the answer.
+- **A plain mapping whose key references a same-named outer key no longer recurses forever**
+  (F6): `val_fraction: 0.2` + `r: {val_fraction: !ref:val_fraction}` loads as `{'val_fraction': 0.2}`
+  — a scope never answers a reference with the reference itself; the self-hit is skipped and the
+  next scope answers. A self-reference with NO outer key is a located `ReferenceResolutionError`.
+- **A nested class-valued kwarg dumps its `__qualname__`.** `dump()` rendered a class VALUE with
+  `__name__`, so `Holder.Inner` dumped as `pkg.Inner` — a path that resolves to nothing, or
+  silently to an UNRELATED top-level class sharing the short name. Now `pkg.Holder.Inner`,
+  matching the two sibling sites in the same file that already used `__qualname__`.
+
+### Internal
+
+- The ` at file:line:col` error-suffix helper (`_at_yaml_loc`) moved to `confluid.fluid` beside
+  `format_yaml_loc` — it had drifted into three spellings across seven re-inlined copies because
+  the layering kept `broadcast`/`scopes` from importing it out of `engine`. The five
+  identical-spelling sites now share it; the two contextual spellings (`(set at …)`,
+  `(receiver at …)`) are deliberate and unchanged. `engine._contains_fluid` was renamed
+  `_is_definition_shaped` — it shared a name with `validation._contains_fluid` while treating ANY
+  list as fluid-shaped and never recursing tuples, a de-duplication trap. The duplicate
+  `partial_param_names` entry in `__all__` and its orphaned comment (left by the alias-block
+  deletion) are gone.
+
+### Fixed
+
+- **The block-vs-bare contest agrees across both paths, in every ordering** (BUGS-2026-08-13 C2).
+  One deferred slot with two competing specs — a bare sweep key and a class block addressing the
+  slot — resolved differently on the two paths for the ordinary "node first, overrides below"
+  layout: `load()` gave 99 where `configure()` gave 50. Both EDGE orderings agreed and were
+  pinned; the middle one, the way anyone actually writes it, had no pin. The cause was one rule
+  implemented twice — the shared scanner already computes the verdict at the delivering BLOCK's
+  position and hands it to every sink, `_LiveSink` recorded it, and `_MergeSink` accepted the
+  argument and dropped it while the engine computed a second verdict from the MARKER's splice
+  position, where the block's position no longer exists. `_MergeSink` now keeps it and the engine
+  overrides only the slots a block delivered; a marker's OWN dict kwargs keep the existing
+  computation, since those really do sit at the marker. Pinned by the C2 group in
+  `tests/test_cross_path_pins.py` — all three orderings, per path and compared across paths.
+
+- **A dotted key competes on position, like every other spelling** (BUGS-2026-08-13 P7). The
+  dotted expansion ran in two passes — every plain key first, then every dotted key sorted by depth
+  and then alphabetically — so a dotted leaf was always applied last and could not lose to anything
+  written after it. `a.b: 1` followed by `a: {b: 0}` gave `{'b': 1}`, and so did the opposite
+  order: the two orderings did not disagree, against the one precedence rule. The same conflict
+  across an include behaved the same way, so a dotted key written ABOVE an `include:` still beat
+  the file pasted below it, while two plain keys in that position arbitrate correctly. Expansion is
+  now a single pass in document order; the fresh-head anchoring (fixed in August) is unchanged, and
+  both branches merge a dict onto a dict symmetrically. Verified by snapshotting the resolved value
+  of all 1759 workspace configs before and after: zero changed. Pinned by the position group in
+  `tests/test_merger.py`.
+
+- **An include-file override of one kwarg no longer deletes the whole marker** (BUGS-2026-08-13
+  P1). The commonest composition in the system — a base file defining the model, an experiment file
+  overriding one knob — produced a plain `dict` with no target and no error:
+
+  ```yaml
+  # base.yaml                       # experiment.yaml
+  model:                            include: base.yaml
+    _target_: collections.Counter   model:
+    red: 1                            blue: 3
+  ```
+  `load()` returned `{'blue': 3}`, while the DOTTED spelling of the same override
+  (`model.blue: 3`) correctly gave `Counter({'blue': 3, 'red': 1})` — two spellings of one
+  override disagreeing, which the format's own rule forbids. `deep_merge` recursed only when both
+  sides were dicts, and a marker is not a dict, so this was a THIRD site of the dict-at-slot rule
+  C1/C1b settled; document composition was a path nobody counted. It now tunes the marker,
+  recursing so a marker NESTED inside the overridden one survives too (which the dotted and
+  class-block spellings both do), and copying rather than mutating — the base document's markers
+  are shared by identity. Restricted to `Target`, mirroring the classifier's marker arm.
+  Pinned by the marker-merge group in `tests/test_merger.py`.
+
+- **A marker's target is named by the registry, like a live instance's** (BUGS-2026-08-13 F3).
+  The live-instance branch asks `registry.key_for()` so the emitted name re-resolves to THIS class
+  rather than to a namesake; `_target_name` bypassed it and emitted a raw `module.qualname`. Two
+  targets have no importable qualname and so could not reload at all: a class built by a FACTORY
+  keeps the `<locals>` the registry strips, and a registered FUNCTION is not a `type`, so it fell
+  through to `str()` and emitted `<function build at 0x108420fe0>` — a memory address, which also
+  made two dumps of the same object differ. An unregistered target keeps its dotted path and a
+  string target passes through verbatim. Pinned by the F3 group in `tests/test_dumper.py`.
+
+- **`dump()` emits body slots, so a configured object round-trips** (BUGS-2026-08-13 F2). The
+  dumper reconstructed a node from its CONSTRUCTOR params only, so an `__init__`-body attribute was
+  absent from the document: `self.epochs = 1` configured to 50 dumped as bare `_target_: BodyHost`
+  and reloaded as 1, and a marker slot tuned by `configure()` came back untuned. Every other surface
+  treats a body slot as first-class, so this contradicted the round-trip rule outright — and it
+  meant a config written beside a checkpoint omitted values the run actually used. `_DUMP_KINDS`
+  now carries `body_slot`. Values are emitted ALWAYS, never "only when different from the default",
+  matching how ctor params already behaved: that is what keeps a dumped document self-contained
+  when a default later changes in the source. Setterless properties stay out (derived state
+  recomputes on reload). Pinned by the body-slot group in `tests/test_dumper.py`.
+
+- **A string annotation resolves instead of leaking as a `str`** (BUGS-2026-08-13 I4, I5). A
+  QUOTED body-slot annotation (`self.optimizer: "Partial[Optim]"`, the ordinary way to defer an
+  import) lost its deferral entirely — the AST node is a string constant, so `eval` returned the
+  TEXT and a plain `str` is not a ForwardRef, so it became `Slot.annotation`. The identical
+  spelling on a constructor param always worked, which is exactly the asymmetry between the two
+  declaration halves that class-design rule 4 forbids. Separately, in a module using
+  `from __future__ import annotations`, ONE unresolvable hint (a `TYPE_CHECKING`-only import)
+  emptied `get_type_hints` and sent EVERY parameter back to its raw PEP-563 string — measured on a
+  three-parameter class, an unrelated `precision: Decimal` cost `stages` its `list` routing and
+  `optimizer` its deferral. Both now go through one `introspect.resolve_string_annotation`, with
+  per-name degradation: only the annotation that cannot resolve becomes `Any`. `marked_param_names`
+  projects from `slots()` rather than re-reading `get_type_hints`, which was a third copy of the
+  same failure. Pinned by the string-annotation group in `tests/test_introspect.py`.
+
+- **`configure()` no longer writes to objects nobody keeps** (BUGS-2026-08-13 C3, C4). Two
+  independent ways the walk configured a throwaway and reported success. **C3:** the recursion
+  filter was `callable()`, so every child defining `__call__` — every op, every framework module —
+  was skipped; the load path broadcast into the same class fine. It usually still worked by
+  accident, via the ctor-kwargs capture dict in `__dict__`, so the visible failure was narrow: a
+  `capture=False` parent silently skipped the child, and a constructor storing something other
+  than what it captured had the DISCARDED object configured while the report said applied. The
+  filter is now routines-and-classes; classes stay skipped because a class `__dict__` is a truthy
+  mappingproxy of its own attributes. **C4:** a plain `Target(...)` body slot was flowed into a
+  temporary, configured, and discarded — the marker kept its defaults while the report recorded
+  the key as applied, so a later `flow(obj.opt)` built with the defaults. Marker slots are now
+  tuned by their owner like `PartialClass` ones; the check widened from `Partial` to `Target`,
+  which leaves `Reference` on the flow path (it still raises rather than becoming a silent
+  no-ops), and the early return walks the marker's kwargs so live objects held inside one
+  (`Target(Stage, dep=widget)`) are still configured. Pinned by the C3/C4 groups in
+  `tests/test_configurator.py`.
+
+- **A reserved key inside a dotted key is refused instead of producing inert data** (BUGS-2026-08-13
+  P16). `model._target_: Box` loaded as `{'model': {'_target_': 'Box'}}` — a plain dict carrying a
+  literal `_target_`, which `flow()` did not rescue either, so it reached the consumer as data.
+  Conversion is parse-time and `expand_dotted_keys` runs afterwards, so the dotted spelling breaks
+  for exactly the one key that decides a node is a marker; every other key works dotted, including
+  one merging into a marker written above it (`model: {_target_: Box}` plus `model.size: 3` builds
+  `Box(size=3)` — unchanged). The refusal is located and names the nested spelling to write, and it
+  covers a reserved segment in any position: a NESTED dotted key was never expanded at all
+  (expansion is top-level only) and stayed a literal `inner._target_`, and inside a marker's kwargs
+  it became a constructor kwarg named `sub._target_`. Both parse-time key-shape refusals now go
+  through one `_refuse_malformed_keys`, called from the untagged and the tagged mapping paths.
+  Zero workspace configs use the spelling. Pinned by the P16 group in `tests/test_plain_format.py`.
+
+- **`include:` is honoured in every position, and conditional includes work** (BUGS-2026-08-13
+  P15). The directive was spliced only where the recursive walk reached its dict branch; a
+  marker's kwargs and a scope block's contents were walked value-wise, so their own `include:`
+  key never got there. Inside a marker it became a constructor kwarg literally named `include`
+  (`Target(Widget, {'include': 'frag.yaml'})`); inside a scope block it leaked into the loaded
+  config as literal data. Both now splice. A scope block's include is deliberately NOT processed
+  before activation — that would open a file the block may be about to discard — so `load()`
+  alternates scope resolution and include splicing until a pass splices nothing. The alternation
+  repeats, because an activated block can splice a file carrying its own scope block carrying its
+  own include, and it is capped so that two files including each other from inside scope blocks
+  report a sentence instead of hanging. This makes the conditional-overlay spelling work:
+
+  ```yaml
+  lr: 0.1
+  post_include:
+    _notscope_: { default: }
+    include: tuning.yaml        # spliced here; not opened when the block is inactive
+  ```
+
+  Two malformed spellings now raise instead of degrading: `include: {path: a.yaml}` consumed the
+  key and spliced NOTHING (a whole file lost in silence), and a non-string entry in the list was
+  skipped among its siblings. Cost is one extra document walk per load — measured 0.11 ms against
+  a 9–23 ms load of a 27 KB config. Pinned by the P15 group in `tests/test_includes.py`.
+
+- **A duplicate mapping key is refused instead of silently discarding a value** (BUGS-2026-08-13
+  P11). Two `include:` directives in one document lost a whole FILE before the loader ever ran —
+  PyYAML collapses a duplicate key at parse, keeping the last value with no warning — and the
+  survivor spliced at the FIRST occurrence's position, so a key written above it beat a value from
+  the file included below it (measured: `x` came out `1` where the list spelling gives `999`). The
+  YAML spec restricts a mapping's keys to be unique and lists non-unique keys among its loading
+  failure points, leaving the response to the processor; confluid now raises a located
+  `ConfigurationError` naming both lines, and points `include:` at the valid multi-file spelling
+  (`include: [a.yaml, b.yaml]`, which also honours position correctly). This covers every repeated
+  key, not just `include:` — `lr: 0.1` … `lr: 0.5` in one mapping is a differently-trained run.
+  Identity is `(tag, value)` so `1:` and `"1":` stay distinct keys, `<<:` merge keys are excluded
+  (a merged key overridden locally is override semantics, not duplication), and the check binds the
+  TAG spelling too — the four tag constructors now share `_str_keyed_mapping` instead of each
+  building their mapping inline. Verified against every YAML in the workspace: 3985 files composed,
+  zero duplicate keys. Pinned by the duplicate-key group in `tests/test_loader.py`.
+
+- **`_partial_` beside a non-`_target_` discriminator is refused instead of swallowed**
+  (BUGS-2026-08-13 P10). `{_ref_: proto, _partial_: true}` stripped the modifier and flowed
+  EAGERLY — no error, no warning, and the key gone from the marker's kwargs so nothing downstream
+  could notice. Same for a `_scope_` / `_notscope_` block. `_partial_` modifies
+  CONSTRUCTION and `_target_` is the only key that constructs, so the pairing now raises a located
+  `ConfigurationError` naming the spelling that works (put the modifier on the node being
+  constructed, then reference it). The lone-modifier error is corrected in the same change: it
+  listed all five discriminators as valid partners while the code honoured exactly one — a
+  program emitting false documentation about itself. Pinned by the P10 group in
+  `tests/test_plain_format.py`, including the parse-time property (an unactivated scope block
+  still raises, so a document cannot be valid or invalid depending on `--scope`) and the
+  false-positive guard (an ordinary scope block is untouched).
+
+- **A marker delivered by a YAML merge key (`<<:`) is now converted** (BUGS-2026-08-13 P2).
+  `derived: {<<: *base}` where the anchor carries `_target_` loaded as an inert `dict` holding a
+  literal `_target_` key — and `flow()` did not rescue it, so it reached the consumer as data.
+  Merge keys are core YAML 1.1 and the standard many-variants-of-one-node idiom, which the
+  plain-format promise ("ordinary YAML that `yaml.safe_load` reads") has to cover. Only the
+  opt-in GATE was blind: it read the node's literal scalar keys, and a merge key's literal key is
+  `<<`. The conversion itself always worked — one unrelated literal reserved key on the node was
+  enough to make the anchor's `_target_` resolve — so the fix is confined to the key-name read
+  (`loader._node_key_names`), which now sees through `<<: *a` and `<<: [*a, *b]`, recurses for a
+  chained merge, and carries a pinned cycle guard for a self-referential merge. Still no values
+  are constructed to answer the gate, so the ordinary-mapping fast path is unchanged. Pinned by
+  the merge-key group in `tests/test_plain_format.py`, including the two must-not-change cases
+  (a quoted `"<<"` stays ordinary data; an ordinary merge key still matches stock `safe_load`).
+
+- **Every id()-keyed store now pins the object whose address keys it** (BUGS-2026-08-13
+  X1/X3/E1/E2/I7 — one root cause, five faces, each measured): `configure()` silently skipped
+  whole subtrees when gc recycled a walk temporary's address (450 of 512 objects unconfigured
+  under DEFAULT thresholds — the visited store is now id→object, so recording IS pinning); a
+  ctor-local `flow(Target(...))` — the documented dependency idiom — could hand an object ANOTHER
+  object's dependency via a recycled memo address (the public-`flow()` memo write now pins, like
+  the two engine-internal writes); the slot-tune path's memo write shared instances across tuned
+  slots (5 distinct objects for 12 slots) and stamped `_order_resolved` onto the BUILT instance
+  (an `AttributeError` for `__slots__` targets — the stamp is now markers-only); and the slots
+  cache could serve a freed unhashable callable's slots to its address's next tenant (entries now
+  store `(target, slots)`). Pinned by `tests/test_memo_pinning.py`, each test proven red on the
+  pre-fix code.
+
+- **A mapping addressed at a slot means ONE thing, on both paths — decided by what the slot
+  holds** (BUGS-2026-08-13 C1/C1b; architecture record 15). Two silent destructions are gone:
+  a live `@configurable` child (`self.engine = Engine(-1)`) overridden by `engine: {power: 50}`
+  was REPLACED BY THE DICT on the load path (configure() handled it correctly all along) — the
+  load path now walks into the child and sets its fields; and a nested `_target_:` recipe at a
+  constructor-param slot was clobbered by a class-block override — `_MergeSink.dict_at_slot`
+  now tunes the recipe (`tune_marker`), so `Trainer: {enc: {width: 3}}` merges into the nested
+  Encoder instead of deleting it. The ONE classifier is `broadcast.dict_at_slot_kind`; both
+  paths dispatch through it.
+- **BEHAVIOUR CHANGE (user decision 2026-08-13): a mapping at a slot holding a live object that
+  is NOT `@configurable` now raises a located `ConfigurationError`** on both paths, naming the
+  class and the ways out (register it, wire the slot from config, or replace the whole value in
+  code). It used to silently replace the object with the dictionary — the failure mode this
+  release exists to end. Dict-typed slots, absent slots and routing sub-blocks are untouched.
+
+### Fixed
+
+- **The last three private slot walks now project from `introspect.slots()`** — the 2026-08-12
+  consolidation left `to_pydantic`'s signature half, `broadcast._get_param_kinds` and the dumper's
+  two walks un-migrated, each with a wrong answer the shared enumeration already had right:
+
+  - `to_pydantic` filtered parameters by NAME (`_SKIP_PARAMS = {"self", "cls", "args", "kwargs"}`),
+    so an ordinary keyword parameter literally named `args` or `kwargs` was dropped from the
+    generated model alone among the six readers — and, the model being `extra="forbid"`, the
+    default strict init policy then REFUSED the legal call (`Odd(args=[1])` →
+    `ValidationError: args Extra inputs are not permitted`). Exclusion is now by KIND
+    (`_FIELD_KINDS`): variadics are never fields whatever they are named, and a name never
+    excludes anything. The same name-set also silently excluded a *body slot* named `args` from
+    every generated schema (`_post_init_field_specs`' seen-set); it no longer does. The
+    introspection-agreement table now carries `to_pydantic`'s field set, so a seventh private
+    walk cannot drift unnoticed.
+  - `broadcast._get_param_kinds` walked the signature alone and was blind to body slots: a class
+    declaring `self.transforms: list[Any] = [...]` answered `{}`, so an addressed
+    `Cls: {transforms: [...]}` block was refused as a value on the LOAD path ("block has no
+    attribute") while `configure()` applied the identical block. An ANNOTATED body slot now
+    classifies exactly like the equivalent ctor param — the two declaration halves of the
+    class-design convention behave alike, and the two paths agree. An unannotated body slot
+    stays unclassified (routing/block reading unchanged). Consequent rule:
+    `_classify_annotation` peels `Annotated` first, because `slots()` resolves hints WITH
+    extras — without the peel every range-marked container param
+    (`Annotated[Tuple[float, float], Interval(...)]`) would have flipped to `None`.
+
+### Changed
+
+- **`dump()` no longer emits a stored variadic bundle.** The dumper's own signature walks kept
+  `*args`/`**kwargs` NAMES, so a class storing `self.kwargs = kwargs` dumped a `kwargs: {...}`
+  line — which never round-tripped (on reload the ctor filter passes it INSIDE the catchall as a
+  literal `"kwargs"` key, doubly nested). Both walks now project `slots()` to `_DUMP_KINDS`
+  (`keyword` + `positional_only`, signature order preserved); the None-skip rule and body-slot
+  exclusion are unchanged.
+
+### Breaking
+
+- **`configure()` runs through the document** (architecture record 19, phase 4). The objects
+  become a marker document (`dumper.to_markers` — the same reconstruction `dump()` uses), the
+  config is merged after it, pass 7 settles the whole thing, and the settled values are written
+  back onto the objects. The second implementation of the precedence rule over live objects
+  (`configurator._walk` / `_LiveSink` / `_tune_deferred`) is gone. **New:** objects passed by
+  keyword are addressable by name — `configure(config={"trainer.model.lr": 0.7}, trainer=t)`
+  (positional objects stay reachable by class-name blocks and bare keys). **Changed:** a chain of
+  instance names past the first level (`a.b.c.value`) is no longer a spelling (the load path never
+  had it — use the attribute path from a named object); a bare list/dict reaches a body-slot
+  marker the document shows, exactly as it reaches a document marker under `load()`; an object
+  that is neither `@configurable` nor built by confluid is warned about and skipped; a plain
+  object with dynamically set attributes has no document (declared slots only). The report's
+  vocabulary is the scanner's (a class block delivering a mapping to a child records at the
+  receiver the block addressed). `tests/test_configure_via_document.py`.
+- **The runtime consumes the settled document** (architecture record 19, phase 3). `materialize()`
+  = pass 7 (broadcast + references, settled ONCE — what `hydraide` emits) → `instantiate` (pass 8:
+  every `Target` at ANY depth is built from its settled kwargs; construction no longer re-runs the
+  cascade into a marker's own kwargs). Three behaviours change, each measured before/after:
+  a marker inside a plain mapping or list is now BUILT (it used to come back as an unbuilt
+  `Target` — F4); a reference to a plain value is INLINED in pass 7, so `load()` hands back the
+  value where it used to hand back a late-bound `Reference` (F5) — a CLI that overrides after
+  loading merges into the `load(until="document")` document and calls `load(document)`, which is what the
+  app framework already did; an unresolvable reference is a located `ReferenceResolutionError` at
+  `resolve()`/`emit` and `load()` alike (it used to survive as a marker). The emitted document is
+  therefore CLOSED: no `_ref_` — markers are anchors, plain values are inlined, functions are
+  `${ref:module.qualname}`. `tests/test_instantiate.py`.
+- **Attribute references are REMOVED** (architecture record 19, phase 2 — user ruling 1b).
+  `!ref:split.train` / `${ref:split.train}` (reading a property of the object built at `split`)
+  and `!ref:obj.build()` (calling a method) are REFUSED with a located `ConfigurationError`
+  naming the rewrite, on both `load()` and `resolve()` — so `hydraide` reports one (exit 2)
+  instead of emitting it unresolved. What a dotted `!ref:` MEANS is decided by its FIRST
+  segment: a document key walks STRUCTURE only (`!ref:cfg.lr`, `!ref:packs[1].name` — unchanged);
+  anything else is an import path (`!ref:posixpath.join` — unchanged, and still what `dump()`
+  emits for a function-valued param). The object policy is deleted from the resolver
+  (`getattr_fallback`, `_materialize_cursor` and its lazy seam into the engine, the trailing-`()`
+  grammar) together with `_EngineState.structural`, which only existed to keep that policy from
+  building under `resolve()`. **Rewrite:** give the referent's class a selector parameter and
+  reference the whole object — for a train/val split, one `DatasetSplit`-style marker per view
+  with `split:` set, the recipe anchored on the first view and `<<:`-merged into the others
+  (every view `!ref:`-ing the same upstream source keeps it ONE instance).
+  `tests/test_attribute_refs_removed.py`.
+- **`Clone` is removed — `_clone_`, `${clone:…}` and the `!clone:` tag, and the `Clone` marker
+  class** (user ruling 2026-08-15; architecture record 18). It had zero users workspace-wide (one
+  comment in `confluid.example.yaml`). Independence now has one spelling — write the marker
+  again (or `<<:` an anchored base into each site) — and sharing has one, `_ref_` / `${ref:}`.
+  The removal is LOUD in every spelling: `_clone_` still reaches the marker gate and is refused
+  with a `file:line:col`, `${clone:x}` raises at the resolver instead of surviving as a string,
+  and `!clone:` no longer parses. **Breaking for a 0.2.0 config using
+  `!clone:`** — the located error names both replacement spellings. Pinned by the Clone-removal
+  group in `tests/test_plain_format.py`; `tests/test_clone.py` deleted.
+
+- **`@ignore_config` is REMOVED** — `from confluid import ignore_config` now raises `ImportError`.
+  There is no deprecation shim: the decorator was a no-op on every class that existed.
+
+  Measured before removing it: of **275 registered classes across the workspace, 0 used it**. Its
+  only occurrence anywhere was a documentation example marking a read-only `@property` — and on
+  that shape it changed no reader's answer, because a setter-less property is already excluded by
+  `introspect._non_signature_slots`. The same class with and without the decorator answered
+  identically on all four surfaces (`accepts_key`, `get_hierarchy`, `to_pydantic`, the accept-list).
+
+  Where the marker *did* bite — a class attribute shadowing an `__init__`-body slot — it made the
+  accept-list disagree with the engine: `accepts_key` returned `True` while the engine discarded
+  the value, with no warning and no `report.failed` entry, so a config line was silently thrown
+  away. Removing the marker makes that key behave as written:
+
+  ```yaml
+  cache:
+    _target_: Cache
+    scratch: /tmp/mine     # before: silently discarded (obj.scratch is None)
+                           # after:  obj.scratch == "/tmp/mine"
+  ```
+
+  **Migration:** delete the decorator. To keep an attribute out of configuration, make it a
+  read-only `@property` (the mechanism `@output` already documents) or prefix it with `_`.
+
+  Pins: `tests/test_introspection_agreement.py::test_a_readonly_property_is_excluded_without_any_marker`,
+  `::test_a_yaml_key_aimed_at_a_readonly_property_does_not_change_it`, `::test_ignore_config_is_gone`.
+
+### Changed
+
+- **`get_hierarchy` now reports `__init__`-body slots, so `--docs` stops lying by omission.**
+  It walked the signature only, which meant a CLI listed fewer knobs BEFORE a config was flowed
+  than after — the two hierarchy walkers disagreeing about the same class. Measured on
+  `matrainer.TrainerRunnable`: **10 paths where 13 exist**, with `metrics_sidecar_path`,
+  `predictions_sink` and `val_set` invisible to anyone reading `--docs` cold.
+
+  Body slots are configurable by the class-design convention's rule 4, so omitting them
+  contradicted the walker's own contract. It could not be fixed until `slots()` carried body-slot
+  TYPES (the walker recurses on a type), which landed the same day.
+
+  A configurable-typed body slot RECURSES, exactly as a ctor param of that type does — verified
+  side by side that both declaration halves produce the same path shape (`Host.child.lr`). The
+  alternative (report as leaves, never recurse) was rejected: measured across 314 registered
+  classes and 859 body slots, **zero** carry a directly-configurable type, so the two options
+  produce identical output on every real class and only this one is a rule you can state.
+  `class_attr` slots stay out — the accept-list wants them, a declared-options listing does not.
+
+  Only body slots the class OWNS are reported — the same `Slot.owner` filter `to_pydantic`
+  applies. Without it a class extending `keras.Model` advertised twelve of its internals
+  (`predict_function`, `compiled`, `supports_jit`, …) as configuration: measured at 522 of 859
+  body slots workspace-wide, so the honest growth in `--docs` is **+337 paths (+15 %)**, not +859.
+  The live walker never had the bug — it reads `get_configurable_attrs`, which subtracts
+  non-`@configurable` ancestors already.
+
+  Consequence for the reader table: `get_hierarchy` moved from the "what the signature declares"
+  answer to the "what is configurable at all" answer, leaving `input_specs` alone on the first —
+  which is correct, since that one reports the CONSTRUCTOR contract, and a body slot is by
+  definition not part of it.
+
+### Changed
+
+- **`schema.py`'s three private signature reads now project from `introspect.slots()`.** The
+  backlog entry called the two hierarchy walkers "~150 near-parallel lines … merge into one walker
+  with a static/live policy". Measured first, that premise did not hold — they are 266 lines and
+  answer different questions:
+
+  ```
+  get_hierarchy(Root)               -> {Root.leaf, Root.name}                     rooted at the CLASS
+  get_hierarchy_from_instance(root) -> {run.leaf._Leaf.lr, run.name, run.toggle}  rooted at the INSTANCE
+  ```
+
+  The static walker recurses on a configurable ANNOTATION, the live one on a live VALUE. Merging
+  them would unify two things that deliberately differ, and both feed user-visible surfaces (a
+  CLI's `--help` / `--docs`, hyperparameter logging). So the ENUMERATION is shared and the
+  traversals are not; `_skipped_param_names` is deleted, and `schema.py` no longer reads a
+  signature at all except for an `@output` property's return type.
+
+  Output pinned before and after — byte-identical. The backlog entry is corrected, since it would
+  have sent the next reader at a merge that should not happen.
+
+### Added
+
+- **`@configurable(strict_attrs=True)` / `register(..., strict_attrs=True)` — a closed config
+  surface.** Confluid is permissive by default and stays that way: an addressed key naming nothing
+  a class declares lands as a post-init attribute, because `_apply_post_init_attrs` IS the
+  post-construction toggle mechanism. A class that wants its surface closed can now say so.
+
+  ```
+  Trainer has no attribute 'epochz' at exp.yaml:2:3 and is declared strict_attrs=True, so it
+  will not be set as a post-init attribute. Trainer declares: epochs, head.
+  ```
+
+  "Declared" is the accept-list — constructor parameters (or the callable's own signature for a
+  builder function), settable class attributes, and `__init__`-body slots.
+
+  Two decisions, both taken deliberately: `register()` carries the mark for the reason it carries
+  `broadcast=False` (a class you do not own is the one you cannot close by editing its
+  declaration), and the mark binds `configure()` as well as the load path — one meaning different
+  things per path would be the exact asymmetry the previous change removed.
+
+  Never refused: a `**kwargs` target (no accept-list, so nothing is undeclared for it — marking one
+  is meaningless rather than an error) and BARE keys (the accept-list drops them first, which keeps
+  a strict class usable in a document that also configures something else). All three exemptions
+  pinned, along with inheritance and the `marks()` read surface.
+
+  The detection is not new — it is the warning added in the same round, now gated by the mark.
+
+### Changed
+
+- **`slots()` now carries a body slot's DECLARED type, and the two private scans are gone.** The
+  first consolidation unified the NAME enumeration and left the TYPE one duplicated:
+  `Slot.annotation` was `Any` for every body slot, while `pydantic_export` and `confluid.partial`
+  each ran their own AST scan to resolve `self.run_name: Optional[str]`. Nothing checked the two
+  agreed, and **163 annotated body slots** in production code ride on it (`matrainer/runnable.py`
+  alone: `Optional[Partial[RecordSource]]`, `RunnableTask`, `Partial[KerasOptimizer]`, …).
+
+  ```
+  the class says            slots() before      slots() now
+  optimizer: Partial[Dep]   Any                 Union[Dep, Fluid, …]
+  run_name: Optional[str]   Any                 Optional[str]
+  untyped   (no annotation) Any                 Any        <- the class's own answer
+  ```
+
+  **`Slot` gained `owner`** — the MRO class that declared the slot — because the two readers need
+  different MRO SCOPES, not different filters. The accept-list wants a non-`@configurable` base's
+  `self.training = True` (a bare key may legitimately set it, and the engine subtracts those later);
+  `to_pydantic` must not, or every model in a torch/Lightning tree grows fields no config should
+  set. Measured before the change: a naive projection would have added exactly
+  `['allow_zero_length_dataloader', 'prepare_data_per_node', 'training']` to every generated
+  schema. So the walk is shared and the scope is the reader's, as an `owner` filter.
+
+  Eager vs lazy resolution was decided by measurement, not preference: 74 µs for a class with ten
+  annotated slots, cached once per distinct class per pass, against a 278 ms materialize. Lazy was
+  rejected — it would have made `Slot` something other than a plain NamedTuple for under 1 %.
+  `materialize` after: 278.1 ms, unchanged.
+
+  One scan deliberately stays: `confluid.partial`'s deferred-by-VALUE half
+  (`self.x = PartialClass(...)`). `slots()` carries a slot's declared TYPE, never its assigned
+  expression, so that signal is not projectable. Its deferred-by-ANNOTATION half now is.
+
+  Sequenced so every step was reviewable: `to_pydantic`'s current output was pinned FIRST, the
+  annotation fill-in changed exactly one test (the pin whose job was to show it), and the schema
+  is byte-identical afterwards.
+
+### Fixed
+
+- **An undeclared config key is now reported on the load path, not silently absorbed.** One typo
+  had three behaviours: `load()` with the key on the marker SET it silently, `load()` with the key
+  in a class block IGNORED it silently, and only `configure()` reported it.
+
+  ```
+  Node has no attribute 'pathh' at exp.yaml:2:3 — set as a post-init attribute anyway.
+  Declare it as a constructor parameter or an __init__-body slot, or remove it.
+  ```
+
+  The load-path sink justified its silence as *"constructor validation is this path's typo
+  enforcement"*. Measured false: `pathh` is not a constructor parameter, so `_ctor_params` filters
+  it out and it reaches a post-init `setattr` — around the constructor. `Node(pathh="/x")` raises
+  `ValidationError`; the same key through `load()` did not.
+
+  **The own-kwarg form still APPLIES the value** (option B1, chosen over full `configure()`
+  parity). That branch IS the post-init attribute mechanism — `_apply_post_init_attrs` exists to
+  assign kwargs the constructor did not take — so refusing there would delete documented behaviour
+  from the commonest spelling. Refusing is the opt-in `strict_attrs` mark instead, now filed.
+
+  Three exemptions, each pinned: a `**kwargs` class is never reported (no accept-list — it accepts
+  everything by design), a BARE key is `unused` rather than `failed` (it legitimately matches
+  nothing, so reporting it would fire on every sweep document), and a declared body slot is silent.
+
+  Impact measured BEFORE shipping: **0 real warnings across 96 workspace configs and 412 markers**
+  (five apparent hits were artifacts of the measurement resolving bare names against a merged
+  registry — verified individually). All 24 examples stay silent.
+
+### Fixed
+
+- **A config key naming a `*args` parameter is refused instead of absorbed.** A variadic is
+  positional-only by construction and a marker carries keyword arguments alone, so such a key can
+  never reach the parameter. It was silently set as a post-init ATTRIBUTE: the constructor never
+  saw it, and `obj.loaders` held a value the object ignored.
+
+  ```
+  DataLoaders cannot accept 'loaders' at exp.yaml:3:3: it is a *args parameter, which can
+  never be passed by keyword, so no config key can reach it. Pass the values positionally —
+  flow(node, a, b) — or give the target a keyword parameter.
+  ```
+
+  Hydra refuses the identical spelling (measured, 1.3.5: `loaders: [...]` on a `*loaders` target
+  raises `InstantiationException`) and offers `_args_` as its separate channel; confluid's channel
+  is `flow(node, a, b)`, runtime-only by mandate, so the config-side answer matches.
+
+  **ADDRESSED keys only** — one written on the marker or in a `ClassName:` block. A BARE key is an
+  implicit `**.key` that cascades tree-wide and legitimately matches nothing, so a document whose
+  top-level key collides with some class's variadic parameter keeps loading. Hydra never faces
+  that case: it has no bare-key broadcast. A `**kwargs` name is never refused either — such a
+  class accepts everything by design. All three exemptions are pinned.
+
+  Scope came from measurement, not assumption: the two spellings reach different code paths
+  (`engine._apply_post_init_attrs` for own kwargs, `_MergeSink.unknown` for a class block) and the
+  bare form reaches neither, so its exemption is structural rather than a check.
+
+### Changed
+
+- **One slot enumeration, six projections.** Six readers answer "which slots does this target
+  have", each walking the signature itself with its own hand-rolled "minus `self`/`cls`" filter.
+  Measured on one class, they gave **five different answers**; they now project from
+  `introspect.slots()` and give **three** — one per question actually being asked (what is
+  configurable at all · what the signature declares · what the constructor can take).
+
+  Three of the five differences were defects, each silent:
+
+  * the accept-list admitted a `*args` NAME, which can never be passed by keyword — it landed as
+    a post-init attribute nothing reads;
+  * `get_hierarchy` published the same name as a dotted CLI path, so a front-end offered a flag
+    Python rejects at the call. Its filter skipped `self`/`cls`/`args`/`kwargs` by NAME, which
+    misses a variadic spelled anything else and would wrongly drop an ordinary parameter called
+    `args`;
+  * `declares_key` — the public predicate `AGENTS.md` tells front-ends to call INSTEAD of
+    re-deriving settability — gave OPPOSITE answers for the same parameter kind depending on
+    whether the class also took `**kwargs`, because it short-circuited to the accept-list in one
+    case and ran its own kind-filtered walk in the other.
+
+  **Behaviour change:** a bare key matching a `*args` parameter name no longer lands as a
+  post-init attribute. `positional_only` is deliberately still settable — it falls through to a
+  post-init `setattr`, which is what `configure()` has always done for it, so both paths agree.
+
+  The `introspect.py` NOTE that rejected a shared "ctor params" helper was correct and shaped the
+  fix rather than blocking it: all three of its objections (the dumper needs ordered params, the
+  accept-list needs its `**kwargs` → `None` sentinel, schema needs rich metadata) are about the
+  RETURN TYPE of a name-set helper, none about the enumeration underneath. Rationale:
+  `docs/architecture.md` record 12. Measured cost: none — `materialize` 278.2 ms vs 276.9 ms on
+  the 2,500-marker benchmark, within noise, since one cached enumeration replaces several walks.
+
+  Two readers keep their own walk, deliberately: `to_pydantic` needs the AST-resolved annotation
+  of a typed body slot (a feature gap, filed), and the dumper's signature walk is `hasattr`-guarded
+  and outside the divergence.
+
+### Added
+
+- **`tests/test_introspection_agreement.py` — the baseline for the `slots()` consolidation.**
+  Five subsystems answer "which slots does this target have", and for one class they give five
+  different answers; nothing checked that, so a divergence could only ever be found by someone
+  hitting it. The file records each answer verbatim and separates the DELIBERATE differences (an
+  accept-list is not a form spec; the `**kwargs` → `None` sentinel; `_ctor_params` keeping
+  VAR_KEYWORD while dropping VAR_POSITIONAL) from the DRIFT, which it pins under `test_DRIFT_*`
+  names that say what the fix should make each one do. Pinning a defect before touching the layer
+  that produces it is what makes that refactor reviewable — verified by breaking `_ctor_params`
+  with a one-line change and confirming three tests trip, each naming a different consequence.
+
+### Fixed
+
+- **A quoted marker string the resolver cannot honour now RAISES instead of reaching your
+  config as text.** `optimizer: "!lazy:Adam(lr=0.01)"` used to load as the literal string
+  `!lazy:Adam(lr=0.01)` — no marker, no error, no warning — and the constructor got the text.
+  So did `"!clone:…"` and `"!scope:…"`, in every position, and so did `"!class:…"` / `"!ref:…"`
+  **inside a marker's own kwargs**, which is the position `docs/targets.md` recommended the
+  spelling for. Measured against the pre-change engine before changing anything.
+
+  ```
+  '!lazy:Adam(lr=0.01)' is a marker written as a quoted STRING, which confluid does not parse
+  here. Write the tag unquoted — `!lazy:Adam` with a block body for nested values — or the
+  reserved-key form:
+
+      {_target_: Adam, _partial_: true, lr: 0.01}
+  ```
+
+  The replacement is derived from the same `Target(...)` grammar the tags use, so the message
+  is a line you can paste. The refusal matches the exact marker prefixes and never a bare
+  leading `!` — an ordinary config value may legitimately start with one (`!important`), and
+  breaking those to fix a spelling nobody uses would be the worse trade. No `file:line`: a
+  scalar carries none (only markers are stamped), so the message quotes the offending text
+  instead, which is greppable; a location side-table is filed in `TASKS.md`.
+
+  `tests/test_loader.py::test_quoted_lazy_tag_is_not_recognized` previously ASSERTED the
+  silence and is replaced by the refusal group. Two resolver tests used a marker string in
+  marker kwargs as a vehicle for unrelated rules (the bare-`$` skip, the in-place kwargs walk)
+  and were retargeted; one of them carried the comment *"string keeps its prefix — parsed at
+  flow time"*, which was false — nothing parsed it, there or later.
+
+  A census found zero configs using the quoted spelling workspace-wide: a nested `!ref:` goes in
+  a block body, and `{_target_: Adam, lr: ${ref:base}}` needs no escape at all.
+
+### Added
+
+- **`ConfigurationReport.explain(key)` — why a key has the value it has.** Confluid arbitrates by
+  document POSITION and nothing else, which is the one thing about it that surprises people: a
+  value written AT a node loses to a bare key that merely sits lower in the file. That is the
+  documented rule, and until now the only way to watch it happen was `LOGGAIR_CONSOLE_LEVEL=TRACE`
+  and a grep — even though both candidates already reached the report's sink and the loser was
+  simply discarded.
+
+  ```
+  lr on Trainer = 0.9
+      #0   block 'Trainer'    0.5          beaten — earlier in the document
+    ✓ #2   bare               0.9          applied
+  ```
+
+  Both paths report identically — a `configure()` report explains the same contest a `load()`
+  report does, because both run the one scanner. The candidates live on `AppliedKey.contest`
+  (`Candidate(origin, value, pos)`, document order, last entry wins) so a front-end can render
+  them; `value` is a bounded string, never the object.
+
+  Cost: `materialize()` / `resolve()` are unchanged (the ledger is behind the existing
+  `report is not None` guard), and `configure()` — which always has a report — pays 1.5 ms on a
+  2,500-marker pass. The first implementation cost 5.7 ms; rendering the `repr` at record time,
+  and only for keys something actually contested, removed 4.6 ms of that.
+
+- **`docs/broadcasting.md` → "What this costs you"** and a `RATIONALE.md` section naming the bet.
+  Nothing in the documentation said that **moving** a line — not just adding or removing one — can
+  change the result, which is the price of implicit reach-many. Libraries that make reach-many
+  explicit pay the opposite price in verbosity. `RATIONALE.md`'s comparison table listed confluid's
+  only weakness as "New implementation"; it now names order-dependence, with `explain()` as the
+  mitigation.
+
+### Changed
+
+- **README corrections.** The "Design Goals" bullet advertised a "Tag-Based IR" with
+  `!class:Name` deferred / `!class:Name()` eager — a distinction deleted in 0.3.0 when
+  `Class` and `Instance` collapsed into `Target`. The Quick Start's first config used the
+  quoted-string spelling. The Scopes bullet spelled a scope `_scope_: debug`, which is not
+  valid: the value must be a MAPPING, and that spelling raises `ConfigurationError`.
+
+### Fixed
+
+- **`docs/targets.md` documented a construction rule that was deleted.** Its table said
+  `!class:Model` parses to a deferred `Class` stub and only `!class:Model()` builds — the
+  "rule of thumb: a trailing `()` means build it now" — and a second table said a nested
+  marker under a `@configurable` parent is NOT built. Both are false since the IR collapse
+  (2026-08-11): the trailing `()` is inert, `_target_` always builds, and the only things
+  that defer are `_partial_: true` and a slot the RECEIVER declared deferred (`Partial[T]` /
+  a `PartialClass(...)` body value). Verified against the engine before rewriting — a reader
+  following the old text would write `child: {_target_: Optimizer}` expecting a stub and get
+  a constructed optimizer with no `params`. The "Deferred initialization" section, the
+  marker-family table and the `Class(...)` code samples were rewritten around the two real
+  modes.
+
+- **`examples/ml_experiments/README.md` linked to `docs/tags.md`**, renamed to `targets.md`.
+  `tests/test_docs_links.py` scanned `docs/` and the root README only, so a directory
+  example's README — which IS its documentation page, per the AGENTS rule — was outside every
+  link check. It now covers them.
+
+### Removed — BREAKING
+
+- **`Class`, `Instance`, `Lazy`, `LazyClass`, `lazy_param_names` and the `confluid.lazy` module
+  are gone (2026-08-11).** Use `Target`, `Partial`, `PartialClass`, `partial_param_names` and
+  `confluid.partial`. `Class` and `Instance` had become the same class, so code discriminating
+  with `isinstance(x, Instance)` reads `x.partial`.
+
+  `introspect._PARTIAL_CALL_NAMES` narrowed to `("PartialClass", "Partial")` with them. That list
+  matches on the call NAME in the SOURCE, so a body slot written with a removed spelling does not
+  raise — it silently stops deferring, and a runtime-injection target reaches its constructor
+  without its argument. That is why the removal is called out here rather than left to the import
+  error.
+
+### Changed — BREAKING
+
+- **Two construction modes, not three (2026-08-11).** `Class` and `Instance` merged into one
+  marker, `Target`, carrying a `partial: bool`. **A bare `!class:Foo` is now BUILT**, exactly like
+  `!class:Foo()` — the trailing `()` is inert, and `_partial_: true` (`!lazy:`) is the only
+  spelling that withholds construction.
+
+  The deleted middle state built or didn't depending on whether its *parent* was `@configurable`,
+  which is not something a reader can see locally. Its stated justification — "pick deferred so
+  broadcasting can still reach it" — does not hold: broadcasting is pass 7 and construction is
+  pass 8, so a built node already receives every cascading key before its constructor runs.
+  Verified, same document, both spellings: `Model(layers=3, seed=7)` either way.
+
+  What this means for a config: a `!class:Foo` whose receiver genuinely needs to build it later
+  (an optimizer needing `params=`, a model needing `num_classes`) must now say so — `_partial_:
+  true`, or `!lazy:`. A slot the receiving class *declared* deferred (`Partial[T]`, or a body slot
+  holding `PartialClass(...)`) still keeps its value unbuilt automatically, so classes following
+  the workspace convention are unaffected.
+
+- **`Lazy` renamed to `Partial` across the API** so the Python name and the YAML key are one word:
+  `Lazy[T]`→`Partial[T]`, `LazyClass(...)`→`PartialClass(...)`,
+  `lazy_param_names`→`partial_param_names`, `@configurable(lazy=True)`→`partial=True`,
+  `confluid.lazy`→`confluid.partial`, `docs/tags.md`→`docs/targets.md`.
+  `Class is Instance is Target` now, so `isinstance(x, Instance)` no longer separates eager
+  from deferred — read `x.partial`.
+
+- **`dump()` emits the plain format** (`_target_:` / `_partial_:` / `_ref_:`), so an
+  archived config is readable by `yaml.safe_load`, `yq` and a diff viewer. Reload fidelity is
+  unchanged.
+
+### Fixed
+
+- **`dump()` no longer emits a document `yaml.safe_load` refuses.** Two fallbacks still wrote
+  TAGS: a function-valued param became `!ref 'module.qualname'` (a `collate_fn` is the common
+  case) and an opaque object became a `!class:<name>` scalar. One tag anywhere costs the whole
+  file its plain-YAML readability, which is the single property the format change exists to
+  give. They are now `${ref:module.qualname}` and a bare `{_target_: <name>}` mapping.
+
+- **A class-resolution failure now names the YAML line that wrote the name.** `UnknownClassError`
+  reported `Cannot resolve class: pkg.mod.Typo` with no file and no line, so the exact failure a
+  rename produces left the reader a 30-frame traceback and a config tree to grep — while
+  `ConstructionError`, a few frames later on the same run, had been printing
+  `.../evaluate_yolo26.yaml:20:5` the whole time. The location was available and discarded:
+  `_resolve_target_callable` was handed `obj.target`, the bare string, so the marker holding
+  `_yaml_loc` never reached the raise. It now takes the MARKER, and both construction funnels
+  report `at <file>:<line>:<col>`. `AmbiguousClassError` gets the same treatment — the registry
+  raises it and has never seen the document, so the funnel re-raises it with the location and the
+  registry's candidate list intact.
+
+  Nested markers report their OWN node, not the enclosing one, which is what makes the line usable
+  in a real config where the offending target is a source inside a pipeline's kwargs.
+
+- **Sibling markers could share one instance through a recycled `id()`.** Both engine memos key on
+  `id(marker)`, which is unique only while the marker is alive; the engine builds short-lived
+  broadcast copies, and CPython reuses a freed object's address, so the second item of a list could
+  land on the first one's address and read as a memo HIT. Measured on a three-stage pipeline: every
+  stage came back as stage one. Markers the memos key on are now pinned for the pass
+  (`_EngineState.memo_keepalive`). Pinned by
+  `tests/test_ref_identity.py::test_sibling_list_items_do_not_share_an_instance_via_recycled_ids`.
+
+### Added
+
+- **A plain-YAML config format — no custom tags (2026-08-11).** A document may now
+  be written with reserved mapping keys instead of YAML tags, which makes it
+  ordinary YAML that `yaml.safe_load`, `yq`, editor schemas and linters can read.
+  A tagged document cannot be: `yaml.safe_load` on `!class:MLP` raises
+  `ConstructorError: could not determine a constructor for the tag`.
+
+  ```yaml
+  seed: 7
+  model: {_target_: MLP, hidden: 32}          # was: !class:MLP(hidden=32)
+  optimizer:                                   # was: !lazy:SGD(lr=0.5)
+    _target_: SGD
+    _partial_: true
+    lr: 0.5
+  alias: ${ref:model}                          # was: !ref:model
+  variant:                                     # was: !scope:size=big
+    _scope_: {size: big}
+    model: {_target_: MLP, hidden: 512}
+  ```
+
+  The keys are `_target_` / `_partial_` (construction), `_ref_`
+  (references, with `${ref:…}` as scalar shorthand), and
+  `_scope_` / `_notscope_` (conditional blocks). Every other key in the mapping
+  becomes the marker's kwargs; a mapping carrying none of them is an ordinary
+  dict, untouched.
+
+  **`_scope_` takes a MAPPING of dimension → value**, not the tag form's
+  `KEY=VAL` string — so it is data rather than a grammar packed into a scalar,
+  and several dimensions are ANDed for free (`{framework: mlx, model: convnet}`
+  replaces a block nested inside another block). `{debug: }` is a boolean
+  dimension. A value YAML would read as a boolean is rejected with a quote-it
+  message: unquoted `{extra: yes}` becomes `True` and would never match the
+  `extra=yes` an activation passes.
+
+  **A LIST whose first item is a `_scope_` mapping is a scope block**, the
+  remaining items its body — the only way to write a conditional list *item*,
+  since a YAML node is a mapping or a sequence and never both:
+
+  ```yaml
+  ops:
+    - always_first
+    - - _scope_: {extra: enabled}
+      - extra_a
+      - extra_b
+    - always_last
+  ```
+
+  The list shape needs no reserved key, no second body-shape rule, and no scalar special
+  case (a scalar body is a one-item list, and the resolver already extends).
+
+  Both spellings produce the **same** Fluid markers, so broadcasting, scopes,
+  interpolation, `configure()` and `dump()` are unchanged and cannot tell them
+  apart — and the two may be **mixed in one file**. Parity is pinned per construct
+  (`tests/test_plain_format.py::test_both_spellings_agree`). Both spellings are
+  first-class input (record 19).
+
+  Three details worth knowing: the conversion rides the default mapping tag and
+  decides from the YAML *node's* key names, so ordinary mappings keep PyYAML's
+  own constructor (and its alias behaviour) untouched; markers built this way are
+  stamped with their source location, so diagnostics are unchanged; and a
+  malformed marker raises a **located `ConfigurationError`** rather than degrading
+  silently — the opposite of the tag grammar's behaviour, where one space in
+  `!class:Model(a=1, b=2)` produced a target named `Model(a=1,` and dropped both
+  kwargs with no error at all.
+
+  See `docs/plain-format.md`, `examples/plain_format.py`, and architecture
+  record 11.
+
+- **`${env:NAME}` / `${env:NAME,default}` environment reads** (alias
+  `${oc.env:…}`). An explicit, unambiguous spelling for an environment variable,
+  independent of what a bare `${NAME}` is taken to mean. Checked before the
+  dotted-name test, since `oc.env` contains a dot.
+
+- **`${ref:path}`** — scalar shorthand producing the same marker as `!ref:`,
+  so identity semantics are identical. A
+  reference must be the whole value; embedding one in a larger string raises
+  rather than stringifying an object.
+
+### Changed
+
+- **`include:` pastes the included document AT ITS LINE (2026-08-11).** An
+  `include:` now behaves as if the included document were pasted into the source
+  document at that line — the same "splice at the wrapper's slot" rule `!scope:`
+  blocks follow, and the only reading consistent with confluid's one precedence
+  rule. Two defects went with the old behaviour:
+
+  - the directive's **position was discarded** (it was popped and the whole
+    including file merged over the result), so writing it first or last made no
+    difference and the including file always won — a config could not express
+    "these are my fallbacks, let the shared file win" at all;
+  - an **overridden key kept the INCLUDED file's position**, because `deep_merge`
+    assigned into a copy of the base and Python preserves a key's position on
+    assignment. So an override written after the include lost to an addressed
+    block inside it, while the same document written flat gave the opposite
+    answer — with no diagnostic on either path.
+
+  ```yaml
+  # base.yaml       # main.yaml, include FIRST     # main.yaml, include LAST
+  lr: 0.1           include: base.yaml             lr: 0.3
+  Stage:            lr: 0.3                        s: !class:Stage()
+    lr: 0.2         s: !class:Stage()              include: base.yaml
+                    # -> s.lr = 0.3                # -> s.lr = 0.2
+  ```
+
+  `loader._splice_includes` cuts the document at the directive's slot and folds
+  the segments with `deep_merge`, which now re-anchors an overridden key at the
+  overlay's position — so a key written on both sides survives once, at the later
+  position, with the later value. Nested blocks still deep-merge.
+
+  **Migration.** The shape that changes is a config whose lines **above** the
+  `include:` set a key the included file also sets: those lines are now
+  overridden by the paste, where before the including file always won. Move the
+  directive to the top to keep the old meaning.
+
+  Measured across every config in the reference workspace that uses `include:`
+  (14 loadable; the directive sits on lines 2–70, so mid-file placement is
+  common): **key order changes in all of them and no value changes in any**,
+  because none re-states a key its include also sets. Expect the same shape of
+  result elsewhere — a reordering that is usually inert, and a genuine change
+  only where a key is set on both sides of the directive.
+
+  A front-end that re-seats CLI override keys at the end of the document to work
+  around the old positioning can keep doing so — the operation is now a no-op,
+  not a conflict. Docs: `docs/interpolation.md` → "`include:` and document
+  order"; architecture record 6.
+
+- **`python-dotenv` is no longer a runtime dependency** — it moved to the new
+  `confluid[env]` extra. It was only ever used by `confluid.env.load_workspace_env`
+  (a `.env`-walking convenience helper); nothing in the configuration engine
+  imports it, so every installation of confluid was paying for a helper most
+  consumers never call. `confluid.env` still imports without the extra; only the
+  call raises, with an `ImportError` naming it. Runtime dependencies are now
+  `pyyaml`, `loggair` and `typing-extensions`.
+
+- **`confluid.state` and `confluid.broadcast` split out of `confluid.engine`.**
+  The layering is now `fluid → state → broadcast → engine → loader`. `broadcast`
+  owns the one precedence rule and its machinery — scope tags, the tagged view,
+  the ordered merge, the child-view splice, the accept-lists, and the three
+  `accepts_*` predicates; `state` holds the engine ContextVar and exists so
+  `broadcast` can read the ambient report without importing the engine.
+
+  The reason is not file size. The rule was implemented twice — in `engine` and,
+  over live objects, in `configurator` — and the two copies diverged four separate
+  ways, three of them silently. One module both callers import is what stops the
+  fifth. `broadcast` deliberately materializes nothing, which is what keeps the
+  dependency one-directional.
+
+  **No import with users breaks.** Every moved name that HAD an importer is
+  re-exported from `confluid.engine`, so `from confluid.engine import
+  accepts_key` (and the internal `_prepare_kwargs` / `active_context` / …
+  spellings) keeps working; zero-user private names are pruned instead (eight
+  so far — see the Internal and Removed sections). New code should import from
+  the real home. One caveat for test suites: broadcast
+  diagnostics now log from `confluid.broadcast`, so a monkeypatched logger must
+  target that module.
+
+### Fixed
+
+- **Two classes with the same `module.QualName` no longer share an accept-list
+  (2026-08-11).** The five per-pass introspection caches (`_acceptable_keys_cache`,
+  `_post_init_attrs_cache`, `_param_kind_cache`, `_declared_names_cache`,
+  `engine._parent_blacklist_cache`) keyed on that dotted name, which is not unique —
+  the registry has always known this (`_claim_key` suffixes `~N`) because two
+  classes defined in ONE scope share it: a class factory, a plugin loader building
+  classes in a loop, a decorator that rebuilds a class, a parametrised fixture.
+  The second class was served the first one's accept-list, so it was built on its
+  defaults and had a FOREIGN key `setattr`-ed onto it, silently. All five now key
+  on `broadcast._cache_key(target)` — the target object itself.
+
+- **`get_hierarchy()` returned `{}` for every registered builder FUNCTION
+  (2026-08-11).** `register()` / `@configurable` stamp `__confluid_configurable__`
+  on the function object, which disqualified it from `schema.py`'s callable branch;
+  the class branch then read `types.FunctionType.__init__` = `object.__init__` =
+  `(*args, **kwargs)` and filtered every parameter away. The same target was fully
+  visible to `input_specs` / `to_pydantic` / `parse_param_docs`, so only the
+  `get_hierarchy` surface (a CLI `--help` view) lost it. Both walkers in
+  `schema.py` now dispatch through `introspect.init_callable`, which exists to
+  prevent exactly this.
+
+- **A glob-registered unused-candidate is satisfied by its LEAF (2026-08-10).**
+  `ConfigurationReport.mark_used("lr")` now also satisfies registered `**.lr` /
+  `*.lr` candidates. The nested-marker cascade delivers from a pool in which
+  rider contents are flattened to bare keys, so it can only mark the leaf — a
+  `'**'` rider whose content landed everywhere it aimed still reported its
+  glob spelling unused in the same report that showed the delivery (found by
+  the first real consumer of `collect_report()`, a CLI front-end asking
+  "did this override reach anything?").
+
+- **Three silent fallbacks now say so.** `configure()` with a non-mapping
+  config (the canonical miss: `configure(model, config="overrides.yaml")` — a
+  plain filename fails the YAML heuristic and NOTHING was applied, with an
+  empty report reading as success) warns and names `configure_from_file` for
+  the string case. A nested-broadcast result dropped by a refusing setattr
+  (`_broadcast_onto_instance`'s read-only/`__slots__` swallow) and a
+  `get_type_hints` failure in the param-kind scan (which silently flips a
+  dict-annotated param from value to routing) each log at DEBUG.
+
+- **A `'**'` rider now orders against a slot-addressed mapping by document
+  position — on BOTH paths (the D7 adjudication, 2026-08-10).** The contest was
+  position-insensitive with OPPOSITE winners: under `load()` the mapping always
+  won (the late-keys verdict kept BARE top-level keys only, and rider contents
+  sit under the dict-valued `'**'` entry — invisible), under `configure()` the
+  rider always won (the beaten verdict kept non-dict keys only, and the rider
+  entry IS a dict — never beaten). A sweep's `'**': {lr: …}` override therefore
+  silently lost on one path and silently beat a later per-slot choice on the
+  other, for the identical document. Both verdicts now read the ONE candidate
+  set, `broadcast._cascade_scalar_positions` — bare keys at their own index, a
+  rider's scalar contents at the RIDER's index — with the per-path directional
+  read unchanged. Pinned as a rider × spelling × ordering × path matrix in
+  `tests/test_document_order.py`.
+
+- **`configure()` applies values BEFORE `solidify()` fires.** Since the
+  flow-pass-through solidify (0.3.0's record-2 change), the configure walk's
+  internal `flow(obj)` finalized every live object BEFORE the pass applied its
+  values — an unsolidified object baked its pre-configure state
+  (`configure(m, {"width": 32})` left `backbone(width=8)` where the load path
+  builds `backbone(width=32)`), and the idempotency contract then kept it. The
+  walk now flows with `solidify=False` and re-fires the hook post-order, once
+  the object and its subtree carry the new values. An object solidified before
+  the call keeps its built state — rebuild-on-reconfigure remains the
+  recompute-property convention's job, not `solidify()`'s.
+
+- **A function-OBJECT marker target is introspected as itself, everywhere (the
+  D6 adjudication, 2026-08-10).** Five of the six "normalize `marker.target`"
+  sites degraded a plain callable to `None` (`resolve_class` is
+  string/type-only), so a code-built `PartialClass(builder_fn, …)` slot ran the
+  engine cascade with NO `NoBroadcast` gates — against what `accepts_broadcast`
+  answered for the same key — and `configure()` could not tune the slot at all,
+  while the identical class-target slot behaved. All six sites now normalize
+  through the one callable-aware `broadcast._settability_target`.
+
+### Changed (behavior)
+
+- **`get_hierarchy` reports a declared `name` constructor param (2026-08-09
+  adjudication).** The class walker skipped `name` while the live-instance
+  walker, `to_pydantic`, `input_specs` and the settability predicates all
+  report it — so a CLI's report view showed the row only when the config
+  happened to be flowed, and shell completion never offered `--Cls.name`
+  although the override machinery accepts it (the "settable but undocumented"
+  trap). Both walkers (and the callable branch) now agree: a row appears for
+  targets that genuinely DECLARE the param. Display surface only — nothing
+  about bare-`name:` broadcasting changed; the `NoBroadcast[T]` guidance for
+  generically-named knobs stands. Pin:
+  `tests/test_schema_from_instance.py::test_both_walkers_report_a_declared_name_param`.
+
+### Added
+
+- **`load_configurables(group="confluid.configurables")` — the entry-point
+  bootstrap now ships IN confluid.** Packages have long advertised their
+  `@configurable`-bearing modules under `[project.entry-points.
+  "confluid.configurables"]`, but the loop that iterates the group lived in a
+  consumer; the group carries confluid's name, so confluid now owns the
+  loader. One call imports every declared module (running its registration
+  side effects) and returns `{entry_name: module}`. Errors are collected PER
+  ENTRY: a broken import logs one warning and lands in the dict as the
+  exception instance, so one broken package never blanks the other packages'
+  registrations. Explicit call only — never invoked at confluid import — and
+  repeated calls are cheap (Python's module cache makes re-imports no-ops).
+
+- **Bare `$VAR` expands as an environment variable in the one interpolation
+  pass.** After the `${...}` handling, a bare `$IDENTIFIER` in a string value
+  reads `os.getenv` — an unset variable leaves the `$name` text literal,
+  mirroring `os.path.expandvars`. Env-only by design: no dotted config-path
+  form and no `:default` (those spellings stay `${...}`-exclusive).
+  The reason: 59+ live workspace YAML lines spell `root: $DATA_ROOT/...`,
+  which worked only through front-ends that re-implement
+  `os.path.expandvars` — the same file through a direct `confluid.load()`
+  kept the literal and produced the canonical zero-records failure. One
+  spelling now behaves identically on every entry path.
+
+- **`marks(target)` / `Marks` — the ONE public read surface for the
+  `__confluid_*__` stamps.** Six projects were reading the dunders raw
+  (`getattr(cls, "__confluid_role__", None)` and friends), so a rename would
+  have broken every one with no deprecation path. `marks()` accepts a class,
+  decorated callable, or instance and returns a frozen record of all sixteen
+  marks with typed defaults; the dunder names are now explicitly internal.
+
+- **`declares_key(target, key)` — the fourth settability predicate.** What the
+  target NAMES (ctor params, settable properties, body slots), with the
+  `**kwargs` catchall never counting — the question between `accepts_key`
+  (which answers yes to everything a catchall cannot refuse) and
+  `accepts_any_key`. A consumer sizing torchmetrics templates (every metric
+  takes `**kwargs` and raises "Unexpected keyword arguments" for undeclared
+  names) had re-derived exactly this locally; per the never-re-derive rule the
+  gate now lives beside its siblings.
+
+- **`register()` carries the accept-list controls the decorator does** —
+  `broadcast=False` and `broadcast_attrs=[...]`. They existed only on
+  `@configurable`, which had it backwards: a class you own can be shielded from
+  cascade keys by declaring parameters or adding a decorator argument; a class you
+  do **not** own can be shielded by neither. A third-party constructor taking
+  `**kwargs` has no accept-list, so confluid errs permissive and every bare key in
+  the document reaches it — a choice its author never made, having never seen
+  confluid. `register()` is the one place the person wiring it up can decide.
+
+  ```python
+  register(SomeLibraryClass, name="Sink", broadcast=False)     # no bare key cascades in
+  register(Frozen, name="Frozen", broadcast_attrs=["slot"])    # body slots in packaged mode
+  ```
+
+  `broadcast_attrs` unions with the AST scan exactly as on the decorator, so
+  declaring can never lose a scanned name.
+
+
+- **A DEBUG line when a value is overridden.** The merge's single write path now
+  reports a key whose value is REPLACED, with both sides and which scope won:
+
+  ```
+  override: 'lr' 0.5 -> 0.9 (exact value replaced by a bare one;
+                             document order decides — the later spec wins)
+  ```
+
+  Overriding is normal operation — a sweep's `lr:` reaching every node is the
+  point of bare keys — so this is DEBUG, not a warning, and an uncontested value
+  is silent. It exists because every configuration defect fixed in this release
+  looked identical from outside: the run used a value the author did not write at
+  the node they wrote it on, with nothing in the log. "My knob did not take" is
+  now one grep (`LOGGAIR_CONSOLE_LEVEL=DEBUG`) instead of a bisect.
+
+### Removed
+
+- **Eight more never-imported re-exports dropped from `confluid.engine`**
+  (2026-08-10, the third pruning tranche): `_expand_block_keys`,
+  `_get_acceptable_keys`, `_get_post_init_attrs`, `accepts_key`,
+  `accepts_broadcast`, `accepts_any_key`, `active_context`, `collect_report`.
+  Each grep-verified dead as an ENGINE name — no engine-body use and no
+  `from confluid.engine import` site anywhere (workspace Python, notebooks,
+  YAML). The public names are unaffected: all live in `confluid` top-level
+  and their real homes (`confluid.broadcast`, `confluid.state`).
+
+- **`ConfluidRegistry.register_object` / `get_object` and the `_objects`
+  store.** A write-only feature: no resolution path — not `!ref:`, not
+  `!class:`, not `resolve_class` — ever consulted the store, so a "registered"
+  object could never be reached from a config. Zero consumers workspace-wide
+  (Python, YAML, and notebooks all grepped); the only callers were two
+  put-then-get round-trip tests, deleted with it.
+
+- **`introspect.init_setattr_annotations`.** The `to_pydantic` body-slot
+  typing projection it was built for consumes `scan_init_body` directly, which
+  orphaned it — its only remaining caller was its own test.
+
+- **Three never-imported re-exports dropped from `confluid.engine`**
+  (`_broadcast_blocked_keys`, `_get_param_kinds`, `_same_target`) — same
+  criterion as the five pruned 2026-08-08: zero users anywhere, engine's own
+  body included; the real homes in `confluid.broadcast` are untouched.
+
+  (Considered and deliberately KEPT despite zero Python callers:
+  `confluid.env.load_workspace_env` — it has a real notebook consumer, which a
+  `.py`-only grep misses. Audits claiming "zero consumers" must grep
+  notebooks too.)
+
+### Documentation
+
+- **`docs/lifecycle.md` — the map (2026-08-11).** Twenty-one correct topic pages
+  with nothing tying them together: no page described the ORDER of the passes, and
+  the repo had no diagram at all. The new guide gives the nine passes
+  (parse → import → include → scope → interpolate → expand → broadcast → flow →
+  solidify), what each one decides permanently, where you can stop
+  (the `load(until=…)` stages, `solidify=False`, `configure()`), and the questions the order
+  answers — why `${...}` burns in, why
+  a scope block cannot read an interpolated value, why an included file wins or
+  loses. Its runnable twin `examples/lifecycle.py` walks one document through every
+  stage and ASSERTS each invariant. Cross-linked from the topic guides and listed
+  first in the README index.
+
+- **`AGENTS.md` re-split into RULE / PINS / WHY (2026-08-11).** It had grown to
+  108 KB of rule, history, measurement and pins interleaved in single paragraphs —
+  several mandates were longer than the topic guide they pointed at, and the
+  rationale was restated beside every link to the architecture record that already
+  held it. Same rules, same 35 test-file and 32 test-method pins, half the size.
+
+- **`examples/modular_includes/` gained the README its own convention requires**,
+  and now demonstrates the include-ordering rule with assertions rather than only
+  composition.
+
+- **Three new topic guides, each with a runnable example twin** (2026-08-10 —
+  closing the review's largest doc gaps): `docs/configure.md`
+  (post-construction configuration — the first key-feature bullet finally has
+  a page: call surface, the one matching rule over live objects,
+  deferred-slot tuning, values-before-finalize ordering, layering) with
+  `examples/configure.py`; `docs/schema-export.md` (`to_pydantic`,
+  `parse_param_docs`, `validate_model`, `sanitize_schema`) with
+  `examples/schema_export.py`; and `docs/serialization.md` (the dump/reload
+  round trip, what a dump omits and why) pointing at
+  `examples/reproducible_experiment.py`. All three are in the README index.
+- **`scope_aliases` is documented** (`docs/scopes.md` + an
+  `examples/scopes.py` demo) — the top-level alias map existed since the
+  scopes engine landed but was described only by its circular-chain error.
+- **Drift fixes**: the README no longer names the nonexistent
+  `ClassReference` type; `examples/ml_pipeline.py` no longer claims the
+  configuration machinery executes property getters (it walks instance
+  attributes only — the recompute rule is about ordinary domain reads);
+  `report.py`'s origin vocabulary lists `"deferred slot"` and `"own"`.
+- **`AGENTS.md` deduplicated against `docs/architecture.md` (2026-08-10).**
+  Eight mandate paragraphs carried the full narrative — failure stories,
+  measurements, rejected alternatives — that their architecture record also
+  carries, and the two copies had measurably drifted (AGENTS named a
+  `Fluid._beaten_bare_keys` field that never survived). Each mandate now
+  states its rules, discriminators, and pins and points at its record for
+  rationale, history, and measurements; facts that lived only in AGENTS were
+  folded into the records in the same pass.
+
+### Internal
+
+- **Materialization is ~22 % faster (2026-08-11), measured, no design change.**
+  Two hot-path repairs on `examples/performance.py`'s 2,500-marker tree
+  (305 ms → 238 ms):
+
+  - **Per-key TRACE diagnostics are gated.** Python evaluates the f-string before
+    the logger can filter, and loggair's handlers sit at TRACE with a filter, so
+    loguru's own min-level fast path never fires — 10,000 records per pass were
+    built in full, dispatched to both handlers, and discarded (30.1 % of the pass,
+    isolated by measurement). The four per-key sites now check a gate recomputed
+    once per pass by `clear_pass_caches()` from `loggair.get_active_config()`. A
+    swapped-in logger is never gated, so log-asserting tests are unaffected.
+  - **`broadcast._same_target` is memoized** through the existing
+    `register_pass_cache` mechanism. It was the one uncached introspection helper
+    in the module and was asked once per (view entry × marker) — 113,000 times per
+    pass, 50,002 of which reached `resolve_class` (9.5 %).
+
+- **The cascade corner runs on shared primitives (2026-08-10 — the review's P1
+  batch, closing the residue the D6/D7 defects lived in).** Four
+  consolidations, all behavior-preserving: (1) per-pass cache clearing is ONE
+  registered `broadcast.clear_pass_caches()` — modules owning a cache
+  self-register (`engine._parent_blacklist_cache` does) and every entry point
+  fires it, **now including `configure()`**, which cleared nothing: a
+  same-qualname class redefined between calls (a notebook cell re-run) was
+  served its previous definition's accept-list with no diagnostic; (2) the
+  "mapping tunes a deferred marker" idiom is ONE `broadcast.tune_marker`
+  (two inline copies had already cosmetically drifted); (3) the
+  report's glob-prefix used-key spelling is ONE `broadcast._mark_used_key`
+  beside the origin-label constants it parses (both sinks carried a
+  byte-identical parsing expression — a scanner label rename would have
+  silently broken unused-tracking in two modules); (4) the scanner's
+  `gated`/`floating` boolean pair is the closed `_Delivery` Literal
+  (`addressed`/`glob_one`/`rider`) on `_consume` and the receiver
+  `dict_slot` predicate — three real states, self-documented.
+
+- **One grammar per concept in the introspection/grammar layer (2026-08-09).**
+  Three duplications the one-scanner plan's audit found one layer below
+  `broadcast`, each folded to a single implementation: (1) the dotted-key
+  expansion — `merger.expand_dotted_keys` (document top level) and
+  `broadcast._expand_block_keys` (in-block) are now the ONE
+  `merger.expand_dotted_mapping` under two copy-policy hooks (deep-copy with
+  Fluid identity + `deep_merge` vs share-by-reference + shallow last-write),
+  which also propagates the fresh-head position anchoring to in-block dotted
+  keys; (2) the `Target(...)` call grammar — `_TARGET_CALL_RE` lives in
+  `resolver` (with the `_split_inline_pairs` k=v splitter), the ONE grammar
+  the tag constructors use; (3) the
+  annotation-marker scan — `introspect.marked_param_names` (see Fixed).
+  Value-coercion policies (tag `parse_value` vs quoted context-resolve) are
+  deliberately NOT unified — they differ by design and stay at their callers.
+
+- **Dead compatibility shims pruned (private names, zero users verified
+  workspace-wide).** Five never-imported re-exports dropped from
+  `confluid.engine` (`_classify_annotation`, `_scope_of`, `_settability_target`,
+  `_warn_if_init_unscannable`, `_warned_unscannable_inits`); `confluid.loader`'s
+  blanket compat block reduced to its one real dependency (`materialize`);
+  the uncalled `pydantic_export._unwrap_annotated` deleted. Public API is untouched.
+
+- **Cache ownership follows module ownership.** The engine's parent-attr
+  blacklist now rides its own `engine._parent_blacklist_cache` (cleared per
+  materialize/resolve pass like the others) instead of squatting in
+  `broadcast._post_init_attrs_cache` under suffixed `#parent_blacklist` keys —
+  the arrangement contradicted broadcast's stated cache ownership.
+
+- **Three small duplications folded to one implementation each:** the dumper's
+  target-name spelling (three verbatim copies → `_target_name`), the
+  `KEY=VALUE` scope split (`loader._parse_scope_suffix` now delegates to
+  `scopes.parse_scope_arg`), and `configurator`'s eleven function-local
+  import sites hoisted to the module top (no cycle ever required them).
+
+- **Architecture records 6 and 7 added** (`docs/architecture.md`): why
+  precedence is discriminated by `Fluid._order_resolved` and never `_yaml_loc`,
+  and why `${...}` interpolation burns in at load for every spelling (with the
+  rejected late-bound/copy-on-write alternatives on record).
+
+### Fixed
+
+- **Rider content reaches a declared deferred slot on BOTH paths, BOTH value
+  shapes (the D5 adjudication, 2026-08-09).** The 2×2 was crossed: for a
+  trainer with `self.optimizer = PartialClass(AdamW, lr=0.001)`,
+  `'**.optimizer.lr': 0.01` (rider MAPPING) tuned the slot under `configure()`
+  and was silently ignored under `load()` — the kept difference D5 — while
+  `'**.lr': 0.01` (rider SCALAR) tuned it under `load()` and was silently
+  ignored under `configure()`, an uncatalogued mirror in no pin (the
+  deferred-slot cascade sat outside the one-scanner audit's walk). Both
+  failing cells failed identically: the run silently used a value the author
+  overrode. Now: both receivers' `dict_slot` admit a gated/floating dict at a
+  DECLARED key (gated deliveries respect the NoBroadcast opt-outs — each
+  shield gates its own key: the slot param's shield refuses the rider
+  mapping, the target param's shield refuses the rider scalar), and
+  `configure()`'s deferred tuning flattens the `'**'` rider into its pool via
+  the same `_broadcast_pool` the engine uses. Along the way
+  `_broadcast_pool` became scope-preserving: flattening to a plain dict
+  erased the `_View` tags exactly when a rider was present, making an
+  ancestor's addressed (EXACT) values cascade-eligible for descendants'
+  deferred slots. Pins: the spelling×path matrix + NoBroadcast pin in
+  `tests/test_cross_path_pins.py` (the old D5 twins, which ENFORCED the
+  divergence, are replaced by it); example:
+  `examples/broadcasting.py::rider_content_reaches_deferred_slots`.
+
+- **The marker helpers and `input_specs` read a builder FUNCTION's own
+  signature.** `partial_param_names` / `mandatory_param_names` reached for
+  `getattr(target, "__init__")` — on a function that is `object.__init__`
+  (`*args, **kwargs`) — so an identical `Partial[...]` / `Mandatory[...]`
+  annotation was reported on a class and silently EMPTY on a registered
+  builder function (measured: `{'model'}` vs `set()`), and `input_specs`
+  reported an empty contract for every function target. All now dispatch
+  through `introspect.init_callable`; the scan-plus-cache itself is ONE
+  helper, `introspect.marked_param_names`, replacing three near-identical
+  copies that had already drifted on exactly this. Pins:
+  `tests/test_partial.py::test_partial_param_names_reads_a_builder_functions_own_signature`,
+  `tests/test_io_contract.py::test_input_specs_and_mandatory_read_a_builder_functions_signature`.
+
+- **`get_hierarchy` finds docs kept at class level.** The class walker read
+  `__init__.__doc__` alone while the instance walker fell back to the class
+  docstring, so a class keeping its `Args:` block at class level (the common
+  convention) had help text in one hierarchy and none in the other. All four
+  docstring-resolution copies (`get_hierarchy`, `get_hierarchy_from_instance`,
+  `to_pydantic`, `parse_param_docs`) now ARE `parse_param_docs` — whose
+  docstring always claimed `to_pydantic` resolved "the same way"; now it is
+  the same code. Pin:
+  `tests/test_schema_from_instance.py::test_both_walkers_find_docs_kept_at_class_level`.
+
+- **The direct-flow `'**'` receiver application runs the ONE cascade gate.**
+  `_pop_glob_routing` carried an inline copy of the bare-key gates that was
+  strictly weaker than `merge_bare_pool_into_kwargs` — no list skip, no
+  Fluid declared-key requirement, no `_same_target` self-broadcast guard — so
+  a list-valued or Fluid-valued `**.key` behaved differently on the
+  direct-flow path than on the materialize path (the same drift class the
+  D2/D3 adjudication closed for `configure()`). Both halves are now the one
+  function; glob contents still feed the nested-marker pool unchanged. Pin:
+  `tests/test_broadcast_robustness.py::test_pop_glob_routing_applies_the_one_cascade_gate`.
+
+- **A top-level dotted address orders at the position it was WRITTEN.**
+  `expand_dotted_keys` created a missing head key by plain assignment — i.e.
+  APPENDED at the end of the document — so `Model.layers: 3` written FIRST
+  still beat a marker's own `layers=10` below it, while the supposedly
+  identical `Model: {layers: 3}` in the same position lost. One documented
+  rule, two answers, split by spelling. A fresh head is now anchored at the
+  dotted key's own position; a head that exists as a real key keeps its own
+  position, unchanged. Pins: the fresh-head pair in
+  `tests/test_document_order.py`.
+
+- **The legacy colon-free `!class` spelling accepts a kwarg named `target`.**
+  `class_compat` was the one tag constructor still building its marker via
+  `Instance(name, **kwargs)` instead of `_make_fluid`, so
+  `!class Widget(target=x)` raised `got multiple values for argument
+  'target'` on a config the modern `!class:` form loads fine. Pin:
+  `tests/test_loader.py::test_kwarg_named_target_survives_the_legacy_class_spelling`.
+
+- **The override DEBUG diagnostic can no longer crash the merge.** `_View.set`
+  decided "did this write change the value?" with a bare `!=`, which raises on
+  any value whose comparison returns a non-boolean (a numpy/torch array's
+  `__eq__` returns an ARRAY) — a `ValueError` inside the merge's single write
+  path, far from the config that caused it. Comparison failures now fall back
+  to identity: a false "changed" on an equal-but-distinct array costs one
+  DEBUG line. Pin:
+  `tests/test_scanner.py::test_view_set_override_diagnostic_survives_array_valued_writes`.
+
+- **The settability predicates read a builder FUNCTION's own signature.**
+  `accepts_key` / `accepts_broadcast` / `accepts_any_key` answered True for
+  EVERY key on a registered builder function (measured: `accepts_key(builder,
+  "run_name")` on a builder declaring only `weights`/`num_classes`): the
+  accept-list machinery read `target.__init__` unconditionally, which for a
+  function is `object.__init__` — `(*args, **kwargs)` — so every function
+  target looked like a `**kwargs` constructor. That defeated, for function
+  targets, the exact stray-CLI-key failure `accepts_any_key` exists to
+  prevent. The class-vs-callable dispatch every signature reader must make now
+  lives in ONE helper (`introspect.init_callable`), used by the accept-lists,
+  the param-kind scan, and the engine's constructor filter alike.
+
+- **The per-class marker caches no longer leak across the MRO.**
+  `partial_param_names` / `mandatory_param_names` / `no_broadcast_param_names`
+  read their cache with `getattr`, which walks the MRO: a subclass queried
+  after its parent returned the PARENT's stamped answer (measured: a subclass
+  declaring `opt: Partial[Any]` reported an empty set), and in the other
+  direction a subclass overriding `__init__` without markers inherited the
+  parent's — for `NoBroadcast`, silently blocking bare keys the subclass never
+  opted out of. The read is now the class's OWN `__dict__`, the same guard the
+  registry has always used for `__confluid_name__`.
+
+- **`${...}` inside a marker's kwarg block interpolates — all spellings agree.**
+  The Resolver returned any Fluid whole, so a placeholder written in a
+  `!class:`/`!lazy:` tag's mapping body stayed the LITERAL string on every path
+  (measured: `input_dir: "${DATA_ROOT}/files"` reached the constructed object
+  verbatim, silently). Marker kwargs
+  are now walked by the same load-time pass, in place (marker identity is
+  load-bearing for the flow memo and `!ref:` sharing) and text-only: a
+  `Reference` fluid stays late-bound, nested markers recurse, and sibling
+  kwargs act as the local scope. Substituted values BURN IN — `dump()` emits
+  them and a deferred `!partial:` slot flowed later sees them; a slot that must
+  stay late-bound uses `!ref:` to a plain key.
+
+- **The override DEBUG line picks its article from the winning scope's name** —
+  "replaced by an exact one", not "a exact one". Cosmetic, but the line exists
+  to be grepped by an operator explaining a value they did not expect, and a
+  typo there reads as a bug in the very diagnostic meant to build trust.
+
+- **Positional-only constructor parameters are configurable.** `def __init__(self,
+  k, /)` rejected every document path with a `ConstructionError` while
+  `configure()` set it fine — the same engine/configurator split, from the same
+  cause as `*args`: a name that can never be passed by keyword was left in the
+  constructor-kwarg filter, so a matching config key reached the call and Python
+  refused it. Both kinds are now excluded; the value arrives as a post-init
+  attribute, which is what the post-construction path always did.
+
+- **A target that can accept a key nowhere now says so.** An addressed key aimed at
+  a `__slots__` class with no matching slot (or any object refusing the attribute)
+  escaped as a raw `AttributeError` — `'S' object has no attribute '__dict__'`,
+  from a line the author never wrote. It is now a located `ConstructionError`
+  naming the key, the target and the YAML position, and saying what to do:
+
+  ```
+  ConstructionError: S cannot accept 'k' (set at config.yaml:4:3): it is not a
+  constructor parameter and the object does not allow the attribute to be set.
+  Add it to the constructor, or remove it from the config.
+  ```
+
+  A *bare* key nothing declares is still dropped silently — it was aimed at the
+  whole document, so a node that cannot take it is the normal case, not a mistake.
+
+- **Every published registry key is now a legal YAML tag.** `_entry_key` strips
+  `<locals>` precisely so keys survive a `!class:` tag, but `<lambda>` reached it
+  unhandled. Registering two anonymous callables under one name published
+  `__main__.<lambda>` — a key `list_classes()` returned and the loader rejected:
+
+  ```
+  ScannerError: while scanning a tag
+  ```
+
+  Registering an anonymous callable is legitimate (a one-line metric, a builder
+  factory) and works until the *name* becomes ambiguous, at which point the public
+  key switches to the dotted form and becomes unusable. So the key is made
+  tag-legal rather than the registration refused.
+
+  The two bracketed shapes get opposite treatment, because they mean opposite
+  things: `<locals>` names a *scope* and is dropped (`outer.<locals>.Inner` →
+  `outer.Inner`, still identifying the class), while `<lambda>` *is* the name and is
+  unwrapped (`__main__.lambda`) — dropping it would leave a bare trailing dot,
+  identical for every lambda in the module. Same-module collisions fall to the
+  existing `~N` suffix, `~` being a legal tag character. The rule is general, so
+  `<listcomp>` / `<genexpr>` / `<module>` are covered too.
+
+- **A zero-parameter constructor is configurable again.** A `@configurable` class
+  whose `__init__` takes no parameters at all died on any config key:
+
+  ```python
+  @configurable
+  class Host:
+      def __init__(self) -> None:      # no parameters
+          self.slot = None             # ...but a body slot to configure
+  ```
+  ```
+  ConstructionError: Host.__init__() got an unexpected keyword argument 'slot'
+  ```
+
+  The error came from inside the class's own constructor and pointed nowhere near
+  the config that caused it. The shape is one the class-design convention actively
+  encourages — a minimal constructor with the dependencies as `__init__`-body
+  slots — taken to its limit.
+
+  `_ctor_params` returned a plain `set()` for two different states: the signature
+  could not be *read*, and the signature was read and found *empty*. Those need
+  opposite handling (pass every kwarg through as a best effort, versus pass none),
+  and the caller's truthiness fallback picked the first for both. The unreadable
+  case now returns a distinct `_UNKNOWN_PARAMS` sentinel — still an ordinary
+  `set` for every reader, told apart by identity — so an empty parameter list
+  means what it says.
+
+  Pre-existing, not introduced this cycle.
+
+
+- **Precedence is document order for EVERY spelling, not just some.** Confluid has
+  one precedence rule — last spec wins — and two of the four ways to address a
+  value at a deferred slot did not follow it. A mapping (`optimizer: {lr: 0.5}`)
+  and a dotted key (`runnable.optimizer.lr: 0.5`) lost to a bare `lr:` **wherever
+  it sat**, while the equivalent `optimizer: !lazy:AdamW(lr=0.5)` correctly won
+  when written later:
+
+  | spelling | bare key above it | bare key below it |
+  |---|---|---|
+  | `optimizer: !lazy:AdamW(lr=0.5)` | slot wins | bare wins |
+  | `optimizer: {lr: 0.5}` | *was* bare wins → now slot wins | bare wins |
+  | `runnable.optimizer.lr: 0.5` | *was* bare wins → now slot wins | bare wins |
+
+  The cause was a guard testing `_yaml_loc is not None` — a source location, i.e.
+  a *diagnostic* — as a stand-in for "was this addressed by the author?". Tuning a
+  code-declared slot copies the code marker's empty location, so the author's own
+  value was recorded as a default and any bare key beat it.
+
+  The guard's real question is narrower: *has the ordered merge already settled
+  this key?* `_prepare_kwargs` resolves a marker's own kwargs against surrounding
+  bare keys **by position** and the later broadcast pass must not re-run that
+  contest. That is now stamped explicitly as `Fluid._order_resolved`, and
+  `_yaml_loc` is back to being diagnostics only.
+
+  A mapping addressed at a slot is applied post-construction — the first moment
+  the slot's default is knowable — and a plain dict cannot carry a position, so
+  its contest is decided during the ordered merge and carried forward as its
+  outcome (`Fluid._late_bare_keys`: the bare keys sitting later than that slot).
+
+- **A class-name block now reaches an `__init__`-body slot.**
+  `Trainer: {optimizer: {lr: 0.5}}` left the constructor default even with nothing
+  competing — the value was silently dropped — while the inline spelling of the
+  same thing worked. Two paths were involved and each had its own reason:
+
+  - **Loading:** `_consume_block` admitted a dict only for a dict-*typed* param,
+    where `_apply_own` admits one at any *declared* key. A deferred body slot is
+    not dict-typed, so the mapping was hoisted as routing for the children and
+    never applied. `_consume_block` now follows the same rule on the addressed
+    path; a glob-delivered or floating dict stays routing.
+  - **`configure()`:** the same block recursed *into* the marker. A `Fluid`
+    reports `__confluid_configurable__`, so it looked like a live configurable
+    child, and attributes were set on the marker object where nothing reads them.
+    It now tunes `marker.kwargs`, matching the load path.
+
+- **`configure()` no longer builds a deferred slot, and no longer discards what you
+  aim at one.** Two further divergences from the load path, both on the
+  post-construction side:
+
+  - `_assign` materialized the marker, because `PartialClass` subclasses `Target`. A `!partial:`
+    slot exists precisely so its owner can flow it later *with* the runtime argument
+    (`params=model.parameters()`), so building it here produced an object
+    constructed without that argument — and the failure landed far from the cause.
+    `PartialClass` is now excluded, matching `engine._apply_post_init_attrs`.
+  - `_walk` then flowed the slot again to recurse into it and configured the
+    resulting object, which is never written back to the attribute. Every bare key
+    aimed at a deferred slot was applied to a throwaway and silently lost. A `PartialClass`
+    is now tuned in place — merged into `marker.kwargs` under the same accept-list
+    and `NoBroadcast` gates the engine applies — so the value is there when the
+    owner flows it.
+
+  With those, **both paths now order identically** across all four spellings.
+
+- **An ordering verdict no longer outlives the document that produced it.**
+  `configure()` recorded which bare keys a slot-addressed block had out-positioned
+  *on the marker*, so a second call carrying only a bare key found that key still
+  marked "lost" against a document it never saw:
+
+  ```python
+  configure(car, config="power: 99\nCar: {engine: {power: 50}}")   # -> 50, correct
+  configure(car, config="power: 77")                               # -> 50, WRONG
+  ```
+
+  Layering a base config then an override is ordinary usage, and it silently kept
+  the first call's value. The verdict is now a local of the scan that computes it
+  and is passed to the tuning step, so it cannot escape the call. Deferred slots
+  are also tuned by their owner's scan rather than during the graph walk — the
+  owner is the only place that knows where each block sat relative to the bare
+  keys.
+
+- **A deferred (`!partial:`) slot declared in code is now configurable.** Three
+  separate rules combined to make a `self.optimizer = PartialClass(AdamW, lr=1e-4)`
+  slot unreachable from config — every natural spelling failed, and all but one
+  failed *silently*:
+
+  | what you write | before | after |
+  |---|---|---|
+  | `lr: 0.5` (bare) | ignored — trains at `1e-4` | applied |
+  | `optimizer: {lr: 0.5}` | slot replaced by a raw `dict` | applied, `weight_decay` kept |
+  | `optimizer.lr: 0.5` | slot replaced by a raw `dict` | applied, `weight_decay` kept |
+
+  The three causes: (1) `_resolve_kwarg_value` returned a `PartialClass` untouched, so it
+  received no broadcasting at all — but deferral means "do not BUILD it", and
+  merging keys into a marker's `kwargs` builds nothing, which is precisely what
+  the `Target` branch beside it already did. A `PartialClass` **is** a `Target`, so it now
+  takes that branch and only the terminal eager flow is withheld. (2) A mapping
+  addressed at a slot holding a deferred marker was assigned verbatim, destroying
+  the marker; it now **merges into the marker's kwargs**, so the kwargs you did
+  not mention survive. (3) A kwarg set in **code** blocked a bare key, while a
+  constructor default with the same value did not — so *where* a default was
+  written decided whether config could reach it. Code-set marker kwargs are now
+  treated as the defaults they are. A kwarg written on the marker in the
+  **document** still wins over a bare key (provenance via `_yaml_loc`), so
+  addressed-beats-bare is unchanged.
+
+- **`accepts_any_key(target)` — the third settability predicate.** `accepts_key`
+  and `accepts_broadcast` answer *"may this key land here?"*; this one answers
+  the prior question, *"does this target discriminate between keys at all?"*. It
+  is `True` for a `**kwargs` constructor, where both of the others return `True`
+  for **every** key — including keys the class has never heard of.
+
+  ```python
+  class Forwards:
+      def __init__(self, **kwargs): ...
+
+  accepts_key(Forwards, "run_name")   # True — it cannot refuse it ...
+  accepts_any_key(Forwards)           # True — ... because it has no accept-list
+  ```
+
+  An external config front-end needs the difference to decide how to *deliver* a
+  key: writing it into a marker's own kwargs is the ADDRESSED channel, so it
+  becomes a **constructor argument**, and that claim is only justified when the
+  class declares the key. One a target merely cannot refuse must be left to
+  cascade, landing as a post-init attribute — the same split `flow()` already
+  applies to a document's own keys. Without the distinction, a CLI `--run_name x`
+  reaches a metric's constructor and a strict library rejects a keyword it never
+  asked for, from a call site nowhere near the config. See
+  [docs/broadcasting.md](docs/broadcasting.md) → "Declaring a key vs being unable
+  to refuse it".
+
+- **`flow(node, *args, **kwargs)` — positional runtime injection.** A marker
+  carries keyword arguments only (that is all a YAML tag can express), but the
+  constructor being deferred is somebody else's, and a variadic signature has no
+  keyword for its inputs at all. Such a slot could not be deferred: the object
+  had to be built inline, and every knob beside the inputs became unreachable
+  from config.
+
+  ```python
+  class Loaders:
+      def __init__(self, *loaders, device=None): ...
+
+  slot = PartialClass(Loaders, device="cuda")   # the config owns the knobs
+  flow(slot, train_dl, valid_dl)             # the run supplies the inputs
+  ```
+
+  Positional args are runtime-only — never stored on a marker, never emitted by
+  `dump()` — the same status the `params=` / `dataset=` kwargs already had. They
+  suppress instance memoization (they override the stored spec), are dropped
+  for an already-live object (matching the runtime-kwarg convention), and raise
+  `ConstructionError` for a registry-configurable bare type, which materializes
+  through a synthesized marker.
+
+  `_ctor_params` now excludes `VAR_POSITIONAL` names: `inspect.signature` lists
+  `*loaders` under the name `loaders`, so a config key of that name used to pass
+  the constructor-kwarg filter and reach the call as a keyword, where Python
+  rejects it.
+
+- **`discover_dimension_values(config)`** — every keyed scope dimension in a raw
+  document mapped to the values it offers:
+
+  ```python
+  from confluid import discover_dimension_values, load
+
+  discover_dimension_values(load("experiment.yaml", until="raw"))
+  # {"task": {"classification", "segmentation"}, "model": {"convnet"}}
+  ```
+
+  Takes the **raw** document — by the time `load()` returns, the blocks have been
+  spliced away. `discover_dimensions` (keys only) is now derived from the same
+  walk rather than traversing separately.
+
+  A dimension declared only by `!notscope:` blocks maps to an **empty set**: it is
+  a real dimension a CLI must bind, but a negation is activated by every value
+  except the one it names, so there is nothing to *select*.
+
+- **`framework=` — a third orthogonal discovery axis** on `@configurable`,
+  `register()` and `register_class()`, indexed like `task`/`role`
+  (`list_classes(framework=…)`, `list_frameworks()`).
+
+  `task` and `role` say what a class is *for*; neither says a `torch.nn` loss
+  cannot be handed to a Keras trainer. A discovery consumer asked for "a
+  classification loss" therefore offers both, and the mismatch surfaces as a
+  type error far from its cause. `framework` is what makes such a picker
+  offerable:
+
+  ```python
+  @configurable(task="classification", role="loss", framework="torch")
+  class FocalLoss: ...
+
+  list_classes(task="classification", role="loss", framework="keras")
+  ```
+
+  - The unit is the **API, not the tensor runtime** — a `keras.losses.Loss` is
+    `"keras"` whether Keras runs on TensorFlow, JAX or PyTorch, because the API
+    is what decides whether a trainer can consume it.
+  - Deliberately **not** folded into `category`, which stays `f"{task}_{role}"`.
+  - Follows the same fallback template as the other marks, so a partial
+    re-register never drops it.
+  - Works for `register()`-ed **functions** too (builder factories have no base
+    class, so type inference cannot cover them — the reason this is an explicit
+    tag rather than something derived from the MRO).
+  - Untagged classes are absent from the index: a `framework` filter returns
+    only what explicitly claims that engine. Probe without it to see everything.
+
+- **A registered NAME may map to more than one class.** Two classes may share a
+  name when any discovery tag tells them apart — the same op implemented per
+  framework (`group="fft/numpy"` vs `"fft/torch"`), or a library publishing one
+  name as both a loss and a metric (`role="loss"` vs `"metric"`). Previously the
+  second registration silently replaced the first: it vanished from every
+  picker, and which one survived depended on import order.
+
+  ```python
+  get_registry().get_class("FourierOp", group="fft/torch")   # tag-filtered lookup
+  get_registry().get_class("myops.torch.FourierOp")          # ...or the dotted key
+  ```
+
+  - `get_class` takes the same five filters `list_classes` intersects.
+  - `list_classes()` returns the bare name while it is unambiguous and the
+    canonical dotted key once a name is shared, so the enumerate-then-look-up
+    idiom keeps working AND both classes become reachable.
+  - `ConfluidRegistry.key_for(cls)` reports the key a class is published under;
+    `dump()` uses it, so a round-trip reloads the same class rather than a
+    namesake.
+
+- **`AmbiguousClassError`** (a `ConfigurationError`, and so a `ValueError`) —
+  raised when a bare lookup names several classes and nothing narrows the
+  choice. A sibling of `UnknownClassError`, not a subclass: code catching
+  "unknown" to fall back to an import must not swallow "ambiguous". The message
+  lists every candidate with the tags that separate them.
+
+- **Tag selectors in a target** — `!class:FourierOp@group=fft/torch`, composable
+  with inline kwargs and `!lazy:`. A selector value written `$key` is read from
+  the loaded configuration (`!class:Loss@framework=$engine`), so a document
+  states its engine once and every ambiguous target follows it — including
+  targets nested inside another marker's block, which load-time `${...}`
+  interpolation cannot reach. An unknown axis is rejected, not ignored.
+
+### Changed
+
+- **An active keyed scope must name a value the document declares** — otherwise
+  `load(..., scopes=[...])` raises `ScopeError` listing the values that do exist.
+
+  ```
+  ScopeError: No scope block matches task='classifcation'. This document declares
+  task with: classification, segmentation. Either use one of those values, or add
+  a `!scope:task=classifcation` block.
+  ```
+
+  Previously a value matching no block resolved to the document's *unscoped* keys,
+  so a typo ran the default configuration and reported nothing — indistinguishable
+  from success until the outputs were inspected.
+
+  The rule is narrow, and three cases are deliberately unchanged: an **undeclared**
+  dimension stays an inert no-op (a CLI may pass a dimension a config has not grown
+  into yet), an **unset** dimension resolves to the defaults as before, and a
+  dimension carrying **any** `!notscope:` block accepts every value (both matching
+  and differing are meaningful there, so nothing can be rejected).
+
+  **Breaking** for a config that was relying on an unmatched value falling through
+  to its defaults. The fix is to declare the value as a block — including for a
+  "default" variant a CLI names unconditionally, which is now a checkable value
+  rather than a silent no-op.
+
+- **A bare lookup of a shared name now raises** instead of returning whichever
+  class registered last (`get_class`, and `resolve_class(strict=True)` — which
+  the construction path uses). `resolve_class` stays non-raising by default, so
+  introspection callers that already treat `None` as "not introspectable" are
+  unaffected.
+- **`list_classes()` returns dotted keys for a shared name** (bare names are
+  unchanged for every unique one).
+- `ConfluidRegistry._classes` is gone, replaced by `_entries` (name → entries)
+  and `_by_key` (canonical key → entry). The five tag indices now hold entry
+  keys rather than names.
+- **`to_pydantic` keeps the element type of a re-iterable collection slot.**
+  `Sequence[X]`, `MutableSequence[X]`, `Collection[X]`, `Container[X]`,
+  `Mapping[K, V]` and `MutableMapping[K, V]` now generate a field of that type
+  instead of a bare `Any`, so a slot annotated to say what it holds actually
+  says so in the generated schema — the JSON-Schema / form-spec surface saw
+  `Any` for every one of them before.
+
+  ```python
+  class Runner:
+      def __init__(self, metrics: Optional[Sequence[Metric]] = None): ...
+
+  to_pydantic(Runner).model_fields["metrics"].annotation
+  # was: Optional[Any]        now: Optional[Sequence[Metric]]
+  ```
+
+  `Iterable`, `Iterator`, `Generator` and the three async kinds are still
+  coerced to `Any`, and the split is the point: pydantic validates those lazily,
+  wrapping the input in a one-shot `ValidatorIterator` whose second iteration
+  yields nothing, so keeping their element type would trade a schema detail for
+  silently-empty collections. The six above validate into a real `list` / `dict`
+  holding the identical element objects, so they never had that problem.
+
+### Fixed
+
+- **A `**kwargs` constructor no longer drops every runtime kwarg.** `_ctor_params`
+  reports the VAR_KEYWORD parameter's own name, which is truthy — so `flow()`'s
+  constructor-kwarg filter kept only keys literally named `kwargs` and built the
+  target with nothing:
+
+  ```python
+  class Forwarding(SomeBase):
+      def __init__(self, **kwargs): super().__init__(**kwargs)
+
+  flow(PartialClass(Forwarding), model=net, args=training_args)
+  # was: Forwarding()  -> "requires either a `model` or `model_init` argument"
+  # now: Forwarding(model=net, args=training_args)
+  ```
+
+  What such a constructor receives follows the **addressing** — the same split
+  the accept-list predicates draw:
+
+  | The key | Reaches |
+  |---|---|
+  | written on the marker (`!lazy:Forwarding(tag=x)`), or in a block naming it | the constructor |
+  | injected at flow time (`flow(node, model=…)`) | the constructor |
+  | bare, cascading (a top-level `name:`) | a post-init attribute |
+
+  A `**kwargs` class has no accept-list to filter with, so *every* bare key in
+  the document reaches it — passing those on would turn permissive broadcasting
+  into "called with whatever the document happens to contain". Nothing is applied
+  twice: the post-init step now gates on what the constructor actually received
+  rather than on the declared parameter names.
+
+- **`flow()` now solidifies an ALREADY-LIVE object.** The documented promise —
+  "domain code does not need to manually trigger solidification, `flow(model)`
+  handles it transparently" — held only on the marker path: the hook ran after
+  *construction*, below `flow()`'s already-live early return. An object built
+  eagerly (`!class:Model()`) or handed in from Python came back with its lazy
+  state never finalized, and nothing raised; the failure surfaced elsewhere, as
+  an optimizer flowed with `params=model.parameters()` receiving an empty
+  parameter list.
+
+  `flow(obj, solidify=False)` still suppresses the hook, live objects included.
+  Because a live object may be flowed repeatedly, `solidify()` is now expected
+  to be idempotent (build once, cache, return the cache) — the convention the
+  lazy-initialization rules already require.
+
+- **A duplicate registration with nothing to tell it apart now warns.** Same
+  name, same tags, different class: last-write-wins is preserved, but it is no
+  longer silent. Re-registering the SAME class object stays silent, since a
+  snapshot restore does that on every bootstrap.
+- **`register_class(cls)` is idempotent after a `name=` override** — `name` now
+  falls back to the mark the class already carries (read from its OWN
+  `__dict__`, so a subclass is never registered under its parent's custom name).
+  A partial re-register used to mint a second entry under the short name.
+- **A dotted `!class:` target now matches its class-name block.**
+  `!class:pkg.mod.Widget` set the block-match name to the dotted string, so a
+  `Widget:` block silently did not apply and the value stayed at its
+  constructor default. This also aligns the load path with `configure()`, which
+  has always matched on the registered name.
+- **A re-registration that changes a tag no longer leaves the class indexed
+  under the old value.**
 
 ## [0.2.0] — 2026-07-27
 

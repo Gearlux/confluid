@@ -1,5 +1,7 @@
 # Broadcasting & Ordered Matching
 
+> New here? [The Lifecycle](lifecycle.md) maps the passes this page sits in.
+
 Confluid **broadcasts** bare top-level YAML keys into every configurable node
 whose constructor (or `__init__`-body attribute set) accepts a parameter of that
 name — the mechanism that lets one flat `batch_size: 64` land on every loader in
@@ -27,17 +29,39 @@ Details that make the grammar predictable:
   `trainer.lr` ≡ `**.trainer.lr`. Segments **after** the first are strict
   one-level hops: `trainer.opt.lr` addresses a *direct* child of trainer
   named `opt`; use `trainer.**.opt.lr` to float `opt` at any depth.
-* Segment matching is by **class name or instance `name`**; containers
+* A bare root **mapping** whose key names a slot holding a marker — and is not
+  that node's instance name — is refused as ambiguous: `optimizer: {x: 1}` could
+  mean "set `x` on the optimizer" or "replace the optimizer with a dict". Write
+  the owner-addressed form (`c.optimizer.x: 1` sets the attribute;
+  `c.optimizer: !class:...` replaces the slot). When the key IS the node's name it
+  is an instance-name block and delivers as one.
+* Segment matching is by **class name or instance `name`** — on the load path the
+  marker's `name` kwarg, falling back to the class's ctor **default** for `name`
+  (the value the built instance will carry, which is what the live path matches);
+  an explicit `name:` kwarg opts out of the default. Containers
   (lists, plain grouping dicts) are transparent — one level = one object
-  nesting hop.
+  nesting hop. Transparent for **position** too: a group's entries compete
+  from the group key's line, so a marker inside `group:` loses to a bare key,
+  class block or rider written after the group, exactly as it would at a
+  direct slot — and a key restated inside the group sits at the group's line,
+  not at the line of an earlier same-named root key.
 * All three spellings converge inside blocks too: `trainer: {'**.lr': 1}` ≡
   `trainer: {'**': {lr: 1}}` ≡ `trainer.**.lr: 1`. **YAML quoting caveat:**
   a key starting with `*` must be quoted (`'**.lr':`, `'**':`) because a bare
   `*` opens a YAML alias — the top-level dotted form `trainer.**.lr:` needs
   no quotes.
+* A dotted key that lands **directly on a marker's kwarg** (`t.lr: 9.0` onto
+  `t: !class:Trainer`) competes at the **dotted line's** position, per key: it
+  beats a bare key, block or rider written before it and loses to one written
+  after — and the marker's *other* kwargs keep the marker's position, so the
+  dotted and instance-block spellings of one override agree on every key. An
+  emitted document (`hydraide emit`) re-writes such a line after the keys it
+  beat, so the artefact replays identically.
 * A marker's **own kwargs follow the same rule** — they configure that marker
   only. A kwarg set on a wrapper block that the wrapper itself does not
-  accept *shields* the wrapper's subtree from an outer `'**'` cascade
+  accept *shields* the wrapper's subtree from an outer `'**'` cascade or bare
+  sweep **it out-positions** — a sweep written after the wrapper wins instead
+  (document order, last spec wins; the shield has no position exemption)
   (the value overrides the rider's entry for that subtree).
 * Glob-delivered keys (`*`/`**`) are cascade keys: they honour the
   NoBroadcast opt-outs below exactly like bare keys. Exact addressed keys
@@ -59,6 +83,46 @@ comes last in the document wins (no priority tiers). A `null` value is applied
 (`dropout: null` sets `None`), an unknown key inside a class block logs a
 warning instead of failing silently, and property getters are never executed
 during configuration.
+
+## What this costs you: order-dependence
+
+The rule above has a consequence worth stating plainly, because it is the one
+thing about confluid that surprises people:
+
+> **Moving a line in a config can change the result.** Not only adding or
+> removing one — *moving* one. Position is the whole arbitration.
+
+That is the price of the bet this page describes. Confluid lets an unaddressed
+key reach every node that accepts it, so a sweep sets `lr` once for a whole tree
+with no parameter threading; the cost is that the same `lr` beats a value
+written *at* a node whenever it sits lower in the file. Libraries that make
+reach-many explicit — writing `Trainer.lr` at every site, or calling a
+`select(...)` API — pay the opposite price in verbosity and get order-independence
+back. Neither answer is free.
+
+Two habits keep it manageable:
+
+- **Put document-wide defaults at the TOP and overrides below them.** Reading
+  top-to-bottom then matches what the engine does, and a tidy-up that reorders
+  blocks cannot silently invert a value.
+- **When a value surprises you, ask the report** rather than reading the file
+  again. [`ConfigurationReport.explain`](report.md) prints the contest in
+  document order with the winner marked:
+
+```python
+from confluid import collect_report, load
+
+with collect_report() as report:
+    cfg = load("experiment.yaml")
+
+print(report.explain("lr"))
+```
+
+```
+lr on Trainer = 0.9
+    #0   block 'Trainer'    0.5          beaten — earlier in the document
+  ✓ #2   bare               0.9          applied
+```
 
 ## Opting out of broadcasting
 
@@ -85,16 +149,16 @@ To see exactly what broadcast where, enable trace logging:
 
 ```bash
 LOGGAIR_CONSOLE_LEVEL=TRACE python train.py config/train.yaml
-# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'strength' -> Transform (bare)
-# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (glob '**')
-# ... TRACE | confluid.engine:_prepare_kwargs | broadcast: 'lr' -> Transform (block 'trainer')
+# ... TRACE | confluid.broadcast:apply | broadcast: 'strength' -> Transform (bare)
+# ... TRACE | confluid.broadcast:apply | broadcast: 'lr' -> Transform (glob '**')
+# ... TRACE | confluid.broadcast:apply | broadcast: 'lr' -> Transform (block 'trainer')
 ```
 
 For a structured, assertable version of the same information — every applied
 key with its receiver and origin, plus failed and unused keys — see
 [Configuration Reports](report.md): `configure()` returns a
 `ConfigurationReport`, and `collect_report()` collects one across a
-`load()` / `materialize()` pass.
+`load()` pass.
 
 ## Classes with `**kwargs` constructors
 
@@ -114,22 +178,104 @@ class Passthrough:
 # name: "x" / lr: 0.1 / ANY other bare top-level key now lands on Passthrough
 ```
 
-If that soaks up keys you didn't intend, the opt-outs above are the fix:
+**Where such a key lands follows the addressing**, the same split the two
+predicates below describe — and for a `**kwargs` class the difference is visible,
+because the constructor would take either:
+
+| The key | Reaches | Why |
+|---|---|---|
+| written on the marker (`!class:Passthrough(tag=x)`), or in a block naming it | the **constructor** (`kwargs`) | it says what to build this node *with* |
+| injected at flow time (`flow(node, model=…)`) | the **constructor** (`kwargs`) | a call argument by construction |
+| bare, cascading (`name: "x"` at the top level) | a post-init **attribute** | it was aimed at the whole document, not at this node |
+
+```python
+graph = load("""
+sink: !class:Passthrough
+  tag: addressed
+name: run-42
+""")
+graph["sink"].options   # {"tag": "addressed"}  — addressed at the node
+graph["sink"].name      # "run-42"              — cascaded past it
+```
+
+The asymmetry is deliberate. A `**kwargs` class has no accept-list to filter
+with, so *every* bare key in the document reaches it; passing those to the
+constructor would turn permissive broadcasting into "called with whatever the
+document happens to contain". A key the author addressed to this node carries no
+such ambiguity.
+
+If the cascade soaks up keys you didn't intend, the opt-outs above are the fix:
 `@configurable(broadcast=False)` shields the whole class from cascade keys
 (addressed blocks still work), or declare the real parameters explicitly so
 the accept-list exists. The permissive path announces itself once per class at
 TRACE level (`accept-list unknown for <Class> (**kwargs constructor)` — see
 the trace-logging snippet above).
 
+**For a class you don't own**, neither of those is available to you — you cannot
+edit its signature and you cannot decorate it. `register()` carries the same two
+controls for exactly that reason: see
+[Discovery](discovery.md#registering-a-class-you-dont-own).
+
+```python
+register(SomeLibraryClass, name="Sink", broadcast=False)
+```
+
+### `broadcast="declared"` — close the accept-list without losing the real knobs
+
+`broadcast=False` is all-or-nothing: it also cuts off the bare sweeps the class
+*should* receive. The middle setting, `broadcast="declared"`, builds the
+accept-list from the declared and scanned slots exactly as for a class without
+`**kwargs` — signature parameters, public class attributes, and
+`__init__`-body assignments **MRO-wide** — so the catch-all stops meaning
+"accept everything" while every name the class hierarchy genuinely declares
+stays broadcastable. Nothing is hand-listed: a base class that consumes its
+kwargs the common library way,
+
+```python
+class MetricBase:                     # the shape of many library base classes
+    def __init__(self, **kwargs):
+        self.on_cpu = kwargs.pop("on_cpu", False)   # <- the scan reads this
+        if kwargs:
+            raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+class F1(MetricBase):
+    def __init__(self, average: str = "macro", **kwargs):
+        super().__init__(**kwargs)
+        self.average = average
+
+register(F1, broadcast="declared")
+```
+
+keeps `on_cpu` in the accept-list because the body-slot scan reads the
+`self.on_cpu = kwargs.pop(...)` assignment:
+
+```python
+graph = load("""
+on_cpu: true        # a declared name — still cascades in
+batch_size: 32      # aimed at something else — no longer lands
+meter: !class:F1
+""")
+graph["meter"].on_cpu               # True
+hasattr(graph["meter"], "batch_size")  # False (lands with plain register(F1))
+```
+
+Constructor **routing is untouched**: which keys ride `**kwargs` into the
+constructor still follows the addressing table above, so a key written on the
+marker reaches the constructor (and the base's own "Unexpected keyword
+arguments" refusal still fires for an addressed typo). The setting is a no-op
+for a class without `**kwargs`, and any other string raises
+`ConfigurableDefinitionError` at registration. Both spellings carry it:
+`@configurable(broadcast="declared")` and `register(cls, broadcast="declared")`.
+
 ## Asking whether a key may land
 
 The rules above — the accept-list, plus the two opt-outs — are also available
-as two predicates, so code that delivers configuration from *outside* a YAML
+as predicates, so code that delivers configuration from *outside* a YAML
 document (a CLI layer turning `--lr 0.1` into a config change, a form editor,
 an RPC surface) can ask confluid instead of re-deriving them:
 
 ```python
-from confluid import accepts_broadcast, accepts_key, configurable, NoBroadcast
+from confluid import accepts_any_key, accepts_broadcast, accepts_key, configurable, NoBroadcast
 
 @configurable(broadcast=False)
 class Pinned:
@@ -139,6 +285,7 @@ class Pinned:
 accepts_key(Pinned, "lr")         # True  — `Pinned: {lr: …}` sets it
 accepts_broadcast(Pinned, "lr")   # False — a bare `lr:` must not cascade in
 accepts_key(Pinned, "typo")       # False — nothing to set
+accepts_any_key(Pinned)           # False — it has an accept-list to filter with
 ```
 
 Which predicate to use follows the addressing, not the source:
@@ -148,11 +295,171 @@ Which predicate to use follows the addressing, not the source:
 | names its receiver (`ClassName:` block, exact dotted path, a marker's own kwargs) | `accepts_key` | the accept-list |
 | is bare and cascades | `accepts_broadcast` | the accept-list **and** both opt-outs |
 
-Both accept a class, a live instance, or the dotted string a `!class:` marker
+All accept a class, a live instance, or the dotted string a `_target_` marker
 carries; an unresolvable target accepts nothing. Re-deriving this yourself is
 the mistake they exist to prevent — a hand-rolled accept-list typically misses
 `**kwargs` targets, `__init__`-body slots, and both opt-outs, so a class that
 declared "no bare key may land on me" quietly accepts one anyway.
+
+### Declaring a key vs being unable to refuse it
+
+The two predicates above answer *"may this key land here?"*. `accepts_any_key`
+answers the prior question — *"does this target discriminate between keys at
+all?"* — and it exists because for a [`**kwargs` class](#classes-with-kwargs-constructors)
+the other two say **yes to every key**, including keys the class has never heard of:
+
+```python
+@configurable
+class Forwards:
+    def __init__(self, **kwargs): ...
+
+accepts_key(Forwards, "run_name")   # True  — it cannot refuse it ...
+accepts_any_key(Forwards)           # True  — ... precisely because it has no accept-list
+```
+
+That difference decides how an external front-end should **deliver** the key.
+Writing it into a marker's own kwargs is the *addressed* channel, so it becomes a
+**constructor argument**; a key the target merely cannot refuse was never aimed
+there, and must be left to cascade so it lands as a post-init **attribute**
+instead. Deliver it as an argument and you call somebody else's constructor with
+whatever the document happened to contain — a strict library then rejects a key
+it never asked for, from a call site nowhere near the config:
+
+```python
+if accepts_any_key(cls):
+    ...          # leave it in the document; let broadcasting deliver it BARE
+elif accepts_broadcast(cls, key):
+    marker.kwargs[key] = value   # the class declares it — an argument is correct
+```
+
+A fourth predicate completes the family: `declares_key(target, key)` answers
+what the target **names** — constructor parameters, settable properties,
+`__init__`-body slots — with the `**kwargs` catchall never counting. It is the
+question between `accepts_key` (yes to everything a catchall cannot refuse) and
+`accepts_any_key` (whether it discriminates at all): a library that forwards
+its catchall somewhere strict rejects undeclared names far from the config, so
+a caller sizing such targets checks `declares_key` before passing a dimension.
+For a target with no catchall it agrees with `accepts_key` by construction.
+
+
+## Deferred (`_partial_`) slots are configured, not skipped
+
+A slot that needs a runtime argument is declared deferred, typically in code:
+
+```python
+@configurable
+class Trainer:
+    def __init__(self, model=None) -> None:
+        self.model = model
+        # cannot be built yet — `params=` only exists once the model does
+        self.optimizer: Partial[Optimizer] = PartialClass(AdamW, lr=1e-4, weight_decay=0.05)
+
+    def configure_optimizers(self):
+        return flow(self.optimizer, params=self.model.parameters())
+```
+
+Being deferred means confluid will not **build** it. It does not mean confluid
+will not **configure** it — merging keys into a marker's `kwargs` constructs
+nothing. So every spelling reaches it, and the marker stays deferred:
+
+```yaml
+lr: 0.5                     # bare — cascades like any other key
+'**.lr': 0.5                # a rider SCALAR — cascades to every accepting slot target
+'**.optimizer.lr': 0.5      # a rider MAPPING — tunes every declared `optimizer` slot
+
+trainer: !class:Trainer
+  optimizer:                # a block TUNES the marker ...
+    lr: 0.5                 # ... `weight_decay: 0.05` survives untouched
+  optimizer.lr: 0.5         # the dotted form, same effect
+```
+
+Two points worth knowing:
+
+- **The cascade gates are identical on both paths.** Whether a key reaches
+  a deferred slot during YAML materialization or through post-construction
+  `configure()`, and whether it arrives bare or through a `'**'` rider, the
+  same gates decide: container values at *undeclared* keys never cascade
+  (they are routing), the target's accept-list and the `NoBroadcast` opt-outs
+  gate what lands (a rider mapping is gated by the SLOT param's shield, a
+  rider scalar by the TARGET param's — each shield guards its own key), and a
+  marker value requires a *declared* key (never the `**kwargs` catchall) with
+  a different target than the slot's own — so a slot can never be tuned with
+  a copy of itself.
+- **A block merges, it does not replace.** `optimizer: {lr: 0.5}` keeps every
+  kwarg you did not mention. To replace the marker outright — a different
+  optimizer class, say — write one:
+  `optimizer: !partial:torch.optim.SGD(lr=0.5)`.
+  That form starts from scratch, so restate what you need.
+
+## What a mapping at a slot means — decided by what the slot holds
+
+One rule, identical on the load path and under `configure()` (2026-08-13):
+
+| The slot currently holds | `engine: {power: 50}` does |
+|---|---|
+| a marker (`_target_` recipe, deferred or not) | **tunes** it — merges into its kwargs; the child builds with them |
+| a live `@configurable` object | **walks into it** — sets its fields in place; the object survives |
+| plain data (a dict/list/scalar) or nothing | **assigns** the mapping — a dict-typed slot receives its value |
+| any other live object (not `@configurable`) | **refuses** — a located `ConfigurationError`; confluid will not silently replace an object with a dictionary |
+
+So the simplest class shape works as read:
+
+```python
+@configurable
+class Host:
+    def __init__(self):
+        self.engine = Engine(power=-1)     # a real Engine, built right here
+```
+```yaml
+h: !class:Host {engine: {power: 50}}   # -> host.engine is that same Engine, power == 50
+```
+
+The refusal names the class to register when the child is not `@configurable` —
+register it, wire the slot from config with a `_target_:` marker, or replace the
+whole value in code.
+- **Position decides, not the spelling.** There is no "addressed beats bare" tier:
+  whichever of the two you write *later* in the document wins, exactly as two bare
+  keys of the same name would. All four ways of aiming a value at the slot behave
+  identically here.
+
+  ```yaml
+  lr: 0.9                          # a document-wide default ...
+  runnable: !class:Trainer
+    optimizer: !partial:AdamW
+      lr: 0.5                      # ... overridden per-slot below it  -> 0.5
+  ```
+
+  ```yaml
+  runnable: !class:Trainer
+    optimizer: !partial:AdamW
+      lr: 0.5                      # a per-slot value ...
+  lr: 0.9                          # ... overridden by a later sweep   -> 0.9
+  ```
+
+  A value set in *code* — `self.optimizer = PartialClass(AdamW, lr=1e-4)` — has no
+  position in the document at all, so it is a default: any `lr:` overrides it,
+  exactly as it would override a constructor default. This is also why a CLI
+  override always takes effect: it is applied after the whole file.
+
+### When a knob "did not take"
+
+Because the later spec wins, a value you wrote at a node can be replaced by a
+key further down the file — which is the feature, but it looks the same as a
+setting that never applied. Confluid reports every replaced value at DEBUG:
+
+```
+LOGGAIR_CONSOLE_LEVEL=DEBUG python train.py config.yaml
+```
+
+```
+override: 'lr' 0.5 -> 0.9 (exact value replaced by a bare one;
+                           document order decides — the later spec wins)
+```
+
+An uncontested value logs nothing, so anything you see here is a real contest.
+The fix is usually to move the document-wide key *above* the node you want to
+keep. For the complementary question — which keys matched nothing at all — use
+[`collect_report()`](report.md).
 
 ## Post-init attrs in compiled/frozen deployments (`confluid-bake` / `broadcast_attrs`)
 

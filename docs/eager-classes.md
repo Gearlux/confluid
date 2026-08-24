@@ -5,8 +5,8 @@ Python class — required parameters, real work in `__init__`, params not stored
 supported for loading, flowing, and dumping. This page explains what works out of the box, how the
 dump round-trip is achieved, and where the lazy convention still buys you something.
 
-> Not to be confused with the *tag-level* eager-vs-deferred distinction (`!class:Foo()` vs
-> `!class:Foo` — see [Tags & Deferred Initialization](tags.md)). "Eager class" here means the
+> Not to be confused with *deferred construction* (`_partial_: true` — see
+> [Targets & Deferred Initialization](targets.md)). "Eager class" here means the
 > **class design**: a constructor that does work from its params.
 
 ## Loading just works
@@ -24,7 +24,7 @@ class Resampler:
 ```
 
 ```yaml
-resampler: !class:Resampler()
+resampler: !class:Resampler
   rate: 48000
 ```
 
@@ -121,10 +121,16 @@ are **reconfigured after construction** or **built incrementally by tools**:
 
 - `configure()` / `configure_from_file()` — post-construction reconfiguration can only recompute
   derived state that lives behind a read-only `@property`; work done once in `__init__` goes stale.
-- Cheap structural introspection — `resolve()` and `flow(solidify=False)` assume construction is
+- Cheap structural introspection — `load(until="settled")` and `flow(solidify=False)` assume construction is
   side-effect-free, so a tool can build a config graph without paying for it.
 - Interactive builders — a visual editor or discovery service that instantiates classes with
   partial (or zero) arguments to preview them needs every parameter defaulted.
 
 If your usage is "load a YAML, get working objects, maybe dump them back" — plain eager classes are
 the simpler choice, and confluid supports them first-class.
+
+## Runnable example
+
+[`examples/eager_classes.py`](../examples/eager_classes.py) loads, configures,
+and round-trips a plain eager class — required params, real `__init__` work —
+including the `capture=False` opt-out and the `eager=True` staleness warning.

@@ -1,7 +1,39 @@
+"""Human-facing introspection — hierarchies, docstring parsing, the I/O contract.
+
+The plain-dict half of the introspection surface (the pydantic half lives in
+``confluid.pydantic_export``): :func:`get_hierarchy` /
+:func:`get_hierarchy_from_instance` walk a class's declared options / a live
+object's actual graph into dotted paths (a CLI's ``--docs``, a tracker's
+hyperparameter log), :func:`shortest_unique_paths` abbreviates them for
+display, :func:`parse_param_docs` is the ONE docstring resolver every
+per-parameter help surface reads, and :func:`input_specs` /
+:func:`output_specs` render the I/O contract (``Mandatory[T]`` inputs,
+``@output`` properties) a GUI builds sockets and forms from.
+
+Everything here projects from ``introspect.slots`` — the walkers state their
+rules as kind/owner filters over the ONE enumeration, never as private
+signature walks (``docs/architecture.md`` record 12).
+"""
+
 import inspect
 import re
 import types
-from typing import Annotated, Any, Dict, List, Set, Tuple, TypedDict, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypedDict,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
+
+from confluid.introspect import NO_DEFAULT, init_callable, slots
 
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
@@ -19,33 +51,41 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
     if obj is None:
         return
 
-    # 1. Handle Functions/Callables specifically
-    if not isinstance(obj, type) and callable(obj) and not hasattr(obj, "__confluid_configurable__"):
-        try:
-            sig = inspect.signature(obj)
-            type_hints = get_type_hints(obj)
-            docstring = getattr(obj, "__doc__", "") or ""
-            param_docs = _parse_docstring(docstring)
-
-            for param_name, param in sig.parameters.items():
-                if param_name in ("self", "cls", "args", "kwargs", "name"):
-                    continue
-
-                path = f"{prefix}.{param_name}" if prefix else param_name
-                param_type = type_hints.get(param_name, Any)
-                type_str = getattr(param_type, "__name__", str(param_type))
-                default = param.default if param.default is not inspect.Parameter.empty else None
-                doc = param_docs.get(param_name, "")
-
-                # 3. Recurse if the parameter type is configurable
-                if hasattr(param_type, "__confluid_configurable__"):
-                    _build_hierarchy_recursive(param_type, path, hierarchy, visited)
-                else:
-                    # Only add to hierarchy if it's a "leaf" (not a configurable container)
-                    hierarchy[path] = (type_str, default, doc)
+    # 1. Handle Functions/Callables specifically.
+    #
+    # The test is ``isroutine``, NOT ``callable(obj) and not
+    # __confluid_configurable__`` as it was until 2026-08-11: ``register()`` /
+    # ``@configurable`` STAMP that marker on the function object itself, so every
+    # registered builder function failed this branch, fell through to the class
+    # path below, and had its signature read off ``types.FunctionType.__init__``
+    # = ``object.__init__`` = ``(*args, **kwargs)`` — every parameter filtered
+    # out, ``get_hierarchy()`` returning ``{}`` for a target whose params
+    # ``input_specs`` / ``to_pydantic`` / ``parse_param_docs`` all reported. That
+    # is the exact failure ``introspect.init_callable`` exists to prevent (see
+    # the "A Target May Be ANY Callable" mandate); ``isroutine`` also keeps a
+    # CALLABLE INSTANCE (a ``__call__``-defining object) on the instance path,
+    # where it belongs.
+    if inspect.isroutine(obj):
+        if init_callable(obj) is None:
             return
-        except (ValueError, TypeError):
-            return
+        param_docs = parse_param_docs(obj)
+        for slot in slots(obj):  # a routine's OWN signature governs the call
+            if slot.kind not in ("positional_only", "keyword"):
+                continue
+
+            path = f"{prefix}.{slot.name}" if prefix else slot.name
+            param_type = slot.annotation
+            type_str = getattr(param_type, "__name__", str(param_type))
+            default = None if slot.default is NO_DEFAULT else slot.default
+            doc = param_docs.get(slot.name, "")
+
+            # Recurse if the parameter type is configurable
+            if hasattr(param_type, "__confluid_configurable__"):
+                _build_hierarchy_recursive(param_type, path, hierarchy, visited)
+            else:
+                # Only add to hierarchy if it's a "leaf" (not a configurable container)
+                hierarchy[path] = (type_str, default, doc)
+        return
 
     # Handle both classes and instances
     cls = obj if isinstance(obj, type) else obj.__class__
@@ -67,47 +107,51 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
         # If prefix is provided, it already contains the parameter/instance name
         current_prefix = prefix
 
-    # 2. Extract parameter documentation from docstring
-    init_method = getattr(cls, "__init__", None)
-    docstring = getattr(init_method, "__doc__", "") or ""
-    param_docs = _parse_docstring(docstring)
+    # 2. Extract parameter documentation — through the ONE resolver, so the
+    # class-doc fallback applies here exactly as on the instance walk (this
+    # copy read ``__init__.__doc__`` alone and silently LOST the docs of every
+    # class that keeps its Args: block at class level).
+    init_method = init_callable(cls)
+    param_docs = parse_param_docs(cls)
 
-    # 3. Get type hints and defaults from __init__
-    try:
-        if init_method is None:
-            return
-        sig = inspect.signature(init_method)
-        type_hints = get_type_hints(init_method)
+    # 3. Name / type / default come from the ONE enumeration (introspect.slots),
+    # not a private signature read. The TRAVERSAL below stays this walker's own —
+    # it recurses on a configurable ANNOTATION, where the live walker recurses on
+    # a configurable VALUE, and the two answer different questions on purpose.
+    if init_method is None:
+        return
+    for slot in slots(cls):
+        # Signature params AND body slots: a body slot is a configurable slot by
+        # the class-design convention's rule 4, and omitting it made a CLI's
+        # ``--docs`` show fewer knobs BEFORE a config was flowed than after
+        # (measured on a real runnable: 10 paths reported, 3 missing). A
+        # configurable-typed body slot RECURSES below exactly like a ctor param —
+        # a slot is a slot, whichever half of the class declares it.
+        #
+        # ``class_attr`` stays out: those are class-level constants and settable
+        # descriptors, which the accept-list wants but a declared-options listing
+        # does not. The variadic kinds stay out for the usual reason.
+        if slot.kind not in ("positional_only", "keyword", "body_slot"):
+            continue
+        # OWNER filter, the same one ``to_pydantic`` applies: ``slots()`` walks the
+        # WHOLE MRO because the accept-list wants a framework base's ``self.compiled``
+        # (a bare key may set it), but a DECLARED-OPTIONS listing must not — a class
+        # extending ``keras.Model`` would otherwise advertise twelve of its internals
+        # (``predict_function``, ``supports_jit``, …) as configuration. Measured
+        # across the workspace: 522 of 859 body slots are owned by a foreign base.
+        if slot.kind == "body_slot" and not getattr(slot.owner, "__confluid_configurable__", False):
+            continue
 
-        for param_name, param in sig.parameters.items():
-            if param_name in ("self", "cls", "args", "kwargs", "name"):
-                continue
+        path = f"{current_prefix}.{slot.name}"
+        param_type = slot.annotation
+        type_str = getattr(param_type, "__name__", str(param_type))
+        default = None if slot.default is NO_DEFAULT else slot.default
+        doc = param_docs.get(slot.name, "")
 
-            # Check visibility
-            member = getattr(cls, param_name, None)
-            if member and getattr(member, "__confluid_ignore__", False):
-                continue
-
-            path = f"{current_prefix}.{param_name}"
-
-            # Extract type string
-            param_type = type_hints.get(param_name, Any)
-            type_str = getattr(param_type, "__name__", str(param_type))
-
-            # Extract default
-            default = param.default if param.default is not inspect.Parameter.empty else None
-
-            # Extract docstring for this parameter
-            doc = param_docs.get(param_name, "")
-
-            # 3. Recurse if the parameter type is configurable
-            if hasattr(param_type, "__confluid_configurable__"):
-                _build_hierarchy_recursive(param_type, path, hierarchy, new_visited)
-            else:
-                hierarchy[path] = (type_str, default, doc)
-
-    except (ValueError, TypeError):
-        pass
+        if hasattr(param_type, "__confluid_configurable__"):
+            _build_hierarchy_recursive(param_type, path, hierarchy, new_visited)
+        else:
+            hierarchy[path] = (type_str, default, doc)
 
 
 def get_hierarchy_from_instance(root: Any) -> Dict[str, Tuple[str, Any, str]]:
@@ -139,7 +183,7 @@ def get_hierarchy_from_instance(root: Any) -> Dict[str, Tuple[str, Any, str]]:
       :func:`get_hierarchy`).
 
     ``root`` is typically the ``dict`` returned by
-    :meth:`liquifai.core.LiquifyApp.liquify` (top-level command kwargs).
+    a CLI framework's top-level command kwargs.
     Any dict/list/object shape is accepted — the walker routes.
     """
     hierarchy: Dict[str, Tuple[str, Any, str]] = {}
@@ -176,8 +220,12 @@ def _walk_instance(
         return
 
     # Class objects fall through to type-based walk — defer to get_hierarchy's
-    # existing logic by recursing via the canonical helper.
-    if isinstance(obj, type):
+    # existing logic by recursing via the canonical helper. A FUNCTION target (a
+    # registered builder held in a slot) routes there too: its contract is its
+    # OWN signature, and the instance path below would read
+    # ``types.FunctionType.__init__`` and report nothing (see the callable branch
+    # in ``_build_hierarchy_recursive``).
+    if isinstance(obj, type) or inspect.isroutine(obj):
         _build_hierarchy_recursive(obj, prefix, hierarchy, visited)
         return
 
@@ -199,40 +247,31 @@ def _walk_instance(
     segment = str(instance_name) if instance_name else _configurable_class_name(cls)
     node_prefix = f"{prefix}.{segment}" if prefix else segment
 
-    init_method = getattr(cls, "__init__", None)
+    # The ONE class-vs-callable dispatch (``cls`` is a class here, so this is the
+    # ``__init__`` branch) — every signature reader goes through it.
+    init_method = init_callable(cls)
     if init_method is None:
         return
 
-    try:
-        sig = inspect.signature(init_method)
-        type_hints = get_type_hints(init_method)
-    except (ValueError, TypeError):
-        return
-
     # Prefer __init__'s own docstring; fall back to the class docstring
-    # because user code commonly puts the Args: block at class level.
-    docstring = init_method.__doc__ or cls.__doc__ or ""
-    param_docs = _parse_docstring(docstring)
+    # because user code commonly puts the Args: block at class level — the
+    # ONE resolver both walkers and ``to_pydantic`` share.
+    param_docs = parse_param_docs(cls)
 
+    # Name / type / default from the ONE enumeration; the TRAVERSAL below stays
+    # this walker's own — it descends into live VALUES, where the static walker
+    # descends into configurable annotations.
     ctor_param_names: set = set()
-    for param_name, param in sig.parameters.items():
-        if param_name in ("self", "cls", "args", "kwargs"):
+    for slot in slots(cls):
+        if slot.kind not in ("positional_only", "keyword"):
             continue
-        ctor_param_names.add(param_name)
+        ctor_param_names.add(slot.name)
 
-        member = getattr(cls, param_name, None)
-        if member is not None and getattr(member, "__confluid_ignore__", False):
-            continue
-
-        path = f"{node_prefix}.{param_name}"
-        param_type = type_hints.get(param_name, Any)
+        path = f"{node_prefix}.{slot.name}"
+        param_type = slot.annotation
         type_str = getattr(param_type, "__name__", str(param_type))
-        live_value = getattr(
-            obj,
-            param_name,
-            param.default if param.default is not inspect.Parameter.empty else None,
-        )
-        doc = param_docs.get(param_name, "")
+        live_value = getattr(obj, slot.name, None if slot.default is NO_DEFAULT else slot.default)
+        doc = param_docs.get(slot.name, "")
 
         # Shallow mode (host is non-@configurable): record and move on.
         if shallow:
@@ -272,7 +311,7 @@ def _walk_instance(
     # setattrs (e.g. ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's
     # body) AND post-construction setattrs done by Confluid's machinery or
     # the user externally (the Enable wrapper's ``obj.visualize = True``
-    # pattern). See [confluid/confluid/loader.py:get_configurable_attrs].
+    # pattern). See ``confluid.engine.get_configurable_attrs``.
     from confluid.engine import get_configurable_attrs
 
     declared_names = get_configurable_attrs(obj)
@@ -336,8 +375,8 @@ def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
     When two paths share a leaf, the algorithm walks more of the path toward
     the root until disambiguation is reached.
 
-    Used by display/logging layers (``liquifai.report.show_configuration``,
-    the marainer hyperparameter logger) that want to surface paths without
+    Used by display/logging layers (a CLI's configuration report, an
+    experiment tracker's hyperparameter logger) that want to surface paths without
     the noisy root-class prefix unless it is needed to tell two values apart.
     """
     display_map: Dict[str, str] = {}
@@ -355,34 +394,70 @@ def shortest_unique_paths(all_paths: List[str]) -> Dict[str, str]:
 
 
 def _parse_docstring(docstring: str) -> Dict[str, str]:
-    """
-    Parse Google/NumPy style docstring to extract parameter help.
+    """Extract ``{param: help}`` from a Google- or NumPy-style docstring.
 
-    A parameter's description spans its continuation lines: it runs until the
-    next ``name:`` / ``name (type):`` entry, a blank line, or the end of the
-    string. The terminator deliberately uses ``\\Z`` (end of string), NOT ``$`` —
-    under ``re.MULTILINE`` ``$`` matches at the end of *every* physical line, which
-    would truncate every multi-line description to its first line.
+    Google style: an ``Args:``/``Arguments:``/``Parameters:`` line followed by
+    ``name: description`` / ``name (type): description`` entries — ``*args:`` and
+    ``**kwargs:`` are entries too (stored under their bare name), a parenthesized
+    type may nest parens on its line (``size (tuple(int, int)):``), and an entry
+    ends at the next entry, a blank line, or the end of text. NumPy style: an
+    underlined ``Parameters`` section of ``name : type`` lines with indented
+    descriptions — the type stays out of the help text.
     """
     param_docs: Dict[str, str] = {}
     if not docstring:
         return param_docs
 
-    # Find the Args/Parameters section
+    numpy_section = re.search(
+        r"^[ \t]*Parameters[ \t]*\n[ \t]*-{3,}[ \t]*\n(.*?)(?=\n[ \t]*\w[\w ]*\n[ \t]*-{3,}|\Z)",
+        docstring,
+        re.DOTALL | re.MULTILINE,
+    )
+    if numpy_section:
+        return _parse_numpy_entries(numpy_section.group(1))
+
     section_match = re.search(r"(?:Args|Parameters|Arguments):\s*(.*)", docstring, re.DOTALL | re.IGNORECASE)
     content = section_match.group(1) if section_match else docstring
 
-    # Match "parameter (type): description" or "parameter: description"
+    # ``\*{0,2}`` on the entry AND the lookahead: a ``**kwargs:`` line is an entry
+    # (so it TERMINATES the previous one), never part of a description. The type
+    # group stays on one line (``[^\n]``) so a nested paren cannot eat the entry.
     pattern = re.compile(
-        r"^\s*([\w_]+)\s*(?:\([^\)]+\))?:\s*(.*?)(?=\n\s*[\w_]+\s*(?:\([^\)]+\))?:|\n\s*\n|\Z)",
+        r"^\s*(\*{0,2}[\w_]+)\s*(?:\([^\n]*\))?:\s*(.*?)(?=\n\s*\*{0,2}[\w_]+\s*(?:\([^\n]*\))?:|\n\s*\n|\Z)",
         re.MULTILINE | re.DOTALL,
     )
 
     for match in pattern.finditer(content):
         name, description = match.groups()
         clean_desc = " ".join(description.split())
-        param_docs[name] = clean_desc
+        param_docs[name.lstrip("*")] = clean_desc
 
+    return param_docs
+
+
+def _parse_numpy_entries(block: str) -> Dict[str, str]:
+    """One NumPy ``Parameters`` block: ``name : type`` entry lines, deeper-indented
+    description lines under each. The type is dropped from the help text."""
+    param_docs: Dict[str, str] = {}
+    entry_indent: Optional[int] = None
+    current: Optional[str] = None
+    pieces: Dict[str, List[str]] = {}
+    entry_re = re.compile(r"(\*{0,2}[\w_]+)\s*(?::.*)?$")
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        match = entry_re.fullmatch(stripped)
+        if match and (entry_indent is None or indent <= entry_indent):
+            entry_indent = indent if entry_indent is None else entry_indent
+            current = match.group(1).lstrip("*")
+            pieces[current] = []
+            continue
+        if current is not None:
+            pieces[current].append(stripped)
+    for name, lines in pieces.items():
+        param_docs[name] = " ".join(" ".join(lines).split())
     return param_docs
 
 
@@ -392,9 +467,9 @@ def parse_param_docs(obj: Any) -> Dict[str, str]:
     Resolves the docstring the same way :func:`confluid.to_pydantic` does — for a
     class, its ``__init__`` docstring (falling back to the class docstring); for a
     function or other callable, its own ``__doc__``. This is the single source of
-    per-parameter help reused across the workspace: navigaitor turns it into
+    per-parameter help reused by every introspecting consumer: an MCP service turns it into
     pydantic ``Field(description=...)`` (via ``to_pydantic``) for the form-spec /
-    HTTP editor, and StreamStudio turns it into ComfyUI widget tooltips. Document a
+    HTTP editor, and a visual editor turns it into widget tooltips. Document a
     constructor parameter once in the class's ``Args:`` block and it surfaces in
     both GUIs.
 
@@ -406,12 +481,22 @@ def parse_param_docs(obj: Any) -> Dict[str, str]:
         Empty when there is no docstring or no recognizable ``Args:`` entries.
     """
     if isinstance(obj, type):
-        init = obj.__dict__.get("__init__") or getattr(obj, "__init__", None)
-        init_doc = getattr(init, "__doc__", None) if init is not object.__init__ else None
-        docstring = init_doc or obj.__doc__ or ""
-    else:
-        docstring = getattr(obj, "__doc__", "") or ""
-    return _parse_docstring(docstring)
+        # MRO-wide, base first, subclass entries winning per key — an undocumented
+        # subclass inherits its base's help. Per class: the ``__init__`` docstring's
+        # entries, and when it HAS no entries (a one-line "Build the trainer."),
+        # the class docstring's ``Args:`` block — an Args-less init doc no longer
+        # hides it (N12).
+        merged: Dict[str, str] = {}
+        for klass in reversed(obj.__mro__):
+            if klass is object:
+                continue
+            init = klass.__dict__.get("__init__")
+            entries = _parse_docstring(getattr(init, "__doc__", None) or "") if init is not None else {}
+            if not entries:
+                entries = _parse_docstring(klass.__doc__ or "")
+            merged.update(entries)
+        return merged
+    return _parse_docstring(getattr(obj, "__doc__", "") or "")
 
 
 class OutputSpec(TypedDict):
@@ -454,8 +539,8 @@ def output_specs(cls: type) -> List[OutputSpec]:
     ``__confluid_output__`` marker set by :func:`confluid.output`. For each, the
     getter's return annotation and the first docstring line describe the output.
 
-    This is the I/O-contract OUTPUT surface: StreamStudio runnable nodes append these
-    as output sockets and navigaitor's form-spec surfaces them. An ``@output``
+    This is the I/O-contract OUTPUT surface: a visual editor appends these as
+    output sockets and a form-spec service surfaces them. An ``@output``
     property is read-only/derived, so it never appears as a config field.
 
     Args:
@@ -484,10 +569,14 @@ def output_specs(cls: type) -> List[OutputSpec]:
     return specs
 
 
-def input_specs(cls: type) -> List[InputSpec]:
-    """Enumerate a class's constructor inputs with their MANDATORY / NULLABLE contract.
+def input_specs(cls: Any) -> List[InputSpec]:
+    """Enumerate a target's constructor inputs with their MANDATORY / NULLABLE contract.
 
-    For each ``__init__`` parameter (skipping ``self`` / ``cls`` / ``*args`` /
+    ``cls`` may be a class OR any callable (a registered builder FUNCTION) —
+    the signature is resolved through ``introspect.init_callable``, mirroring
+    the "A Target May Be ANY Callable" rule everywhere else.
+
+    For each signature parameter (skipping ``self`` / ``cls`` / ``*args`` /
     ``**kwargs``) reports:
 
     * ``required`` — True when the parameter has no default OR is annotated
@@ -496,8 +585,8 @@ def input_specs(cls: type) -> List[InputSpec]:
     * ``nullable`` — True when the (Annotated-stripped) type admits ``None``
       (``Optional[T]`` / ``T | None``).
 
-    This is the I/O-contract INPUT surface consumed by StreamStudio (required vs
-    optional sockets) and navigaitor's form-spec.
+    This is the I/O-contract INPUT surface a GUI renders (required vs
+    optional sockets) and a form-spec service reads.
 
     Args:
         cls: Any class (typically a ``@configurable`` Runnable).
@@ -507,35 +596,28 @@ def input_specs(cls: type) -> List[InputSpec]:
     """
     from confluid.mandatory import is_mandatory_annotation
 
-    # Reach __init__ via getattr (mirrors lazy_param_names) — a direct ``cls.__init__`` trips mypy's
-    # "accessing __init__ on an instance is unsound" check.
-    init = getattr(cls, "__init__", None)
-    if init is None:
+    # The ONE class-vs-callable dispatch — reading ``__init__`` directly on a
+    # builder FUNCTION resolves to ``object.__init__`` (``*args, **kwargs``),
+    # which reported an EMPTY contract for every registered function target.
+    if init_callable(cls) is None:
         return []
-    try:
-        sig = inspect.signature(init)
-    except (TypeError, ValueError):
-        return []
-    try:
-        hints = get_type_hints(init, include_extras=True)
-    except Exception:
-        hints = {}
 
     specs: List[InputSpec] = []
-    for pname, param in sig.parameters.items():
-        if pname in ("self", "cls") or param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
+    for slot in slots(cls):
+        # The signature IS the input contract — a class attribute or a body slot
+        # is configurable but is not an INPUT, and the two variadic kinds name no
+        # single slot at all.
+        if slot.kind not in ("positional_only", "keyword"):
             continue
-        if pname in hints:
-            anno: Any = hints[pname]
-        elif param.annotation is not inspect.Parameter.empty:
-            anno = param.annotation
-        else:
-            anno = Any
-        stripped = _strip_annotated(anno)
+        stripped = _strip_annotated(slot.annotation)
         type_str = getattr(stripped, "__name__", str(stripped))
-        required = param.default is inspect.Parameter.empty or is_mandatory_annotation(anno)
-        specs.append(InputSpec(name=pname, type=type_str, required=required, nullable=_is_nullable_annotation(anno)))
+        required = slot.default is NO_DEFAULT or is_mandatory_annotation(slot.annotation)
+        specs.append(
+            InputSpec(
+                name=slot.name,
+                type=type_str,
+                required=required,
+                nullable=_is_nullable_annotation(slot.annotation),
+            )
+        )
     return specs

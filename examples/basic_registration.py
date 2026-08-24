@@ -2,7 +2,7 @@
 
 Both classes are **zero-arg constructible** (every parameter defaulted) and do no functional work
 in ``__init__``; ``MyModel.summary`` shows the canonical "derived state behind a read-only cached
-property" pattern. See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction".
+property" pattern. See ``docs/class-design.md`` for the full convention.
 """
 
 from confluid import configurable, get_registry, register
@@ -12,7 +12,7 @@ from confluid import configurable, get_registry, register
 @configurable
 class MyModel:
     def __init__(self, layers: int = 3) -> None:
-        # Lazy constructor: only stores config (defaulted → ``MyModel()`` works).
+        # Partial constructor: only stores config (defaulted → ``MyModel()`` works).
         self.layers = layers
 
     @property

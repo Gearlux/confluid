@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, Optional
 import pytest
 
 import confluid
-from confluid import LazyClass, configurable, dump, flow, get_registry, load, set_policy, to_pydantic
+from confluid import PartialClass, configurable, dump, flow, get_registry, load, set_policy, to_pydantic
 from confluid.registry import resolve_class
 
 
@@ -65,17 +65,17 @@ def _make_model(
 
 
 def test_flow_function_target_honors_stored_kwargs() -> None:
-    out = flow(LazyClass(_make_widget, size=3, color="blue"))
+    out = flow(PartialClass(_make_widget, size=3, color="blue"))
     assert out == {"size": 3, "color": "blue", "extra": {}}
 
 
 def test_flow_function_target_honors_runtime_kwargs() -> None:
-    out = flow(LazyClass(_make_widget), size=5)
+    out = flow(PartialClass(_make_widget), size=5)
     assert out["size"] == 5 and out["color"] == "red"
 
 
 def test_flow_function_runtime_overrides_stored() -> None:
-    out = flow(LazyClass(_make_widget, size=3), size=9)
+    out = flow(PartialClass(_make_widget, size=3), size=9)
     assert out["size"] == 9
 
 
@@ -95,7 +95,7 @@ def test_yaml_lazy_function_target_materializes_and_flows() -> None:
     """``!lazy:<function path>`` resolves, stays deferred through load, then flows."""
     doc = confluid.load(
         f"widget: !lazy:{_make_widget.__module__}.{_make_widget.__qualname__}\n  size: 7\n",
-        flow=False,
+        until="document",
     )
     built = flow(doc["widget"], color="green")
     assert built == {"size": 7, "color": "green", "extra": {}}
@@ -210,7 +210,7 @@ def test_configurable_function_yaml_materialization_validates(clean_registry: An
     # !lazy: resolves the registered WRAPPER; flow swaps init→yaml mode (strict),
     # so a type-invalid stored kwarg fails validation — proving the wrapper is
     # what got registered. flow() wraps the pydantic error as ConstructionError.
-    doc = load("x: !lazy:build_thing\n  size: not-a-number\n", flow=False)
+    doc = load("x: !lazy:build_thing\n  size: not-a-number\n", until="document")
     with pytest.raises(confluid.ConstructionError):
         flow(doc["x"])
 
@@ -235,6 +235,103 @@ def test_configurable_function_round_trips(clean_registry: Any) -> None:
         return {"size": size, "color": color}
 
     # A real config references the target by NAME (a string), as authored YAML does.
-    marker = LazyClass("rt_builder", size=5, color="blue")
-    reloaded = load(dump(marker), flow=False)  # !lazy:rt_builder → resolved via registry
+    marker = PartialClass("rt_builder", size=5, color="blue")
+    reloaded = load(dump(marker), until="document")  # !lazy:rt_builder → resolved via registry
     assert flow(reloaded) == flow(marker) == {"size": 5, "color": "blue"}
+
+
+def test_settability_predicates_read_a_functions_own_signature(clean_registry: Any) -> None:
+    """A registered builder FUNCTION answers the predicates from its OWN signature.
+
+    Reading ``target.__init__`` unconditionally resolved a function to
+    ``object.__init__`` — signature ``(*args, **kwargs)`` — so all three
+    predicates answered True for EVERY key (measured: ``accepts_key(builder,
+    "run_name")`` was True on a builder declaring only ``weights`` /
+    ``num_classes``), defeating for function targets the exact stray-CLI-key
+    failure ``accepts_any_key`` exists to prevent.
+    """
+    from confluid import accepts_any_key, accepts_broadcast, accepts_key, register
+
+    def build_widget(weights: str = "default", num_classes: int = 91) -> Dict[str, Any]:
+        return {"weights": weights, "num_classes": num_classes}
+
+    register(build_widget, task="detection", role="model")
+
+    assert accepts_key(build_widget, "weights")
+    assert accepts_broadcast(build_widget, "num_classes")
+    assert not accepts_key(build_widget, "run_name")
+    assert not accepts_broadcast(build_widget, "run_name")
+    assert not accepts_any_key(build_widget)
+
+
+def test_a_var_keyword_function_still_cannot_refuse_any_key(clean_registry: Any) -> None:
+    """The ``**kwargs`` permissiveness is a signature fact, and a function may have it too."""
+    from confluid import accepts_any_key, accepts_key, register
+
+    def forwards(**kwargs: Any) -> Dict[str, Any]:
+        return dict(kwargs)
+
+    register(forwards)
+
+    assert accepts_any_key(forwards)
+    assert accepts_key(forwards, "anything")
+
+
+def test_get_hierarchy_reads_a_registered_functions_own_signature(clean_registry: Any) -> None:
+    """``get_hierarchy`` reported ``{}`` for every registered builder FUNCTION.
+
+    ``register()`` / ``@configurable`` stamp ``__confluid_configurable__`` on the
+    function object, which disqualified it from ``_build_hierarchy_recursive``'s
+    callable branch; the class branch then read
+    ``types.FunctionType.__init__`` = ``object.__init__`` = ``(*args, **kwargs)``
+    and filtered every parameter away. The same target was fully visible to
+    ``input_specs`` / ``to_pydantic`` / ``parse_param_docs``, so a CLI ``--help``
+    view (the consumer of ``get_hierarchy``) was the one surface that lost it.
+    """
+    from confluid import configurable, get_hierarchy, input_specs, register
+
+    def build_widget(num_classes: int = 91, pretrained: bool = False) -> Dict[str, Any]:
+        """Build a widget.
+
+        Args:
+            num_classes: How many classes the head predicts.
+            pretrained: Whether to load pretrained weights.
+        """
+        return {"num_classes": num_classes, "pretrained": pretrained}
+
+    register(build_widget, task="detection", role="model")
+
+    hierarchy = get_hierarchy(build_widget)
+    assert set(hierarchy) == {"num_classes", "pretrained"}
+    assert hierarchy["num_classes"][1] == 91  # the real default, not object.__init__'s
+    assert hierarchy["num_classes"][2] == "How many classes the head predicts."
+    # The surfaces must agree — the drift is what made this invisible.
+    assert {spec["name"] for spec in input_specs(build_widget)} == set(hierarchy)
+
+    @configurable
+    def build_other(depth: int = 3) -> Dict[str, Any]:
+        """Build another. Args: depth: How deep."""
+        return {"depth": depth}
+
+    # The @configurable wrapper is still a routine, and get_type_hints /
+    # inspect.signature follow __wrapped__ — so the wrap must not hide the param.
+    assert set(get_hierarchy(build_other)) == {"depth"}
+
+
+def test_get_hierarchy_from_instance_walks_a_function_valued_slot(clean_registry: Any) -> None:
+    """A function held in a live slot routes to the callable walk, not the instance walk."""
+    from confluid import configurable, get_hierarchy_from_instance, register
+
+    def collate(batch_size: int = 4) -> int:
+        """Collate. Args: batch_size: Items per batch."""
+        return batch_size
+
+    register(collate)
+
+    @configurable
+    class Holder:
+        def __init__(self, fn: Any = None) -> None:
+            self.fn = fn
+
+    paths = get_hierarchy_from_instance({"holder": Holder(fn=collate)})
+    assert any(p.endswith("batch_size") for p in paths), sorted(paths)

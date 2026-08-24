@@ -25,10 +25,10 @@ from typing import Any, Dict, List
 
 import pytest
 
-import confluid.engine as engine_module
-from confluid import configurable, flow, load, materialize
-from confluid.engine import _get_acceptable_keys, _get_post_init_attrs
-from confluid.introspect import init_source_available
+import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
+from confluid import configurable, flow, load
+from confluid.broadcast import _get_acceptable_keys
+from confluid.introspect import body_slot_names, init_source_available
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -111,7 +111,7 @@ def test_init_source_available_false_for_builtins() -> None:
 
 
 def test_declared_attrs_union_with_scanned_names() -> None:
-    attrs = _get_post_init_attrs(_DeclaredPlusScanned)
+    attrs = body_slot_names(_DeclaredPlusScanned)
     # Scanned body slots survive...
     assert {"model", "scanned_slot"}.issubset(attrs)
     # ...AND the declared-only name joins them (union, not replacement).
@@ -153,7 +153,7 @@ def test_sourceless_undeclared_scan_is_empty() -> None:
     # The premise of the whole feature: without a declaration the sourceless
     # class's body slots are invisible (scan returns nothing for loss_fn).
     cls = configurable(_compile_sourceless("_SourcelessScanPremise"))
-    attrs = _get_post_init_attrs(cls)
+    attrs = body_slot_names(cls)
     assert "loss_fn" not in attrs
 
 
@@ -162,7 +162,7 @@ def test_sourceless_empty_declaration_silences_warning(monkeypatch: pytest.Monke
     # declaration — distinct from undeclared (None); it must not warn.
     warnings_seen = _capture_engine_warnings(monkeypatch)
     cls = configurable(broadcast_attrs=[])(_compile_sourceless("_SourcelessEmptyDecl"))
-    attrs = _get_post_init_attrs(cls)
+    attrs = body_slot_names(cls)
     assert "loss_fn" not in attrs
     assert warnings_seen == []
 
@@ -178,10 +178,10 @@ def test_sourceless_undeclared_warns_exactly_once_across_two_passes(monkeypatch:
 
     config = {"loss_fn": "custom_loss", "trainer": load("trainer: !class:_SourcelessUndeclaredWarns")["trainer"]}
     # Two materialize passes: each clears the per-pass attr caches, so
-    # _get_post_init_attrs recomputes — but the warned-set is NOT cleared,
+    # the body-slot scan recomputes — but the warned-set is NOT cleared,
     # so the diagnostic fires exactly once.
-    materialize(dict(config), context=dict(config))
-    materialize(dict(config), context=dict(config))
+    load(dict(config), context=dict(config))
+    load(dict(config), context=dict(config))
 
     mine = [msg for msg in warnings_seen if "_SourcelessUndeclaredWarns" in msg]
     assert len(mine) == 1
@@ -191,7 +191,7 @@ def test_sourceless_undeclared_warns_exactly_once_across_two_passes(monkeypatch:
     # And the invisible slot indeed did NOT receive the broadcast (the
     # divergence the warning is about). The no-paren ``!class:`` marker stays
     # a deferred Class through materialize — flow it explicitly to inspect.
-    result = materialize(dict(config), context=dict(config))
+    result = load(dict(config), context=dict(config))
     trainer: Any = flow(result["trainer"])
     assert trainer.loss_fn == "default_loss"
     assert isinstance(trainer, cls)
@@ -209,10 +209,37 @@ def test_scannable_class_never_warns(monkeypatch: pytest.MonkeyPatch) -> None:
             self.x = x
             self.slot = "s"
 
-    attrs = _get_post_init_attrs(_ScannableQuiet)
+    attrs = body_slot_names(_ScannableQuiet)
     assert "slot" in attrs
     assert warnings_seen == []
 
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_a_dataclass_generated_init_logs_debug_not_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N14 (BUGS-2026-08-19) — a dataclass's __init__ is SYNTHESIZED field-wise:
+    no body source exists to lose and confluid-bake cannot help, so the
+    unscannable diagnostic is debug, not an actionable warning. The sourceless
+    pin above stays the con: exec'd/frozen code CAN carry body slots."""
+    from dataclasses import dataclass
+
+    records: List[tuple] = []
+
+    class _Collector:
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(engine_module, "logger", _Collector(), raising=True)
+
+    @configurable
+    @dataclass
+    class Cfg14:
+        lr: float = 0.1
+
+    load("c: {_target_: Cfg14, lr: 0.5}")
+    warned = [msg for level, msg in records if level == "warning" and "Cfg14" in msg]
+    assert warned == []
+    debugged = [msg for level, msg in records if level == "debug" and "Cfg14" in msg]
+    assert any("dataclass-generated" in msg for msg in debugged)

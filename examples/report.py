@@ -5,6 +5,10 @@ its receiver and origin), a failed key (a typo inside a matched block), and
 an unused key (matched nothing anywhere) — first from ``configure()``'s
 return value, then aggregated across a load-then-configure pass via the
 ``collect_report()`` context manager.
+
+Closes with ``report.explain(key)``: confluid arbitrates by document POSITION,
+so the report records every source that competed for a key, not only the one
+that won.
 """
 
 from typing import Any, Optional
@@ -79,7 +83,39 @@ ghost: 2
     assert {(a.key, a.origin) for a in pass_report.applied} >= {("lr", "bare"), ("epochs", "bare")}
     assert pass_report.unused == ["ghost"]
 
+    explain_the_contest()
     print("OK")
+
+
+def explain_the_contest() -> None:
+    """``explain(key)`` shows WHY a key has its value: the contest, in document order.
+
+    Position is confluid's whole arbitration, so a value written AT a node loses
+    to a bare key sitting below it. That is the documented rule and the thing
+    that surprises people — this is how you watch it happen without turning on
+    TRACE logging and grepping.
+    """
+    document = """
+Model:
+  lr: 0.5          # addressed at the class ...
+m: !class:Model
+lr: 0.9            # ... and beaten by a bare key written LOWER in the file
+"""
+    with collect_report() as report:
+        built = load(document)
+
+    assert built["m"].lr == 0.9, "the later spec wins — there are no specificity tiers"
+
+    entry = next(a for a in report.applied if a.key == "lr")
+    origins = [c.origin for c in entry.contest]
+    assert origins == ["block 'Model'", "bare"], "both candidates are recorded, in document order"
+    assert entry.contest[-1].origin == entry.origin, "the last candidate is the one that won"
+
+    print("\nexplain('lr'):")
+    print(report.explain("lr"))
+
+    # A key nothing overrode says so, instead of implying it is unset.
+    assert "overrode nothing" in report.explain("layers")
 
 
 if __name__ == "__main__":

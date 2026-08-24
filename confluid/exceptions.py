@@ -23,11 +23,20 @@ class CircularIncludeError(ConfigurationError):
 
 
 class ReferenceResolutionError(ConfigurationError):
-    """A ``!ref:`` target cannot be resolved (unknown or self-referential)."""
+    """A reference (``${ref:...}`` / ``_ref_``) target cannot be resolved (unknown or self-referential)."""
 
 
 class UnknownClassError(ConfigurationError):
-    """A ``!class:`` / ``Fluid`` target names a class not in the registry and not importable."""
+    """A ``_target_`` / ``Fluid`` marker names a class not in the registry and not importable."""
+
+
+class AmbiguousClassError(ConfigurationError):
+    """A target names a class registered by SEVERAL classes, and nothing narrows the choice.
+
+    A sibling of :class:`UnknownClassError`, not a subclass: "unknown" and "ambiguous" are
+    opposite failures, and a caller catching "unknown" to fall back to an import must not
+    swallow this one. The message lists every candidate with its distinguishing tags.
+    """
 
 
 class ConfigurableDefinitionError(ConfigurationError):
@@ -39,7 +48,14 @@ class ValidationModeError(ConfigurationError):
 
 
 class ScopeError(ConfigurationError):
-    """A scope alias chain is circular."""
+    """A scope declaration or activation is unusable.
+
+    Three conditions raise it: a circular scope-alias chain; an ACTIVE keyed
+    block whose body shape cannot splice at its slot (a sequence/scalar body at
+    a mapping position); and an activation naming a DECLARED dimension with a
+    value no block carries (the error lists the declared values). See
+    docs/scopes.md and docs/errors.md.
+    """
 
 
 class ConfigFileNotFoundError(ConfluidError, FileNotFoundError):

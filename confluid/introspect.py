@@ -1,22 +1,24 @@
-"""Stdlib-only source introspection shared across confluid.
+"""Stdlib-only introspection — the ONE slot enumeration every reader projects from.
 
-ONE AST scan of an ``__init__`` body (:func:`scan_init_body`) backs the three
-projections that used to be three near-identical scanners in ``loader`` and
-``pydantic_export``:
+:func:`slots` answers "which configurable slots does this target have?" ONCE,
+returning rich :class:`Slot` records (name, kind, hint-resolved annotation,
+default, source, declaring ``owner``) in signature order. Every reader states
+its rule as a projection — a KIND SET (:func:`slot_names`), an ``owner`` filter,
+a per-field mapping — never as a private re-derived walk: six readers each
+walked the signature with their own "minus self/cls" filter and gave five
+different answers for one class (``docs/architecture.md`` record 12; pinned by
+``tests/test_introspection_agreement.py``). :func:`body_slot_names` is the
+sibling projection over the same walk for the different question "what does the
+``__init__`` body assign" — ``slots()`` reports a name once and lets the
+signature claim it.
 
-* :func:`init_setattr_names` — every assigned body-slot NAME (the broadcast /
-  accept-list view; the widest — includes ``AugAssign`` and literal
-  ``setattr(self, "x", …)``).
-* :func:`init_setattr_annotations` — ``{name: annotation AST node or None}``
-  for plain/annotated assignments (the ``to_pydantic`` body-slot typing view;
-  first assignment wins, in ``ast.walk`` order).
-* :func:`init_lazy_setattr_names` — names whose assigned VALUE is a
-  ``LazyClass(...)`` / ``Lazy(...)`` call (deferred body slots — emitted as
-  ``!lazy:`` by serializers).
-
-The projections deliberately differ in which slot KINDS they see — that
-preserves the semantics of the three original scanners (``AugAssign`` and
-``setattr`` slots broadcast, but never become pydantic fields or lazy slots).
+Underneath, ONE AST scan of an ``__init__`` body (:func:`scan_init_body`) finds
+the body slots, with two narrow name-set projections kept for the broadcast
+layer: :func:`init_setattr_names` (every assigned body-slot NAME — the widest
+view, ``AugAssign`` and literal ``setattr(self, "x", …)`` included) and
+:func:`init_partial_setattr_names` (names whose assigned VALUE is a
+``PartialClass(...)`` call — deferred body slots, serialized as
+``_partial_: true``).
 
 This module imports ONLY the stdlib, so it is a dependency leaf: safe for the
 optional-pydantic consumer, and structurally incapable of import cycles.
@@ -32,11 +34,27 @@ read ``__code__`` directly. Pinned by
 from __future__ import annotations
 
 import ast
+import functools
 import importlib
 import inspect
 import textwrap
 import types
-from typing import Annotated, Any, Dict, Literal, NamedTuple, Optional, Set, Tuple, Union, get_args, get_origin
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    FrozenSet,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 SlotKind = Literal["assign", "annassign", "augassign", "setattr"]
 
@@ -58,6 +76,32 @@ class BodySlot(NamedTuple):
     kind: SlotKind
     annotation: Optional[ast.AST]  # AnnAssign annotation node, else None
     value: Optional[ast.AST]  # assigned-value node, else None
+
+
+def init_callable(target: Any) -> Optional[Any]:
+    """The callable whose signature governs CALLING ``target``.
+
+    For a class, its ``__init__``; for any other callable (a registered builder
+    FUNCTION, per the "A Target May Be ANY Callable" mandate), the callable
+    itself. Returns ``None`` for a class whose ``__init__`` is literally
+    ``None`` — a legal class attribute that makes the class unconstructable.
+
+    This is the ONE class-vs-callable dispatch every signature reader must go
+    through. Reading ``getattr(target, "__init__")`` unconditionally resolves a
+    plain function's ``__init__`` to ``object.__init__`` — signature
+    ``(*args, **kwargs)`` — which made the accept-list machinery answer
+    "accepts everything" for every registered builder function (measured:
+    ``accepts_key(builder, "run_name")`` was True for a builder declaring only
+    ``weights``/``num_classes``). ``engine._ctor_params`` carried the correct
+    branch while ``broadcast`` did not; this helper is where the four copies
+    were unified so they cannot diverge again.
+
+    Callers still read the signature / type hints themselves (their filtering
+    and error handling differ); this helper only answers WHOSE signature.
+    """
+    if inspect.isclass(target):
+        return getattr(target, "__init__", None)
+    return target
 
 
 def init_source_available(init_func: Any) -> bool:
@@ -196,24 +240,8 @@ def init_setattr_names(init_func: Any) -> Set[str]:
     return {slot.name for slot in scan_init_body(init_func)}
 
 
-def init_setattr_annotations(init_func: Any) -> Dict[str, Any]:
-    """``{name: annotation AST node or None}`` for assign/annassign slots.
-
-    First assignment per name wins (``ast.walk`` order) — a plain ``Assign``
-    seen first maps the name to ``None`` (→ typed ``Any``) even if a later
-    ``AnnAssign`` carries a type, matching the original scanner.
-    ``AugAssign``/``setattr`` slots are deliberately EXCLUDED (they never
-    become pydantic body-slot fields).
-    """
-    found: Dict[str, Any] = {}
-    for slot in scan_init_body(init_func):
-        if slot.kind in ("assign", "annassign"):
-            found.setdefault(slot.name, slot.annotation)
-    return found
-
-
-def init_lazy_setattr_names(init_func: Any) -> Set[str]:
-    """Names of assign/annassign slots whose VALUE is a ``LazyClass(...)``/``Lazy(...)`` call.
+def init_partial_setattr_names(init_func: Any) -> Set[str]:
+    """Names of assign/annassign slots whose VALUE is a ``PartialClass(...)``/``Partial(...)`` call.
 
     An annotated declaration without a value (``self.x: T``) and
     ``AugAssign``/``setattr`` slots never qualify.
@@ -225,31 +253,40 @@ def init_lazy_setattr_names(init_func: Any) -> Set[str]:
     }
 
 
-def _is_lazy_call(value: Any) -> bool:
-    """True for a call whose callee is named ``LazyClass`` or ``Lazy``.
+#: The call names that mark a body slot deferred. This scan matches on the NAME in
+#: the SOURCE, so a name dropped here stops deferring silently — no error, no
+#: diagnostic, the slot is simply built and an optimizer is constructed without its
+#: params. The pre-rename ``PartialClass`` / ``Partial`` spellings were carried here for
+#: exactly that reason and went with the aliases (2026-08-11); adding a new spelling
+#: means adding it here in the same change.
+_PARTIAL_CALL_NAMES = ("PartialClass", "Partial")
 
-    Matches bare names AND attribute-qualified calls (``confluid.LazyClass(...)``)
+
+def _is_lazy_call(value: Any) -> bool:
+    """True for a call whose callee names a deferred-slot constructor.
+
+    Matches bare names AND attribute-qualified calls (``confluid.PartialClass(...)``)
     by inspecting only the final attribute — same rule as the original scanner.
     """
     if not isinstance(value, ast.Call):
         return False
     func = value.func
     name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
-    return name in ("LazyClass", "Lazy")
+    return name in _PARTIAL_CALL_NAMES
 
 
 def annotation_has_marker(annotation: Any, marker: str) -> bool:
     """True iff ``marker`` appears in the annotation's ``Annotated`` metadata — at any wrapper depth.
 
-    The ONE detection rule behind ``is_lazy_annotation`` / ``is_mandatory_annotation`` /
+    The ONE detection rule behind ``is_partial_annotation`` / ``is_mandatory_annotation`` /
     ``is_no_broadcast_annotation``. Directly-nested ``Annotated`` layers flatten their
-    metadata (``Mandatory[Lazy[T]]`` carries both markers at the top), but a ``Union``
-    arm does NOT — and since ``Lazy[T]`` / ``Mandatory[T]`` expand to
+    metadata (``Mandatory[Partial[T]]`` carries both markers at the top), but a ``Union``
+    arm does NOT — and since ``Partial[T]`` / ``Mandatory[T]`` expand to
     ``Annotated[Union[T, Fluid], marker]``, composed spellings bury the inner marker
     inside a Union arm. This helper therefore also walks ``Union`` arms (PEP 604
     included) and ``Annotated`` payloads, so every composition order — and the natural
-    ``Optional[Lazy[T]] = None`` spelling — is detected. It deliberately does NOT
-    recurse into other generics (``List[Lazy[T]]`` marks the ELEMENT, not the param).
+    ``Optional[Partial[T]] = None`` spelling — is detected. It deliberately does NOT
+    recurse into other generics (``List[Partial[T]]`` marks the ELEMENT, not the param).
     """
     if marker in getattr(annotation, "__metadata__", ()):
         return True
@@ -261,11 +298,461 @@ def annotation_has_marker(annotation: Any, marker: str) -> bool:
     return False
 
 
-# NOTE — a shared "ctor params minus self/cls" helper was CONSIDERED here and
-# deliberately NOT shipped: the apparent duplicates each carry a load-bearing
-# difference the shared shape can't express — the dumper needs ORDERED params
-# (dump-key order is round-trip-pinned), the loader accept-list needs its
-# ``**kwargs`` → ``None`` broadcast-everything sentinel, and schema /
-# pydantic_export consume rich ``inspect.Parameter`` metadata, not name sets.
-# The AST body-slot scan above is the real duplication; the signature walks
-# are not.
+def marked_param_names(target: Any, marker: str, cache_attr: Optional[str] = None) -> Set[str]:
+    """Signature-parameter names of ``target`` carrying ``marker`` — the ONE scan.
+
+    The scan-plus-cache behind ``partial_param_names`` / ``mandatory_param_names`` /
+    ``no_broadcast_param_names``, which used to carry three near-identical copies
+    that had already drifted on callable support: two read
+    ``getattr(cls, "__init__")`` directly, so an identical ``Partial[...]`` /
+    ``Mandatory[...]`` annotation was reported on a class and silently DROPPED on
+    a registered builder FUNCTION (whose ``__init__`` is ``object.__init__`` —
+    the exact failure :func:`init_callable` exists to prevent). Every reader goes
+    through :func:`init_callable` here, so classes and callables answer alike.
+
+    ``cache_attr`` names the per-target stamp to read/write (own ``__dict__``
+    only, never ``getattr`` — an MRO walk serves a parent's cached answer to
+    every subclass); pass ``None`` when the caller caches a superset itself
+    (``partial_param_names`` caches the union with the body-slot scan). A hint
+    named ``return`` is excluded — it is a function's return annotation, not a
+    parameter.
+    """
+    if cache_attr is not None:
+        cached = target.__dict__.get(cache_attr) if hasattr(target, "__dict__") else None
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+    init = init_callable(target)
+    names: Set[str] = set()
+    if init is not None:
+        # PROJECTS from the ONE slot enumeration rather than re-reading
+        # ``get_type_hints`` here. That private read was a third copy of the
+        # all-or-nothing failure: one ``TYPE_CHECKING``-only import in the module
+        # emptied the map and every ``Partial[T]`` / ``Mandatory[T]`` mark in the
+        # signature vanished with it (I5). ``slots()`` resolves each annotation
+        # per name, degrading only the one that cannot resolve.
+        #
+        # ``source == "signature"`` keeps this a PARAMETER scan: body slots are the
+        # caller's business (``partial_param_names`` unions them in itself, and the
+        # other two marks are signature-only by contract).
+        names = {
+            slot.name
+            for slot in slots(target)
+            if slot.source == "signature" and annotation_has_marker(slot.annotation, marker)
+        }
+    if cache_attr is not None:
+        try:
+            setattr(target, cache_attr, names)
+        except (AttributeError, TypeError):
+            pass
+    return names
+
+
+# --------------------------------------------------------------------------- #
+# The ONE slot enumeration
+#
+# A shared "ctor params minus self/cls" HELPER was considered here and rightly
+# rejected: the apparent duplicates each carry a load-bearing difference a name
+# set cannot express — the dumper needs ORDERED params (dump-key order is
+# round-trip-pinned), the accept-list needs its ``**kwargs`` → ``None``
+# broadcast-everything sentinel, and schema / pydantic_export consume rich
+# ``inspect.Parameter`` metadata.
+#
+# Every one of those objections is about the RETURN TYPE of a name-set helper.
+# None is about the ENUMERATION underneath, which was the same walk five times —
+# and five hand-rolled "minus self/cls" filters with DIFFERENT kind exclusions
+# gave five different answers for one class (measured; pinned in
+# ``tests/test_introspection_agreement.py``). So the shared thing is the walk,
+# returning rich records, and each consumer keeps its difference as a one-line
+# projection over them.
+# --------------------------------------------------------------------------- #
+
+SlotKindT = Literal[
+    "positional_only",  # can never be passed by keyword — not a keyword slot
+    "keyword",  # POSITIONAL_OR_KEYWORD / KEYWORD_ONLY — the ordinary case
+    "var_positional",  # ``*args`` — not a slot at all; its NAME addresses nothing
+    "var_keyword",  # ``**kwargs`` — the catchall; names nothing, refuses nothing
+    "class_attr",  # a public settable class attribute
+    "body_slot",  # ``self.x = …`` in ``__init__`` — a slot with no signature entry
+]
+
+_PARAM_KIND_MAP: Dict[Any, SlotKindT] = {
+    inspect.Parameter.POSITIONAL_ONLY: "positional_only",
+    inspect.Parameter.POSITIONAL_OR_KEYWORD: "keyword",
+    inspect.Parameter.KEYWORD_ONLY: "keyword",
+    inspect.Parameter.VAR_POSITIONAL: "var_positional",
+    inspect.Parameter.VAR_KEYWORD: "var_keyword",
+}
+
+#: Sentinel for "this slot has no default" — distinct from a default OF ``None``.
+NO_DEFAULT: Any = inspect.Parameter.empty
+
+
+class Slot(NamedTuple):
+    """One configurable slot of a target, however it is declared.
+
+    The fields are what the six readers between them need; each takes a subset —
+    the accept-list wants ``name`` + ``kind``, ``input_specs`` wants ``annotation``
+    and ``default``, ``to_pydantic`` wants all of it.
+    """
+
+    name: str
+    kind: SlotKindT
+    annotation: Any  #: resolved type hint, or ``Any`` when unresolvable
+    default: Any  #: :data:`NO_DEFAULT` when the slot has none
+    source: Literal["signature", "class_attr", "body_scan", "declared", "baked"]
+    #: The MRO class that DECLARED this slot. Load-bearing for ``body_slot`` only,
+    #: where readers legitimately disagree about scope: the accept-list wants a
+    #: framework base's ``self.training = True`` (broadcasting may set it), while
+    #: ``to_pydantic`` must not — those would become fields on every generated
+    #: schema. One walk, two scopes, decided by the READER. For every other kind
+    #: it is the target itself.
+    owner: Any = None
+
+
+#: Per-target slot cache, keyed by identity. Declared HERE (this module owns the
+#: enumeration) and registered for the per-pass clear by ``broadcast``, which owns
+#: the ONE clear site and already imports this module — the reverse of the
+#: ``engine._parent_blacklist_cache`` arrangement, for the same reason: this
+#: module imports only the stdlib and must keep doing so.
+#: The VALUE is ``(target, slots)``: an id-keyed entry (an UNHASHABLE callable)
+#: must pin the object whose address keys it — a freed callable's recycled id
+#: served the previous callable's slots (BUGS-2026-08-13 I7; the memo mandate).
+_slots_cache: Dict[Any, Tuple[Any, Tuple["Slot", ...]]] = {}
+
+
+def slots(target: Any) -> Tuple["Slot", ...]:
+    """Every configurable slot of ``target`` — the ONE enumeration.
+
+    Signature parameters first, in SIGNATURE ORDER (which the dumper's round-trip
+    pins rest on), then class attributes, then ``__init__``-body slots. A name is
+    reported ONCE: a body slot that is also a signature parameter is the parameter.
+
+    ``target`` may be a class OR any callable — the signature comes from
+    :func:`init_callable`, so a registered builder FUNCTION answers like a class.
+    A callable has no class attributes and no ``__init__`` body, so it yields
+    signature slots alone.
+
+    Best-effort by construction, like every reader it replaces: an unreadable
+    signature yields no signature slots, an unresolvable annotation degrades to
+    ``Any`` (the SLOT survives — losing it would drop a knob from every GUI), and
+    an unscannable ``__init__`` (compiled / frozen) falls back to the declared and
+    baked names.
+    """
+    cache_key = target if _hashable(target) else id(target)
+    cached = _slots_cache.get(cache_key)
+    if cached is not None:
+        return cached[1]
+
+    found: List[Slot] = []
+    seen: Set[str] = set()
+
+    init = init_callable(target)
+    if init is not None:
+        try:
+            hints = get_type_hints(init, include_extras=True)
+        except Exception:  # noqa: BLE001 - an unresolvable hint must not lose the SLOT
+            hints = {}
+        try:
+            parameters = dict(inspect.signature(init).parameters)
+        except (TypeError, ValueError):
+            parameters = {}
+        for name, param in parameters.items():
+            if name in ("self", "cls"):
+                continue
+            seen.add(name)
+            annotation = hints.get(name, param.annotation)
+            if isinstance(annotation, str):
+                # PER-NAME fallback. ``get_type_hints`` above is all-or-nothing, so a
+                # single ``TYPE_CHECKING``-only import emptied ``hints`` and this line
+                # fell back to ``param.annotation`` — which under PEP 563 is the raw
+                # STRING, for every parameter in the signature. One bad name cost the
+                # whole class its deferral marks and its container routing (I5).
+                annotation = resolve_string_annotation(annotation, init)
+            found.append(
+                Slot(
+                    name=name,
+                    kind=_PARAM_KIND_MAP[param.kind],
+                    annotation=Any if annotation is inspect.Parameter.empty else annotation,
+                    default=param.default,
+                    source="signature",
+                    owner=target,
+                )
+            )
+
+    found.extend(_non_signature_slots(target, seen))
+    result = tuple(found)
+    _slots_cache[cache_key] = (target, result)  # the first element is the PIN
+    return result
+
+
+def _hashable(target: Any) -> bool:
+    """Whether ``target`` can key a dict — a callable may define ``__eq__`` without ``__hash__``."""
+    try:
+        hash(target)
+    except TypeError:
+        return False
+    return True
+
+
+def _non_signature_slots(target: Any, seen: Set[str]) -> List[Slot]:
+    """Class attributes and ``__init__``-body slots — ``@configurable`` CLASSES only.
+
+    A plain callable has neither: its function attributes are not config slots,
+    and there is no body to ``setattr`` into post-construction.
+    """
+    if not (isinstance(target, type) and getattr(target, "__confluid_configurable__", False)):
+        return []
+
+    out: List[Slot] = []
+    for name in dir(target):
+        if name.startswith("_") or name in seen:
+            continue
+        member = getattr(target, name, None)
+        if isinstance(member, functools.cached_property):
+            continue  # memoized derived state — the same rule as a setterless property (N7)
+        if isinstance(member, types.MemberDescriptorType):
+            continue  # a __slots__ member — the body scan claims it as a body slot (N8)
+        if isinstance(member, property):
+            if member.fset is None:
+                continue  # derived state, per the class-design convention — never a config knob
+        elif callable(member):
+            # A METHOD defined in a class body is never a knob; an ASSIGNED callable
+            # (``collate_fn = default_collate``) is a public settable class attribute
+            # like any other value (N6). The qualname tells them apart: a method's
+            # ends in ``.<its own attribute name>``.
+            if getattr(member, "__qualname__", "").endswith(f".{name}"):
+                continue
+        # ``None`` is a real default (``timeout = None`` declares the slot — N6).
+        seen.add(name)
+        out.append(Slot(name, "class_attr", Any, member, "class_attr", target))
+
+    for name, source, annotation, owner, default in _body_slot_sources(target):
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(Slot(name, "body_slot", annotation, default, source, owner))
+    return out
+
+
+def _literal_default(value_node: Any) -> Any:
+    """``ast.literal_eval`` of an assigned-value node, else ``NO_DEFAULT``."""
+    if value_node is None:
+        return NO_DEFAULT
+    try:
+        return ast.literal_eval(value_node)
+    except (ValueError, SyntaxError, TypeError):
+        return NO_DEFAULT
+
+
+def _body_slot_sources(target: type) -> List[Tuple[str, Any, Any, Any, Any]]:
+    """Body-slot ``(name, source, annotation)`` triples, MRO-wide.
+
+    The effective NAME set is ``scan ∪ declared ∪ baked`` (the packaged-mode rule):
+    fresh source always governs in a dev checkout, and the build-time bake table
+    is consulted per MRO class only when that class's live scan finds nothing.
+
+    The ANNOTATION is resolved here — ``self.run_name: Optional[str] = None`` is a
+    typed slot, and reporting it as ``Any`` is a lie the class did not tell. It
+    was resolved TWICE elsewhere until 2026-08-12 (``pydantic_export`` for its
+    typed fields, ``confluid.partial`` for ``Partial[T]`` detection) with nothing
+    checking the two agreed, across 163 annotated body slots in this workspace.
+    A declared (``broadcast_attrs=``) or baked name carries no annotation and stays
+    ``Any``; so does an unannotated ``self.x = …``.
+
+    Measured cost of resolving eagerly: 74 us for a class with ten annotated
+    slots, once per distinct class per pass (the result is cached), against a
+    278 ms materialize. Lazy resolution was considered and rejected for that
+    ratio — it would have made ``Slot`` something other than a plain NamedTuple.
+    """
+    out: List[Tuple[str, Any, Any, Any, Any]] = []
+    emitted: Set[str] = set()
+
+    def _add(name: str, source: str, annotation: Any = Any, owner: Any = None, default: Any = NO_DEFAULT) -> None:
+        if name not in emitted:
+            emitted.add(name)
+            out.append((name, source, annotation, owner if owner is not None else target, default))
+
+    for declared in getattr(target, "__confluid_broadcast_attrs__", None) or ():
+        _add(declared, "declared")
+    for klass in getattr(target, "__mro__", ()):
+        if klass is object:
+            continue
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        scanned = scan_init_body(init)
+        annotations = {
+            slot.name: slot.annotation
+            for slot in scanned
+            if slot.kind in ("assign", "annassign") and slot.annotation is not None
+        }
+        # A LITERAL assigned value is the slot's default (N17 — a `--docs` listing
+        # showing None for `self.batch_size: int = 32` misreports the class).
+        # Anything non-literal (a call, a param echo) stays NO_DEFAULT; of several
+        # assignments to one name, the last in walk order wins, best-effort.
+        values = {slot.name: slot.value for slot in scanned if slot.kind in ("assign", "annassign")}
+        for name in sorted({slot.name for slot in scanned}):
+            node = annotations.get(name)
+            _add(
+                name,
+                "body_scan",
+                resolve_ast_annotation(node, init) if node is not None else Any,
+                klass,
+                _literal_default(values.get(name)),
+            )
+        if not scanned:
+            for name in baked_init_attrs(klass) or ():
+                _add(name, "baked", Any, klass)
+    return out
+
+
+def body_slot_names(target: Any) -> Set[str]:
+    """Every name ``__init__`` assigns, MRO-wide — INCLUDING ones that are also params.
+
+    The sibling projection of :func:`slots`, over the same walk, answering a
+    different question. ``slots()`` reports a name ONCE and lets the signature
+    claim it, because a slot is a slot; this asks what the BODY assigns, which is
+    what the broadcast layer's post-init injection needs to know (``self.model =
+    model`` is both a parameter and a body assignment, and the accept-list unions
+    the two).
+
+    Sharing the walk is the point — the two answers may differ, but they must
+    never disagree about what the body contains.
+    """
+    if not isinstance(target, type):
+        return set()
+    return {name for name, _, _, _, _ in _body_slot_sources(target)}
+
+
+def slot_names(target: Any, kinds: FrozenSet[str]) -> Set[str]:
+    """Names of ``target``'s slots whose kind is in ``kinds`` — the common projection.
+
+    A caller states its rule as a KIND SET instead of re-deriving a "minus
+    self/cls" filter, which is the drift this enumeration ends.
+    """
+    return {slot.name for slot in slots(target) if slot.kind in kinds}
+
+
+def contains_forwardref(anno: Any) -> bool:
+    """True when ``anno`` is — or nests — an unresolved ``typing.ForwardRef``.
+
+    A string forward reference (``self.child: Optional["Node"] = …``) evaluates
+    to ``Optional[ForwardRef('Node')]`` rather than raising, because the string
+    inside the subscript is captured verbatim, not looked up. If the referent
+    isn't a module global (e.g. a class defined inside a function), pydantic
+    can't resolve it and ``create_model`` yields a "not fully defined" model
+    whose ``model_validate`` raises ``PydanticUserError``. Detecting the marker
+    lets us degrade such slots to ``Any`` (the documented fallback).
+    """
+    import typing
+
+    if isinstance(anno, typing.ForwardRef):
+        return True
+    return any(contains_forwardref(arg) for arg in get_args(anno))
+
+
+def _evaluate_forwardrefs(anno: Any, scope: Dict[str, Any]) -> Any:
+    """Evaluate ForwardRefs nested anywhere inside ``anno`` against ``scope``.
+
+    ``Partial["Optim"]`` evals to a subscript carrying a ``ForwardRef`` — never a
+    plain string — so the I4 re-resolve does not fire, and degrading straight to
+    ``Any`` cost the slot its deferral while the SAME spelling on a ctor param
+    resolved (N5, BUGS-2026-08-19: ``get_type_hints`` evaluates it there). This
+    is the same evaluation, through the public API: a probe function whose one
+    annotation is ``anno``, resolved with extras kept (``Partial``/``Mandatory``
+    are ``Annotated``). ``None`` when a name is genuinely absent — the caller
+    degrades to ``Any`` as before.
+    """
+
+    def _probe() -> None: ...
+
+    _probe.__annotations__ = {"probed": anno}
+    try:
+        return get_type_hints(_probe, globalns=scope, include_extras=True)["probed"]
+    except Exception:  # noqa: BLE001 - an unresolvable hint degrades, never raises
+        return None
+
+
+def resolve_ast_annotation(annotation: Any, init_func: Any) -> Any:
+    """Best-effort resolve an AST annotation node to a runtime type, else ``Any``.
+
+    Lives here rather than beside its first caller because it is pure AST + ``typing``
+    (the module map's rule: this module is the ONE stdlib-only scanning home) and has
+    two consumers with nothing else in common — the pydantic exporter, which needs the
+    type, and :func:`confluid.partial.partial_param_names`, which needs only the marker and
+    must not reach into an optional-dependency module to get it.
+
+    Evaluates the unparsed expression against the defining function's module
+    globals plus ``typing``. Any failure (unimportable name, exotic expression)
+    — or a resulting annotation that still carries an unresolved forward
+    reference — falls back to ``Any``: a post-init slot is always surfaced; only
+    its precision degrades.
+    """
+    if annotation is None:
+        return Any
+    import ast
+    import typing as _typing
+
+    # UNWRAP first: `@configurable` replaces `__init__` with a validation wrapper whose
+    # `__globals__` is confluid's own module dict, where the caller's names do not exist.
+    # Resolving against it silently degraded EVERY body-slot annotation to `Any` — so a
+    # class that dutifully wrote `self.optimizer: Partial[Optimizer] = ...` got an untyped
+    # schema field and an undetected lazy slot. The scanners already see through the
+    # wrapper for SOURCE; this makes the scope agree with them.
+    target = inspect.unwrap(init_func)
+
+    try:
+        src = ast.unparse(annotation)
+        scope: Dict[str, Any] = {**vars(_typing), **getattr(target, "__globals__", {})}
+        resolved = eval(src, scope)  # noqa: S307 - trusted: source is our own __init__ annotation
+    except Exception:
+        return Any
+    if isinstance(resolved, str):
+        # A QUOTED annotation (``self.optimizer: "Partial[Optim]"``) unparses to a
+        # string LITERAL, so ``eval`` hands back the TEXT rather than the type — and
+        # a plain ``str`` is not a ForwardRef, so the check below waved it through and
+        # the raw string became ``Slot.annotation`` (I4). Quoting is how you defer an
+        # import, not a different meaning, so resolve it once more in the same scope.
+        # The same-named CONSTRUCTOR PARAM never had the bug: ``get_type_hints``
+        # resolves the string for it, which is exactly the asymmetry class-design
+        # rule 4 says must not exist between the two declaration halves.
+        return resolve_string_annotation(resolved, init_func)
+    if contains_forwardref(resolved):
+        # A quoted name INSIDE a subscript evals to a ForwardRef; evaluate it in
+        # the same scope (N5) — pydantic cannot finish a model around a leaked
+        # ForwardRef, so a genuinely absent name still degrades.
+        evaluated = _evaluate_forwardrefs(resolved, scope)
+        return Any if evaluated is None else evaluated
+    return resolved
+
+
+def resolve_string_annotation(text: str, init_func: Any) -> Any:
+    """Best-effort resolve a STRING annotation to a runtime type, else ``Any``.
+
+    The sibling of :func:`resolve_ast_annotation` for the two places a string
+    turns up where a type belongs, both of which used to leak it verbatim:
+
+    * a QUOTED annotation, whose AST node is a string constant (I4);
+    * PEP 563 (``from __future__ import annotations``), which stringifies every
+      annotation in a module — and where ``get_type_hints`` is ALL-OR-NOTHING, so
+      one unresolvable name (a ``TYPE_CHECKING``-only import) emptied the map and
+      sent every parameter of the signature back to its raw string (I5).
+
+    Same scope and same degradation as the AST resolver: the defining module's
+    globals plus ``typing``, unwrapped past the validation wrapper, and ``Any``
+    on any failure. A leaked ``str`` is the one outcome that must not happen —
+    every reader asks a question OF the annotation (is this slot deferred? does
+    it take a list?) and a string silently answers no to all of them.
+    """
+    import typing as _typing
+
+    target = inspect.unwrap(init_func)
+    scope: Dict[str, Any] = {**vars(_typing), **getattr(target, "__globals__", {})}
+    try:
+        resolved = eval(text, scope)  # noqa: S307 - trusted: the text is our own annotation
+    except Exception:  # noqa: BLE001 - an unresolvable hint degrades, never raises
+        return Any
+    if contains_forwardref(resolved):
+        evaluated = _evaluate_forwardrefs(resolved, scope)  # N5 — same rule as the AST resolver
+        return Any if evaluated is None else evaluated
+    return resolved

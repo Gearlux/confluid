@@ -7,23 +7,37 @@ Coverage targets:
 * Optional / Union / Literal / List / Dict / Tuple annotations
 * Nested ``@configurable`` recursion produces nested pydantic models
 * Lists of ``@configurable`` produce ``List[NestedModel]``
-* ``@ignore_config``-marked attributes are skipped
+* Params shadowed by a read-only ``@property`` are skipped
 * Mutable defaults (list/dict) become ``default_factory``
 * ``_confluid_class`` attribute carries the correct dotted path
 * ``lru_cache`` returns the same model on repeated calls
-* ``Lazy[T]`` annotations are unwrapped to ``T`` and recorded
-* ``confluid_class_of`` and ``lazy_param_names_of`` helpers
+* ``Partial[T]`` annotations are unwrapped to ``T``
+* the ``confluid_class_of`` helper
 """
 
-from typing import Any, Dict, Generic, List, Literal, Optional, Tuple, TypeVar, Union, get_args
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+    get_args,
+)
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from confluid import LazyClass, configurable, confluid_class_of, get_registry, to_pydantic
+from confluid import PartialClass, configurable, confluid_class_of, get_registry, to_pydantic
 from confluid.fluid import Fluid
-from confluid.lazy import Lazy
-from confluid.pydantic_export import _convert_annotation, _qualname, lazy_param_names_of
+from confluid.partial import Partial
+from confluid.pydantic_export import _convert_annotation, _qualname
 
 
 @pytest.fixture(autouse=True)
@@ -261,47 +275,64 @@ def test_lru_cache_returns_same_model() -> None:
     assert to_pydantic(Repeated) is to_pydantic(Repeated)
 
 
-def test_ignore_config_attributes_are_skipped() -> None:
-    from confluid import ignore_config
+def test_a_readonly_property_is_not_a_field_but_a_ctor_param_always_is() -> None:
+    """The two halves of the rule that replaced ``@ignore_config`` (deleted 0.3.0).
+
+    A derived read-only ``@property`` is not a config knob, so it is not a field —
+    this is the exclusion the removed decorator was being used for, and it needs
+    no marker.
+
+    A declared constructor PARAMETER stays a field even when a read-only property
+    shadows it, because this model describes the constructor: the property shadows
+    the instance attribute after construction, not the argument. ``@ignore_config``
+    used to suppress it, which is the one capability the removal drops — no class
+    in the workspace used it (0 of 275).
+    """
 
     @configurable
-    class WithHidden:
-        def __init__(self, visible: int = 1, hidden: int = 2) -> None:
+    class WithDerived:
+        def __init__(self, visible: int = 1, shadowed: int = 2) -> None:
             self.visible = visible
-            self._hidden = hidden
+            self._shadowed = shadowed
+            self._total = visible + shadowed
 
-        # ``@ignore_config`` marks the class-level ``hidden`` lookup so the
-        # pydantic generator skips the matching ``__init__`` param.
-        @ignore_config
-        def hidden(self) -> int:  # noqa: F811
-            return self._hidden
+        @property
+        def shadowed(self) -> int:  # noqa: F811 — deliberately shadows the ctor param
+            return self._shadowed
 
-    Model = to_pydantic(WithHidden)
+        @property
+        def total(self) -> int:  # purely derived — never a ctor param
+            return self._total
+
+    Model = to_pydantic(WithDerived)
     assert "visible" in Model.model_fields
-    assert "hidden" not in Model.model_fields
+    assert "shadowed" in Model.model_fields, "a declared ctor param is always a field"
+    assert "total" not in Model.model_fields, "derived read-only state is not"
 
 
 # ---------------------------------------------------------------------------
-# Lazy[T] support
+# Partial[T] support
 # ---------------------------------------------------------------------------
 
 
 def test_lazy_annotation_is_unwrapped_and_recorded() -> None:
     @configurable
     class HasOptim:
-        def __init__(self, optimizer: Lazy[Any] = None) -> None:
+        def __init__(self, optimizer: Partial[Any] = None) -> None:
             self.optimizer = optimizer
 
     Model = to_pydantic(HasOptim)
-    # The Lazy marker is stripped from the field type; the alias's honest
+    # The Partial marker is stripped from the field type; the alias's honest
     # ``Union[T, Fluid]`` shape survives (the Fluid arm gains its generated
     # mirror per the configurable-union rule).
     field = Model.model_fields["optimizer"]
     assert getattr(field.annotation, "__metadata__", ()) == ()  # no Annotated wrapper
     assert Fluid in get_args(field.annotation)
-    # The lazy marker is recorded on the generated model.
-    assert "optimizer" in lazy_param_names_of(Model)
-    assert "optimizer" in lazy_param_names_of(Model())
+    # The deferred-slot answer stays the CLASS-side authority (the model-side
+    # stamp was a parallel mechanism nobody consumed — removed 2026-08-13).
+    from confluid.partial import partial_param_names
+
+    assert "optimizer" in partial_param_names(HasOptim)
 
 
 def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
@@ -312,19 +343,18 @@ def test_lazy_typed_slot_validates_fluid_config_and_live_forms() -> None:
 
     @configurable
     class HasTyped:
-        def __init__(self, dep: Lazy[Leaf] = LazyClass(Leaf, n=2)) -> None:
+        def __init__(self, dep: Partial[Leaf] = PartialClass(Leaf, n=2)) -> None:
             self.dep = dep
 
     Model = to_pydantic(HasTyped)
     # All three legal runtime forms validate: a deferred Fluid, a live
     # instance of T, and the generated config mirror.
-    Model(dep=LazyClass(Leaf, n=3))
+    Model(dep=PartialClass(Leaf, n=3))
     Model(dep=Leaf(n=4))
     Model(dep=to_pydantic(Leaf)(n=5))
     # The marker never leaks into the JSON schema, which stays generable.
     schema = Model.model_json_schema()
-    assert "__confluid_lazy__" not in str(schema)
-    assert "dep" in lazy_param_names_of(Model)
+    assert "__confluid_partial__" not in str(schema)
 
 
 def test_range_marks_survive_inside_marker_union_arms() -> None:
@@ -371,13 +401,69 @@ def test_no_lazy_params_means_empty_set() -> None:
         def __init__(self, x: int = 0) -> None:
             self.x = x
 
-    Model = to_pydantic(Plain)
-    assert lazy_param_names_of(Model) == frozenset()
+    to_pydantic(Plain)  # builds cleanly
+    from confluid.partial import partial_param_names
+
+    assert partial_param_names(Plain) == set()
 
 
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
+
+def test_a_param_literally_named_args_validates_end_to_end() -> None:
+    """The S1 defect: ``_SKIP_PARAMS`` filtered by NAME, so an ordinary keyword
+    parameter named ``args`` was dropped from the model and — the model being
+    ``extra="forbid"`` — the strict init policy then REFUSED a legal call."""
+
+    @configurable
+    class OddlyNamed:
+        def __init__(self, args: Optional[List[int]] = None, normal: int = 1) -> None:
+            self.args = args
+            self.normal = normal
+
+    assert set(to_pydantic(OddlyNamed).model_fields) == {"args", "normal"}
+    inst = OddlyNamed(args=[1, 2])  # the wrapped __init__ validates against the model
+    assert inst.args == [1, 2]
+
+
+def test_variadics_are_never_fields_whatever_they_are_named() -> None:
+    """The KIND excludes ``*args`` / ``**kwargs`` — renaming them changes nothing."""
+
+    @configurable
+    class Variadic:
+        def __init__(self, *loaders: int, lr: float = 0.1, **extra: Any) -> None:
+            self.lr = lr
+
+    assert set(to_pydantic(Variadic).model_fields) == {"lr"}
+
+
+def test_a_body_slot_literally_named_args_is_an_optional_field() -> None:
+    """The body-slot half of the same name-filter defect: ``_post_init_field_specs``
+    ORed ``_SKIP_PARAMS`` into its seen-set, silently excluding a body slot that
+    happens to be named ``args`` from every generated schema."""
+
+    @configurable
+    class BodyNames:
+        def __init__(self) -> None:
+            self.args: Optional[int] = None
+
+    assert "args" in to_pydantic(BodyNames).model_fields
+
+
+def test_an_unresolvable_annotation_still_raises_introspection_error() -> None:
+    """The error contract survives the ``slots()`` migration: ``slots()`` degrades
+    silently on an unreadable signature (best-effort by design), but ``to_pydantic``
+    documents a raise — the probe exists solely to keep that promise."""
+    from confluid.exceptions import IntrospectionError
+
+    class Broken:
+        def __init__(self, x: "NoSuchType" = None) -> None:  # type: ignore[name-defined]  # noqa: F821 - the point
+            self.x = x
+
+    with pytest.raises(IntrospectionError):
+        to_pydantic(Broken)
 
 
 def test_class_without_init_produces_empty_model() -> None:
@@ -469,6 +555,94 @@ class _SubTrainer(_TrainerLike):
         self.extra_knob: Any = None
 
 
+class _Deferred:
+    """A runtime-injection target for the ``Partial[T]`` body-slot pin below."""
+
+    def __init__(self, lr: float = 0.1) -> None:
+        self.lr = lr
+
+
+@configurable
+class _TypedBody:
+    """Module-level so ``inspect.getsource`` can read the ``__init__`` body.
+
+    Shaped like the real consumers this matters for — ``matrainer``'s runnables
+    carry ~10 annotated body slots each (``Optional[Partial[RecordSource]]``,
+    ``Partial[KerasOptimizer]``, …), which is 163 slots across the workspace.
+    """
+
+    def __init__(self, epochs: int = 10) -> None:
+        self.epochs = epochs
+        self.optimizer: Partial[_Deferred] = PartialClass(_Deferred)
+        self.run_name: Optional[str] = None
+        self.untyped = None  # no annotation — must stay Any
+
+
+def test_body_slot_ANNOTATIONS_reach_the_generated_model() -> None:
+    """The "before" snapshot for the slots() annotation consolidation.
+
+    ``to_pydantic`` resolves a body slot's declared type by running its OWN AST
+    scan (``pydantic_export._post_init_field_specs``), independently of the one
+    ``introspect.slots()`` runs and of the one ``confluid.partial`` runs. Nothing
+    checks that the three agree, and 163 production body slots ride on it.
+
+    This pins what the schema says TODAY, so folding those scans into one
+    enumeration shows up as a diff in this test rather than as a quietly
+    different schema on every MCP tool and GUI form.
+    """
+    fields = to_pydantic(_TypedBody).model_fields
+
+    assert fields["run_name"].annotation == Optional[str], "a typed body slot is NOT Any"
+    assert fields["untyped"].annotation == Optional[Any], "an unannotated one is — body slots are optional"
+    assert fields["epochs"].annotation is int, "signature params are unaffected"
+
+    # ``Partial[T]`` is stripped to a union admitting the target, the deferred
+    # marker, and its generated config model.
+    optimizer_arms = get_args(fields["optimizer"].annotation)
+    # a plain flow-target class rides as ``Annotated[T, WithJsonSchema({})]`` (the schema is
+    # opaque, the isinstance check is kept) — unwrap before asserting the type survived
+    from typing import Annotated, get_origin
+
+    bare_arms = tuple(get_args(a)[0] if get_origin(a) is Annotated else a for a in optimizer_arms)
+    assert _Deferred in bare_arms, "the flow-target type survives into the schema"
+    assert type(None) in bare_arms
+
+
+def test_the_partial_body_slot_scan_agrees_with_the_schema_today() -> None:
+    """The second private scan, pinned beside the first.
+
+    ``confluid.partial`` resolves the SAME annotations to decide which body slots
+    are deferred. It agrees with ``to_pydantic`` today; nothing enforces that, and
+    a consolidation must keep it true.
+    """
+    from confluid.partial import partial_param_names
+
+    assert "optimizer" in partial_param_names(_TypedBody), "declared Partial[T] in the body"
+    assert "run_name" not in partial_param_names(_TypedBody)
+
+
+def test_slots_reports_a_body_slots_DECLARED_type() -> None:
+    """The gap the consolidation closed, pinned from the other side.
+
+    ``introspect.slots()`` is the ONE slot enumeration, and until 2026-08-12 it
+    carried names and kinds only — a body slot's ``annotation`` was ``Any`` even
+    where the class plainly declared ``Optional[str]``. Nothing was broken by that
+    (no reader asked), but two other scans resolved the same annotations privately
+    and nothing checked they agreed, across 163 production body slots.
+
+    An unannotated slot is still ``Any``: that is the class's own answer, not a
+    missing one.
+    """
+    from confluid.introspect import slots
+
+    by_name = {s.name: s for s in slots(_TypedBody)}
+
+    assert by_name["epochs"].annotation is int, "signature slots were always typed"
+    assert by_name["run_name"].annotation == Optional[str], "body slots are too, now"
+    assert by_name["untyped"].annotation is Any, "...unless the class did not say"
+    assert by_name["optimizer"].kind == "body_slot"
+
+
 def test_to_pydantic_surfaces_post_init_body_slots() -> None:
     """Body-attribute config slots appear as OPTIONAL fields (default None)."""
     model = to_pydantic(_TrainerLike)
@@ -478,6 +652,60 @@ def test_to_pydantic_surfaces_post_init_body_slots() -> None:
     inst = model(model=object(), train_set=[])
     assert inst.optimizer is None
     assert inst.batch_size is None
+
+
+class _FrameworkBase:
+    """NOT @configurable — stands in for ``nn.Module`` / ``LightningModule``.
+
+    Their ``__init__`` bodies assign a dozen internal attributes
+    (``self.training = True``, ``self.prepare_data_per_node = True``, …).
+    """
+
+    def __init__(self) -> None:
+        self.training = True
+        self.prepare_data_per_node = True
+
+
+@configurable
+class _OnFramework(_FrameworkBase):
+    def __init__(self, width: int = 8) -> None:
+        super().__init__()
+        self.width = width
+        self.head: Optional[str] = None
+
+
+def test_a_non_configurable_bases_body_slots_never_become_schema_fields() -> None:
+    """The OWNER filter — the reason ``Slot`` carries which class declared it.
+
+    ``slots()`` walks the WHOLE MRO because the accept-list wants those names: a
+    bare key may legitimately set ``training`` on an instance, and the engine
+    subtracts non-configurable ancestors later (``_get_parent_attr_blacklist``).
+    A generated SCHEMA must not carry them, or every model in a torch/Lightning
+    tree grows ``training`` and ``prepare_data_per_node`` fields that no config
+    should ever set.
+
+    Two readers, two scopes, one enumeration — decided by the reader, not by a
+    second walk. Projecting naively would have added exactly these (measured).
+    """
+    from confluid.introspect import slots
+
+    fields = set(to_pydantic(_OnFramework).model_fields)
+    body_slots = {s.name for s in slots(_OnFramework) if s.kind == "body_slot"}
+
+    assert fields == {"width", "head"}, "the schema sees only what @configurable classes declare"
+    assert {"training", "prepare_data_per_node"} <= body_slots, "...while the enumeration sees all of them"
+    assert not ({"training", "prepare_data_per_node"} & fields)
+
+
+def test_slot_owner_names_the_declaring_class() -> None:
+    """``owner`` is the MRO class that declared the slot, not the target."""
+    from confluid.introspect import slots
+
+    by_name = {s.name: s for s in slots(_OnFramework)}
+
+    assert by_name["head"].owner is _OnFramework
+    assert by_name["training"].owner is _FrameworkBase
+    assert by_name["width"].owner is _OnFramework, "a signature slot owns itself"
 
 
 def test_to_pydantic_body_slots_inherited_across_configurable_chain() -> None:
@@ -602,3 +830,302 @@ def test_to_pydantic_non_range_metadata_on_container_left_untouched() -> None:
 
     model = to_pydantic(_Op)
     assert model(pair=(3.0, 4.0)).pair == (3.0, 4.0)
+
+
+# ---------------------------------------------------------------------------
+# Abstract collection annotations: re-iterable kinds keep their element type
+# ---------------------------------------------------------------------------
+
+
+def test_a_sequence_slot_keeps_its_element_type() -> None:
+    """``Sequence[X]`` must reach the schema as ``Sequence[X]``, not a bare ``Any``.
+
+    A slot is annotated ``Sequence[Metric]`` precisely so a form-spec / MCP schema knows
+    what it holds; coercing it to ``Any`` silently defeats the annotation. ``Sequence`` is
+    safe to keep because pydantic validates it into a real ``list`` — see the re-iterability
+    test below for the property that distinguishes it from ``Iterable``.
+    """
+
+    @configurable
+    class _Metric:
+        def __init__(self, name: str = "acc") -> None:
+            self.name = name
+
+    @configurable
+    class _Runner:
+        def __init__(self, metrics: Optional[Sequence[_Metric]] = None) -> None:
+            self.metrics = metrics
+
+    field = to_pydantic(_Runner).model_fields["metrics"]
+    assert "Any" not in str(field.annotation), f"element type was discarded: {field.annotation}"
+    assert _Metric.__name__ in str(field.annotation)
+
+
+def test_a_mapping_slot_keeps_its_key_and_value_types() -> None:
+    """``Mapping[str, str]`` (the shape a `tags` knob takes) survives as itself."""
+
+    @configurable
+    class _Tagged:
+        def __init__(self, tags: Optional[Mapping[str, str]] = None) -> None:
+            self.tags = tags
+
+    field = to_pydantic(_Tagged).model_fields["tags"]
+    assert "Any" not in str(field.annotation), f"element types were discarded: {field.annotation}"
+
+
+def test_an_iterable_slot_is_still_coerced_to_any() -> None:
+    """``Iterable[X]`` MUST stay coerced — pydantic validates it lazily.
+
+    The coercion is not stylistic: pydantic wraps an ``Iterable[X]`` input in a one-shot
+    ``ValidatorIterator``, so a slot read twice sees an EMPTY collection the second time.
+    Coercing to ``Any`` hands the caller's own object back untouched. This test is the
+    boundary of the narrowing — it fails if someone "completes the set" by dropping the
+    remaining lazy kinds too.
+    """
+
+    @configurable
+    class _Streamer:
+        def __init__(self, rows: Optional[Iterable[str]] = None) -> None:
+            self.rows = rows
+
+    assert to_pydantic(_Streamer).model_fields["rows"].annotation == Optional[Any]
+
+
+def test_a_validated_sequence_is_re_iterable_while_an_iterable_is_not() -> None:
+    """The measured property the split is based on, pinned against pydantic itself.
+
+    If a future pydantic validated ``Sequence`` lazily too, keeping its element type would
+    reintroduce the one-shot bug — this fails first and says why.
+    """
+
+    class _Thing:
+        pass
+
+    @configurable
+    class _Both:
+        def __init__(
+            self,
+            seq: Optional[Sequence[int]] = None,
+            it: Optional[Iterable[int]] = None,
+        ) -> None:
+            self.seq = seq
+            self.it = it
+
+    model = to_pydantic(_Both)
+    built = model(seq=[1, 2], it=[1, 2])
+    assert list(built.seq) == [1, 2] and list(built.seq) == [1, 2], "Sequence must be re-iterable"
+    # `it` is coerced to Any, so it is handed back as the original list untouched.
+    assert built.it == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# A class must never become unconstructable because of its schema mirror, and
+# the mirror must JSON-schema whatever pydantic can validate (BUGS-2026-08-19
+# N1 / N2 / N3 / N9 / N10 / N11). Module-scope fixtures: get_type_hints needs
+# module globals.
+# ---------------------------------------------------------------------------
+
+import collections.abc as _abc  # noqa: E402
+import logging as _logging  # noqa: E402
+from typing import Annotated as _Annotated  # noqa: E402
+from typing import Protocol as _Protocol  # noqa: E402
+from typing import runtime_checkable as _runtime_checkable  # noqa: E402
+
+from annotated_types import Interval as _Interval  # noqa: E402
+
+
+class _Sampler(_Protocol):  # NOT runtime-checkable — cannot be isinstance'd
+    def sample(self) -> int: ...
+
+
+@_runtime_checkable
+class _Closable(_Protocol):
+    def close(self) -> None: ...
+
+
+@configurable
+class _ProtoHost:
+    def __init__(self, sampler: Optional[_Sampler] = None, closer: Optional[_Closable] = None) -> None:
+        self.sampler = sampler
+        self.closer = closer
+
+
+@configurable
+class _UnderscoreHost:
+    def __init__(self, lr: float = 0.1, _seed: int = 0) -> None:
+        self.lr = lr
+        self._seed = _seed
+
+
+@configurable
+class _ReservedNamesHost:
+    def __init__(self, model_config: Optional[dict] = None, schema: str = "s", copy: int = 1, lr: float = 0.1) -> None:
+        self.model_config = model_config
+        self.schema = schema
+        self.copy = copy
+        self.lr = lr
+
+
+@configurable
+class _OptionalRangeHost:
+    def __init__(
+        self,
+        crop: _Annotated[Tuple[float, float], _Interval(ge=0.0, le=1.0)] = (0.1, 0.9),
+        crop_opt: _Annotated[Optional[Tuple[float, float]], _Interval(ge=0.0, le=1.0)] = None,
+    ) -> None:
+        self.crop = crop
+        self.crop_opt = crop_opt
+
+
+class _Backbone:
+    """A plain helper class — not torch/numpy, not @configurable."""
+
+
+@configurable
+class _PlainLeafHost:
+    def __init__(self, backbone: Optional[_Backbone] = None, log: Optional[_logging.Logger] = None) -> None:
+        self.backbone = backbone
+        self.log = log
+
+
+@configurable
+class _BareCallableHost:
+    def __init__(self, fn: Optional[_abc.Callable] = None) -> None:
+        self.fn = fn
+
+
+def test_a_non_runtime_protocol_param_is_any_and_the_class_constructs() -> None:
+    """N1 — `Cls()` raised a raw pydantic-core SchemaError ('cls' must be valid as the
+    first argument to isinstance). A non-runtime Protocol cannot be checked, so it is
+    `Any`; a runtime-checkable one keeps its isinstance check."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    host = _ProtoHost()
+    assert host.sampler is None
+    from typing import Annotated, get_origin
+
+    fields = to_pydantic(_ProtoHost).model_fields
+    assert fields["sampler"].annotation == Optional[Any]
+    closer_arms = [get_args(a)[0] if get_origin(a) is Annotated else a for a in get_args(fields["closer"].annotation)]
+    assert _Closable in closer_arms  # kept (opaque in the schema, isinstance-checked at validation)
+    with pytest.raises(ValidationError):
+        _ProtoHost(closer=3)  # type: ignore[arg-type]
+
+
+def test_an_underscore_param_constructs_and_still_validates() -> None:
+    """N2 — `Host()` raised `NameError: Fields must not use names with leading
+    underscores` on EVERY call. The field is mangled, the alias is the real name."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    host = _UnderscoreHost(lr=0.2, _seed=3)
+    assert (host.lr, host._seed) == (0.2, 3)
+    with pytest.raises(ValidationError):
+        _UnderscoreHost(lr="x")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        _UnderscoreHost(_seed="x")  # type: ignore[arg-type]
+    schema = to_pydantic(_UnderscoreHost).model_json_schema()
+    assert set(schema["properties"]) == {"lr", "_seed"}
+
+
+def test_basemodel_reserved_names_construct_and_still_validate() -> None:
+    """N3 — a param named `model_config` crashed `to_pydantic` (`'FieldInfo' object is
+    not iterable`) and the swallowed TypeError left validation silently OFF."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    host = _ReservedNamesHost(model_config={"a": 1}, schema="x", copy=2, lr=0.3)
+    assert (host.model_config, host.schema, host.copy, host.lr) == ({"a": 1}, "x", 2, 0.3)
+    with pytest.raises(ValidationError):
+        _ReservedNamesHost(lr="x")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        _ReservedNamesHost(copy="x")  # type: ignore[arg-type]
+    schema = to_pydantic(_ReservedNamesHost).model_json_schema()
+    assert set(schema["properties"]) == {"model_config", "schema", "copy", "lr"}
+
+
+def test_a_range_mark_on_an_OPTIONAL_container_relocates_element_wise() -> None:
+    """N9 — the zero-arg spelling of the pinned container convention raised a raw
+    `TypeError: Unable to apply constraint 'ge'` on a LEGAL value."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    _OptionalRangeHost(crop_opt=(0.2, 0.8))
+    _OptionalRangeHost(crop=(0.2, 0.8))
+    with pytest.raises(ValidationError):
+        _OptionalRangeHost(crop_opt=(0.2, 1.8))
+    schema = to_pydantic(_OptionalRangeHost).model_json_schema()
+    crop_opt = schema["properties"]["crop_opt"]
+    arms = crop_opt.get("anyOf", [crop_opt])
+    array = next(a for a in arms if a.get("type") == "array")
+    assert array["prefixItems"][0]["maximum"] == 1.0
+
+
+def test_a_plain_leaf_class_keeps_its_isinstance_check_and_json_schemas() -> None:
+    """N10 — any plain class (or `logging.Logger`) made `model_json_schema()` raise
+    `PydanticInvalidForJsonSchema`; the documented coercion was a torch/numpy allow-list."""
+    from confluid import reset_policy
+
+    reset_policy()  # another test may have left the policy in warn/off
+    schema = to_pydantic(_PlainLeafHost).model_json_schema()
+    assert set(schema["properties"]) == {"backbone", "log"}
+    with pytest.raises(ValidationError):
+        _PlainLeafHost(backbone=3)  # type: ignore[arg-type]  # the isinstance check is KEPT — only the schema is opaque
+    _PlainLeafHost(backbone=_Backbone())
+
+
+def test_a_bare_collections_abc_callable_param_json_schemas() -> None:
+    """N11 — `typing.Callable` was coerced, the PEP 585 spelling was not."""
+    assert "fn" in to_pydantic(_BareCallableHost).model_json_schema()["properties"]
+
+
+def test_a_marker_default_reaches_the_schema_in_plain_format_without_a_warning() -> None:
+    """N15 (BUGS-2026-08-19) — the canonical deferred-slot spelling warned on
+    every model_json_schema() and the default vanished; it is published as the
+    plain-format form now, silently."""
+    import warnings as _warnings
+
+    from confluid import Target
+
+    @configurable
+    class AdamN15:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    @configurable
+    class TrainerN15:
+        def __init__(self, optimizer: Partial[AdamN15] = Target(AdamN15, lr=1e-3)) -> None:
+            self.optimizer = optimizer
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        schema = to_pydantic(TrainerN15).model_json_schema()
+    assert schema["properties"]["optimizer"]["default"] == {"_target_": "AdamN15", "lr": 0.001}
+    assert not [w for w in caught if "not JSON serializable" in str(w.message)]
+
+
+def test_a_marker_default_with_non_json_kwargs_is_excluded_silently() -> None:
+    """N15 con — a default the plain form cannot say truthfully is excluded
+    without a warning, never published as a lie."""
+    import warnings as _warnings
+
+    from confluid import Target
+
+    @configurable
+    class SinkN15:
+        def __init__(self, where: object = None) -> None:
+            self.where = where
+
+    opaque = object()
+
+    @configurable
+    class HostN15:
+        def __init__(self, sink: Partial[SinkN15] = Target(SinkN15, where=opaque)) -> None:
+            self.sink = sink
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        schema = to_pydantic(HostN15).model_json_schema()
+    assert "default" not in schema["properties"]["sink"]
+    assert not [w for w in caught if "not JSON serializable" in str(w.message)]

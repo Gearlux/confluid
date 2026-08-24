@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from confluid import configurable, get_registry
+from confluid import ConfigurationError, configurable, get_registry
 from confluid.resolver import Resolver
 
 
@@ -28,54 +28,21 @@ def test_resolve_env_var_default() -> None:
     assert resolver.resolve("${MISSING_VAR:default_val}") == "default_val"
 
 
-def test_resolve_string_reference() -> None:
-    """Verify that !ref: strings are resolved against the context."""
-    resolver = Resolver(context={"base_lr": 0.001})
-    assert resolver.resolve("!ref:base_lr") == 0.001
-
-
-def test_resolve_string_instantiation_marker() -> None:
-    """Verify that !class: strings are resolved into eager Instance Fluids."""
-    from confluid.fluid import Instance
-
-    resolver = Resolver()
-    marker = resolver.resolve("!class:Model(layers=10)")
-    assert isinstance(marker, Instance)
-    assert marker.target == "Model"
-    assert marker.kwargs["layers"] == 10
-
-
-def test_recursive_string_instantiation_marker() -> None:
-    """Verify nested !class: and !ref: strings produce nested Instance Fluids."""
-    from confluid.fluid import Instance
-
-    resolver = Resolver(context={"global_lr": 0.5})
-    marker = resolver.resolve("!class:Trainer(model=!class:Model(layers=5), lr=!ref:global_lr)")
-
-    assert isinstance(marker, Instance)
-    assert marker.target == "Trainer"
-    assert marker.kwargs["lr"] == 0.5
-    assert isinstance(marker.kwargs["model"], Instance)
-    assert marker.kwargs["model"].target == "Model"
-    assert marker.kwargs["model"].kwargs["layers"] == 5
-
-
-def test_resolve_empty_instantiation_marker() -> None:
-    from confluid.fluid import Instance
-
-    resolver = Resolver()
-    marker = resolver.resolve("!class:Model()")
-    assert isinstance(marker, Instance)
-    assert marker.target == "Model"
-
-
 def test_resolve_dict_and_list_strings() -> None:
-    resolver = Resolver(context={"val": 42})
-    data = {"a": "!ref:val", "b": ["!ref:val", "${HOME}"]}
+    resolver = Resolver(context={"c": {"val": 42}})
+    data = {"a": "${c.val}", "b": ["${c.val}", "${HOME}"]}  # a dotted name is a config key; a bare one an env var
     resolved = resolver.resolve(data)
     assert resolved["a"] == 42
     assert resolved["b"][0] == 42
     assert os.environ["HOME"] in resolved["b"][1]
+
+
+def test_a_marker_written_as_a_string_is_refused_at_every_depth() -> None:
+    """A marker is a tag or a reserved-key mapping; text that starts with a marker prefix is refused."""
+    resolver = Resolver(context={"val": 42})
+    for data in ("!ref:val", {"a": "!class:Model(layers=10)"}, {"b": ["!partial:Model"]}):
+        with pytest.raises(ConfigurationError, match="quoted STRING"):
+            resolver.resolve(data)
 
 
 # --- ${key.path} config-key string interpolation ---------------------------
@@ -139,3 +106,206 @@ def test_interpolate_non_scalar_target_left_literal() -> None:
     """Embedding a dict/list config value is a no-op (stays literal)."""
     resolver = Resolver(context={"cfg": {"nested": {"x": 1}}})
     assert resolver.resolve("prefix-${cfg.nested}") == "prefix-${cfg.nested}"
+
+
+# --- bare $VAR environment expansion ---------------------------------------
+
+
+def test_bare_env_var_expands_embedded_in_a_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``$DATA_ROOT/sub`` expands like ``os.path.expandvars`` — one spelling, every entry path."""
+    monkeypatch.setenv("DATA_ROOT", "/data")
+    assert Resolver().resolve("$DATA_ROOT/sub") == "/data/sub"
+
+
+def test_bare_env_var_unset_stays_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset variable leaves the ``$name`` text in place, mirroring ``os.path.expandvars``."""
+    monkeypatch.delenv("CONFLUID_TEST_UNSET_VAR", raising=False)
+    assert Resolver().resolve("$CONFLUID_TEST_UNSET_VAR/sub") == "$CONFLUID_TEST_UNSET_VAR/sub"
+
+
+def test_bare_env_pass_expands_in_any_ordinary_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bare-``$`` pass has no exemptions: an ordinary value starting with ``!`` expands too
+    (a tag TARGET's ``@axis=$key`` selector lives on the marker, never in a string value)."""
+    monkeypatch.setenv("FRAMEWORK", "/env-value")
+    assert Resolver(context={}).resolve("!important $FRAMEWORK") == "!important /env-value"
+
+
+def test_braced_default_behavior_unchanged_by_bare_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${VAR:default}`` keeps its meaning, and an unresolved ``${...}`` literal survives."""
+    monkeypatch.delenv("CONFLUID_TEST_UNSET_VAR", raising=False)
+    resolver = Resolver()
+    assert resolver.resolve("${CONFLUID_TEST_UNSET_VAR:fallback}") == "fallback"
+    # The bare regex cannot match ``${`` (the ``{`` sits outside its identifier
+    # class), so the braced literal a ${...} miss leaves behind stays untouched.
+    assert resolver.resolve("${CONFLUID_TEST_UNSET_VAR}/x") == "${CONFLUID_TEST_UNSET_VAR}/x"
+
+
+def test_bare_env_var_expands_in_marker_kwargs_walk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A marker kwargs mapping value ``"$DATA_ROOT/x"`` expands in place — and burns in."""
+    from confluid.fluid import Target
+
+    monkeypatch.setenv("DATA_ROOT", "/data")
+    marker = Target("Whatever")
+    marker.kwargs["path"] = "$DATA_ROOT/x"
+    out = Resolver(context={}).resolve(marker)
+    assert out is marker  # identity preserved — the flow memo keys on id()
+    assert marker.kwargs["path"] == "/data/x"
+
+
+def test_resolver_interpolates_marker_kwargs_in_place_and_keeps_references_late_bound(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """The kwargs walk substitutes text IN PLACE (identity kept) and touches nothing deferred."""
+    import pytest  # noqa: F401  (annotation only)
+
+    from confluid.fluid import Reference, Target
+    from confluid.resolver import Resolver
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    marker = Target("Whatever")
+    marker.kwargs.update(
+        path="${CONFLUID_TEST_ROOT}/x",
+        ref=Reference("elsewhere"),
+        plain="not ${CONFLUID_TEST_ROOT} a marker",  # ordinary text still substitutes
+    )
+    out = Resolver(context={}).resolve(marker)
+    assert out is marker  # identity preserved — the flow memo keys on id()
+    assert marker.kwargs["path"] == "/store/x"
+    assert isinstance(marker.kwargs["ref"], Reference)  # late-bound, untouched
+    assert marker.kwargs["plain"] == "not /store a marker"
+    # Idempotent: a second pass changes nothing.
+    Resolver(context={}).resolve(marker)
+    assert marker.kwargs["path"] == "/store/x"
+
+
+def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
+    """A marker whose kwargs reach itself is walked once, not forever."""
+    from confluid.fluid import Target
+    from confluid.resolver import Resolver
+
+    a = Target("A")
+    b = Target("B")
+    a.kwargs["child"] = b
+    b.kwargs["parent"] = a  # cycle
+    assert Resolver(context={}).resolve(a) is a
+
+
+# --------------------------------------------------------------------------- found-null and int-keyed paths
+
+
+def test_a_placeholder_to_a_NULL_value_resolves_to_none() -> None:
+    """SR6 (BUGS-2026-08-19) — the walker said None for FOUND-null and for a miss
+    alike, so `${a.b}` to a legal null stayed the literal text."""
+    from confluid import load
+
+    assert load("a: {b: null}\nuse: ${a.b}\n", until="document")["use"] is None
+
+
+def test_int_keyed_tables_are_addressable_by_every_path_spelling() -> None:
+    """SR7 — the literal-int segment stepped lists only; the same dict step the
+    `idxref` branch always had covers `{1: DJI}` and `{'1': DJI}` alike."""
+    from confluid import load
+
+    doc = load("class_names: {1: DJI, 2: MAVIC}\nuse: ${class_names.1}\nuse2: ${class_names[2]}\n", until="document")
+    assert doc["use"] == "DJI"
+    assert doc["use2"] == "MAVIC"
+    assert load("names: {'1': DJI}\nuse: ${names.1}\n", until="document")["use"] == "DJI"
+    assert load("items: [a, b]\nuse: ${items.1}\n", until="document")["use"] == "b", "list indexing unchanged"
+
+
+# --------------------------------------------------------------------------- interpolation family (PA6/PA7 + P8/P9)
+
+
+def test_whole_string_container_hit_is_resolved_not_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA6 (BUGS-2026-08-19) — `${a.b}` naming a container returned the RAW subtree,
+    unresolved placeholders and all; a config-path container hit now resolves."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    resolver = Resolver(context={"a": {"b": {"path": "${CONFLUID_TEST_ROOT}/x"}}})
+    assert resolver.resolve("${a.b}") == {"path": "/store/x"}
+
+
+def test_circular_container_placeholder_is_refused() -> None:
+    """PA6 guard — a container reached through the placeholder currently resolving
+    it is a cycle: refused, never silently emitted raw (it used to self-nest once)."""
+    context = {"a": {"b": {"x": "${a.b}"}}}
+    with pytest.raises(ConfigurationError, match="circular"):
+        Resolver(context=context).resolve("${a.b}")
+
+
+def test_two_placeholders_naming_one_container_both_resolve() -> None:
+    """PA6 guard hygiene — the guard releases the container after each hit, so a
+    second placeholder naming the same subtree is not a false cycle."""
+    resolver = Resolver(context={"a": {"b": {"v": 1}}})
+    out = resolver.resolve({"c": "${a.b}", "d": "${a.b}"})
+    assert out["c"] == {"v": 1} and out["d"] == {"v": 1}
+
+
+def test_empty_env_var_is_the_empty_string_in_every_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA7 — a SET-but-empty variable read as unset: `${EMPTY}` -> None, `${EMPTY}/x`
+    and `${env:EMPTY}/x` stayed literal; only bare `$EMPTY/x` already worked."""
+    monkeypatch.setenv("CONFLUID_TEST_EMPTY", "")
+    resolver = Resolver()
+    assert resolver.resolve("${CONFLUID_TEST_EMPTY}") == ""
+    assert resolver.resolve("${CONFLUID_TEST_EMPTY}/x") == "/x"
+    assert resolver.resolve("${env:CONFLUID_TEST_EMPTY}/x") == "/x"
+    assert resolver.resolve("$CONFLUID_TEST_EMPTY/x") == "/x"
+
+
+def test_substituted_values_are_never_rescanned_for_bare_dollar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P8 (BUGS-2026-08-13) — the embedded branch fed substituted VALUES back through
+    the bare-`$` pass, expanding a `$HOME` inside an env value (injection channel)."""
+    monkeypatch.setenv("CONFLUID_TEST_PW", "pa$HOME")
+    resolver = Resolver()
+    assert resolver.resolve("${env:CONFLUID_TEST_PW}/x") == "pa$HOME/x"
+    assert resolver.resolve("${env:CONFLUID_TEST_PW}") == "pa$HOME"
+
+
+def test_author_written_bare_dollar_still_expands_beside_a_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P8 con — only SUBSTITUTED text is exempt; a `$OTHER` the author wrote expands."""
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    monkeypatch.setenv("CONFLUID_TEST_OTHER", "zz")
+    assert Resolver().resolve("${env:CONFLUID_TEST_ROOT}/$CONFLUID_TEST_OTHER") == "/store/zz"
+
+
+def test_marker_kwargs_interpolate_once_per_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P9 (BUGS-2026-08-13) — a marker aliased at two slots was walked twice, and the
+    second walk expanded placeholder-shaped text the FIRST walk substituted."""
+    from confluid.fluid import Target
+
+    monkeypatch.setenv("CONFLUID_TEST_INDIRECT", "${env:CONFLUID_TEST_SECRET}")
+    monkeypatch.setenv("CONFLUID_TEST_SECRET", "hunter2")
+    marker = Target("Whatever")
+    marker.kwargs["path"] = "${env:CONFLUID_TEST_INDIRECT}x"
+    Resolver(context={}).resolve({"proto": marker, "other": marker})
+    assert marker.kwargs["path"] == "${env:CONFLUID_TEST_SECRET}x"
+
+
+def test_double_dollar_is_left_alone_by_interpolation_and_collapses_in_the_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CD10 + PA14 (BUGS-2026-08-22) — `$$` is a literal `$` in the FINAL objects. Pass 6
+    never expands across it and never rewrites it (so the document stage is idempotent);
+    the collapse happens once, where the document becomes objects."""
+    from confluid import load
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    resolver = Resolver(context={"a": {"b": 7}})
+    assert resolver.resolve("$$CONFLUID_TEST_ROOT/x") == "$$CONFLUID_TEST_ROOT/x"  # opaque here
+    assert resolver.resolve("$${a.b}") == "$${a.b}"
+    assert resolver.resolve("${a.b} costs $$5") == "7 costs $$5"  # live spellings still fire beside it
+    assert load("v: $$CONFLUID_TEST_ROOT/x\nw: $$5\nq: $${a.b}\n")["v"] == "$CONFLUID_TEST_ROOT/x"
+    assert load("v: $$5\n")["v"] == "$5"
+    assert load("a: {b: 7}\nq: $${a.b}\n")["q"] == "${a.b}"
+
+
+def test_a_placeholder_walking_into_a_marker_is_refused_like_the_ref_spelling() -> None:
+    """PA23 (BUGS-2026-08-19) — `${model.hidden}` stayed the literal text while
+    `!ref:model.hidden` was refused; one grammar, one answer. A `:default` is an
+    authored fallback and still applies; a plain miss still stays literal."""
+    from confluid import load
+
+    doc = "model: {_target_: collections.Counter, hidden: 3}\n"
+    with pytest.raises(ConfigurationError, match=r"reads into the marker at `model`"):
+        load(doc + "x: ${model.hidden}\n", until="document")
+    assert load(doc + "x: ${model.hidden:7}\n", until="document")["x"] == 7
+    assert load("cfg: {a: 1}\nx: ${cfg.nothere}\n", until="document")["x"] == "${cfg.nothere}"
