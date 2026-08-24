@@ -43,7 +43,7 @@ mlruns/
 flake8.txt
 mypy.txt
 coverage.xml
-test-report.xml
+*test-report.xml
 coverage/
 
 # Generated quality-gate artifacts (CI writes these; never commit)
