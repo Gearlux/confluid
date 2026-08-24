@@ -66,10 +66,9 @@ jobs:
             def __init__(self, value: int = 1):
                 self.value = value
 
-        f = confluid.Instance("SmokeCfg")
-        f.kwargs.update({"value": 42})
-        obj = confluid.materialize(f, context={})
+        obj = confluid.load("smoke: !class:SmokeCfg {value: 42}")["smoke"]
         assert obj.value == 42
+        assert confluid.load(confluid.dump(obj)).value == 42
         print("wheel smoke-test OK, version:", version("confluid"))
         EOF
     - uses: actions/upload-artifact@v4
