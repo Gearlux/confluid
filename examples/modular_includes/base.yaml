@@ -2,6 +2,9 @@
 project_name: "MyResearch"
 base_lr: 0.001
 
+# A bare key: it broadcasts to every node that accepts `dropout`...
+dropout: 0.9
+# ...and an addressed block, written later, overrides it for Model only.
 Model:
   layers: 3
   dropout: 0.1

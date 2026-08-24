@@ -13,12 +13,14 @@ import pytest
 
 from confluid import (
     NoBroadcast,
+    accepts_any_key,
     accepts_broadcast,
     accepts_key,
     configurable,
     configure,
     load,
     no_broadcast_param_names,
+    register,
 )
 
 # No per-file registry clear: the module-level @configurable classes below must
@@ -90,7 +92,7 @@ obj: !class:OptedOut()
 
 def test_nested_class_stub_broadcast_honors_marker() -> None:
     @configurable
-    class Holder:
+    class NoBroadcastHolder:
         def __init__(self, child: Any = None):
             self.child = child
 
@@ -98,12 +100,12 @@ def test_nested_class_stub_broadcast_honors_marker() -> None:
         """
 name: stray
 strength: 3.0
-holder: !class:Holder()
+holder: !class:NoBroadcastHolder()
   child: !class:MarkedParam
 """
     )
     child = doc["holder"].child
-    # The deferred Class stub received broadcasting during the holder's flow.
+    # The deferred Target stub received broadcasting during the holder's flow.
     from confluid import flow
 
     built = flow(child) if not isinstance(child, MarkedParam) else child
@@ -126,7 +128,7 @@ def test_configure_respects_marker_and_class_flag() -> None:
 
 
 def test_no_broadcast_alias_has_no_fluid_arm() -> None:
-    """Deliberate asymmetry with Lazy/Mandatory: NoBroadcast is a routing gate for
+    """Deliberate asymmetry with Partial/Mandatory: NoBroadcast is a routing gate for
     generically-named SCALAR knobs, so its alias stays ``Annotated[T, marker]`` —
     no ``Union[..., Fluid]`` arm (which would misdescribe a plain scalar)."""
     from typing import get_args
@@ -158,11 +160,11 @@ def test_to_pydantic_strips_marker_but_keeps_field() -> None:
 
 def test_round_trip_of_marked_class() -> None:
     from confluid import dump, flow
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
-    marker = Instance("MarkedParam")
+    marker = Target("MarkedParam")
     marker.kwargs.update({"name": "kept", "strength": 4.0})
-    reloaded = load(dump(flow(marker)), flow=False)
+    reloaded = load(dump(flow(marker)), until="document")
     rebuilt = flow(reloaded)
     assert rebuilt.name == "kept" and rebuilt.strength == 4.0
 
@@ -170,7 +172,7 @@ def test_round_trip_of_marked_class() -> None:
 def test_broadcast_trace_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     """A bare broadcast emits the trace diagnostic (patched logger — loggair
     is not caplog-capturable)."""
-    import confluid.engine as engine_module
+    import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 
     traces: list[str] = []
     monkeypatch.setattr(
@@ -223,6 +225,40 @@ def test_accepts_key_is_true_for_kwargs_constructor() -> None:
     assert accepts_broadcast(_PredicateKwargs, "whatever")
 
 
+def test_accepts_any_key_separates_declaring_from_being_unable_to_refuse() -> None:
+    """The distinction the other two predicates cannot express.
+
+    Both return True for EVERY key on a `**kwargs` target, so a caller asking
+    "may this land?" gets the same yes whether the class declared the key or
+    merely has no way to say no. An external front-end deciding whether a key was
+    ADDRESSED here needs the difference — see docs/broadcasting.md.
+    """
+    assert accepts_key(_PredicateKwargs, "run_name")  # cannot refuse it ...
+    assert accepts_any_key(_PredicateKwargs)  # ... precisely because it has no accept-list
+
+    assert not accepts_key(_PredicateBodySlot, "run_name")  # nothing to set
+    assert not accepts_any_key(_PredicateBodySlot)  # it has an accept-list
+
+
+def test_accepts_any_key_normalizes_like_its_siblings() -> None:
+    """Same target normalization, and an unresolvable target accepts NOTHING."""
+    assert accepts_any_key(_PredicateKwargs())  # a live instance
+    assert not accepts_any_key("no.such.ClassAnywhere")
+    assert not accepts_any_key(None)
+
+
+def test_accepts_any_key_matches_what_the_constructor_actually_receives() -> None:
+    """Drift pin: the predicate answers the question the engine acts on.
+
+    A bare key reaches a declaring class's CONSTRUCTOR and a `**kwargs` class's
+    ATTRIBUTES, which is exactly the split `accepts_any_key` reports.
+    """
+    doc = load("a: 42\nslot: !class:_PredicateBodySlot()\nkw: !class:_PredicateKwargs()\n")
+    assert doc["slot"].a == 42  # declared -> a constructor argument
+    assert doc["kw"].kw == {}  # no accept-list -> NOT a constructor argument ...
+    assert doc["kw"].a == 42  # ... a post-init attribute instead
+
+
 def test_accepts_key_normalizes_class_instance_and_dotted_name() -> None:
     assert accepts_key(MarkedParam, "strength")
     assert accepts_key(MarkedParam(), "strength")  # a live instance
@@ -249,3 +285,113 @@ def test_accepts_broadcast_matches_what_materialization_actually_does() -> None:
     assert doc["opted"].size == 1  # accepts_broadcast(OptedOut, "size") is False
     assert doc["marked"].name == "default"  # accepts_broadcast(MarkedParam, "name") is False
     assert doc["marked"].strength == 2.0  # accepts_broadcast(MarkedParam, "strength") is True
+
+
+# --- register() carries the same accept-list controls as @configurable ------ #
+
+
+def test_register_can_opt_a_third_party_class_out_of_broadcasting() -> None:
+    """`register(cls, broadcast=False)` must work, because you cannot decorate a class you don't own.
+
+    The accept-list controls existed only on `@configurable`, so a class you own
+    could be shielded from cascade keys and a third-party one could not — exactly
+    backwards. A library constructor taking `**kwargs` has NO accept-list, so
+    confluid errs permissive and every bare key in the document reaches it; its
+    author never chose that, having never seen confluid. `register` is the only
+    place the person wiring it up can say otherwise.
+    """
+
+    class ThirdParty:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    register(ThirdParty, name="ThirdPartyPinned", broadcast=False)
+
+    assert accepts_key(ThirdParty, "lr"), "an addressed block must still reach it"
+    assert not accepts_broadcast(ThirdParty, "lr"), "a bare key must not cascade in"
+
+
+def test_register_can_declare_body_slots_for_a_third_party_class() -> None:
+    """`register(cls, broadcast_attrs=[...])` — the frozen-deployment escape hatch.
+
+    Body slots are found by AST-scanning `__init__` SOURCE, which is absent in
+    compiled / frozen / zip deployments. The declaration is the documented fix and
+    was reachable only through the decorator, so a class you don't own had no fix
+    at all. Declared names UNION with the scan, so this can never lose one.
+    """
+
+    class ThirdPartyBody:
+        def __init__(self) -> None:
+            self.scanned = 1
+
+    register(ThirdPartyBody, name="ThirdPartyBodyPinned", broadcast_attrs=["declared_only"])
+
+    assert accepts_key(ThirdPartyBody, "declared_only"), "the declaration reached the accept-list"
+    assert accepts_key(ThirdPartyBody, "scanned"), "and did NOT replace what the scan found"
+
+
+def test_no_broadcast_cache_is_per_class_never_inherited() -> None:
+    """A subclass overriding ``__init__`` without the marker must not inherit the block.
+
+    The cache was read with ``getattr`` (an MRO walk), so after the parent was
+    queried a bare key was silently blocked on every subclass — including one
+    whose own constructor never declared ``NoBroadcast``. Own-``__dict__`` read
+    now; a subclass that INHERITS the parent's constructor still computes the
+    parent's markers, which is the semantically correct answer.
+    """
+    from confluid import NoBroadcast, no_broadcast_param_names
+
+    class _Base:
+        def __init__(self, n: NoBroadcast[int] = 0) -> None: ...
+
+    class _Sub(_Base):
+        def __init__(self, n: int = 0) -> None: ...
+
+    class _Inherits(_Base):
+        pass
+
+    assert no_broadcast_param_names(_Base) == frozenset({"n"})  # parent primed FIRST
+    assert no_broadcast_param_names(_Sub) == frozenset()
+    assert no_broadcast_param_names(_Inherits) == frozenset({"n"})
+
+
+def test_declares_key_ignores_the_kwargs_catchall() -> None:
+    """The question between accepts_key and accepts_any_key — named surface only.
+
+    A ``**kwargs`` target cannot REFUSE any key (`accepts_key` says yes to
+    everything), but a library forwarding its catchall somewhere strict rejects
+    undeclared names far from the config. `declares_key` answers what the
+    target NAMES; a consumer sizing torchmetrics re-derived exactly this.
+    """
+    from confluid import accepts_key, declares_key
+
+    class Forwarding:
+        def __init__(self, top_k: int = 1, **kwargs: object) -> None:
+            self.top_k = top_k
+
+    assert accepts_key(Forwarding, "banana")  # cannot refuse ...
+    assert declares_key(Forwarding, "top_k")  # ... but declares only what it names
+    assert not declares_key(Forwarding, "banana")
+
+
+def test_declares_key_agrees_with_accepts_key_without_a_catchall() -> None:
+    from confluid import accepts_key, declares_key
+
+    class Plain:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    for key in ("lr", "typo"):
+        assert declares_key(Plain, key) == accepts_key(Plain, key)
+
+
+def test_declares_key_sees_body_slots_and_refuses_unresolvable_targets() -> None:
+    from confluid import configurable, declares_key
+
+    @configurable
+    class WithSlot:
+        def __init__(self, **kw: object) -> None:
+            self.optimizer = None
+
+    assert declares_key(WithSlot, "optimizer")  # an __init__-body slot is declared surface
+    assert not declares_key("not.importable.Anywhere", "lr")  # unresolvable declares nothing

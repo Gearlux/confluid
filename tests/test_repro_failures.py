@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 
 import confluid
-from confluid import Instance, configurable, load, materialize
+from confluid import Target, configurable, load
 
 
 @pytest.fixture(autouse=True)
@@ -32,19 +32,19 @@ def test_repro_dotted_override_into_tagged_class() -> None:
     Mirrors: DatasetProcessor.stream.source.count
     """
     config = {
-        "MockProcessor": {"stream": "!class:MockStream(source=!class:MockSource(count=10))"},
+        "MockProcessor": {"stream": Target("MockStream", source=Target("MockSource", count=10))},
         "MockProcessor.stream.source.count": 5,  # Dotted override
     }
 
     # 1. Load config (simulating Liquify bootstrap)
-    resolved = load(config, flow=False)
+    resolved = load(config, until="document")
 
     # 2. Materialize the processor
-    # We pass the block associated with the class name as an Instance marker
+    # We pass the block associated with the class name as an Target marker
     processor_block = resolved.get("MockProcessor")
-    marker = Instance("MockProcessor")
+    marker = Target("MockProcessor")
     marker.kwargs.update(processor_block if isinstance(processor_block, dict) else {})
-    instance = materialize(marker)
+    instance = load(marker)
 
     assert instance.stream.source.count == 5
 

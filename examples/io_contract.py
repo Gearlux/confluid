@@ -7,7 +7,7 @@ defaulted-for-zero-arg-construction input as genuinely required with ``Mandatory
 
 from typing import Any, Optional
 
-from confluid import Class, Lazy, Mandatory, configurable, flow, input_specs, output, output_specs
+from confluid import Mandatory, Partial, Target, configurable, flow, input_specs, output, output_specs
 
 
 class Model:
@@ -26,12 +26,12 @@ class Optimizer:
 class Trainer:
     # The canonical spellings — subscript the INTERFACE the slot flows into:
     #   model:     Mandatory[nn.Module]            (required dependency slot)
-    #   optimizer: Mandatory[Lazy[torch.optim.Optimizer]]  (required AND deferred)
-    # Both aliases union a Fluid arm, so the deferred Class(...) defaults type-check.
+    #   optimizer: Mandatory[Partial[torch.optim.Optimizer]]  (required AND deferred)
+    # Both aliases union a Fluid arm, so the deferred Target(...) defaults type-check.
     def __init__(
         self,
-        model: Mandatory[Model] = Class(Model),
-        optimizer: Mandatory[Lazy[Optimizer]] = Class(Optimizer, lr=1e-3),
+        model: Mandatory[Model] = Target(Model),
+        optimizer: Mandatory[Partial[Optimizer]] = Target(Optimizer, lr=1e-3),
         num_classes: Optional[int] = None,
     ) -> None:
         """A minimal Runnable.
@@ -62,7 +62,7 @@ def main() -> None:
 
     assert [o["name"] for o in outputs] == ["trained_model"]
     assert inputs["model"]["required"] is True, "Mandatory[T] restores required-ness despite the default"
-    assert inputs["optimizer"]["required"] is True, "Mandatory[Lazy[T]]: required AND deferred"
+    assert inputs["optimizer"]["required"] is True, "Mandatory[Partial[T]]: required AND deferred"
     assert inputs["num_classes"]["required"] is False and inputs["num_classes"]["nullable"] is True
 
     print("outputs:")

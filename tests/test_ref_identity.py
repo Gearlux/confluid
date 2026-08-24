@@ -1,15 +1,15 @@
 """Tests for ``!ref:`` identity semantics.
 
 A ``!ref:target`` must resolve to the **same live object** as ``target``
-itself — it is a late-bound alias, not a copy. Use ``!clone:target`` when
-independent copies are wanted.
+itself — it is a late-bound alias, not a copy (Clone is removed; write the
+marker again when an independent copy is wanted).
 """
 
 from typing import Any
 
 import pytest
 
-from confluid import configurable, get_registry, load
+from confluid import ConfigurationError, configurable, get_registry, load
 
 
 @pytest.fixture(autouse=True)
@@ -128,27 +128,6 @@ widget: !class:Widget()
     assert result["widget"].checkpoint_path == "/tmp/model.ckpt"
 
 
-def test_ref_vs_clone_distinction() -> None:
-    """!ref: shares identity; !clone: creates a deep copy. Both must coexist."""
-
-    @configurable
-    class Widget:
-        def __init__(self, label: str = "w") -> None:
-            self.label = label
-
-    yaml_str = """
-base: !class:Widget()
-  label: base
-aliased: !ref:base
-cloned: !clone:base
-"""
-    result: Any = load(yaml_str)
-
-    assert result["aliased"] is result["base"]
-    assert result["cloned"] is not result["base"]
-    assert result["cloned"].label == result["base"].label
-
-
 def test_ref_does_not_re_instantiate_even_with_many_aliases() -> None:
     """Heavy-handed case: 10 references, 1 instantiation."""
 
@@ -169,14 +148,13 @@ def test_ref_does_not_re_instantiate_even_with_many_aliases() -> None:
         assert result[f"alias{i}"] is result["root"]
 
 
-def test_dotted_attribute_ref_reuses_single_instance() -> None:
-    """``!ref:obj.attr`` must resolve against the SAME materialized ``obj`` as the top-level key.
+def test_a_dotted_attribute_ref_is_refused_not_resolved() -> None:
+    """``!ref:obj.attr`` — the attribute reference — is REMOVED (record 19, phase 2).
 
-    Regression: the dotted-ref used to re-flow the RAW marker (missing the instance memo, which
-    keys on the *resolved* marker), building a SECOND ``obj`` and re-running its constructor — so a
-    splitter referenced via ``.train`` / ``.val`` reloaded its upstream source. ``_resolve_dotted_ref``
-    now maps the raw marker through ``flow_memo`` first, so every attribute-ref shares the one live
-    instance the memo caches (one construction → one load).
+    This test used to pin that ``!ref:loader.head`` / ``.tail`` resolved off ONE shared
+    ``loader`` (a regression where the dotted ref re-flowed the raw marker). The sharing
+    guarantee is now carried by the whole-object ref alone: reference ``!ref:loader`` and read
+    the attribute on the consumer side. The old spelling is refused, located, naming that.
     """
 
     @configurable
@@ -191,32 +169,24 @@ def test_dotted_attribute_ref_reuses_single_instance() -> None:
         def head(self) -> str:
             return f"head-of-{self.size}"
 
-        @property
-        def tail(self) -> str:
-            return f"tail-of-{self.size}"
+    Loader.instantiations = 0
+    with pytest.raises(ConfigurationError) as exc:
+        load("loader: !class:Loader()\n  size: 5\na: !ref:loader.head\n")
+    assert "ATTRIBUTE `head`" in str(exc.value) and "!ref:loader" in str(exc.value)
+    assert Loader.instantiations == 0, "refused before anything is built"
 
-    yaml_str = """
-loader: !class:Loader()
-  size: 5
-a: !ref:loader.head
-b: !ref:loader.tail
-"""
-    result: Any = load(yaml_str)
-
-    assert Loader.instantiations == 1, "dotted-ref re-flowed a duplicate instance (extra load)"
-    assert result["a"] == "head-of-5"
-    assert result["b"] == "tail-of-5"
-    # The attribute-refs resolved off the SAME instance as the top-level key.
-    assert result["a"] == result["loader"].head
+    # The whole-object ref still shares ONE instance across every site.
+    graph = load("loader: !class:Loader()\n  size: 5\na: !ref:loader\nb: !ref:loader\n")
+    assert graph["a"] is graph["b"] is graph["loader"] and Loader.instantiations == 1
 
 
 def test_ref_inside_list_shares_instance() -> None:
-    """!ref: inside a YAML list must resolve to the same Instance marker as the source.
+    """!ref: inside a YAML list must resolve to the same Target marker as the source.
 
-    Note: _deep_flow only materializes Instance markers at the top dict level;
-    markers buried inside plain lists remain as Instance markers. The identity
+    Note: _deep_flow only materializes Target markers at the top dict level;
+    markers buried inside plain lists remain as Target markers. The identity
     invariant we care about (``!ref: == same object``) is tested on the raw
-    markers via ``flow=False``.
+    markers via ``until="document"``.
     """
 
     @configurable
@@ -231,7 +201,7 @@ roster:
   - !ref:node
   - !ref:node
 """
-    result: Any = load(yaml_str, flow=False)
+    result: Any = load(yaml_str, until="document")
 
     assert result["roster"][0] is result["node"]
     assert result["roster"][1] is result["node"]
@@ -249,20 +219,275 @@ aliased: !ref:numbers
 
 
 def test_ref_preserves_identity_without_flow() -> None:
-    """load(..., flow=False) must also preserve Fluid identity for !ref:."""
+    """load(..., until="document") must also preserve Fluid identity for !ref:."""
 
     @configurable
     class Thing:
         def __init__(self) -> None:
             pass
 
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
     yaml_str = """
 thing: !class:Thing()
 alias: !ref:thing
 """
-    result: Any = load(yaml_str, flow=False)
-    # Post-resolver, both should point at the SAME Instance marker
-    assert isinstance(result["thing"], Instance)
+    result: Any = load(yaml_str, until="document")
+    # Post-resolver, both should point at the SAME Target marker
+    assert isinstance(result["thing"], Target)
     assert result["alias"] is result["thing"]
+
+
+def test_sibling_list_items_do_not_share_an_instance_via_recycled_ids() -> None:
+    """Distinct markers in one list must build distinct objects.
+
+    Both engine memos key on ``id(marker)``, which is unique only while the marker
+    is alive. The engine builds short-lived broadcast COPIES, and CPython reuses a
+    freed object's address — so without a keepalive the second list item's copy can
+    land on the first one's address and read as a memo HIT, handing back the wrong
+    instance. Measured before the fix: every stage of a pipeline came back as the
+    first stage.
+    """
+    from typing import List, Optional
+
+    from confluid import configurable, load
+
+    @configurable
+    class _Leaf:
+        def __init__(self, tag: str = "") -> None:
+            self.tag = tag
+
+    @configurable
+    class _Node:
+        def __init__(self, name: str = "", leaf: Optional[_Leaf] = None) -> None:
+            self.name, self.leaf = name, leaf
+
+    @configurable
+    class _Root:
+        def __init__(self, nodes: Optional[List[_Node]] = None) -> None:
+            self.nodes = nodes or []
+
+    root = load(
+        """
+root: !class:_Root()
+  nodes:
+    - !class:_Node()
+      name: a
+      leaf: !class:_Leaf(tag=a)
+    - !class:_Node()
+      name: b
+      leaf: !class:_Leaf(tag=b)
+    - !class:_Node()
+      name: c
+      leaf: !class:_Leaf(tag=c)
+"""
+    )["root"]
+
+    assert [n.name for n in root.nodes] == ["a", "b", "c"]
+    assert [n.leaf.tag for n in root.nodes] == ["a", "b", "c"]
+    assert len({id(n) for n in root.nodes}) == 3
+
+
+# ---------------------------------------------------------------------------
+# Kwargs on a reference TUNE the shared referent (user ruling 2026-08-19, option A —
+# BUGS-2026-08-19 PA10 / BC8 / SR9). They are folded into the referent marker's own
+# kwargs before pass 7 (the same thing `proto.k: 5` does), so they compete at the
+# referent's position like any own kwarg; every spelling lands — the mapping form,
+# the tag with a body, a reference nested in a marker's kwargs, and a dotted path
+# walking through a reference. Before: every one of them vanished, report `unused=[]`.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class _S:
+    def __init__(self, v: int = 1, k: int = 0) -> None:
+        self.v = v
+        self.k = k
+
+
+@configurable
+class _Opt:
+    def __init__(self, lr: float = 0.0) -> None:
+        self.lr = lr
+
+
+@configurable
+class _Trainer:
+    def __init__(self, optimizer: Any = None) -> None:
+        self.optimizer = optimizer
+
+
+def _register_ref_fixtures() -> None:
+    from confluid import register
+
+    for cls in (_S, _Opt, _Trainer):
+        register(cls)
+
+
+def test_the_tag_spelling_keeps_a_reference_body_at_parse() -> None:
+    """`!ref:proto` with a mapping body used to discard the body entirely."""
+    raw = load("proto: !class:_S {v: 1}\nuse: !ref:proto\n  k: 5\n", until="raw")
+    assert raw["use"].kwargs == {"k": 5}
+
+
+@pytest.mark.parametrize(
+    "label, doc",
+    [
+        ("mapping form, top level", "proto: !class:_S {v: 1}\nuse: {_ref_: proto, k: 5}\n"),
+        ("tag + body, top level", "proto: !class:_S {v: 1}\nuse: !ref:proto\n  k: 5\n"),
+        ("${ref:} plus dotted kwarg", "proto: !class:_S {v: 1}\nuse: ${ref:proto}\nuse.k: 5\n"),
+    ],
+)
+def test_reference_kwargs_tune_the_shared_referent(label: str, doc: str) -> None:
+    _register_ref_fixtures()
+    r = load(doc)
+    assert r["use"] is r["proto"], label
+    assert (r["proto"].v, r["proto"].k) == (1, 5), label
+
+
+def test_reference_kwargs_inside_a_markers_kwargs_tune_the_referent() -> None:
+    _register_ref_fixtures()
+    r = load("proto: !class:_S {v: 1}\nhost: !class:_Trainer\n  optimizer: {_ref_: proto, k: 5}\n")
+    assert r["host"].optimizer is r["proto"]
+    assert r["proto"].k == 5
+
+
+def test_a_dotted_path_THROUGH_a_reference_tunes_the_referent() -> None:
+    """`a.optimizer.lr: 9.0` where `a.optimizer` is `!ref:shared` — the dotted walk
+    lands on the Reference's kwargs (pass 6); the fold carries them to `shared`."""
+    _register_ref_fixtures()
+    doc = "shared: !class:_Opt {lr: 1.0}\na: !class:_Trainer\n  optimizer: !ref:shared\na.optimizer.lr: 9.0\n"
+    r = load(doc)
+    assert r["a"].optimizer is r["shared"]
+    assert r["shared"].lr == 9.0
+
+
+def test_two_references_tuning_one_referent_last_writer_wins_and_both_land() -> None:
+    _register_ref_fixtures()
+    r = load("proto: !class:_S\nx: {_ref_: proto, v: 3}\ny: {_ref_: proto, v: 4, k: 7}\n")
+    assert r["x"] is r["y"] is r["proto"]
+    assert (r["proto"].v, r["proto"].k) == (4, 7)
+
+
+def test_folded_reference_kwargs_compete_at_the_REFERENTS_position() -> None:
+    """Not a second precedence rule: the kwargs sit in `proto`'s own kwargs, so a
+    bare key written AFTER `proto` still wins and one written BEFORE still loses —
+    exactly as for `proto.v: 5`."""
+    _register_ref_fixtures()
+    later_bare = load("proto: !class:_S {v: 1}\nuse: {_ref_: proto, v: 5}\nv: 9\n")
+    assert later_bare["proto"].v == 9
+    earlier_bare = load("v: 9\nproto: !class:_S {v: 1}\nuse: {_ref_: proto, v: 5}\n")
+    assert earlier_bare["proto"].v == 5
+
+
+def test_a_reference_without_kwargs_is_unchanged() -> None:
+    _register_ref_fixtures()
+    r = load("proto: !class:_S {v: 1}\nuse: {_ref_: proto}\nb: !ref:proto\n")
+    assert r["use"] is r["proto"] is r["b"]
+    assert (r["proto"].v, r["proto"].k) == (1, 0)
+
+
+def test_kwargs_on_a_reference_to_a_PLAIN_VALUE_are_refused_with_a_location() -> None:
+    """A plain value has no kwargs to tune — the con case; it must not silently drop."""
+    with pytest.raises(ConfigurationError, match=r"lr.*plain value|plain value.*lr") as info:
+        load("lr: 0.1\nuse: {_ref_: lr, k: 5}\n")
+    assert "<unicode string>:2:6" in str(info.value)
+
+
+def test_reference_kwargs_survive_the_document_stage_idempotently() -> None:
+    """`load(load(x, until="document")) == load(x)` — the fold happens once."""
+    _register_ref_fixtures()
+    text = "proto: !class:_S {v: 1}\nuse: {_ref_: proto, k: 5}\n"
+    once = load(text)
+    twice = load(load(text, until="document"))
+    assert (once["proto"].v, once["proto"].k) == (twice["proto"].v, twice["proto"].k) == (1, 5)
+
+
+# ---------------------------------------------------------------------------
+# ENG-3 (BUGS-2026-08-19) — a referenced node that FAILS to construct fails the
+# load; only a genuinely unresolvable reference stays deferred.
+# ---------------------------------------------------------------------------
+
+
+def test_a_referenced_nodes_constructor_failure_propagates() -> None:
+    """`except ValueError` swallowed the referent's own crash (ConfigurationError
+    IS a ValueError) and silently left the Reference in the slot."""
+    from confluid import Target, active_context, flow
+    from confluid.fluid import Reference
+
+    class _BadCtor:
+        def __init__(self, x: int = 0) -> None:
+            raise ValueError("disk is on fire")
+
+    @configurable
+    class _Holder:
+        def __init__(self, child: Any = None) -> None:
+            self.child = child
+
+    with active_context({"a": Target(_BadCtor)}):
+        with pytest.raises(ValueError, match="disk is on fire"):
+            flow(Target(_Holder, child=Reference("a")))
+
+
+def test_a_reference_to_an_UNKNOWN_class_propagates() -> None:
+    from confluid import Target, active_context, flow
+    from confluid.exceptions import UnknownClassError
+    from confluid.fluid import Reference
+
+    @configurable
+    class _Holder2:
+        def __init__(self, child: Any = None) -> None:
+            self.child = child
+
+    with active_context({"a": Target("no.such.module.Cls")}):
+        with pytest.raises(UnknownClassError):
+            flow(Target(_Holder2, child=Reference("a")))
+
+
+def test_a_genuinely_unresolvable_reference_is_still_kept_deferred() -> None:
+    """The con: the narrow catch — a miss stays a Reference for a later flow."""
+    from confluid import Target, active_context, flow
+    from confluid.fluid import Reference
+
+    @configurable
+    class _Holder3:
+        def __init__(self, child: Any = None) -> None:
+            self.child = child
+
+    with active_context({"unrelated": 1}):
+        host = flow(Target(_Holder3, child=Reference("missing_key")))
+    assert isinstance(host.child, Reference)
+
+
+def test_a_dotted_ref_to_a_NULL_value_is_the_value_not_an_attribute_refusal() -> None:
+    """SR6 — `!ref:cfg.x` with `cfg: {x: null}` was refused as "reads the ATTRIBUTE
+    `x` of the object built at `cfg`" — an object that does not exist. A structural
+    walk that FOUND null is a hit."""
+
+    @configurable
+    class _NullHost:
+        def __init__(self, v: Any = 1) -> None:
+            self.v = v
+
+    built = load("cfg: {x: null}\nuse: {_target_: _NullHost, v: {_ref_: cfg.x}}\n")
+    assert built["use"].v is None
+    assert load("cfg: {x: 0}\nuse: {_ref_: cfg.x}\n")["use"] == 0, "falsy-but-present still resolves (con)"
+
+
+def test_a_genuine_attribute_reference_is_still_refused() -> None:
+    """The con for SR6: the refusal fires for a walk that LEAVES structure, not for
+    a structural hit on a null."""
+
+    @configurable
+    class _SplitLike:
+        def __init__(self, v: int = 2) -> None:
+            self.v = v
+
+    with pytest.raises(ConfigurationError, match="reads the ATTRIBUTE"):
+        load("split: {_target_: _SplitLike, v: 2}\nt: {_ref_: split.train}\n")
+
+
+def test_a_dotted_ref_into_an_int_keyed_table_resolves() -> None:
+    """SR7 — `!ref:class_names[1]` on `{1: DJI}` was refused as an attribute ref."""
+    built = load("class_names: {1: DJI, 2: MAVIC}\nuse: {_ref_: 'class_names[1]'}\n")
+    assert built["use"] == "DJI"

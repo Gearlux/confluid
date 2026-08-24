@@ -1,4 +1,4 @@
-# Class Design: Lazy Init & Zero-Arg Construction
+# Class Design: Partial Init & Zero-Arg Construction
 
 The four rules below are the **convention** that unlocks confluid's post-construction machinery —
 `configure()` reconfiguration that never goes stale, cheap structure introspection, and tools that
@@ -9,20 +9,45 @@ first-class — see [Eager Classes](eager-classes.md) for that mode and its trad
 When your objects are configured **after** they are built, design them cheap and side-effect-free
 to construct. Four rules:
 
-1. **Lazy constructor — no functional work.** `__init__` only *stores* values. No I/O, network,
+1. **Partial constructor — no functional work.** `__init__` only *stores* values. No I/O, network,
    file reads, dataset/model materialization, or heavy compute. Real work is deferred to a property
    or method.
-2. **Zero-arg construction works.** `Cls()` must succeed — every parameter is defaulted. A value
-   genuinely required to *run* is still a defaulted parameter, validated **lazily** (where it is
-   used) with a clear error, not in `__init__`.
-3. **Derived state → read-only `@property`, recomputed.** State derived from the configurable
+2. **Zero-arg construction is RECOMMENDED, not required.** The preferred shape is `Cls()`
+   succeeding — every parameter defaulted, a value genuinely required to *run* validated
+   **lazily** (where it is used) with a clear error, not in `__init__`. A class that keeps a
+   genuinely required constructor parameter is fully supported and is NOT a defect (see
+   [Eager classes](eager-classes.md)); prefer the lazy shape for new classes.
+3. **Derived state → read-only `@property`, recomputed.** (`functools.cached_property`
+   counts as the memoized variant of the same rule — equally invisible to the config
+   surface.) State derived from the configurable
    inputs is a read-only property (not a stored attribute), so it never goes stale when the inputs
    change. Read-only properties are invisible to Confluid's config surface — never set by
    `configure`, never `dump`ed, rebuilt after `load()`. Cache (into a private `_field`) **only** an
    expensive external materialization whose inputs are stable by first use.
-4. **Params stay in the constructor**, documented in the `Args:` docstring — so they remain visible
-   to static introspection (`to_pydantic`, `parse_param_docs` — the schema/help surface GUIs and
-   agents read).
+4. **Configurable slots live in the constructor signature OR as `__init__`-body attributes —
+   both are introspected.** The classic form keeps every knob in the signature (defaulted,
+   documented in the `Args:` docstring). A class with *many* deferred dependencies may instead
+   take a **minimal constructor** (only the genuinely required inputs and identity scalars) and
+   assign the rest as body attributes — `self.optimizer = PartialClass(Adam, lr=1e-3)` — reconfigured
+   after construction by YAML, broadcasting, or a subclass. Body slots are not hidden state:
+   the schema surface (`to_pydantic`) enumerates the `__init__` body and surfaces every
+   non-underscore `self.<name> = …` slot **declared by a `@configurable` class in the MRO** as an
+   optional field (a non-`@configurable` framework base's internals never become schema fields),
+   so the schema/help surface GUIs and agents read still enumerates them. Three rules for body slots:
+   - a slot that needs a **runtime-injected** argument (`params=`, `dataset=`) must hold a
+     `PartialClass(...)` value (`_partial_: true` in YAML) — a plain `Target(...)` body value is eagerly built
+     during parent materialization and would crash a target missing its runtime argument;
+   - give the slot a **type annotation** in the body (`self.optimizer: Partial[Optimizer] = …`) so
+     the generated schema can type it (un-annotated slots degrade to `Any`). A **quoted**
+     annotation (`self.optimizer: "Partial[Optimizer]"`) means the same thing, as does one in a
+     module using `from __future__ import annotations`; a name that cannot be resolved at runtime
+     degrades that one slot to `Any` and leaves its siblings alone;
+   - assign a **fresh `PartialClass(...)` per instance** in the body — never a shared mutable default.
+
+   The body scan reads `__init__` *source*, so a compiled/frozen/zip deployment needs the
+   build-time bake step (`confluid-bake <package>`) or an explicit
+   `@configurable(broadcast_attrs=[...])` declaration — see
+   [Extending Discovery](extending-discovery.md) for the packaged-mode details.
 
 ```python
 from typing import Any, Optional
@@ -31,7 +56,7 @@ from confluid import configurable
 @configurable
 class DataSource:
     def __init__(self, path: str = "", split: str = "train") -> None:
-        # Lazy: store config only — no load here. `DataSource()` is valid.
+        # Partial: store config only — no load here. `DataSource()` is valid.
         self.path = path
         self.split = split
         self._data: Optional[Any] = None   # private cache for the expensive materialization

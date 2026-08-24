@@ -9,18 +9,19 @@ same-name guard) or under-broadcasting (dict/list rejection, AST missing
 setattr).
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Annotated, Any, Dict, List, Mapping, Optional, Sequence
 
-from confluid import Instance, configurable, flow, materialize, register
-from confluid.loader import _get_acceptable_keys, _get_param_kinds, _get_post_init_attrs
+from confluid import Target, configurable, flow, load, register
+from confluid.broadcast import _get_acceptable_keys, _get_param_kinds
+from confluid.introspect import body_slot_names
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -80,7 +81,7 @@ def test_dict_value_broadcasts_when_annotated_dict() -> None:
 
     context = {"extras": {"a": 1, "b": 2}}
     data = _inst("WithDictParam")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, WithDictParam)
     assert result.extras == {"a": 1, "b": 2}
@@ -96,7 +97,7 @@ def test_list_value_broadcasts_when_annotated_sequence() -> None:
 
     context = {"callbacks": ["a", "b"]}
     data = _inst("WithListParam")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, WithListParam)
     assert result.callbacks == ["a", "b"]
@@ -120,7 +121,7 @@ def test_dict_value_does_NOT_broadcast_when_param_is_scalar() -> None:
     # (which has no class marker → effectively ignored).
     context = {"name": {"oops": "this is a dict"}}
     data = _inst("WithScalarParam")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, WithScalarParam)
     assert result.name == "default"  # default preserved
@@ -142,7 +143,7 @@ def test_optional_dict_annotation_still_classifies_as_dict() -> None:
 
     context = {"extras": {"k": 9}}
     data = _inst("WithOptionalDict")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
     assert isinstance(result, WithOptionalDict)
     assert result.extras == {"k": 9}
 
@@ -156,6 +157,49 @@ def test_optional_list_annotation_classifies_as_list() -> None:
     register(WithOptionalList)
     kinds = _get_param_kinds(WithOptionalList)
     assert kinds.get("items") == "list"
+
+
+def test_param_kinds_reports_an_annotated_body_slot() -> None:
+    """A dict/list-ANNOTATED body slot classifies like the equivalent ctor param.
+
+    ``_get_param_kinds`` walked the signature alone, so a class declaring
+    ``self.transforms: list[Any] = [...]`` answered ``{}`` — an addressed
+    ``transforms: [...]`` block was then refused as a value on the load path
+    while ``configure()`` applied it (the accept-list and ``slots()`` both
+    carried the slot the whole time).
+    """
+
+    @configurable
+    class TrainAnnotated:
+        def __init__(self) -> None:
+            self.transforms: List[Any] = []
+
+    assert _get_param_kinds(TrainAnnotated).get("transforms") == "list"
+
+
+def test_param_kinds_ignores_an_unannotated_body_slot() -> None:
+    """No annotation ⇒ no classification — the routing/block reading stays."""
+
+    @configurable
+    class TrainBare:
+        def __init__(self) -> None:
+            self.transforms = [1]  # non-empty so mypy infers; still NO AST annotation
+
+    assert _get_param_kinds(TrainBare).get("transforms") is None
+
+
+def test_param_kinds_peels_annotated_metadata() -> None:
+    """``slots()`` resolves hints WITH extras, so the classifier must peel
+    ``Annotated`` — or every range-marked container param (the workspace's
+    ``Annotated[Tuple[float, float], Interval(...)]`` convention) would flip
+    from its container kind to ``None``."""
+
+    @configurable
+    class Marked:
+        def __init__(self, table: Optional[Annotated[Dict[str, int], "unit:count"]] = None) -> None:
+            self.table = table
+
+    assert _get_param_kinds(Marked).get("table") == "dict"
 
 
 # ---------------------------------------------------------------------------
@@ -176,14 +220,14 @@ def test_post_init_ast_scan_detects_literal_setattr() -> None:
             setattr(self, "extra_attr", 42)
 
     register(WithLiteralSetattr)
-    attrs = _get_post_init_attrs(WithLiteralSetattr)
+    attrs = body_slot_names(WithLiteralSetattr)
     assert "extra_attr" in attrs
     assert "base" in attrs  # plain assignment still detected
 
     # And it actually broadcasts:
     context = {"extra_attr": 99}
     data = _inst("WithLiteralSetattr")
-    result = materialize(data, context=context)
+    result = load(data, context=context)
     assert isinstance(result, WithLiteralSetattr)
     assert getattr(result, "extra_attr") == 99
 
@@ -203,7 +247,7 @@ def test_ast_scan_ignores_non_literal_setattr() -> None:
             setattr(self, attr_name, "value")  # not a string-literal arg
 
     register(WithDynamicSetattr)
-    attrs = _get_post_init_attrs(WithDynamicSetattr)
+    attrs = body_slot_names(WithDynamicSetattr)
     assert "placeholder" in attrs
     assert "dynamic" not in attrs
 
@@ -215,21 +259,21 @@ def test_ast_scan_skips_private_literal_setattr() -> None:
             setattr(self, "_hidden", 1)
 
     register(WithPrivateSetattr)
-    attrs = _get_post_init_attrs(WithPrivateSetattr)
+    attrs = body_slot_names(WithPrivateSetattr)
     assert "_hidden" not in attrs
 
 
 # ---------------------------------------------------------------------------
-# Lazy: stays deferred, but receives broadcast kwargs.
+# Partial: stays deferred, but receives broadcast kwargs.
 # ---------------------------------------------------------------------------
 
 
 def test_lazy_stays_deferred_through_materialize() -> None:
-    """A ``LazyClass`` value at the root of a config must NOT be flowed by
+    """A ``PartialClass`` value at the root of a config must NOT be flowed by
     ``materialize`` — domain code is responsible for calling
     ``flow(value, **runtime_kwargs)`` later.
     """
-    from confluid import LazyClass
+    from confluid import PartialClass
 
     class _Adam:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -238,12 +282,12 @@ def test_lazy_stays_deferred_through_materialize() -> None:
 
     register(_Adam)
 
-    lazy = LazyClass(_Adam, lr=0.005)
-    result = materialize(lazy)
+    lazy = PartialClass(_Adam, lr=0.005)
+    result = load(lazy)
     # ``materialize`` may copy the Fluid while running the broadcast pass;
     # the contract is "still deferred", not Python identity. The result
-    # must remain a LazyClass with the original kwargs intact.
-    assert isinstance(result, LazyClass)
+    # must remain a PartialClass with the original kwargs intact.
+    assert isinstance(result, PartialClass)
     assert result.kwargs.get("lr") == 0.005
 
     # Explicit flow with runtime kwargs constructs the target.
@@ -254,7 +298,7 @@ def test_lazy_stays_deferred_through_materialize() -> None:
 
 
 def test_lazy_inside_a_class_attribute_is_left_deferred() -> None:
-    from confluid import LazyClass
+    from confluid import PartialClass
 
     class _Optim:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -269,17 +313,17 @@ def test_lazy_inside_a_class_attribute_is_left_deferred() -> None:
     register(_Optim)
     register(TrainerLike)
 
-    data = _inst("TrainerLike", optimizer=LazyClass(_Optim, lr=0.001))
-    result = materialize(data)
+    data = _inst("TrainerLike", optimizer=PartialClass(_Optim, lr=0.001))
+    result = load(data)
     assert isinstance(result, TrainerLike)
-    assert isinstance(result.optimizer, LazyClass)
+    assert isinstance(result.optimizer, PartialClass)
 
 
 def test_lazy_receives_broadcast_kwargs_like_class() -> None:
     """``!lazy:`` participates in broadcast just like ``!class:`` — the
     deferral only blocks construction, not kwarg merging.
     """
-    from confluid import LazyClass
+    from confluid import PartialClass
 
     class _Adam:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -288,17 +332,17 @@ def test_lazy_receives_broadcast_kwargs_like_class() -> None:
 
     register(_Adam)
 
-    context = {"lr": 0.5, "optimizer": LazyClass(_Adam)}
-    result = materialize(context, context=context)
-    assert isinstance(result["optimizer"], LazyClass)
-    # Broadcast pulled `lr` into the Lazy's kwargs.
+    context = {"lr": 0.5, "optimizer": PartialClass(_Adam)}
+    result = load(context, context=context)
+    assert isinstance(result["optimizer"], PartialClass)
+    # Broadcast pulled `lr` into the Partial's kwargs.
     assert result["optimizer"].kwargs.get("lr") == 0.5
 
 
 def test_lazy_yaml_tag_round_trip() -> None:
-    """``!lazy:Foo(lr=1e-3)`` parses to a ``LazyClass`` and dumps back to
+    """``!lazy:Foo(lr=1e-3)`` parses to a ``PartialClass`` and dumps back to
     ``!lazy:`` (not ``!class:``)."""
-    from confluid import LazyClass, dump, load
+    from confluid import PartialClass, dump, load
 
     class _Adam:
         def __init__(self, params: Any = None, lr: float = 0.01) -> None:
@@ -308,22 +352,22 @@ def test_lazy_yaml_tag_round_trip() -> None:
     register(_Adam)
 
     yaml_text = "optimizer: !lazy:tests.test_broadcast_robustness._Adam\n  lr: 0.001\n"
-    loaded = load(yaml_text, flow=False)
-    assert isinstance(loaded["optimizer"], LazyClass)
+    loaded = load(yaml_text, until="document")
+    assert isinstance(loaded["optimizer"], PartialClass)
     assert loaded["optimizer"].kwargs == {"lr": 0.001}
 
-    # Round-trip through dump → load preserves the Lazy semantics.
+    # Round-trip through dump → load preserves the Partial semantics.
     rendered = dump({"optimizer": loaded["optimizer"]})
-    assert "!lazy:" in rendered
+    assert "_partial_: true" in rendered
     assert "!class:" not in rendered
 
-    reloaded = load(rendered, flow=False)
-    assert isinstance(reloaded["optimizer"], LazyClass)
+    reloaded = load(rendered, until="document")
+    assert isinstance(reloaded["optimizer"], PartialClass)
 
 
 def test_lazy_inline_kwargs_form() -> None:
     """``!lazy:Adam(lr=0.01)`` inline-kwargs form works (mirrors !class:)."""
-    from confluid import LazyClass, load
+    from confluid import PartialClass, load
 
     class _Adam:
         def __init__(self, lr: float = 0.0) -> None:
@@ -331,8 +375,8 @@ def test_lazy_inline_kwargs_form() -> None:
 
     register(_Adam)
     yaml_text = "opt: !lazy:tests.test_broadcast_robustness._Adam(lr=0.001)\n"
-    loaded = load(yaml_text, flow=False)
-    assert isinstance(loaded["opt"], LazyClass)
+    loaded = load(yaml_text, until="document")
+    assert isinstance(loaded["opt"], PartialClass)
     assert loaded["opt"].kwargs == {"lr": 0.001}  # inline scalars are coerced (parse_value)
 
 
@@ -351,7 +395,7 @@ def test_same_target_uses_class_identity_not_name() -> None:
     skipped from broadcasting into a sibling class ``A`` defined in a
     different module.
     """
-    from confluid.loader import _same_target
+    from confluid.broadcast import _same_target
 
     @configurable
     class A:
@@ -365,7 +409,7 @@ def test_same_target_uses_class_identity_not_name() -> None:
     # A is registered under "A"; B's qualified name is still distinct.
     B.__name__ = "A"  # type: ignore[attr-defined]
 
-    # Class objects always compare by identity — even with matching names.
+    # Target objects always compare by identity — even with matching names.
     assert _same_target(B, A) is False
     assert _same_target(A, A) is True
 
@@ -382,3 +426,35 @@ def test_same_target_uses_class_identity_not_name() -> None:
     # ``_same_target("A", A)`` is True — but ``_same_target("A", B)`` is
     # NOT — exactly the cross-skip bug the fix targets.
     assert _same_target("A", B) is False
+
+
+def test_pop_glob_routing_applies_the_one_cascade_gate() -> None:
+    """The direct-flow ``'**'`` receiver application runs the SHARED gates.
+
+    This branch carried an inline copy with strictly weaker gates: a LIST
+    value and a same-target Fluid landed on the receiver here while the
+    materialize path refused both. Now both halves are
+    ``merge_bare_pool_into_kwargs`` — one gate, one answer.
+    """
+    from confluid.broadcast import _pop_glob_routing
+    from confluid.fluid import Target
+
+    @configurable
+    class GlobReceiver:
+        def __init__(self, lr: float = 0.1, stages: object = None, helper: object = None) -> None:
+            self.lr = lr
+            self.stages = stages
+            self.helper = helper
+
+    same_target = Target(GlobReceiver)
+    merged = {
+        "**": {
+            "lr": 0.9,  # scalar at a declared key — lands
+            "stages": [1, 2],  # container — pooled, never applied
+            "helper": same_target,  # same-target Fluid — refused (would loop)
+        }
+    }
+    pool = _pop_glob_routing(merged, GlobReceiver)
+
+    assert merged == {"lr": 0.9}
+    assert pool == {"lr": 0.9, "stages": [1, 2], "helper": same_target}

@@ -1,7 +1,7 @@
 """Round-trip reproducibility with lazy, zero-arg ``@configurable`` classes.
 
-Shows that the lazy-init convention (see confluid ``AGENTS.md`` → "Lazy Initialization &
-Zero-Arg Construction") and full-hierarchy serialization compose cleanly:
+Shows that the lazy-init convention (``docs/class-design.md``) and full-hierarchy
+serialization (``docs/serialization.md``) compose cleanly:
 
   * ``Preprocessor()`` / ``Pipeline()`` are **zero-arg constructible** (every field defaulted);
   * ``Preprocessor.fitted_params`` is **derived state behind a read-only cached property** — it is
@@ -18,7 +18,7 @@ from confluid import configurable, dump, load
 @configurable
 class Preprocessor:
     def __init__(self, mode: str = "standard", scale: float = 1.0) -> None:
-        # Lazy constructor: only stores config (both knobs defaulted → ``Preprocessor()`` works).
+        # Partial constructor: only stores config (both knobs defaulted → ``Preprocessor()`` works).
         self.mode = mode
         self.scale = scale
         self._fitted: Optional[Dict[str, Any]] = None  # lazy derived state — see ``fitted_params``
@@ -85,5 +85,44 @@ def main() -> None:
     print("\n[SUCCESS] Hierarchy reconstructed with 100% fidelity; derived state rebuilt lazily.")
 
 
+class _Series:
+    """A third-party value type — not configurable, no registry entry."""
+
+    def __init__(self, values: list) -> None:
+        self.values = list(values)
+
+
+def _series_from_values(values: list) -> "_Series":
+    """The reload target of the spelling below — an ordinary callable."""
+    return _Series(values)
+
+
+def dump_spellings() -> None:
+    """`register_dump_spelling` — a faithful spelling for a value the dumper cannot respell.
+
+    Without it, an opaque value degrades to a bare `{_target_: X}` placeholder that
+    reloads DEFAULT-constructed. The registered recipe emits an ordinary marker, so
+    the reload needs nothing beyond the load machinery that already exists.
+    """
+    from confluid import Target, register, register_dump_spelling
+
+    @configurable(name="SeriesHost")
+    class SeriesHost:
+        def __init__(self) -> None:
+            self.payload: object = None
+
+    register(_series_from_values, name="SeriesFromValues")
+    register_dump_spelling(_Series, lambda s: Target(_series_from_values, values=s.values))
+
+    host = SeriesHost()
+    host.payload = _Series([0.25, 0.5, 1.0])
+    text = dump(host)
+    assert "SeriesFromValues" in text and "_Series" not in text, "the placeholder is gone"
+    reloaded = load(text)
+    assert isinstance(reloaded.payload, _Series) and reloaded.payload.values == [0.25, 0.5, 1.0]
+    print("[SUCCESS] registered dump spelling: the opaque value round-trips as its VALUES.")
+
+
 if __name__ == "__main__":
     main()
+    dump_spellings()

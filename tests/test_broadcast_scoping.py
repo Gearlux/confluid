@@ -15,7 +15,7 @@ The ONE rule, restated:
 * ``*``/``**``-delivered keys are cascade keys and honour the NoBroadcast
   opt-outs like bare keys; exact addressed keys bypass them like blocks.
 
-Every scenario is pinned through BOTH paths: ``materialize()`` (the engine)
+Every scenario is pinned through BOTH paths: ``load()`` (the engine)
 and ``configure()`` (post-construction, live objects) — the ONE-rule parity
 mandate.
 """
@@ -24,13 +24,13 @@ from typing import Any, List, Optional
 
 import pytest
 
-from confluid import NoBroadcast, configurable, configure, get_registry, load, materialize, resolve
+from confluid import NoBroadcast, configurable, configure, get_registry, load
 from confluid.dumper import dump
-from confluid.fluid import Instance
+from confluid.fluid import Target
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    marker = Instance(target)
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -135,7 +135,7 @@ def test_nested_block_is_exact_configure() -> None:
 def test_own_kwargs_do_not_cascade_materialize() -> None:
     """A marker's own kwargs configure that marker only (same rule as blocks)."""
     config = _inst("_Node", name="root", lr=0.5, child=_inst("_Node", name="mid"))
-    root = materialize(config)
+    root = load(config)
     assert root.lr == 0.5
     assert root.child.lr == 0.0
 
@@ -309,7 +309,7 @@ def test_glob_then_later_exact_exact_wins_configure() -> None:
 
 def test_glob_keys_never_reach_instances_or_dump() -> None:
     config = _inst("_Node", name="root", child=_inst("_Node", name="mid"), **{"**": {"lr": 0.5}})
-    root = materialize(config)
+    root = load(config)
     assert root.lr == 0.5
     assert root.child.lr == 0.5
     assert not hasattr(root, "**")
@@ -321,7 +321,7 @@ def test_glob_keys_never_reach_instances_or_dump() -> None:
 
 def test_resolve_strips_glob_routing_from_marker_kwargs() -> None:
     config = {"root": _inst("_Node", name="root", child=_inst("_Node", name="mid"), **{"**": {"lr": 0.5}})}
-    markers = resolve(config)
+    markers = load(config, until="settled")
     root_marker = markers["root"]
     assert "**" not in root_marker.kwargs
     assert root_marker.kwargs["lr"] == 0.5  # applied to the introducing node
@@ -403,9 +403,9 @@ def test_in_block_dotted_key_merges_with_sibling_block_materialize() -> None:
 
 def test_direct_flow_honours_glob_kwargs() -> None:
     """A hand-built marker flowed OUTSIDE materialize still honours '**' kwargs."""
-    from confluid import Class, flow
+    from confluid import Target, flow
 
-    child_stub = Class("_Node")
+    child_stub = Target("_Node")
     marker = _inst("_Node", name="root", child=child_stub, **{"**": {"lr": 0.5}})
     root = flow(marker)
     assert root.lr == 0.5
@@ -465,9 +465,9 @@ mid:
 
 
 def test_direct_flow_star_kwargs_feed_nested_stubs() -> None:
-    from confluid import Class, flow
+    from confluid import Target, flow
 
-    marker = _inst("_Node", name="root", child=Class("_Node"), **{"*": {"lr": 0.5}})
+    marker = _inst("_Node", name="root", child=Target("_Node"), **{"*": {"lr": 0.5}})
     root = flow(marker)
     assert root.lr == 0.0  # '*' addresses the children, not the receiver
     assert flow(root.child).lr == 0.5
@@ -487,7 +487,7 @@ def test_direct_flow_glob_self_application_guards() -> None:
 
 def test_expand_block_keys_unit() -> None:
     """Unit pins for the in-block dotted-key expansion helper."""
-    from confluid.engine import _expand_block_keys
+    from confluid.broadcast import _expand_block_keys
 
     # No dotted keys — same object back (no-op identity).
     block = {"lr": 1}
@@ -538,7 +538,7 @@ def test_inner_rider_merges_with_outer_rider_configure() -> None:
 
 
 def test_two_matched_blocks_merge_strict_routing_configure() -> None:
-    """Class-name AND instance-name blocks hoisting the same sub-block merge."""
+    """Target-name AND instance-name blocks hoisting the same sub-block merge."""
     root = _tree()
     configure(root, config="_Node:\n  mid:\n    momentum: 0.1\nroot.mid.lr: 0.5")
     mid = root.child
@@ -599,7 +599,7 @@ def test_view_copy_returns_view_with_scopes() -> None:
     """``view.copy()`` must return a ``_View`` carrying the tags — ``dict.copy()``
     on a subclass returns a plain ``dict``, which would silently flatten every
     addressed/glob key to BARE."""
-    from confluid.engine import _KeyScope, _View
+    from confluid.broadcast import _KeyScope, _View
 
     v = _View({"a": 1})
     v.set("b", 2, _KeyScope.EXACT)
@@ -620,7 +620,7 @@ def test_view_update_last_write_wins_on_scopes() -> None:
     """``update()`` takes each key's scope FROM THE SOURCE: a ``_View`` source
     carries its tag over, and an untagged source key CLEARS an existing tag
     (the value was overwritten, so the stale tag must not survive)."""
-    from confluid.engine import _KeyScope, _View
+    from confluid.broadcast import _KeyScope, _View
 
     v = _View()
     v.set("kept", 1, _KeyScope.EXACT)
@@ -641,7 +641,7 @@ def test_view_update_last_write_wins_on_scopes() -> None:
 def test_view_update_from_plain_sources_clears_tags() -> None:
     """A plain-dict / iterable-of-pairs / keyword source is untagged, so the
     updated keys become BARE."""
-    from confluid.engine import _KeyScope, _View
+    from confluid.broadcast import _KeyScope, _View
 
     v = _View()
     v.set("a", 1, _KeyScope.EXACT)
@@ -666,7 +666,7 @@ def test_var_keyword_class_receives_every_bare_key(monkeypatch: pytest.MonkeyPat
     broadcasts in. The permissive path announces itself once at TRACE."""
     from types import SimpleNamespace
 
-    import confluid.engine as engine_module
+    import confluid.broadcast as engine_module  # broadcast owns the accept-list + merge diagnostics
 
     traces: List[str] = []
     real_logger = engine_module.logger
@@ -696,3 +696,272 @@ strength: 0.75
     sink = graph["sink"]
     assert sink.name == "run-42" and sink.strength == 0.75
     assert any("accept-list unknown" in msg and "_CatchAll" in msg for msg in traces)
+
+
+# --------------------------------------------------------------------------- #
+# Log gates — a record no sink can accept must not be BUILT
+# --------------------------------------------------------------------------- #
+
+
+def test_trace_gate_closes_when_no_sink_accepts_trace() -> None:
+    """The gate is computed from loggair's RESOLVED levels, floor across all sinks."""
+    from confluid.broadcast import _compute_trace_gate
+
+    assert not _compute_trace_gate({"configured": True, "file_level": "DEBUG", "console_level": "INFO"})
+    assert _compute_trace_gate({"configured": True, "file_level": "TRACE", "console_level": "INFO"})
+    assert _compute_trace_gate({"configured": True, "file_level": "INFO", "console_level": "TRACE"})
+
+
+def test_trace_gate_is_open_whenever_the_answer_is_unknown() -> None:
+    """Conservative in ONE direction: logging too much costs time, too little costs a diagnostic."""
+    from confluid.broadcast import _compute_trace_gate
+
+    assert _compute_trace_gate({"configured": False})
+    assert _compute_trace_gate({"configured": True})  # no levels at all
+    assert _compute_trace_gate({"configured": True, "file_level": "WAT", "console_level": "INFO"})
+    # A per-module override anywhere at TRACE keeps the gate open.
+    assert _compute_trace_gate(
+        {"configured": True, "file_level": "INFO", "console_level": "INFO", "module_levels": {"confluid": "TRACE"}}
+    )
+
+
+def test_a_swapped_in_logger_is_never_gated() -> None:
+    """Otherwise every log-asserting test becomes a false green."""
+    from types import SimpleNamespace
+
+    import confluid.broadcast as broadcast_module
+
+    collector = SimpleNamespace(trace=lambda msg: None)
+    previous = broadcast_module._trace_on
+    try:
+        broadcast_module._trace_on = False
+        assert broadcast_module.trace_enabled(collector) is True
+        assert broadcast_module.trace_enabled() is False
+    finally:
+        broadcast_module._trace_on = previous
+
+
+def test_same_target_memo_is_per_pass_and_agrees_with_the_uncached_answer() -> None:
+    """The memo is a pure-function cache; a pass boundary drops it."""
+    from confluid import configurable
+    from confluid.broadcast import _resolves_to_same_class, _same_target, _same_target_cache, clear_pass_caches
+
+    @configurable(name="MemoProbe")
+    class MemoProbe:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    clear_pass_caches()
+    assert _same_target("MemoProbe", MemoProbe) == _resolves_to_same_class("MemoProbe", MemoProbe) is True
+    assert _same_target("NotAThing", MemoProbe) == _resolves_to_same_class("NotAThing", MemoProbe) is False
+    assert _same_target_cache  # the second call would have hit the registry again
+
+    clear_pass_caches()
+    assert not _same_target_cache
+
+
+def test_an_instance_name_block_matches_the_ctor_default_name_on_load() -> None:
+    """CD19 (BUGS-2026-08-19) — `m: {layers: 5}` matched on configure() (live attr)
+    but not on load() when `name="m"` is only the ctor DEFAULT: the load path now
+    reads the same default the built instance will carry."""
+
+    @configurable
+    class NamedModel:
+        def __init__(self, layers: int = 3, name: str = "m") -> None:
+            self.layers, self.name = layers, name
+
+    @configurable
+    class Holder:
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    loaded = load("t: !class:Holder\n  model: !class:NamedModel {}\nm: {layers: 5}\n")["t"]
+    assert loaded.model.layers == 5
+
+    live = Holder(model=NamedModel())
+    configure(live, config="m: {layers: 5}\n")
+    assert live.model.layers == 5
+
+
+def test_an_explicit_name_kwarg_opts_out_of_the_default_name_block() -> None:
+    """CD19 con — a marker carrying `name: other` is not `m`; the block misses."""
+
+    @configurable
+    class NamedModel:
+        def __init__(self, layers: int = 3, name: str = "m") -> None:
+            self.layers, self.name = layers, name
+
+    @configurable
+    class Holder:
+        def __init__(self, model: Any = None) -> None:
+            self.model = model
+
+    loaded = load("t: !class:Holder\n  model: !class:NamedModel {name: other}\nm: {layers: 5}\n")["t"]
+    assert loaded.model.layers == 3
+
+
+def test_a_sweep_restating_an_addressed_kwargs_key_moves_it_to_the_attribute_channel() -> None:
+    """BC14 closed AS-DESIGNED (user ruling 2026-08-20): on a ``**kwargs`` class,
+    a later bare sweep line wins the key entirely — the value leaves the
+    constructor call and lands as a post-init attribute."""
+
+    @configurable(validate=False)
+    class ForwardsBC14:
+        def __init__(self, **kw: Any) -> None:
+            self.ctor_saw = dict(kw)
+
+    plain = load("node: !class:ForwardsBC14 {n: 1}\n")["node"]
+    assert plain.ctor_saw == {"n": 1}
+    swept = load("node: !class:ForwardsBC14 {n: 1}\nn: 5\n")["node"]
+    assert swept.ctor_saw == {} and swept.n == 5
+
+
+def test_a_class_block_delivers_a_marker_to_a_kwargs_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BC15 (BUGS-2026-08-19) — the block spelling dropped the marker with a
+    false "has no attribute" warning and a failed record, on a class whose
+    accept-list is accept-everything; the own-kwarg spelling always delivered."""
+    from confluid import collect_report
+
+    @configurable
+    class TBC15:
+        def __init__(self, lr: float = 0.0) -> None:
+            self.lr = lr
+
+    @configurable(validate=False)
+    class KWBC15:
+        def __init__(self, **kw: Any) -> None:
+            self.kw = kw
+
+    with collect_report() as report:
+        built = load("k: !class:KWBC15\nKWBC15: {n: 1, child: !class:TBC15 {lr: 1.0}}\n")["k"]
+    assert built.kw["n"] == 1
+    assert isinstance(built.kw["child"], TBC15) and built.kw["child"].lr == 1.0
+    assert report.failed == []
+
+
+def test_a_class_block_list_lands_at_a_declared_unannotated_slot() -> None:
+    """BC16 — the own-kwarg and dotted spellings delivered the list; the block
+    spelling dropped it claiming the attribute does not exist. An UNDECLARED
+    key stays refused, and a BARE list still never broadcasts (the
+    post-init-broadcast filter pin)."""
+    from confluid import collect_report
+
+    @configurable
+    class TrainerBC16:
+        def __init__(self, items: Any = None) -> None:
+            self.items = items
+
+    with collect_report() as report:
+        built = load("t: !class:TrainerBC16\nTrainerBC16: {items: [1, 2]}\n")["t"]
+    assert built.items == [1, 2]
+    assert report.failed == []
+    with collect_report() as report:
+        load("t: !class:TrainerBC16\nTrainerBC16: {ghost: [1]}\n")
+    assert [(f.key, f.reason) for f in report.failed] == [("ghost", "unknown-attribute")]
+
+
+def test_the_same_target_guard_drop_is_not_reported_as_an_unknown_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BC17 — the anti-recursion drop STANDS (a Node marker broadcast into every
+    Node would re-materialize forever), but it is no longer misreported as
+    "has no attribute 'child'" with unknown-attribute records."""
+    from types import SimpleNamespace
+
+    import confluid.broadcast as broadcast_module
+    from confluid import collect_report
+
+    records: List[Any] = []
+
+    class _Collector(SimpleNamespace):
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(broadcast_module, "logger", _Collector())
+
+    @configurable
+    class NodeBC17:
+        def __init__(self, name: str = "", child: Any = None) -> None:
+            self.name, self.child = name, child
+
+    with collect_report() as report:
+        built = load("root: !class:NodeBC17 {name: root}\nNodeBC17: {child: !class:NodeBC17 {name: delivered}}\n")
+    assert built["root"].child is None  # the guard still drops it
+    assert report.failed == []
+    assert [m for level, m in records if level == "warning" and "child" in m] == []
+
+
+# --------------------------------------------------------------------------- BC13: the ambiguous bare mapping
+
+
+@configurable
+class _OptBC13:
+    def __init__(self, lr: float = 0.0, name: str = "o") -> None:
+        self.lr, self.name = lr, name
+
+
+@configurable
+class _HostBC13:
+    def __init__(self, optimizer: Any = None) -> None:
+        self.optimizer = optimizer
+
+
+_BC13 = "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: o, lr: 1.0}\nlr: 9.0\n"
+
+
+def test_a_bare_mapping_at_a_marker_slot_is_refused_as_ambiguous() -> None:
+    """BC13 (BUGS-2026-08-19; user ruling 2026-08-20) — `optimizer: {x: 1}` at the
+    root names a slot holding a marker and no node: it is ambiguous (set an
+    attribute? replace the slot?) and is refused naming both working spellings.
+    It used to be dropped as unused AND still move the marker's own `lr: 1.0`
+    past the bare `lr: 9.0`."""
+    import pytest
+
+    from confluid import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match=r"is ambiguous.*`c\.optimizer\.<attr>: <value>`"):
+        load(_BC13 + "optimizer: {x: 1}\n")
+    with pytest.raises(ConfigurationError, match=r"is ambiguous"):
+        load(_BC13 + "optimizer: {lr: 5}\n")
+    # the root-dotted spelling without an owner expands to the same mapping
+    with pytest.raises(ConfigurationError, match=r"is ambiguous"):
+        load(_BC13 + "optimizer.x: 1\n")
+
+
+def test_the_owner_addressed_spellings_do_what_the_bare_mapping_could_not() -> None:
+    """The two spellings the refusal names: an attribute on the node, or a marker
+    replacing the slot."""
+    loaded = load(_BC13 + "c.optimizer.x: 1\n")["c"].optimizer
+    assert loaded.lr == 9.0 and loaded.x == 1  # the bare `lr: 9.0` still wins; x lands
+    replaced = load(
+        "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: o}\nc.optimizer: !class:builtins.dict {x: 1}\n"
+    )
+    assert replaced["c"].optimizer == {"x": 1}
+
+
+def test_an_instance_name_block_that_matches_the_node_is_not_ambiguous() -> None:
+    """The exemption: when the key IS the node's instance name the mapping is an
+    instance-name block — a documented delivery, not a slot write."""
+    named = "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: optimizer, lr: 1.0}\nlr: 9.0\n"
+    assert load(named + "optimizer: {lr: 5}\n")["c"].optimizer.lr == 5
+
+
+def test_a_bare_mapping_at_a_slot_holding_plain_data_is_untouched() -> None:
+    """Con — no marker at the slot, no ambiguity: the mapping is a name block that
+    matches nothing (unused), exactly as before."""
+    from confluid import collect_report
+
+    with collect_report() as report:
+        loaded = load("c: !class:_HostBC13\n  optimizer: {lr: 1.0}\noptimizer: {x: 1}\n")
+    assert loaded["c"].optimizer == {"lr": 1.0}
+    assert report.unused == ["optimizer"]
+
+
+def test_configure_refuses_the_ambiguous_bare_mapping_too() -> None:
+    import pytest
+
+    from confluid import ConfigurationError
+
+    live = _HostBC13(optimizer=_OptBC13(name="o", lr=1.0))
+    with pytest.raises(ConfigurationError, match=r"is ambiguous"):
+        configure(c=live, config="lr: 9.0\noptimizer: {x: 1}\n")

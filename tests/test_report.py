@@ -24,7 +24,6 @@ from confluid import (
     dump,
     get_registry,
     load,
-    materialize,
     reset_policy,
     set_policy,
 )
@@ -91,7 +90,10 @@ def test_report_applied_addressed_recursion_origin() -> None:
     root = Root(mid=Child())
     report = configure(root, config={"Root": {"mid": {"lr": 0.7}}})
     assert root.mid.lr == 0.7
-    assert [(a.key, a.target, a.origin) for a in report.applied] == [("lr", "Child", "addressed")]
+    # Through the document (record 19, phase 4) the class block delivers `mid` — a mapping at
+    # a slot holding the child's marker — to Root, and the tune lands on the child: ONE
+    # applied record, at the receiver the block addressed, in the scanner's vocabulary.
+    assert [(a.key, a.target, a.origin) for a in report.applied] == [("mid", "Root", "block 'Root'")]
     assert report.unused == []
 
 
@@ -110,13 +112,15 @@ def test_report_one_applied_record_per_attr_last_write_wins() -> None:
 
 
 def test_report_failed_unknown_attribute_and_warning_still_fires(monkeypatch: pytest.MonkeyPatch) -> None:
-    import confluid.configurator as configurator_module
+    import confluid.broadcast as broadcast_module
 
+    # The typo is caught by the ONE scanner (configure() runs through the document since
+    # record 19 phase 4), so the warning is broadcast's — the same line the load path emits.
     warnings_seen: list[str] = []
     monkeypatch.setattr(
-        configurator_module,
+        broadcast_module,
         "logger",
-        SimpleNamespace(warning=lambda msg: warnings_seen.append(msg), trace=lambda msg: None),
+        SimpleNamespace(warning=lambda msg: warnings_seen.append(msg), trace=lambda msg: None, debug=lambda msg: None),
     )
     Model = _model_cls()
     model = Model()
@@ -288,13 +292,13 @@ def test_collect_report_engine_glob_leaves() -> None:
 
 
 def test_collect_report_survives_materialize_and_active_context() -> None:
-    from confluid.engine import _ENGINE_STATE, active_context
+    from confluid.state import _ENGINE_STATE, active_context
 
     _register_tree_classes()
     with collect_report() as report:
         with active_context({"lr": 0.5}):
             assert _ENGINE_STATE.get().report is report  # fresh state carries it
-        materialize({"outer": {"_target_": None}} if False else {"lr": 0.9, "outer": "!class:Outer()"})
+        load({"lr": 0.9, "outer": {"_target_": "Outer"}})
         assert _ENGINE_STATE.get().report is report
     assert _ENGINE_STATE.get().report is None
 
@@ -314,7 +318,7 @@ def test_collect_report_nesting_reuses_outer_report() -> None:
 
 
 def test_no_report_active_is_default() -> None:
-    from confluid.engine import _ENGINE_STATE
+    from confluid.state import _ENGINE_STATE
 
     _register_tree_classes()
     tree = load("outer: !class:Outer()\ndepth: 5\n")
@@ -380,3 +384,308 @@ def test_report_round_trip() -> None:
     reloaded = load(dump(model))
     assert reloaded.layers == 11
     assert reloaded.lr == 0.25
+
+
+def test_a_leaf_delivery_satisfies_the_glob_registered_spelling() -> None:
+    """A rider's content delivered by the CASCADE marks ``**.leaf`` used.
+
+    A ``'**'`` block registers per leaf under the glob prefix (``**.lr``), but
+    the nested-marker cascade delivers from a pool in which rider contents are
+    flattened to BARE keys — it can only mark the LEAF. Before this rule a
+    rider whose content landed everywhere it aimed still reported ``**.lr``
+    unused in the same report that showed the delivery
+    (``applied=[('lr', 'nested-class')]``), measured through a consumer's CLI
+    override pipeline.
+    """
+    report = ConfigurationReport()
+    report.add_config_keys(["**.lr", "other"])
+    report.mark_used("lr")
+    assert report.unused == ["other"]
+
+
+def test_marking_the_glob_spelling_itself_still_works() -> None:
+    report = ConfigurationReport()
+    report.add_config_keys(["**.lr"])
+    report.mark_used("**.lr")
+    assert report.unused == []
+
+
+# --------------------------------------------------------------------------------------
+# explain() — why this key has this value
+# --------------------------------------------------------------------------------------
+
+
+def _tuned_cls() -> type:
+    """A two-knob receiver for the ordering contests below.
+
+    Defined per test (this file clears the registry in an autouse fixture, the
+    ``_model_cls`` convention above).
+    """
+
+    @configurable
+    class _Tuned:
+        def __init__(self, lr: float = 0.0, epochs: int = 1, name: Optional[str] = None) -> None:
+            """
+            Args:
+                lr: The knob every contest below competes over.
+                epochs: A knob nothing competes over.
+                name: Instance name, so two receivers can be told apart.
+            """
+            self.lr, self.epochs, self.name = lr, epochs, name
+
+    return _Tuned
+
+
+def test_explain_names_the_winner_the_loser_and_the_positions() -> None:
+    """The whole point: position decided it, so position is what the answer shows.
+
+    A value written AT the node losing to a bare key below it is confluid's most
+    surprising behaviour and its documented rule. Before ``explain`` the only way
+    to watch it happen was ``LOGGAIR_CONSOLE_LEVEL=TRACE`` and a grep, even though
+    both candidates already reached the report's sink — the loser was discarded.
+    """
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        cfg = load("_Tuned:\n  lr: 0.5\nt:\n  _target_: _Tuned\nlr: 0.9\n")
+
+    assert cfg["t"].lr == 0.9
+    text = report.explain("lr")
+    assert "lr on _Tuned = 0.9" in text
+    assert "block '_Tuned'" in text and "0.5" in text and "beaten" in text
+    assert "bare" in text and "applied" in text
+    # The loser must be reported EARLIER than the winner — that is the reason.
+    entry = next(a for a in report.applied if a.key == "lr")
+    positions = [c.pos for c in entry.contest]
+    assert positions == sorted(positions) and len(positions) == 2
+    assert entry.contest[-1].origin == "bare", "the last candidate is the winner"
+
+
+def test_explain_covers_a_markers_own_kwarg_losing_to_a_later_bare_key() -> None:
+    """An own kwarg is a competitor like any other, and loses by position like one.
+
+    ``_MergeSink.apply`` returns early for own kwargs (they are definitions, not
+    overrides, so they erase an origin) — the contest is therefore recorded BEFORE
+    that return, or the single case readers most need explained would be the one
+    case with no explanation.
+    """
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        cfg = load("t:\n  _target_: _Tuned\n  lr: 0.5\nlr: 0.9\n")
+
+    assert cfg["t"].lr == 0.9
+    entry = next(a for a in report.applied if a.key == "lr")
+    assert [c.origin for c in entry.contest] == ["own", "bare"]
+    assert "own" in report.explain("lr")
+
+
+def test_explain_agrees_across_the_load_and_configure_paths() -> None:
+    """One rule, one explanation — the two paths must not answer differently.
+
+    The ordered-merge rule was implemented twice before 2026-08-03 and the copies
+    diverged four ways in a day. A diagnostic that reported the contest differently
+    per path would be the same failure wearing a different hat.
+    """
+    _Tuned = _tuned_cls()
+    document = "_Tuned:\n  lr: 0.5\nlr: 0.9\n"
+
+    with collect_report() as load_report:
+        load(f"t:\n  _target_: _Tuned\n{document}")
+    live_report = configure(_Tuned(), config=document)
+
+    def shape(report: ConfigurationReport) -> list:
+        entry = next(a for a in report.applied if a.key == "lr")
+        return [(c.origin, c.value) for c in entry.contest]
+
+    assert shape(load_report) == [("block '_Tuned'", "0.5"), ("bare", "0.9")]
+    # The live object's CURRENT value is a candidate too — its document carries `lr: 0.0`
+    # (dump writes every value), and an own kwarg is a competitor like any other. Same rule,
+    # same vocabulary; the extra entry is the object's state, not a second explanation.
+    assert shape(live_report) == [("own", "0.0"), ("block '_Tuned'", "0.5"), ("bare", "0.9")]
+
+
+def test_explain_says_so_when_a_key_overrode_nothing() -> None:
+    """ "Not applied" is not "not set" — conflating them sends the reader hunting.
+
+    A marker's own kwarg and a constructor default both produce a value nothing
+    overrode, which is exactly what having no override record means.
+    """
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        load("t:\n  _target_: _Tuned\n  epochs: 3\nlr: 0.9\n")
+
+    text = report.explain("epochs")
+    assert "overrode nothing" in text
+    assert "constructor default" in text, "must name the innocent explanations"
+    assert "lr" in text, "and list what DID override, so the reader can compare spellings"
+
+
+def test_explain_narrows_to_one_receiver() -> None:
+    """Two instances of one class both take the key; ``target`` picks one."""
+    _tuned_cls()  # registers `_Tuned`; the YAML below names it by string
+    with collect_report() as report:
+        load("a:\n  _target_: _Tuned\n  name: first\nb:\n  _target_: _Tuned\n  name: second\nlr: 0.9\n")
+
+    targets = {a.target for a in report.applied if a.key == "lr"}
+    assert len(targets) >= 1
+    one = sorted(targets)[0]
+    assert report.explain("lr", target=one).count("lr on ") == 1
+
+
+def test_a_contest_value_is_a_bounded_string_never_the_object() -> None:
+    """The ledger must not keep a config VALUE alive, and must not raise rendering one.
+
+    A config value is an arbitrary object — a dataset, a model, an array — so
+    holding one for the report's lifetime turns a diagnostic into a leak, and
+    calling its ``__repr__`` runs user code that may raise or be enormous.
+    """
+    from confluid.report import _short_repr
+
+    class Exploding:
+        def __repr__(self) -> str:
+            raise RuntimeError("nope")
+
+    assert _short_repr(Exploding()) == "<Exploding>"
+    assert len(_short_repr("x" * 500)) <= 48
+    assert _short_repr(0.9) == "0.9"
+
+
+def test_an_uncontested_key_still_explains_itself_and_stores_no_candidates() -> None:
+    """One source is not a contest — it must print, and it must not pay to render.
+
+    A single candidate says nothing ``origin`` does not already say, and building
+    one costs a ``repr()`` per applied key: measured at 4.6 ms of the 5.7 ms this
+    ledger first added to a 2,500-marker ``configure()`` pass. So a lone candidate
+    is dropped, and the same empty contest also covers the paths with no view to
+    order at all (the deferred-slot cascade, a direct ``flow()``).
+    """
+    report = ConfigurationReport()
+    report.record_applied("lr", "AdamW", "deferred slot")
+    report.record_applied("wd", "AdamW", "bare", candidates=[("bare", 0.1, 3)])
+
+    assert next(a for a in report.applied if a.key == "wd").contest == (), "one source stores nothing"
+    for key in ("lr", "wd"):
+        text = report.explain(key)
+        assert f"{key} on AdamW" in text
+        assert "nothing else competed" in text
+
+    # Two sources DO get rendered — that is the case explain() exists for.
+    report.record_applied("mom", "AdamW", "bare", candidates=[("block 'AdamW'", 0.8, 1), ("bare", 0.9, 4)])
+    contested = next(a for a in report.applied if a.key == "mom")
+    assert [c.value for c in contested.contest] == ["0.8", "0.9"]
+
+
+# --------------------------------------------------------------------------------------
+# An undeclared key is reported on BOTH paths (B1)
+# --------------------------------------------------------------------------------------
+#
+# One typo, three behaviours, until 2026-08-12: `load()` with the key on the marker
+# SET it silently; `load()` with the key in a class block IGNORED it silently; only
+# `configure()` reported it. The load path's sink justified its silence with
+# "constructor validation is this path's typo enforcement" — measured false: the key
+# is not a ctor param, so `_ctor_params` filters it out and it reaches a post-init
+# setattr, going AROUND the constructor. Validation never sees it.
+#
+# B1 (chosen 2026-08-12 over full parity): both load-path forms now WARN and record a
+# ``unknown-attribute`` failure, and the own-kwarg form still APPLIES the value. The
+# post-init attribute mechanism is documented behaviour — `_apply_post_init_attrs`
+# exists to assign kwargs the constructor did not take — so B1 makes it audible
+# without removing it. Refusing outright is the opt-in `strict_attrs` mark (TASKS.md).
+
+
+def _node_cls() -> type:
+    """A receiver with a ctor param AND a body slot, so 'declared' has both shapes."""
+
+    @configurable
+    class Node:
+        def __init__(self, path: str = "") -> None:
+            self.path = path
+            self.enabled = False  # a body slot — DECLARED, and must stay silent
+
+    return Node
+
+
+def test_an_undeclared_key_on_the_marker_warns_records_and_still_applies() -> None:
+    """B1's own-kwarg half: audible, but the value still lands.
+
+    Dropping it instead would be full `configure()` parity (option B2) and would
+    remove the post-init attribute mechanism from the commonest spelling. Measured
+    across 96 workspace configs / 412 markers: zero rely on it today — but it is
+    documented behaviour, so it changes only behind the opt-in mark.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("n:\n  _target_: Node\n  pathh: /x\n")["n"]
+
+    assert built.pathh == "/x", "B1 still applies it — that is what distinguishes B1 from B2"
+    assert [(f.key, f.reason) for f in report.failed] == [("pathh", "unknown-attribute")]
+
+
+def test_an_undeclared_key_in_a_class_block_warns_and_records_on_the_load_path() -> None:
+    """B1's class-block half: it was already dropped, and is now reported.
+
+    This is the form `configure()` has always reported; the load path reached the
+    same sink method and did nothing there.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("Node:\n  pathh: /x\nn:\n  _target_: Node\n")["n"]
+
+    assert not hasattr(built, "pathh"), "still dropped, exactly as before"
+    assert [(f.key, f.reason) for f in report.failed] == [("pathh", "unknown-attribute")]
+
+
+def test_the_two_paths_now_report_the_same_failure_for_the_same_typo() -> None:
+    """The point of the change: one document, one mistake, one answer."""
+    Node = _node_cls()
+    document = "Node:\n  pathh: /x\n"
+
+    with collect_report() as load_report:
+        load(f"n:\n  _target_: Node\n{document}")
+    live_report = configure(Node(), config=document)
+
+    assert [(f.key, f.reason) for f in load_report.failed] == [("pathh", "unknown-attribute")]
+    assert [(f.key, f.reason) for f in live_report.failed] == [("pathh", "unknown-attribute")]
+
+
+def test_a_DECLARED_body_slot_is_silent_on_the_load_path() -> None:
+    """The control that keeps this from being a nuisance.
+
+    A body slot is in the accept-list, so it is declared — the class-design
+    convention's rule 4 exists to make exactly these configurable.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("n:\n  _target_: Node\n  enabled: true\n")["n"]
+
+    assert built.enabled is True
+    assert report.failed == []
+
+
+def test_a_kwargs_class_never_reports_an_undeclared_key() -> None:
+    """A ``**kwargs`` constructor has no accept-list — it accepts everything by design."""
+
+    @configurable(validate=False)
+    class Catchall:
+        def __init__(self, **extra: Any) -> None:
+            self.extra = dict(extra)
+
+    with collect_report() as report:
+        built = load("c:\n  _target_: Catchall\n  anything: 1\n")["c"]
+
+    assert built.extra == {"anything": 1}
+    assert report.failed == []
+
+
+def test_a_BARE_key_matching_nothing_is_not_a_failure() -> None:
+    """A bare key legitimately matches nothing — it is `unused`, never `failed`.
+
+    Reporting bare misses would fire on every sweep document: a top-level `lr:`
+    aimed at one node necessarily misses every other node in the tree.
+    """
+    _node_cls()
+    with collect_report() as report:
+        built = load("pathh: /x\nn:\n  _target_: Node\n")["n"]
+
+    assert not hasattr(built, "pathh")
+    assert report.failed == []
+    assert "pathh" in report.unused, "it is an unused override, which is the honest bucket"

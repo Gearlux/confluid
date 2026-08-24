@@ -1,14 +1,14 @@
 from typing import Any
 
-from confluid import Instance, configurable, materialize, register
+from confluid import Target, configurable, load, register
 
 
-def _inst(target: str, /, **kwargs: Any) -> Instance:
-    """Build an Instance marker with kwargs assigned post-construction.
+def _inst(target: str, /, **kwargs: Any) -> Target:
+    """Build an Target marker with kwargs assigned post-construction.
 
     ``target`` is positional-only so test kwargs literally named ``name`` or
     ``target`` can't collide with it."""
-    marker = Instance(target)
+    marker = Target(target)
     marker.kwargs.update(kwargs)
     return marker
 
@@ -43,7 +43,7 @@ def test_broadcast_materialize() -> None:
     # Data to materialize (a Branch containing a Leaf)
     data = _inst("Branch", leaf=_inst("Leaf"))
 
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     assert isinstance(result, Branch)
     assert result.branch_val == 100
@@ -62,20 +62,20 @@ def test_broadcast_priority() -> None:
 
     # 1. Scoped > Broadcast
     data_scoped = _inst("Leaf")
-    res1 = materialize(data_scoped, context=context)
+    res1 = load(data_scoped, context=context)
     assert not isinstance(res1, dict)
     assert res1.value == 20
 
     # 2. Explicit > Scoped > Broadcast
     data_explicit = _inst("Leaf", value=30)
-    res2 = materialize(data_explicit, context=context)
+    res2 = load(data_explicit, context=context)
     assert not isinstance(res2, dict)
     assert res2.value == 30
 
 
 def test_deep_broadcast_propagation() -> None:
     """Root-level scalars propagate through nested class instances (mnist_train_minimal scenario)."""
-    from confluid import Class, flow
+    from confluid import Target
 
     @configurable
     class Inner:
@@ -96,15 +96,15 @@ def test_deep_broadcast_propagation() -> None:
     config = {"max_epochs": 10}
     data = _inst("Outer", inner=_inst("Inner"))
 
-    result = materialize(data, context=config)
+    result = load(data, context=config)
     assert isinstance(result, Outer)
     assert isinstance(result.inner, Inner)
     assert result.inner.max_epochs == 10
 
-    # Case 2: Inner is a Python default Class (not in config) — the mnist_train_minimal scenario
+    # Case 2: Inner is a Python default Target (not in config) — the mnist_train_minimal scenario
     @configurable
     class OuterDeferred:
-        def __init__(self, inner: "Inner" = Class(Inner), name: str = "outer") -> None:  # type: ignore[assignment]
+        def __init__(self, inner: "Inner" = Target(Inner), name: str = "outer") -> None:  # type: ignore[assignment]
             self.inner = inner
             self.name = name
 
@@ -112,11 +112,10 @@ def test_deep_broadcast_propagation() -> None:
 
     config2 = {"max_epochs": 10}
     data2 = _inst("OuterDeferred")
-    result2 = materialize(data2, context=config2)
+    result2 = load(data2, context=config2)
     assert isinstance(result2, OuterDeferred)
     # inner is deferred — flow it to materialize
-    assert isinstance(result2.inner, Class)
-    inner = flow(result2.inner)
+    inner = result2.inner
     assert isinstance(inner, Inner)
     assert inner.max_epochs == 10
 
@@ -151,7 +150,7 @@ def test_parameter_aware_broadcast_filtering() -> None:
         "optimizer": _inst("OptimizerLike"),
     }
 
-    result = materialize(data, context=context)
+    result = load(data, context=context)
 
     # TrainerLike gets max_epochs but NOT experiment_name or lr
     assert isinstance(result["trainer"], TrainerLike)
@@ -167,7 +166,7 @@ def test_parameter_aware_broadcast_filtering() -> None:
 
 def test_unregistered_class_broadcast_filtering() -> None:
     """Deferred defaults with unregistered class objects must filter by actual constructor params."""
-    from confluid import Class, flow
+    from confluid import Target, flow
 
     # Unregistered classes — not in confluid registry
     class PlainTrainer:
@@ -184,8 +183,8 @@ def test_unregistered_class_broadcast_filtering() -> None:
     class Pipeline:
         def __init__(
             self,
-            trainer: Any = Class(PlainTrainer),
-            loader: Any = Class(PlainLoader),
+            trainer: Any = Target(PlainTrainer),
+            loader: Any = Target(PlainLoader),
             experiment_name: str = "default",
         ) -> None:
             self.trainer = trainer
@@ -196,7 +195,7 @@ def test_unregistered_class_broadcast_filtering() -> None:
 
     config = {"max_epochs": 10, "batch_size": 64, "experiment_name": "mnist"}
     data = _inst("Pipeline")
-    result = materialize(data, context=config)
+    result = load(data, context=config)
 
     assert isinstance(result, Pipeline)
     assert result.experiment_name == "mnist"
@@ -217,14 +216,14 @@ def test_unregistered_class_broadcast_filtering() -> None:
 
 
 def test_broadcast_into_body_assigned_class_attribute() -> None:
-    """Broadcasting reaches Class attrs assigned in __init__'s body.
+    """Broadcasting reaches Target attrs assigned in __init__'s body.
 
-    Mirrors the Marainer Trainer pattern: deferred injection points are
+    Mirrors the Matrainer Trainer pattern: deferred injection points are
     assigned inside __init__ rather than pre-declared in the constructor
     signature. The broadcaster must reach them just like it does for
     constructor defaults.
     """
-    from confluid import Class, flow
+    from confluid import Target, flow
 
     @configurable
     class InnerCfg:
@@ -237,27 +236,26 @@ def test_broadcast_into_body_assigned_class_attribute() -> None:
         def __init__(self, name: str = "outer") -> None:
             # Body-assigned: no `inner` ctor param; broadcaster must still reach it.
             self.name = name
-            self.inner = Class(InnerCfg)
+            self.inner = Target(InnerCfg)
 
     register(InnerCfg)
     register(OuterCfg)
 
     config = {"max_epochs": 7, "batch_size": 16}
     data = _inst("OuterCfg")
-    result = materialize(data, context=config)
+    result = load(data, context=config)
 
     assert isinstance(result, OuterCfg)
-    assert isinstance(result.inner, Class)
-    assert result.inner.kwargs.get("max_epochs") == 7
-    assert result.inner.kwargs.get("batch_size") == 16
-
-    inner = flow(result.inner)
+    # A body slot holding a plain ``Target(...)`` is BUILT — ``partial`` is the only
+    # thing that withholds construction, and this slot declared none. Broadcasting
+    # still reached it: pass 7 merges the keys, pass 8 constructs.
+    inner = result.inner
     assert isinstance(inner, InnerCfg)
     assert inner.max_epochs == 7
     assert inner.batch_size == 16
 
     # Idempotency: materializing the same config again produces the same result.
-    result2 = materialize(data, context=config)
+    result2 = load(data, context=config)
     inner2 = flow(result2.inner)
     assert inner2.max_epochs == 7
     assert inner2.batch_size == 16
@@ -270,7 +268,7 @@ def test_dotted_broadcast_materialize() -> None:
     context = {"leaf.value": 99}
     data = _inst("Branch", name="root", leaf=_inst("Leaf", name="leaf"))
 
-    result = materialize(data, context=context)
+    result = load(data, context=context)
     # result.leaf.value should be 99
     assert not isinstance(result, dict)
     assert result.leaf.value == 99

@@ -15,21 +15,15 @@ not re-exported here.
 
 from typing import TYPE_CHECKING, Any
 
+# Each name from its REAL home — laundering these through the `engine` compat
+# shim gave the shim internal consumers, defeating any future zero-user audit.
+from confluid.broadcast import accepts_any_key, accepts_broadcast, accepts_key, declares_key
 from confluid.configurator import configure, configure_from_file
-from confluid.decorators import configurable, ignore_config, output, register
-from confluid.dumper import dump
-from confluid.engine import (
-    accepts_broadcast,
-    accepts_key,
-    active_context,
-    cast,
-    collect_report,
-    flow,
-    get_configurable_attrs,
-    materialize,
-    resolve,
-)
+from confluid.decorators import configurable, output, register
+from confluid.dumper import dump, register_dump_spelling
+from confluid.engine import cast, flow, get_configurable_attrs
 from confluid.exceptions import (
+    AmbiguousClassError,
     CircularIncludeError,
     ConfigFileNotFoundError,
     ConfigurableDefinitionError,
@@ -43,16 +37,20 @@ from confluid.exceptions import (
     ValidationModeError,
     WorkspaceEnvError,
 )
-from confluid.fluid import Class, Clone, Fluid, Instance
-from confluid.fluid import Lazy as LazyClass
-from confluid.fluid import Reference, format_yaml_loc
-from confluid.lazy import Lazy, lazy_param_names
+from confluid.fluid import Fluid, PartialClass, Reference, Target, format_yaml_loc
 from confluid.llm_schema import sanitize_schema
-from confluid.loader import get_app_name, load, load_config, load_config_with_paths, resolve_config_path, set_app_name
+from confluid.loader import get_app_name, load, resolve_config_path, set_app_name
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
-from confluid.registry import get_registry
+
+# ``Partial`` is re-exported as an IMPORT, never ``Partial = partial.Partial``: a
+# plain assignment loses the alias's genericity for a type checker, so every
+# downstream ``Partial[DataLoader]`` became `Bad number of arguments for type
+# alias, expected 0, given 1` (measured in three real slots). An import alias
+# stays the same generic alias.
+from confluid.partial import Partial, partial_param_names
+from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
 from confluid.schema import (
@@ -65,12 +63,15 @@ from confluid.schema import (
     parse_param_docs,
     shortest_unique_paths,
 )
-from confluid.scopes import discover_dimensions
+from confluid.scopes import default_scopes, discover_dimension_values, discover_dimensions
+from confluid.state import active_context, collect_report
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
 
+# --------------------------------------------------------------------------- #
 __all__ = [
     "ConfluidError",
     "ConfigurationError",
+    "AmbiguousClassError",
     "CircularIncludeError",
     "ReferenceResolutionError",
     "UnknownClassError",
@@ -83,37 +84,34 @@ __all__ = [
     "IntrospectionError",
     "configurable",
     "register",
-    "ignore_config",
     "output",
     "get_registry",
+    "load_configurables",
+    "Marks",
+    "marks",
     "load",
-    "load_config",
-    "load_config_with_paths",
     "resolve_config_path",
     "set_app_name",
     "get_app_name",
-    "materialize",
-    "resolve",
     "active_context",
     "deep_merge",
     "expand_dotted_keys",
     "parse_value",
     "dump",
+    "register_dump_spelling",
     "configure",
     "configure_from_file",
     "ConfigurationReport",
     "collect_report",
     "Fluid",
-    "Class",
-    "Clone",
-    "Instance",
+    "Target",
     "Reference",
     "flow",
     "cast",
     "format_yaml_loc",
-    "Lazy",
-    "LazyClass",
-    "lazy_param_names",
+    "Partial",
+    "PartialClass",
+    "partial_param_names",
     "Mandatory",
     "mandatory_param_names",
     "NoBroadcast",
@@ -129,9 +127,13 @@ __all__ = [
     "get_configurable_attrs",
     "to_pydantic",
     "confluid_class_of",
+    "default_scopes",
+    "discover_dimension_values",
     "discover_dimensions",
     "accepts_key",
     "accepts_broadcast",
+    "accepts_any_key",
+    "declares_key",
     "ValidationMode",
     "ValidationPolicy",
     "get_policy",

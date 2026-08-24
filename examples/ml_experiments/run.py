@@ -121,7 +121,7 @@ class SGD:
         lr: Learning rate (wired to the shared ``base_lr`` via ``!ref:``).
         model: The LIVE model whose parameters to update — injected at RUN
             time by the trainer (``flow(self.optimizer, model=...)``), which
-            is why the YAML declares the optimizer with ``!lazy:``. An object
+            is why the YAML declares the optimizer ``!partial:``. An object
             survives the flow by identity (a plain list kwarg would be copied).
             ``NoBroadcast`` keeps the bare top-level ``model:`` key from
             pre-wiring it at load — this slot belongs to the run.
@@ -170,7 +170,7 @@ class Trainer:
     Args:
         model: The model to train (``!ref:model`` in YAML).
         dataset: The training data (``!ref:dataset``).
-        optimizer: A DEFERRED optimizer (``!lazy:`` in YAML) — built inside
+        optimizer: A DEFERRED optimizer (``!partial:`` in YAML) — built inside
             ``fit()`` once the model's parameters exist.
         max_epochs: Training length — the knob overlays override.
         device: Reached by the broadcast ``device`` key.
@@ -194,7 +194,7 @@ class Trainer:
         self.verbose = verbose
 
     def fit(self) -> float:
-        # The canonical runtime injection: the !lazy: optimizer finally gets
+        # The canonical runtime injection: the deferred optimizer finally gets
         # the argument only the run can supply — the live model.
         opt = flow(self.optimizer, model=self.model)
         points = self.dataset.points

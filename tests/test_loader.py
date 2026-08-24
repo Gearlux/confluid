@@ -1,36 +1,40 @@
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import pytest
+import yaml
 
-from confluid import configurable, get_registry, load, load_config
+from confluid import ConfigurationError, configurable, get_registry, load
+from confluid.fluid import Target
+from confluid.loader import ConfluidLoader
 
 
-def test_load_config_valid(tmp_path: Path) -> None:
+def test_load_raw_from_file_valid(tmp_path: Path) -> None:
     yaml_file = tmp_path / "config.yaml"
     yaml_file.write_text("Model:\n  layers: 10")
 
-    data = load_config(yaml_file)
+    data = load(yaml_file, until="raw")
     assert data["Model"]["layers"] == 10
 
 
-def test_load_config_empty(tmp_path: Path) -> None:
+def test_load_raw_from_file_empty(tmp_path: Path) -> None:
     yaml_file = tmp_path / "empty.yaml"
     yaml_file.write_text("")
 
-    data = load_config(yaml_file)
+    data = load(yaml_file, until="raw")
     assert data == {}
 
 
-def test_load_config_not_found() -> None:
+def test_load_raw_from_file_not_found() -> None:
     with pytest.raises(FileNotFoundError):
-        load_config("non_existent.yaml")
+        load("non_existent.yaml", until="raw")
 
 
 def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> None:
     """A YAML kwarg literally named ``target`` must not collide with the marker ctors.
 
     The Fluid constructors' own first parameter is ``target`` — building a marker via
-    ``Instance(name, **mapping)`` raised ``got multiple values for argument 'target'``
+    ``Target(name, **mapping)`` raised ``got multiple values for argument 'target'``
     whenever a config carried a ``target:`` kwarg (e.g. recordstream ``ConfigureOp.target``).
     The loader assigns kwargs post-construction instead.
     """
@@ -54,7 +58,23 @@ def test_kwarg_named_target_loads_without_marker_collision(tmp_path: Path) -> No
     assert isinstance(wrapper.target, _Configurish) and wrapper.target.param == "inner"
 
 
-def test_load_config_with_import() -> None:
+def test_kwarg_named_target_survives_the_legacy_class_spelling() -> None:
+    """The colon-free ``!class`` compat constructor is collision-proof too.
+
+    It was the ONE tag constructor building its marker via
+    ``Target(name, **kwargs)`` instead of ``_make_fluid``, so the legacy
+    spelling raised ``got multiple values for argument 'target'`` on a config
+    the modern ``!class:`` form loads fine.
+    """
+    data = yaml.load("x: !class Widget(target=inner, param=low)", Loader=ConfluidLoader)
+    marker = data["x"]
+
+    assert isinstance(marker, Target)
+    assert marker.target == "Widget"
+    assert marker.kwargs == {"target": "inner", "param": "low"}
+
+
+def test_load_raw_with_import() -> None:
     import tempfile
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -64,7 +84,7 @@ def test_load_config_with_import() -> None:
         path = f.name
 
     try:
-        data = load_config(path)
+        data = load(path, until="raw")
         assert data == {}  # import is popped
     finally:
         import os
@@ -73,21 +93,21 @@ def test_load_config_with_import() -> None:
 
 
 def test_load_with_custom_tags(tmp_path: Path) -> None:
-    from confluid.fluid import Class, Reference
+    from confluid.fluid import Reference, Target
 
     config_file = tmp_path / "tags.yaml"
     config_file.write_text("model: !class:Model\n  layers: 10\nref: !ref:base_lr")
 
-    data = load_config(config_file)
-    # Tags produce Class/Reference objects
-    assert isinstance(data["model"], Class)
+    data = load(config_file, until="raw")
+    # Tags produce Target/Reference objects
+    assert isinstance(data["model"], Target)
     assert data["model"].target == "Model"
     assert data["model"].kwargs["layers"] == 10
     assert isinstance(data["ref"], Reference)
     assert data["ref"].target == "base_lr"
 
 
-def test_load_config_root_level_class(tmp_path: Path) -> None:
+def test_load_raw_root_level_class(tmp_path: Path) -> None:
     """Top-level `!class:` documents must round-trip via the path loader.
 
     The text loader (`confluid.loader.load(text)`) already handles a root
@@ -95,13 +115,13 @@ def test_load_config_root_level_class(tmp_path: Path) -> None:
     that point at a YAML file containing a single class doc don't blow
     up in `_process_imports` (which assumes a dict).
     """
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     config_file = tmp_path / "root_class.yaml"
     config_file.write_text("!class:Model\nlayers: 10\nactivation: relu\n")
 
-    data = load_config(config_file)
-    assert isinstance(data, Class)
+    data = load(config_file, until="raw")
+    assert isinstance(data, Target)
     assert data.target == "Model"
     assert data.kwargs["layers"] == 10
     assert data.kwargs["activation"] == "relu"
@@ -132,7 +152,7 @@ def _register_grammar_model() -> None:
 
 def _parse_tags(text: str) -> dict:
     """Parse a YAML string through ConfluidLoader (the tag-aware loader class),
-    WITHOUT materializing — so the raw ``Class`` / ``Instance`` Fluids are visible."""
+    WITHOUT materializing — so the raw ``Target`` / ``Target`` Fluids are visible."""
     from typing import cast
 
     import yaml
@@ -143,47 +163,54 @@ def _parse_tags(text: str) -> dict:
 
 
 def test_class_form_bare_parses_to_deferred_class() -> None:
-    """``!class:Model`` (no parens) parses to a deferred ``Class`` — never built."""
-    from confluid.fluid import Class
+    """``!class:Model`` (no parens) parses to a deferred ``Target`` — never built."""
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model\n")
-    assert isinstance(data["m"], Class)
+    assert isinstance(data["m"], Target)
     assert data["m"].kwargs == {}
 
 
 def test_class_form_bare_with_body_keeps_deferred_with_kwargs() -> None:
     """A bare ``!class:Model`` plus a mapping body stays deferred but captures kwargs."""
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model\n  layers: 9\n")
-    assert isinstance(data["m"], Class)
+    assert isinstance(data["m"], Target)
     assert data["m"].kwargs["layers"] == 9
 
 
 def test_class_form_empty_parens_parses_to_instance() -> None:
-    """``!class:Model()`` (empty parens) parses to an eager ``Instance``."""
-    from confluid.fluid import Instance
+    """``!class:Model()`` (empty parens) parses to an eager ``Target``."""
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model()\n")
-    assert isinstance(data["m"], Instance)
+    assert isinstance(data["m"], Target)
 
 
 def test_class_form_inline_kwargs_parses_to_instance() -> None:
-    """``!class:Model(layers=7)`` parses to an eager ``Instance`` carrying coerced kwargs."""
-    from confluid.fluid import Instance
+    """``!class:Model(layers=7)`` parses to an eager ``Target`` carrying coerced kwargs."""
+    from confluid.fluid import Target
 
     data = _parse_tags("m: !class:Model(layers=7)\n")
-    assert isinstance(data["m"], Instance)
+    assert isinstance(data["m"], Target)
     # Inline values are coerced to native types at parse time (parse_value).
     assert data["m"].kwargs["layers"] == 7
     assert isinstance(data["m"].kwargs["layers"], int)
 
 
-def test_class_form_bare_stays_deferred_after_load(_register_grammar_model: None) -> None:
-    """``load()`` leaves a bare ``!class:`` deferred (the receiver flows it)."""
-    from confluid.fluid import Class
+def test_class_form_bare_is_built_by_load(_register_grammar_model: None) -> None:
+    """A bare ``!class:`` is BUILT — the parens no longer change anything.
 
-    assert isinstance(load("m: !class:Model\n")["m"], Class)
+    Until 2026-08-11 the trailing ``()`` decided eager-vs-deferred and a bare
+    ``!class:`` produced a stub whose construction depended on whether its parent
+    was ``@configurable``. There are now exactly two modes and only ``_partial_``
+    (``!lazy:``) selects between them.
+    """
+    bare = load("m: !class:Model\n")["m"]
+    parens = load("m: !class:Model()\n")["m"]
+    assert isinstance(bare, _GrammarModel) and isinstance(parens, _GrammarModel)
+    assert bare.layers == parens.layers
 
 
 def test_class_form_empty_parens_is_built_by_load(_register_grammar_model: None) -> None:
@@ -216,24 +243,6 @@ def test_class_form_unquoted_inline_kwargs_coerce_float_bool_none() -> None:
     assert data["m"].kwargs == {"a": 0.01, "b": True, "c": None}
 
 
-def test_class_form_quoted_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
-    """Quoted ``"!class:Model(layers=7)"`` is resolved through the resolver, which
-    coerces inline scalars to the declared type (``parse_value``: ``"7"`` → ``7``)."""
-    built = load('m: "!class:Model(layers=7)"\n')["m"]
-    assert isinstance(built, _GrammarModel)
-    assert built.layers == 7  # coerced str→int by the resolver path
-
-
-def test_class_form_quoted_inline_ref_is_resolved(_register_grammar_model: None) -> None:
-    """A nested ``!ref:`` works only in the QUOTED form (the Adam example in docs/tags.md).
-
-    YAML forbids two tags on one node, so ``!class:Model(layers=!ref:n)`` cannot be
-    written unquoted — the value must be a quoted string the resolver then parses.
-    """
-    built = load('n: 10\nm: "!class:Model(layers=!ref:n)"\n')["m"]
-    assert built.layers == 10
-
-
 def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None) -> None:
     """Inline ``(k=v)`` kwargs MERGE with a mapping body (no longer discarded).
 
@@ -243,20 +252,20 @@ def test_class_form_inline_kwargs_merge_with_body(_register_grammar_model: None)
     # Inline width=7 has no body entry → survives. Inline layers=99 is overridden
     # by the body's layers=3.
     built = _parse_tags("m: !class:Model(layers=99,extra=7)\n  layers: 3\n")["m"]
-    from confluid.fluid import Instance
+    from confluid.fluid import Target
 
-    assert isinstance(built, Instance)
+    assert isinstance(built, Target)
     assert built.kwargs["layers"] == 3  # block body wins on conflict
     assert built.kwargs["extra"] == 7  # inline-only key is preserved, not discarded
 
 
 def test_lazy_tag_stays_deferred_with_any_grammar(_register_grammar_model: None) -> None:
-    """``!lazy:`` always produces a deferred ``Lazy`` — parens or not, block or not."""
-    from confluid.fluid import Lazy
+    """``!lazy:`` always produces a deferred ``Partial`` — parens or not, block or not."""
+    from confluid.fluid import PartialClass
 
-    assert isinstance(load("m: !lazy:Model\n")["m"], Lazy)
-    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], Lazy)
-    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], Lazy)
+    assert isinstance(load("m: !lazy:Model\n")["m"], PartialClass)
+    assert isinstance(load("m: !lazy:Model(layers=5)\n")["m"], PartialClass)
+    assert isinstance(load("m: !lazy:Model\n  layers: 5\n")["m"], PartialClass)
 
 
 def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> None:
@@ -271,11 +280,65 @@ def test_lazy_tag_inline_kwargs_are_coerced(_register_grammar_model: None) -> No
     assert merged.kwargs == {"layers": 3, "extra": 5}  # block wins; inline-only kept
 
 
-def test_quoted_lazy_tag_is_not_recognized(_register_grammar_model: None) -> None:
-    """The quote-the-tag trick is ``!class:`` / ``!ref:`` only — a quoted ``!lazy:``
-    stays a plain string and is NEVER turned into a ``Lazy``."""
-    value = load('m: "!lazy:Model(layers=5)"\n')["m"]
-    assert value == "!lazy:Model(layers=5)"  # untouched string
+@pytest.mark.parametrize(
+    ("text", "replacement"),
+    [
+        ('"!class:Model(layers=5)"', "{_target_: Model, layers: 5}"),
+        ('"!partial:Model(layers=5)"', "{_target_: Model, _partial_: true, layers: 5}"),
+        ('"!lazy:Model(layers=5)"', "{_target_: Model, _partial_: true, layers: 5}"),
+        ('"!ref:other"', "{_ref_: other}"),
+        ('"!scope:debug"', "{_scope_: {debug: }}"),
+        ('"!notscope:debug"', "{_notscope_: {debug: }}"),
+    ],
+)
+def test_a_marker_written_as_a_quoted_STRING_is_refused(
+    text: str, replacement: str, _register_grammar_model: None
+) -> None:
+    """A marker is a YAML tag or a reserved-key mapping — a quoted tag is a string, and a
+    string starting with a marker prefix is refused, naming the two lines that work.
+
+    Never let it through as text: a deferred optimizer written ``"!lazy:Adam(lr=0.01)"``
+    once reached its constructor as that literal string with no diagnostic anywhere.
+    """
+    with pytest.raises(ConfigurationError) as excinfo:
+        load(f"other: 7\nm: {text}\n")
+
+    message = str(excinfo.value)
+    assert text.strip('"') in message, "quote the offending text — a scalar carries no file:line"
+    assert replacement in message, "and name the exact reserved-key line to write instead"
+    assert text.strip('"').split("(")[0] in message, "and the tag to write unquoted"
+
+
+def test_the_refusal_names_the_plain_yaml_line_to_write(_register_grammar_model: None) -> None:
+    """An error that says "write it as plain YAML" must show WHICH plain YAML.
+
+    The suffix is already parsed by the shared ``Target(...)`` grammar, so the
+    replacement is derivable — and a message the reader can paste is the
+    difference between a fix and a search.
+    """
+    with pytest.raises(ConfigurationError) as excinfo:
+        load('m: "!lazy:Model(layers=5)"\n')
+
+    assert "{_target_: Model, _partial_: true, layers: 5}" in str(excinfo.value)
+
+
+def test_a_quoted_marker_inside_a_markers_own_kwargs_is_REFUSED(_register_grammar_model: None) -> None:
+    """The same refusal inside a marker's kwargs — the position a nested value goes in a block body."""
+    for inner in ('"!class:Model(layers=7)"', '"!ref:other"'):
+        with pytest.raises(ConfigurationError, match="marker's own kwargs"):
+            load(f"other: 7\nm:\n  _target_: Model\n  extra: {inner}\n")
+
+
+def test_an_ordinary_value_starting_with_a_bang_is_untouched(_register_grammar_model: None) -> None:
+    """The refusal matches the exact marker prefixes, never a bare leading ``!``.
+
+    A config value may legitimately start with one — a shell negation, a CSS
+    ``!important``, a message — and refusing those would break real documents to
+    fix a spelling nobody uses.
+    """
+    out = load('a: "!important"\nb: "!not-a-marker:x"\nc: "!classroom: 3"\n')
+
+    assert out == {"a": "!important", "b": "!not-a-marker:x", "c": "!classroom: 3"}
 
 
 def test_import_key_warns_on_missing_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,7 +354,7 @@ def test_import_key_warns_on_missing_module(tmp_path: Path, monkeypatch: pytest.
 
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text("import: [definitely_not_a_module_xyz]\nval: 1\n")
-    data = load_config(cfg)
+    data = load(cfg, until="raw")
     assert data == {"val": 1}
     assert any("definitely_not_a_module_xyz" in msg for msg in warnings_seen)
 
@@ -310,9 +373,9 @@ def test_global_safe_loader_stays_clean() -> None:
     with pytest.raises(yaml.constructor.ConstructorError):
         yaml.safe_load("r: !ref:base\n")
     # ...while confluid's own entry point parses them fine.
-    from confluid.fluid import Class
+    from confluid.fluid import Target
 
-    assert isinstance(load("m: !class:Model\n", flow=False)["m"], Class)
+    assert isinstance(load("m: !class:Model\n", until="document")["m"], Target)
 
 
 def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -324,5 +387,377 @@ def test_config_key_interpolation_end_to_end(monkeypatch: pytest.MonkeyPatch) ->
         "  version: v3\n"
         'data_dir: "${CONFLUID_TEST_ROOT}/${train.dataset}/${train.version}/data"\n'
     )
-    result = load(doc, flow=False)
+    result = load(doc, until="document")
     assert result["data_dir"] == "/store/RFUAV/v3/data"
+
+
+def test_materialize_interpolates_config_keys_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine entry runs the same Resolver pass the loader runs.
+
+    docs/interpolation.md promises interpolation from ``until="document"`` on;
+    the engine entry substitutes too, and is idempotent on data ``load`` has
+    already substituted.
+    """
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    out = load({"run": {"name": "exp42"}, "output_dir": "${CONFLUID_TEST_ROOT}/runs/${run.name}"})
+    assert out["output_dir"] == "/store/runs/exp42"
+
+
+def test_materialize_resolves_against_a_separate_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A distinct ``context=`` dict is the interpolation source, and is itself resolved."""
+
+    monkeypatch.delenv("db", raising=False)
+    out = load({"port_str": "port=${db.port}"}, context={"db": {"port": 5432}})
+    assert out["port_str"] == "port=5432"
+
+
+def test_interpolation_reaches_a_markers_kwarg_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${ENV}`` and ``${key.path}`` inside a tag's mapping body substitute at load.
+
+    Measured before the fix: ``Resolver.resolve`` returned Fluids whole, so the
+    literal ``${...}`` rode into the constructed object silently on EVERY path,
+    while the quoted-string spelling of the same target interpolated — two
+    spellings, two answers. Nested plain dicts inside the kwargs interpolate too.
+    """
+    from confluid import configurable, load
+
+    @configurable
+    class _InterpSrc:
+        def __init__(self, input_dir: str = "", tag: str = "", extras: dict = None) -> None:  # type: ignore[assignment]
+            self.input_dir, self.tag, self.extras = input_dir, tag, extras
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    cfg = load(
+        "run:\n"
+        "  name: exp42\n"
+        "src: !class:_InterpSrc()\n"
+        '  input_dir: "${CONFLUID_TEST_ROOT}/files"\n'
+        '  tag: "${run.name}"\n'
+        "  extras:\n"
+        '    nested: "${run.name}-x"\n'
+    )
+    assert cfg["src"].input_dir == "/store/files"
+    assert cfg["src"].tag == "exp42"
+    assert cfg["src"].extras == {"nested": "exp42-x"}
+
+
+def test_interpolation_matches_across_marker_spellings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mapping-body, quoted-string, and Fluid-ROOT spellings substitute identically."""
+    from confluid import configurable, load
+
+    @configurable
+    class _SpellSrc:
+        def __init__(self, input_dir: str = "") -> None:
+            self.input_dir = input_dir
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    body = load('src: !class:_SpellSrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/files"\n')["src"]
+    plain = load('src: {_target_: _SpellSrc, input_dir: "${CONFLUID_TEST_ROOT}/files"}')["src"]
+    root = load('!class:_SpellSrc()\ninput_dir: "${CONFLUID_TEST_ROOT}/files"')
+    assert body.input_dir == plain.input_dir == root.input_dir == "/store/files"
+
+
+def test_interpolation_burns_into_a_lazy_marker_without_building_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``!lazy:`` kwarg substitutes at LOAD (burn-in) while construction stays deferred.
+
+    Round-trip half of the pin: the dumped marker carries the SUBSTITUTED value,
+    so a reload in a different environment reproduces this run — a slot that must
+    stay late-bound uses ``!ref:`` instead.
+    """
+    from confluid import configurable, dump, load
+    from confluid.fluid import PartialClass
+
+    @configurable
+    class _LazySrc:
+        def __init__(self, input_dir: str = "") -> None:
+            self.input_dir = input_dir
+
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
+    marker = load('opt: !lazy:_LazySrc()\n  input_dir: "${CONFLUID_TEST_ROOT}/opt"\n')["opt"]
+    assert isinstance(marker, PartialClass)  # construction still deferred
+    assert marker.kwargs["input_dir"] == "/store/opt"
+    dumped = dump({"opt": marker})
+    assert "/store/opt" in dumped and "${" not in dumped
+    monkeypatch.setenv("CONFLUID_TEST_ROOT", "/elsewhere")
+    reloaded = load(dumped)["opt"]
+    assert reloaded.kwargs["input_dir"] == "/store/opt"  # burned in — reload reproduces
+
+
+# --------------------------------------------------------------------------------------
+# A YAML mapping keeps the key TYPES it was written with.
+# --------------------------------------------------------------------------------------
+
+
+def test_non_string_mapping_keys_survive_load(tmp_path: Path) -> None:
+    """A mapping keyed by int/float reaches its consumer keyed by int/float.
+
+    ``_process_includes_recursive`` rebuilt every dict in the document with ``str(k)``,
+    so a class-id table written ``{1: drone}`` arrived as ``{'1': 'drone'}`` and a lookup
+    by the int id missed. The raw parse had it right the whole time — only this walk broke
+    it, and it had done so since 2026-03-13. (A consumer is free to normalize keys itself;
+    what is fixed here is confluid silently deciding for it.)
+    """
+    cfg = tmp_path / "keys.yaml"
+    cfg.write_text("table:\n  1: one\n  2.5: mid\n  plain: str\n")
+
+    table = load(str(cfg))["table"]
+
+    assert table == {1: "one", 2.5: "mid", "plain": "str"}
+    assert sorted(type(k).__name__ for k in table) == ["float", "int", "str"]
+
+
+def test_non_string_keys_survive_inside_a_markers_kwargs(tmp_path: Path) -> None:
+    """The same, for a mapping handed to a target as a constructor argument."""
+
+    @configurable
+    class Table:
+        def __init__(self, names: Optional[Dict[Any, str]] = None) -> None:
+            self.names = names
+
+    cfg = tmp_path / "marker.yaml"
+    cfg.write_text("node:\n  _target_: Table\n  names:\n    1: one\n    2: two\n")
+
+    assert load(str(cfg))["node"].names == {1: "one", 2: "two"}
+
+
+def test_a_dotted_STRING_key_still_expands_beside_non_string_keys(tmp_path: Path) -> None:
+    """The guard must not cost the dotted-path grammar its job.
+
+    ``expand_dotted_mapping`` asks ``"." in k``, which is why the loader used to stringify
+    everything up front. It now skips non-str keys instead — so a dotted key must still
+    expand in a document that also carries a non-str-keyed table.
+
+    Expansion is TOP-LEVEL only (a nested ``inner.value:`` stays literal); that is
+    pre-existing behaviour, and this pins the level where the two rules actually meet.
+    """
+    cfg = tmp_path / "mixed.yaml"
+    cfg.write_text("inner.value: 7\ntable:\n  1: an int key\n")
+
+    doc = load(str(cfg))
+
+    assert doc["inner"] == {"value": 7}
+    assert doc["table"] == {1: "an int key"}
+
+
+# ---------------------------------------------------------------------------
+# Duplicate mapping keys are REFUSED (BUGS-2026-08-13 P11)
+#
+# The YAML spec restricts a mapping's keys to be unique and lists "mapping keys
+# may not be unique" among its loading failure points, but leaves the processor's
+# response unspecified — PyYAML keeps the LAST value, silently. For confluid that
+# meant `include: a.yaml` … `include: b.yaml` lost a whole FILE before the loader
+# ever ran, and the survivor spliced at the FIRST occurrence's position (a
+# collapsed duplicate keeps first-insertion order), inverting the documented
+# "later line wins" rule. An ordinary duplicated key loses its first value the
+# same way.
+# ---------------------------------------------------------------------------
+
+
+def test_two_include_directives_are_refused(tmp_path: Path) -> None:
+    """The P11 case. Before this, a.yaml was silently never read."""
+    (tmp_path / "a.yaml").write_text("from_a: 1\n")
+    (tmp_path / "b.yaml").write_text("from_b: 2\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: a.yaml\nx: 1\ninclude: b.yaml\n")
+
+    with pytest.raises(ConfigurationError, match="duplicate key 'include'"):
+        load(str(main))
+
+
+def test_a_duplicated_ordinary_key_is_refused() -> None:
+    """`include:` is only the case where the discarded value is a whole file."""
+    with pytest.raises(ConfigurationError, match="duplicate key 'lr'"):
+        load("lr: 0.1\nmodel: {_target_: collections.Counter}\nlr: 0.5")
+
+
+def test_the_refusal_names_both_lines_and_the_file(tmp_path: Path) -> None:
+    """A duplicate is a two-location problem: the reader needs both to fix it."""
+    cfg = tmp_path / "dup.yaml"
+    cfg.write_text("include: a.yaml\nx: 1\ninclude: b.yaml\n")
+
+    with pytest.raises(ConfigurationError) as exc:
+        load(str(cfg))
+
+    message = str(exc.value)
+    assert "dup.yaml:3:1" in message, message  # the second occurrence
+    assert "line 1" in message, message  # the first one it collides with
+
+
+def test_a_duplicate_inside_a_nested_mapping_is_refused() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("outer:\n  size: 1\n  other: 2\n  size: 3\n")
+
+
+def test_a_duplicate_inside_a_markers_own_kwargs_is_refused() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("m:\n  _target_: collections.Counter\n  size: 1\n  size: 2\n")
+
+
+def test_a_duplicate_inside_a_scope_block_is_refused() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("wrap:\n  _scope_: {mode: fast}\n  size: 1\n  size: 2\n")
+
+
+def test_the_valid_multi_file_spelling_still_works(tmp_path: Path) -> None:
+    """One key, a sequence value — the spelling the refusal leaves you with.
+
+    It also honours position, which the duplicate-key form got wrong: `x` is
+    written ABOVE the include, so b.yaml's `x` wins.
+    """
+    (tmp_path / "a.yaml").write_text("from_a: 1\n")
+    (tmp_path / "b.yaml").write_text("from_b: 2\nx: 999\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("x: 1\ninclude: [a.yaml, b.yaml]\n")
+
+    assert load(str(main)) == {"from_a": 1, "from_b": 2, "x": 999}
+
+
+def test_a_merge_key_overridden_by_a_local_key_is_NOT_a_duplicate() -> None:
+    """The false-positive guard that matters most.
+
+    `<<:` merging a key the node also writes literally is ordinary override
+    semantics — the whole point of the idiom — not a duplicate key.
+    """
+    doc = "base: &b\n  size: 1\n  label: base\nderived:\n  <<: *b\n  size: 2\n"
+    assert load(doc)["derived"] == {"size": 2, "label": "base"}
+
+
+def test_the_same_key_in_DIFFERENT_mappings_is_fine() -> None:
+    """Uniqueness is per-mapping, not per-document."""
+    assert load("a: {size: 1}\nb: {size: 2}\n") == {"a": {"size": 1}, "b": {"size": 2}}
+
+
+def test_the_same_key_across_LIST_ITEMS_is_fine() -> None:
+    assert load("items:\n  - size: 1\n  - size: 2\n")["items"] == [{"size": 1}, {"size": 2}]
+
+
+def test_an_include_and_a_local_key_of_the_same_name_across_files_is_fine(tmp_path: Path) -> None:
+    """An included file re-stating a key is a MERGE, not a duplicate — that is
+    the entire point of overlays."""
+    (tmp_path / "base.yaml").write_text("lr: 0.1\nseed: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("include: base.yaml\nlr: 0.5\n")
+
+    assert load(str(main)) == {"lr": 0.5, "seed": 7}
+
+
+def test_same_text_different_TAG_keys_are_not_duplicates() -> None:
+    """Identity is (tag, value), not text.
+
+    `1:` is an int key and `"1":` a str key; PyYAML keeps both, so refusing them
+    would reject a legal document. Same for `yes:` (a YAML boolean) beside `"yes":`.
+    """
+    assert load('table:\n  1: one\n  "1": two\n')["table"] == {1: "one", "1": "two"}
+    assert load('flags:\n  yes: a\n  "yes": b\n')["flags"] == {True: "a", "yes": "b"}
+
+
+def test_the_refusal_binds_the_TAG_spelling_too() -> None:
+    """A behaviour reachable from only one spelling is a bug in that spelling.
+
+    The four tag constructors each built their mapping inline, so a check added
+    to the plain path alone would have left the deprecated spelling silently
+    losing a duplicated key. They now share `_str_keyed_mapping`.
+    """
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("m: !class:Box\n  size: 1\n  size: 2\n")
+
+    with pytest.raises(ConfigurationError, match="duplicate key 'size'"):
+        load("w: !scope:mode=fast\n  size: 1\n  size: 2\n")
+
+
+# ---------------------------------------------------------------------------
+# Legal-but-odd inputs stop crashing raw (BUGS-2026-08-19 PA13 / PA14).
+# ---------------------------------------------------------------------------
+
+
+def test_empty_text_loads_as_an_empty_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PA13 — `load("")` resolved '' to the working DIRECTORY and crashed with a raw
+    IsADirectoryError; empty text is text."""
+    monkeypatch.chdir(tmp_path)
+    assert load("") == {}
+    assert load("   ") == {}
+
+
+def test_a_directory_is_refused_as_not_a_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from confluid import ConfigFileNotFoundError
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "d.yaml").mkdir()
+    with pytest.raises(ConfigFileNotFoundError, match="is a directory, not a config file"):
+        load("d.yaml")
+    with pytest.raises(ConfigFileNotFoundError, match="is a directory"):
+        load(Path("."))
+
+
+def test_an_empty_include_path_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ConfigurationError, match="non-empty path"):
+        load("include: ''\nb: 2\n", until="raw")
+
+
+@pytest.mark.parametrize(
+    "document",
+    ["import: 42\na: 1\n", "import: [os, 42]\na: 1\n", "import: {os: x}\na: 1\n"],
+)
+def test_a_malformed_import_directive_is_refused(document: str) -> None:
+    """PA14 — `import: 42` crashed with a raw TypeError, a mixed list with an
+    AttributeError, and a dict silently imported its KEYS."""
+    with pytest.raises(ConfigurationError, match="import: takes a module name or a list of names"):
+        load(document, until="raw")
+
+
+def test_a_plain_import_still_imports(tmp_path: Path) -> None:
+    assert load("import: os\na: 1\n", until="raw") == {"a": 1}
+
+
+# --------------------------------------------------------------------------- the PA tail
+
+
+def test_a_long_yaml_path_string_still_names_a_file(tmp_path: Path) -> None:
+    """PA17 (BUGS-2026-08-19) — a 255+ character `.yaml` str parsed as YAML TEXT and
+    the path came back as the config; the suffix rule has no length clause."""
+    long_dir = tmp_path / ("x" * 200) / ("y" * 60)
+    long_dir.mkdir(parents=True)
+    config = long_dir / "cfg.yaml"
+    config.write_text("lr: 0.5\n")
+    assert len(str(config)) > 255
+    assert load(str(config)) == {"lr": 0.5}
+
+
+def test_an_import_that_fails_with_any_error_warns_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PA26 — the lifecycle contract says a failed import WARNS; a module with a
+    SyntaxError raised raw through load()."""
+    import sys
+    from types import SimpleNamespace
+
+    import confluid.loader as loader_module
+
+    (tmp_path / "bad_mod_syntax_pa26.py").write_text("def (:\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    records: list = []
+
+    class _Collector(SimpleNamespace):
+        def __getattr__(self, level: str) -> Any:
+            return lambda msg: records.append((level, msg))
+
+    monkeypatch.setattr(loader_module, "logger", _Collector())
+    assert load("import: bad_mod_syntax_pa26\na: 1\n", until="raw") == {"a": 1}
+    assert any(level == "warning" and "SyntaxError" in msg for level, msg in records)
+    sys.modules.pop("bad_mod_syntax_pa26", None)
+
+
+def test_a_nested_import_is_consumed_like_an_include() -> None:
+    """PA26 — `import:` inside a sub-mapping stayed behind as a junk data key."""
+    assert load("sub:\n  import: os\n  a: 1\n", until="raw") == {"sub": {"a": 1}}
+
+
+def test_an_empty_dotted_segment_is_refused(tmp_path: Path) -> None:
+    """PA30 — `a..b: 1` minted a literal '' key nothing can address."""
+    with pytest.raises(ConfigurationError, match=r"EMPTY dotted segment"):
+        load("a..b: 1\n", until="document")
+    with pytest.raises(ConfigurationError, match=r"EMPTY dotted segment"):
+        load("d.: 3\n", until="document")
+    assert load("a.b: 1\n", until="document") == {"a": {"b": 1}}  # the con

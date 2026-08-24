@@ -10,7 +10,7 @@ enforced at three points in a class's lifecycle:
    active mode to :attr:`ValidationPolicy.yaml` around the ``target(**ctor)``
    call so YAML-driven runs can be configured independently of direct-Python
    instantiation.
-3. **MCP tool entrypoints** — navigaitor's subprocess tool bodies call
+3. **MCP tool entrypoints** — an MCP server's subprocess tool bodies call
    :func:`validate_model` on the typed pydantic config before spawning the
    subprocess. Mode comes from :attr:`ValidationPolicy.tool`.
 
@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional, Set, Type
 
 from confluid.exceptions import ValidationModeError
 
@@ -88,7 +89,7 @@ def _contains_fluid(value: Any, fluid_cls: type) -> bool:
     Only descends into the three built-in container shapes that confluid's
     YAML loader actually produces — that's enough to catch
     ``stores=[Class(...)]`` (list-of-Fluids), ``data={"train": Class(...)}``
-    (dict-of-Fluids), and the various ``tuple``-typed kwargs marainer
+    (dict-of-Fluids), and the various ``tuple``-typed kwargs a trainer
     pipelines use. Other custom containers fall back to "concrete" — they
     don't appear in YAML-driven configurations.
     """
@@ -162,12 +163,15 @@ def set_policy(
     """Replace one or more knobs on the active policy and return the new policy."""
     current = get_policy()
     updates: Dict[str, ValidationMode] = {}
+    # Validate against the closed Literal like the env-var reader does — a typo
+    # (``set_policy(init="stict")``) used to be stored and then read as warn-mode
+    # by every ``!= "strict"`` test downstream (BUGS-2026-08-19 N13).
     if init is not None:
-        updates["init"] = init
+        updates["init"] = _normalize_mode(init, env_var="set_policy(init=...)")
     if yaml is not None:
-        updates["yaml"] = yaml
+        updates["yaml"] = _normalize_mode(yaml, env_var="set_policy(yaml=...)")
     if tool is not None:
-        updates["tool"] = tool
+        updates["tool"] = _normalize_mode(tool, env_var="set_policy(tool=...)")
     if not updates:
         return current
     new_policy = replace(current, **updates)
@@ -202,6 +206,13 @@ def override_init_mode(mode: ValidationMode) -> Iterator[None]:
         _policy = previous
 
 
+#: The YAML location of the marker currently being constructed — set by the
+#: engine around ``target(**ctor)`` so the WARN-mode diagnostic below names the
+#: same ``file:line:col`` the strict path's ``ConstructionError`` names (N16,
+#: BUGS-2026-08-19). Empty outside a document-driven construction.
+_construction_where: ContextVar[str] = ContextVar("confluid_construction_where", default="")
+
+
 def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> None:
     """Validate constructor / call kwargs against ``to_pydantic(cls)`` under ``mode``.
 
@@ -218,7 +229,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
       proceed (it may still fail naturally on the bad value).
     * ``"off"`` — return immediately without building the schema.
 
-    Fluid markers (``Class``, ``Instance``, ``Reference``, ``Lazy``, …) in
+    Fluid markers (``Class``, ``Instance``, ``Reference``, ``Partial``, …) in
     ``kwargs`` represent deferred construction — the live object hasn't been
     built yet, so the pydantic ``is_instance_of(<annotated_type>)`` check
     would always fail. The contract is "validate post-flow": when the Fluid
@@ -238,20 +249,16 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     if mode == "off" or not _have_pydantic():
         return
 
-    # Lazy import: ``pydantic_export`` pulls pydantic + inspect, which is
+    # Partial import: ``pydantic_export`` pulls pydantic + inspect, which is
     # heavier than this module needs to be eligible to import. ``Fluid`` is
     # imported lazily too so this module stays importable before fluid.py is
     # fully initialised (the loader → fluid → validation chain runs at startup).
     from pydantic import ValidationError
 
     from confluid.fluid import Fluid
-    from confluid.pydantic_export import to_pydantic
 
-    try:
-        model = to_pydantic(cls)
-    except TypeError:
-        # Class signature not introspectable (e.g. C extension without a
-        # Python wrapper). Skip validation rather than blocking instantiation.
+    model = _model_or_none(cls)
+    if model is None:
         return
 
     # Split kwargs into "concrete" (eager pydantic check) and "deferred"
@@ -279,15 +286,47 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
             # nor "field required" errors. ``validate_assignment`` checks one
             # field against the model's schema; ``model_construct`` builds an
             # un-validated stub instance to give it a target.
+            from confluid.pydantic_export import field_name_for
+
             stub = model.model_construct()
             for name, value in concrete.items():
-                if name not in model.model_fields:
+                field = field_name_for(model, name)
+                if field is None:
                     continue
-                model.__pydantic_validator__.validate_assignment(stub, name, value)
+                model.__pydantic_validator__.validate_assignment(stub, field, value)
     except ValidationError as exc:
         if mode == "strict":
             raise
-        logger.warning(f"{cls.__name__}: invalid configuration\n{exc}")
+        logger.warning(f"{cls.__name__}: invalid configuration{_construction_where.get()}\n{exc}")
+
+
+_unvalidatable_warned: Set[Any] = set()
+
+
+def _model_or_none(cls: Callable[..., Any]) -> Optional[Type[BaseModel]]:
+    """``to_pydantic(cls)``, or ``None`` — logged ONCE per class — when no mirror can be built.
+
+    A constructor must never fail because confluid could not build its schema mirror (a C
+    extension without a Python signature; an annotation ``get_type_hints`` cannot resolve —
+    ``to_pydantic`` raises ``IntrospectionError`` by contract), so the skip stays. It used to
+    be SILENT — ``except TypeError: return`` — which meant a class ran with validation OFF
+    under the default strict policy and nobody knew (BUGS-2026-08-19 N3/N4); and it caught
+    ``TypeError`` alone, so pydantic's own ``SchemaError`` escaped the constructor (N1). Any
+    failure skips now, and says so once per class at WARNING — the condition is actionable
+    (fix the annotation, add the import, or ``@configurable(validate=False)``).
+    """
+    from confluid.pydantic_export import to_pydantic
+
+    try:
+        return to_pydantic(cls)
+    except Exception as exc:  # IntrospectionError, pydantic's TypeError / SchemaError — any of them
+        if cls not in _unvalidatable_warned:
+            _unvalidatable_warned.add(cls)
+            logger.warning(
+                f"{getattr(cls, '__name__', cls)}: validation is OFF for this class — no schema mirror can be built "
+                f"({type(exc).__name__}: {exc})"
+            )
+        return None
 
 
 def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> Optional[str]:
@@ -309,18 +348,18 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
 
     from pydantic import ValidationError
 
-    from confluid.pydantic_export import to_pydantic
-
-    try:
-        model = to_pydantic(cls)
-    except TypeError:
+    model = _model_or_none(cls)
+    if model is None:
         return None
 
-    if name not in model.model_fields:
+    from confluid.pydantic_export import field_name_for
+
+    field = field_name_for(model, name)
+    if field is None:
         return None
 
     try:
-        model.__pydantic_validator__.validate_assignment(model.model_construct(), name, value)
+        model.__pydantic_validator__.validate_assignment(model.model_construct(), field, value)
     except ValidationError as exc:
         if mode == "strict":
             raise
@@ -332,7 +371,7 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:
     """Re-validate an already-constructed pydantic model under ``mode``.
 
-    Pydantic validates at construction, but navigaitor's MCP tool entry needs
+    Pydantic validates at construction, but an MCP tool entry needs
     to surface ``warn`` outcomes as structured warnings without raising. This
     helper redundantly re-validates so the same mode logic applies uniformly.
     """

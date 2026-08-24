@@ -1,7 +1,6 @@
-"""Lazy-init / zero-arg ``@configurable`` classes + post-construction configuration.
+"""Partial-init / zero-arg ``@configurable`` classes + post-construction configuration.
 
-Demonstrates the workspace class-design convention (see confluid ``AGENTS.md`` →
-"Lazy Initialization & Zero-Arg Construction"):
+Demonstrates the class-design convention (``docs/class-design.md``):
 
   * the constructor does **no functional work** — it only stores values;
   * **every parameter is defaulted**, so ``Cls()`` (zero-arg) always works and the
@@ -13,9 +12,7 @@ Demonstrates the workspace class-design convention (see confluid ``AGENTS.md`` �
 
 from typing import Any, List, Optional
 
-import yaml
-
-from confluid import Class, configurable, configure, flow, register
+from confluid import Target, configurable, configure, flow, register
 
 # --- 1. Define modular components ---
 
@@ -23,7 +20,7 @@ from confluid import Class, configurable, configure, flow, register
 @configurable
 class Model:
     def __init__(self, layers: int = 3, dropout: float = 0.1) -> None:
-        # Lazy constructor: only stores config (both knobs defaulted → ``Model()`` works).
+        # Partial constructor: only stores config (both knobs defaulted → ``Model()`` works).
         self.layers = layers
         self.dropout = dropout
 
@@ -32,8 +29,9 @@ class Model:
         """Per-layer weights, derived lazily from the CURRENT ``layers`` (never built in __init__).
 
         A *recomputing* property — not a stored attribute — so it can't go stale when ``layers`` is
-        changed post-construction via ``configure``. (``configure`` introspects an instance by
-        ``getattr``, which would trigger and freeze a *cached* property before the new config lands;
+        changed post-construction via ``configure``. (The configuration machinery itself never
+        executes property getters — it walks instance attributes only — but ordinary domain code
+        reading a *cached* property after reconfiguration would see the frozen pre-config value;
         recomputing reflects current state. Cache only an expensive external materialization whose
         inputs are stable by first use.)
         """
@@ -59,13 +57,13 @@ register(AdamOptimizer, name="Adam")
 @configurable
 class Trainer:
     def __init__(self, model: Optional[Model] = None, epochs: int = 5) -> None:
-        # Lazy constructor, zero-arg constructible: ``model`` defaults to None so ``Trainer()``
+        # Partial constructor, zero-arg constructible: ``model`` defaults to None so ``Trainer()``
         # is valid; the dependency graph is wired afterwards via ``configure`` (build → configure → use).
         self.model = model
         self.epochs = epochs
-        # The optimizer arrives as a deferred recipe (a ``Class`` stub by default, or a
-        # ``!class:Adam(...)`` from YAML). The *live* optimizer is materialized lazily by the property.
-        self.optimizer: Any = Class(AdamOptimizer)
+        # The optimizer arrives as a deferred recipe (a ``Target`` stub by default, or a
+        # ``!class:Adam`` block from YAML). The *live* optimizer is materialized lazily by the property.
+        self.optimizer: Any = Target(AdamOptimizer)
 
     @property
     def built_optimizer(self) -> Any:
@@ -73,7 +71,7 @@ class Trainer:
 
         A recomputing property so it reflects the recipe set by ``configure`` (a cached one could
         freeze the pre-config default — see ``Model.weights``). ``flow`` is idempotent: a recipe
-        (``Class`` / ``!class:`` Fluid) or an already-live object both resolve correctly.
+        (a ``Target`` Fluid) or an already-live object both resolve correctly.
         """
         return flow(self.optimizer)
 
@@ -84,12 +82,18 @@ class Trainer:
 # --- 2. Define the experiment in YAML ---
 
 experiment_yaml = """
-base_lr: 0.0001
+defaults:
+  base_lr: 0.0001
 
 Trainer:
   epochs: 10
-  # Dependency Injection: a deferred Adam recipe, built lazily by Trainer.built_optimizer
-  optimizer: "!class:Adam(lr=!ref:base_lr)"
+  # Dependency Injection: a deferred Adam recipe, built lazily by Trainer.built_optimizer.
+  # `${defaults.base_lr}` is config-key INTERPOLATION: it substitutes at load and burns
+  # the value in, so the recipe carries `lr: 0.0001` and stays flowable later, outside
+  # any document context. `!ref:` would instead stay a late-bound Reference — right
+  # when the whole graph materializes together, wrong for a slot flowed on demand.
+  optimizer: !class:Adam
+    lr: ${defaults.base_lr}
 
 Model:
   layers: 50
@@ -100,7 +104,7 @@ Model:
 def main() -> None:
     # Zero-arg construction works — no functional work happens in any constructor.
     print("--- Zero-Arg Construction ---")
-    print(Trainer())  # Trainer(epochs=5, model=None, optimizer=<Class AdamOptimizer>)
+    print(Trainer())  # Trainer(epochs=5, model=None, optimizer=<Target AdamOptimizer>)
 
     # Build the components, then apply the hierarchical config post-construction.
     model = Model()
@@ -109,9 +113,13 @@ def main() -> None:
     print("\n--- Before Configuration ---")
     print(trainer)
 
-    config_data = yaml.safe_load(experiment_yaml)
-    configure(trainer, config=config_data)
-    configure(model, config=config_data)
+    # `configure` parses a YAML STRING with confluid's own loader, which is what turns
+    # a `!class:` node (or a `_target_:` mapping — both spellings read alike) into a
+    # marker. A plain parser cannot: `yaml.safe_load` refuses the tag and hands the
+    # reserved-key form back as plain data, so let confluid do the parse whenever
+    # you want markers back.
+    configure(trainer, config=experiment_yaml)
+    configure(model, config=experiment_yaml)
 
     print("\n--- After Configuration ---")
     print(trainer)
@@ -120,9 +128,9 @@ def main() -> None:
     assert trainer.model is not None
     print(f"Verified Model Layers: {trainer.model.layers}")
 
-    # Lazy derived state — materialized only now, on first access.
+    # Partial derived state — materialized only now, on first access.
     print(f"Verified Optimizer LR: {trainer.built_optimizer.lr}")
-    print(f"Lazy Model Weights (len): {len(trainer.model.weights)}")
+    print(f"Partial Model Weights (len): {len(trainer.model.weights)}")
 
 
 if __name__ == "__main__":

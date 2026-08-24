@@ -1,0 +1,11 @@
+# fallbacks.yaml — the include-at-the-bottom idiom.
+#
+# Everything above the directive is a FALLBACK: the paste lands after it, so
+# base.yaml overrides all of it. Move `include:` to the top and the opposite
+# holds — the usual "my file wins".
+
+Model:
+  layers: 99
+dropout: 0.5
+
+include: base.yaml

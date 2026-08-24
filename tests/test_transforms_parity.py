@@ -4,6 +4,11 @@ import pytest
 
 from confluid import configurable, configure, get_registry
 
+# Class names are deliberately distinct from ``test_parity.py``'s: confluid's registry
+# keys by name, so two same-named, same-tagged classes in two test modules are a genuine
+# clobber — one silently replaced the other (and now warns) even though each file clears
+# the registry in its own fixture, because module-level decorators run at IMPORT.
+
 
 @pytest.fixture(autouse=True)
 def setup_registry() -> None:
@@ -11,14 +16,14 @@ def setup_registry() -> None:
 
 
 @configurable
-class TransformClass:
+class NoiseTransform:
     def __init__(self, name: str = "noise"):
         self.noise_std = 0.1
         self.name = name
 
 
 @configurable
-class Delegate:
+class TransformDelegate:
     def __init__(self, delegate: Any, enabled: bool = True, name: str = "delegate"):
         self.delegate = delegate
         self.enabled = enabled
@@ -36,8 +41,8 @@ def test_config_transforms_broadcast() -> None:
     """Verify that a top-level key applies to all matching attributes in a hierarchy."""
     pipeline = Compose(
         transforms=[
-            TransformClass(name="noise1"),
-            Delegate(delegate=TransformClass(name="noise2"), name="wrapper"),
+            NoiseTransform(name="noise1"),
+            TransformDelegate(delegate=NoiseTransform(name="noise2"), name="wrapper"),
         ]
     )
 
@@ -56,8 +61,8 @@ def test_config_transforms_scoping() -> None:
     """Verify that scoped paths correctly target specific objects."""
     pipeline = Compose(
         transforms=[
-            TransformClass(name="noise1"),
-            Delegate(delegate=TransformClass(name="noise2"), name="wrapper"),
+            NoiseTransform(name="noise1"),
+            TransformDelegate(delegate=NoiseTransform(name="noise2"), name="wrapper"),
         ]
     )
 
@@ -75,13 +80,13 @@ wrapper.delegate.noise_std: 0.9
 
 def test_mixed_class_and_name_scoping() -> None:
     """Verify ClassName.name.attribute priority."""
-    pipeline = Compose(transforms=[TransformClass(name="noise1"), TransformClass(name="noise2")])
+    pipeline = Compose(transforms=[NoiseTransform(name="noise1"), NoiseTransform(name="noise2")])
 
     configure(
         pipeline,
         config="""
-TransformClass.noise_std: 0.2
-TransformClass.noise1.noise_std: 0.3
+NoiseTransform.noise_std: 0.2
+NoiseTransform.noise1.noise_std: 0.3
 """,
     )
 

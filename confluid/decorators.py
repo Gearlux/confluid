@@ -1,6 +1,6 @@
 import functools
 import inspect
-from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar, Union, cast, overload
+from typing import Any, Callable, Dict, Literal, Optional, Sequence, Tuple, Type, TypeVar, Union, cast, overload
 
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.registry import get_registry
@@ -11,6 +11,31 @@ T = TypeVar("T")
 # function (both are callable), returning the same type. See the "A Target May
 # Be ANY Callable" mandate.
 C = TypeVar("C", bound=Callable[..., Any])
+
+#: The cascade knob shared by :func:`configurable` and :func:`register` — a
+#: closed three-state set: ``True`` (bare/glob keys cascade in), ``False``
+#: (they never land), ``"declared"`` (they land only on declared/scanned
+#: slots, which is what closes a ``**kwargs`` constructor's accept-list).
+Broadcast = Union[bool, Literal["declared"]]
+
+
+def _broadcast_flags(broadcast: Broadcast) -> Tuple[bool, bool]:
+    """``(no_broadcast, broadcast_declared)`` for ``register_class`` — the ONE conversion site.
+
+    Refuses any other value: a misspelled string is truthy, so without the
+    refusal ``broadcast="declred"`` would silently register a fully OPEN class.
+    """
+    if broadcast is True:
+        return (False, False)
+    if broadcast is False:
+        return (True, False)
+    if broadcast == "declared":
+        return (False, True)
+    raise ConfigurableDefinitionError(
+        f"broadcast={broadcast!r} is not a setting — use True (bare keys cascade in), "
+        f"False (they never land), or 'declared' (they land only on declared slots, "
+        f"closing a **kwargs constructor's accept-list)"
+    )
 
 
 @overload
@@ -25,15 +50,17 @@ def configurable(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    framework: Optional[str] = None,
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
     constant: bool = False,
     eager: bool = False,
-    broadcast: bool = True,
+    broadcast: Broadcast = True,
     capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
+    strict_attrs: bool = False,
     display_name: Optional[str] = None,
 ) -> Callable[[C], C]: ...
 
@@ -46,15 +73,17 @@ def configurable(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    framework: Optional[str] = None,
     lazy: bool = False,
     validate: bool = True,
     random: bool = False,
     constant: bool = False,
     eager: bool = False,
-    broadcast: bool = True,
+    broadcast: Broadcast = True,
     capture: bool = True,
     broadcast_attrs: Optional[Sequence[str]] = None,
     strict_typing: bool = False,
+    strict_attrs: bool = False,
     display_name: Optional[str] = None,
 ) -> Union[C, Callable[[C], C]]:
     """Mark a class OR callable as confluid-configurable and register it.
@@ -69,12 +98,12 @@ def configurable(
         name: Optional override for the registration name.
         category: Optional discovery taxonomy bucket (e.g. ``"loss"``,
             ``"model"``, ``"trainer"``). Surfaces via
-            :meth:`ConfluidRegistry.list_classes` and navigaitor's
-            ``list_configurable_classes(category=...)`` MCP tool.
+            :meth:`ConfluidRegistry.list_classes` and an MCP discovery
+            service's category filter.
         group: Optional free-form, path-like sub-grouping WITHIN a category
             (e.g. ``"numpy"``, ``"fft/numpy"``, ``"segmentation"``). Unlike
             ``category`` / ``task`` / ``role`` (which gate *what* is offered),
-            ``group`` only organises presentation: StreamStudio nests a node's
+            ``group`` only organises presentation: a visual editor nests a node's
             palette folder as ``<Package>/<Category>/<group>``. It is NOT part
             of the discovery contract — an absent group simply means the node
             sits directly under ``<Package>/<Category>``.
@@ -83,28 +112,37 @@ def configurable(
             orthogonal decomposition of ``category``: passing both also derives
             ``category=f"{task}_{role}"`` so existing category-based discovery
             keeps working, while ``list_classes(task=..., role=...)`` enables
-            navigaitor's scan-and-generate task surfaces.
+            scan-and-generate task surfaces.
+        framework: Optional engine whose API this class belongs to (``"torch"`` /
+            ``"keras"`` / ``"tensorflow"`` / ``"jax"`` / ``"mlx"`` / ``"sklearn"``).
+            The unit is the **API**, not the tensor runtime: a ``keras.losses.Loss``
+            is ``"keras"`` whether Keras runs on TensorFlow, JAX or PyTorch,
+            because that is what decides whether a given trainer can consume it.
+            Orthogonal to ``task``/``role`` and NOT folded into ``category``:
+            ``task``/``role`` say what a class is FOR, ``framework`` says what it
+            can be WIRED TO. Indexed, so ``list_classes(task=…, role=…,
+            framework=…)`` filters a picker down to compatible candidates.
         role: Optional slot role this class fills for its task (``"model"`` /
             ``"loss"`` / ``"dataset"`` / ``"metric"`` / ``"trainer"``).
-        lazy: When ``True``, stamp ``__confluid_lazy__`` on the class. Marks a
+        lazy: When ``True``, stamp ``__confluid_partial__`` on the class. Marks a
             class whose constructed value should stay **deferred** — a
             runtime-injection slot (e.g. an optimizer needing ``params=`` or a
             DataLoader needing ``dataset=``). Consumers that compose configs read
-            it to emit a ``LazyClass`` (deferred) rather than a live instance —
-            notably StreamStudio's object nodes, which feed a runnable's deferred
+            it to emit a ``PartialClass`` (deferred) rather than a live instance —
+            notably a visual editor's object nodes, which feed a runnable's deferred
             body slots. Independent of ``category``/``task``/``role``.
         random: When ``True``, stamp ``__confluid_random__`` on the class.
             Marks a class whose output is non-deterministic (e.g. stochastic
-            augmentation ops). StreamStudio uses this to inject ``IS_CHANGED``
-            on the generated ComfyUI node so downstream nodes (Preview Image,
-            etc.) always re-execute rather than serving a cached output.
+            augmentation ops). A visual editor uses this to force re-execution of
+            the generated node so downstream nodes always recompute rather
+            than serving a cached output.
         constant: When ``True``, stamp ``__confluid_constant__`` on the class.
             Marks a class whose instances (and declared ``@output`` properties)
             are a PURE function of the constructor config — no I/O, no record
-            input, no hidden state. Exporters may fold/hoist such a value
-            producer into a static config: StreamStudio's ops-export hoists a
-            constant value node as a top-level ``!class:`` entry and rewires
-            its consumers via dotted ``!ref:<name>.<output>`` instead of
+            input, no hidden state. An exporter may fold/hoist such a value
+            producer into a static config: a graph exporter hoists a constant
+            value node as a top-level ``_target_:`` entry and rewires its
+            consumers via dotted ``${ref:<name>.<output>}`` instead of
             dropping the wired values. Mutually exclusive with ``random``.
         eager: When ``True``, stamp ``__confluid_eager__`` on the class.
             Declares that the constructor does REAL WORK from its params
@@ -122,6 +160,15 @@ def configurable(
             ``ClassName:`` / instance-name blocks and ``configure()`` still set
             attributes normally. The param-level counterpart is the
             ``NoBroadcast[T]`` annotation (``confluid.no_broadcast``).
+            When ``"declared"``, stamp ``__confluid_broadcast_declared__``: the
+            accept-list is built from the declared/scanned slots even when the
+            constructor takes ``**kwargs`` — bare/glob keys land only on names
+            the class hierarchy declares (signature params, public class
+            attributes, ``__init__``-body assignments MRO-wide), instead of the
+            accept-EVERYTHING degradation. Constructor routing is untouched:
+            addressed keys still ride ``**kwargs`` into the constructor. A
+            no-op for a class without ``**kwargs``. Any other value raises
+            :class:`ConfigurableDefinitionError`.
         capture: When ``False``, stamp ``__confluid_no_capture__`` on the
             class: constructor kwargs are NOT captured into
             ``__confluid_kwargs__`` — neither by the validation wrap on direct
@@ -148,13 +195,13 @@ def configurable(
             An explicit empty sequence (``broadcast_attrs=[]``) declares "no
             post-init broadcast attrs" and silences that warning.
         strict_typing: When ``True``, stamp ``__confluid_strict_typing__`` on
-            the class. StreamStudio uses this to render ``Union[int, str]``
+            the class. A visual editor uses this to render ``Union[int, str]``
             constructor params as two optional sockets — ``{name}_records``
             (INT, full range) and ``{name}_duration`` (STRING) — instead of
             the default single STRING widget. Whichever socket is
             connected/filled wins; if neither, the constructor default applies.
         display_name: Optional human-readable label for UI surfaces (e.g.
-            StreamStudio palette). Stamped as ``__confluid_display_name__``.
+            a node palette). Stamped as ``__confluid_display_name__``.
             Falls back to the class name when absent.
         validate: When ``True`` (default), wrap ``cls.__init__`` so it
             validates kwargs against :func:`confluid.to_pydantic` under the
@@ -169,12 +216,39 @@ def configurable(
             "a constant's outputs are a pure function of its config, a random class's are not."
         )
 
-    # ``task`` + ``role`` derive ``category`` when an explicit one isn't given,
-    # so a single tag feeds both the orthogonal (task/role) and legacy
-    # (category) discovery paths.
-    effective_category = category or (f"{task}_{role}" if task and role else None)
+    no_broadcast_flag, broadcast_declared_flag = _broadcast_flags(broadcast)
+
+    if cls is not None and not callable(cls) and not isinstance(cls, (staticmethod, classmethod)):
+        # `@configurable("Named")` — the positional slot is the TARGET; a string here
+        # used to travel all the way to register_class and crash with a raw
+        # AttributeError on an unrelated line (BUGS-2026-08-19 R1).
+        raise ConfigurableDefinitionError(
+            f"configurable() takes the class or callable to register as its positional argument, got "
+            f"{cls!r} — a name is a keyword: @configurable(name={cls!r})"
+        )
 
     def decorator(c: C) -> C:
+        if isinstance(c, (staticmethod, classmethod)):
+            # Above the descriptor decorator, @configurable receives the DESCRIPTOR:
+            # wrapping a staticmethod made a plain function (instance calls broke) and
+            # a classmethod object registered as an uncallable target (R3). The working
+            # order applies @configurable to the FUNCTION first.
+            kind = type(c).__name__
+            raise ConfigurableDefinitionError(
+                f"@configurable sits UNDER @{kind}, not above it — write:\n"
+                f"    @{kind}\n    @configurable\n    def ...\n"
+                f"so the function is registered and the descriptor still binds"
+            )
+        if name is None and not isinstance(c, type) and callable(c) and getattr(c, "__name__", None) is None:
+            # Checked on the ORIGINAL callable, before the validation wrap: the wrapper
+            # would carry its own literal name "wrapper" (functools.wraps copies nothing
+            # off a functools.partial / callable instance), and every such target used
+            # to register under "wrapper", each clobbering the last (R2). The test is
+            # for a MISSING __name__ — a function genuinely named `wrapper` is untouched.
+            raise ConfigurableDefinitionError(
+                f"cannot derive a registration name for {c!r}: the target has no __name__. "
+                f"Pass name= (e.g. @configurable(name='build_thing')), or wrap it in a named function"
+            )
         # A @configurable FUNCTION (not a class) gets its CALL validated by a
         # functools.wraps wrapper — the callable analogue of the class
         # __init__ wrap below. Markers + registration then land on the WRAPPER
@@ -188,17 +262,20 @@ def configurable(
         get_registry().register_class(
             c,
             name=name,
-            category=effective_category,
+            category=category,
             group=group,
             task=task,
             role=role,
+            framework=framework,
             lazy=lazy,
             random=random,
             constant=constant,
             eager=eager,
             strict_typing=strict_typing,
+            strict_attrs=strict_attrs,
             display_name=display_name,
-            no_broadcast=not broadcast,
+            no_broadcast=no_broadcast_flag,
+            broadcast_declared=broadcast_declared_flag,
             no_capture=not capture,
             broadcast_attrs=broadcast_attrs,
         )
@@ -220,9 +297,13 @@ def register(
     group: Optional[str] = None,
     task: Optional[str] = None,
     role: Optional[str] = None,
+    framework: Optional[str] = None,
     lazy: bool = False,
     eager: bool = False,
     capture: bool = True,
+    broadcast: Broadcast = True,
+    broadcast_attrs: Optional[Sequence[str]] = None,
+    strict_attrs: bool = False,
 ) -> C:
     """Register a class OR callable (e.g. a third-party class or builder function) as configurable.
 
@@ -238,7 +319,10 @@ def register(
         group: Optional path-like presentation sub-grouping (see :func:`configurable`).
         task: Optional ML task (see :func:`configurable`).
         role: Optional slot role (see :func:`configurable`).
-        lazy: When ``True``, stamp ``__confluid_lazy__`` — the constructed value
+        framework: Optional engine whose API this class belongs to (see
+            :func:`configurable`) — e.g. ``register(nn.CrossEntropyLoss,
+            task="classification", role="loss", framework="torch")``.
+        lazy: When ``True``, stamp ``__confluid_partial__`` — the constructed value
             should stay deferred (a runtime-injection slot like a torch optimizer
             needing ``params=`` / a DataLoader needing ``dataset=``). See
             :func:`configurable`.
@@ -250,9 +334,32 @@ def register(
             (``__confluid_kwargs__``), so heavy/disposable constructor args are
             not kept alive by reference. Costs dump fidelity for transformed
             params. See :func:`configurable`.
+        broadcast: When ``False``, stamp ``__confluid_no_broadcast__`` — no bare
+            or glob-delivered key ever cascades onto instances of this class,
+            while addressed ``ClassName:`` blocks, exact dotted paths and
+            ``configure()`` keep working. The reason this is on ``register`` and
+            not only on :func:`configurable`: a class you do NOT own is exactly
+            the one you cannot fix by declaring parameters. A third-party
+            constructor taking ``**kwargs`` has no accept-list, so confluid errs
+            permissive and every bare key in the document reaches it — and its
+            author never chose that, because they never saw confluid. This is
+            the control that lets the person registering it decide.
+            ``broadcast="declared"`` is the middle setting for exactly that
+            ``**kwargs`` case: the accept-list is built from the declared and
+            scanned slots (signature params, public class attributes,
+            ``__init__``-body assignments MRO-wide — a base consuming
+            ``kwargs.pop("x")`` into ``self.x`` keeps ``x`` broadcastable), so
+            bare/glob keys land only on names the class hierarchy declares.
+            Constructor routing is untouched; a no-op without ``**kwargs``.
+        broadcast_attrs: Explicit ``__init__``-body attribute names to treat as
+            broadcast targets, UNIONED with the AST scan (declaring can never
+            lose scanned names). Same rationale: the scan reads ``__init__``
+            source, which is absent in compiled / frozen / zip deployments, and
+            you cannot add a decorator to a class you do not own.
     """
     effective_category = category or (f"{task}_{role}" if task and role else None)
-    # ``register_class`` stamps the discovery markers (incl. ``__confluid_lazy__``)
+    no_broadcast_flag, broadcast_declared_flag = _broadcast_flags(broadcast)
+    # ``register_class`` stamps the discovery markers (incl. ``__confluid_partial__``)
     # on the class — it tolerates immutable built-ins via try/except.
     get_registry().register_class(
         cls,
@@ -261,17 +368,16 @@ def register(
         group=group,
         task=task,
         role=role,
+        framework=framework,
         lazy=lazy,
         eager=eager,
         no_capture=not capture,
+        no_broadcast=no_broadcast_flag,
+        broadcast_declared=broadcast_declared_flag,
+        broadcast_attrs=broadcast_attrs,
+        strict_attrs=strict_attrs,
     )
     return cls
-
-
-def ignore_config(func: T) -> T:
-    """Decorator to mark a property or attribute to be ignored by configuration/overview."""
-    setattr(func, "__confluid_ignore__", True)
-    return func
 
 
 def output(func: T) -> T:
@@ -284,7 +390,7 @@ def output(func: T) -> T:
         @output
         def trained_model(self) -> nn.Module: ...
 
-    Consumers (StreamStudio runnable nodes, navigaitor's form-spec) read
+    Consumers (a visual editor's runnable nodes, a form-spec service) read
     :func:`confluid.output_specs` to expose these as node OUTPUT sockets. An
     ``@output`` property is read-only / derived, so it is already excluded from
     config introspection (``to_pydantic`` skips setter-less properties) — it never
@@ -322,7 +428,7 @@ def _wrap_callable_with_validation(func: C) -> C:
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # Lazy import to avoid a hard dependency cycle at decorator-import time.
+        # Partial import to avoid a hard dependency cycle at decorator-import time.
         from confluid.validation import get_policy, validate_kwargs
 
         mode = get_policy().init
@@ -393,7 +499,7 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
 
     @functools.wraps(original_init)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> None:
-        # Lazy import to avoid a hard dependency cycle at decorator-import time.
+        # Partial import to avoid a hard dependency cycle at decorator-import time.
         from confluid.validation import get_policy, validate_kwargs
 
         mode = get_policy().init

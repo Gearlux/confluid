@@ -7,7 +7,7 @@ import pytest
 from pydantic import Field
 
 from confluid import configurable, get_registry
-from confluid.lazy import Lazy
+from confluid.partial import Partial
 from confluid.pydantic_export import to_pydantic
 
 
@@ -91,17 +91,20 @@ def test_to_pydantic_preserves_annotated_field_constraints() -> None:
 def test_lazy_param_does_not_leak_marker_and_is_recorded() -> None:
     @configurable
     class C:
-        def __init__(self, opt: Lazy[Any] = None) -> None:
+        def __init__(self, opt: Partial[Any] = None) -> None:
             self.opt = opt
 
     model = to_pydantic(C)
-    # The lazy marker is recorded separately, not left as schema metadata.
+    # The lazy marker never becomes schema metadata; the class-side scan is the
+    # ONE deferred-slot answer (the model-side stamp was removed 2026-08-13).
+    from confluid.partial import partial_param_names
+
     assert "opt" in model.model_fields
-    assert "opt" in getattr(model, "_confluid_lazy_params", frozenset())
+    assert "opt" in partial_param_names(C)
 
 
 # --------------------------------------------------------------------------- #
-# lazy mark (__confluid_lazy__)
+# lazy mark (__confluid_partial__)
 # --------------------------------------------------------------------------- #
 
 
@@ -110,7 +113,7 @@ def test_configurable_lazy_sets_marker() -> None:
     class Opt:
         pass
 
-    assert getattr(Opt, "__confluid_lazy__") is True
+    assert getattr(Opt, "__confluid_partial__") is True
 
 
 def test_configurable_lazy_defaults_false_no_marker() -> None:
@@ -118,7 +121,7 @@ def test_configurable_lazy_defaults_false_no_marker() -> None:
     class Op:
         pass
 
-    assert getattr(Op, "__confluid_lazy__", False) is False
+    assert getattr(Op, "__confluid_partial__", False) is False
 
 
 def test_register_lazy_sets_marker_on_third_party_class() -> None:
@@ -128,7 +131,7 @@ def test_register_lazy_sets_marker_on_third_party_class() -> None:
         pass
 
     register(_ThirdParty, category="loader", lazy=True)
-    assert getattr(_ThirdParty, "__confluid_lazy__") is True
+    assert getattr(_ThirdParty, "__confluid_partial__") is True
 
 
 def test_lazy_marker_survives_reregister_without_lazy() -> None:
@@ -140,7 +143,7 @@ def test_lazy_marker_survives_reregister_without_lazy() -> None:
 
     # Mirror navigaitor's snapshot-restore path (only forwards category).
     get_registry().register_class(Opt, category="optimizer")
-    assert getattr(Opt, "__confluid_lazy__") is True
+    assert getattr(Opt, "__confluid_partial__") is True
 
 
 # --------------------------------------------------------------------------- #
@@ -246,7 +249,7 @@ _ALL_MARKS = (
     "__confluid_group__",
     "__confluid_task__",
     "__confluid_role__",
-    "__confluid_lazy__",
+    "__confluid_partial__",
     "__confluid_random__",
     "__confluid_constant__",
     "__confluid_strict_typing__",
@@ -323,3 +326,199 @@ def test_register_class_stamps_marks_on_third_party_class() -> None:
     assert getattr(ThirdParty, "__confluid_strict_typing__") is True
     assert getattr(ThirdParty, "__confluid_no_broadcast__") is True
     assert not hasattr(ThirdParty, "__confluid_random__")
+
+
+# --------------------------------------------------------------------------- #
+# framework — the third orthogonal axis (which ENGINE's API a class belongs to)
+# --------------------------------------------------------------------------- #
+# `task`/`role` say what a class is FOR; neither says a `torch.nn` loss cannot be
+# handed to a Keras trainer. `framework` is what makes a picker offerable.
+
+
+def test_framework_stamps_the_mark_and_indexes_it() -> None:
+    @configurable(task="classification", role="loss", framework="torch")
+    class TorchLoss:
+        pass
+
+    assert getattr(TorchLoss, "__confluid_framework__") == "torch"
+    assert get_registry().list_classes(framework="torch") == {"TorchLoss"}
+    assert get_registry().list_frameworks() == {"torch"}
+
+
+def test_framework_does_not_pollute_the_derived_category() -> None:
+    """`category` stays `f"{task}_{role}"` — framework is a separate axis, not a suffix."""
+
+    @configurable(task="classification", role="loss", framework="torch")
+    class TorchLoss:
+        pass
+
+    assert getattr(TorchLoss, "__confluid_category__") == "classification_loss"
+    assert get_registry().list_classes(category="classification_loss") == {"TorchLoss"}
+
+
+def test_framework_intersects_with_task_and_role() -> None:
+    """The picker query: a classification loss THIS trainer can actually consume."""
+
+    @configurable(task="classification", role="loss", framework="torch")
+    class TorchLoss:
+        pass
+
+    @configurable(task="classification", role="loss", framework="keras")
+    class KerasLoss:
+        pass
+
+    @configurable(task="classification", role="model", framework="torch")
+    class TorchModel:
+        pass
+
+    reg = get_registry()
+    assert reg.list_classes(task="classification", role="loss", framework="torch") == {"TorchLoss"}
+    assert reg.list_classes(task="classification", role="loss", framework="keras") == {"KerasLoss"}
+    assert reg.list_classes(framework="torch") == {"TorchLoss", "TorchModel"}
+
+
+def test_untagged_classes_are_absent_from_a_framework_filter_but_not_from_discovery() -> None:
+    """Absence is not exclusion: probe WITHOUT the filter to see everything."""
+
+    @configurable(task="classification", role="loss")
+    class UntaggedLoss:
+        pass
+
+    reg = get_registry()
+    assert reg.list_classes(task="classification", role="loss") == {"UntaggedLoss"}
+    assert reg.list_classes(task="classification", role="loss", framework="torch") == set()
+
+
+def test_unknown_framework_returns_empty_rather_than_raising() -> None:
+    @configurable(task="classification", role="loss", framework="torch")
+    class TorchLoss:
+        pass
+
+    assert get_registry().list_classes(framework="mlx") == set()
+
+
+def test_register_tags_a_third_party_class() -> None:
+    """The off-the-shelf path — `register(nn.CrossEntropyLoss, framework="torch")`."""
+    from confluid import register
+
+    class ThirdPartyLoss:
+        pass
+
+    register(ThirdPartyLoss, task="classification", role="loss", framework="torch")
+    assert getattr(ThirdPartyLoss, "__confluid_framework__") == "torch"
+    assert get_registry().list_classes(role="loss", framework="torch") == {"ThirdPartyLoss"}
+
+
+def test_register_tags_a_builder_FUNCTION() -> None:
+    """The case MRO inference cannot cover — a function has no base classes."""
+    from confluid import register
+
+    def build_detector(num_classes: int = 91) -> object:
+        return object()
+
+    register(build_detector, task="detection", role="model", framework="torch")
+    assert getattr(build_detector, "__confluid_framework__") == "torch"
+    assert get_registry().list_classes(task="detection", framework="torch") == {"build_detector"}
+
+
+def test_partial_reregister_keeps_the_framework_mark() -> None:
+    """The fallback template: a re-register that omits `framework` must not drop it."""
+
+    @configurable(task="classification", role="loss", framework="torch")
+    class TorchLoss:
+        pass
+
+    # navigaitor's snapshot restore forwards only name + category.
+    get_registry().register_class(TorchLoss, name="TorchLoss", category="classification_loss")
+
+    assert getattr(TorchLoss, "__confluid_framework__") == "torch"
+    assert get_registry().list_classes(framework="torch") == {"TorchLoss"}
+
+
+def test_clear_resets_the_framework_index() -> None:
+    @configurable(task="classification", role="loss", framework="torch")
+    class TorchLoss:
+        pass
+
+    get_registry().clear()
+    assert get_registry().list_frameworks() == set()
+
+
+def test_marks_is_the_one_public_read_surface_for_the_stamps() -> None:
+    """`marks()` mirrors the raw getattr reads consumers used to hand-roll.
+
+    Inheritance-visible, class/callable/instance all accepted, typed defaults
+    (None for the string axes, False for the flags). The dunders themselves are
+    internal — this record is what a rename must keep working.
+    """
+    from confluid import Marks, configurable, marks
+
+    @configurable(task="classification", role="model", framework="torch", lazy=True)
+    class Tagged:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    m = marks(Tagged)
+    assert isinstance(m, Marks) and m.configurable
+    assert (m.task, m.role, m.framework) == ("classification", "model", "torch")
+    assert m.category == "classification_model"  # derived from task x role
+    assert m.lazy and not m.random and not m.eager
+    assert m.display_name is None and m.broadcast_attrs is None
+    assert marks(Tagged(lr=0.2)) == m  # an instance reads via its class
+
+    class Sub(Tagged):
+        pass
+
+    assert marks(Sub).task == "classification"  # plain getattr — inherited marks visible
+
+    class Untagged:
+        pass
+
+    u = marks(Untagged)
+    assert not u.configurable and u.task is None and not u.lazy
+
+
+def test_a_subclass_restating_role_gets_a_rederived_category() -> None:
+    """R5 (BUGS-2026-08-19) — restating half the taxonomy re-derives `category`
+    from the effective task+role; the stale parent category indexed a METRIC
+    under every LOSS picker."""
+    from confluid import marks
+
+    @configurable(task="classification", role="loss")
+    class R5BaseLoss:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    @configurable(role="metric")
+    class R5AccuracyFromLoss(R5BaseLoss):
+        pass
+
+    m = marks(R5AccuracyFromLoss)
+    assert (m.task, m.role, m.category) == ("classification", "metric", "classification_metric")
+    assert marks(R5BaseLoss).category == "classification_loss", "the parent keeps its own category"
+    reg = get_registry()
+    assert "R5AccuracyFromLoss" not in reg.list_classes(category="classification_loss")
+    assert "R5AccuracyFromLoss" in reg.list_classes(category="classification_metric")
+
+
+def test_register_class_derives_category_like_the_decorator_does() -> None:
+    """R6 (BUGS-2026-08-19) — register_class is the ONE stamping authority, so the
+    derivation lives there; it used to exist only inside configurable()."""
+    from confluid import marks
+
+    class R6Plain:
+        def __init__(self, x: int = 1) -> None:
+            self.x = x
+
+    get_registry().register_class(R6Plain, task="classification", role="model")
+    assert marks(R6Plain).category == "classification_model"
+
+
+def test_an_explicit_category_argument_still_wins_over_derivation() -> None:
+    from confluid import marks
+
+    @configurable(task="segmentation", role="model", category="hand_set")
+    class R56HandSet:
+        pass
+
+    assert marks(R56HandSet).category == "hand_set"

@@ -5,138 +5,116 @@ cycle. The layering is now one-directional:
 
     ``fluid`` (marker data classes, LEAF)
         ↑
-    ``engine`` (this module: flow/cast, materialize/resolve, _flow_recursive,
-                broadcasting/_prepare_kwargs, accept-lists, the ``_ENGINE_STATE``
-                ContextVar + the public ``active_context()``)
+    ``state`` (the ``_ENGINE_STATE`` ContextVar + the public
+                ``active_context()`` / ``collect_report()``)
         ↑
-    ``loader`` (YAML parsing: ConfluidLoader, load/load_config, includes,
+    ``broadcast`` (the ONE precedence rule and its machinery: ``_KeyScope`` /
+                ``_View`` / ``_prepare_kwargs`` / ``_splice_kwargs_at_slot``,
+                the accept-lists, the settability predicates. Materializes
+                nothing — that is what keeps this edge one-directional.)
+        ↑
+    ``engine`` (this module: flow/cast, materialize/resolve, _flow_recursive)
+        ↑
+    ``loader`` (YAML parsing: ConfluidLoader, load, includes,
                 imports, scopes glue)
 
-Two deliberate lazy seams remain (both documented at the site):
-``resolve()`` body-imports ``loader.load`` (str/Path convenience), and
-``resolver._materialize_cursor`` body-imports this module (``_ENGINE_STATE``/``flow``).
+``state`` and ``broadcast`` came out of this module (2026-08-03): the ordered-merge
+rule was implemented twice — here and, over live objects, in ``configurator`` — and
+the two copies diverged four separate ways in a single day, three of them silently.
+Both callers now import the one module. Names with users stay importable from here
+(the caches, ``_prepare_kwargs``, …); zero-user compat re-exports are pruned as
+found — sixteen so far, ledger in the AGENTS broadcast mandate and the CHANGELOG.
+NEW code imports from the real home (``confluid.broadcast`` / ``confluid.state``).
 
-``confluid.loader`` re-exports the moved names for backward compatibility —
-new code should import from here.
+No lazy seam: this module works on PREPARED data only (``settle`` = pass 7,
+``materialize`` = passes 7–9) and imports nothing from ``loader``.
+
+(The loader's own compat re-export block was pruned 2026-08-08 — it had zero
+users; only its real ``materialize`` / ``settle`` dependency remains. New code
+imports engine names from ``confluid.engine`` or, better, the real home
+modules ``confluid.broadcast`` / ``confluid.state``.)
 """
 
-import inspect
-from contextlib import contextmanager
-from contextvars import ContextVar
+import weakref
 from copy import copy
-from dataclasses import dataclass, replace
-from enum import Enum
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Type
+from dataclasses import replace
+from typing import Any, Dict, FrozenSet, Optional, Set, Tuple, Type
 
 from loggair import get_logger
 
-from confluid.exceptions import ConstructionError, ReferenceResolutionError, UnknownClassError
-from confluid.fluid import Class, Clone, Fluid, Instance, Lazy, Reference, T, format_yaml_loc
-from confluid.introspect import baked_init_attrs, init_setattr_names, init_source_available
-from confluid.merger import expand_dotted_keys
-from confluid.registry import get_registry, resolve_class
+# Broadcasting moved to `confluid.broadcast` — the ordered-merge rule was
+# implemented twice (here and over live objects in `configurator`) and the copies
+# diverged; one module both import is what stops that. Names below are engine
+# dependencies; the caches double as compat re-exports for test suites that
+# reach them via `engine.<cache>` (zero-user re-exports are pruned as found —
+# the ledger lives in the AGENTS broadcast mandate and the CHANGELOG).
+from confluid.broadcast import (  # noqa: F401
+    _acceptable_keys_cache,
+    _broadcast_pool,
+    _cache_key,
+    _cascade_scalar_positions,
+    _get_acceptable_keys,
+    _is_glob_key,
+    _KeyScope,
+    _late_bare_keys_per_slot,
+    _param_kind_cache,
+    _pop_glob_routing,
+    _prepare_kwargs,
+    _receiver_cache,
+    _settability_target,
+    _splice_kwargs_at_slot,
+    _View,
+    clear_pass_caches,
+    dict_at_slot_kind,
+    holds_marker,
+    merge_bare_pool_into_kwargs,
+    refuse_if_undeclared,
+    refuse_if_variadic_name,
+    register_pass_cache,
+    trace_enabled,
+    tune_marker,
+)
+from confluid.exceptions import (
+    AmbiguousClassError,
+    ConfigurationError,
+    ConstructionError,
+    ReferenceResolutionError,
+    UnknownClassError,
+)
+from confluid.fluid import (
+    Fluid,
+    PartialClass,
+    Reference,
+    T,
+    Target,
+    _at_yaml_loc,
+    addressed_keys_of,
+    format_yaml_loc,
+    is_order_resolved,
+    late_bare_keys_of,
+)
+from confluid.introspect import init_callable, init_setattr_names, slot_names, slots
+from confluid.partial import partial_param_names
+from confluid.registry import _resolve_selector_values, get_registry, parse_target_spec, resolve_class
 from confluid.report import ConfigurationReport
-from confluid.resolver import Resolver, resolve_reference_path
+from confluid.resolver import PATH_MISS, Resolver, refuse_attribute_reference, resolve_reference_path
+
+# The engine state moved to `confluid.state` so `confluid.broadcast` can read
+# the ambient report without importing the engine (see that module's docstring
+# for the layering). These are the engine's own dependencies — the public
+# `active_context` / `collect_report` seams live in `confluid.state` and
+# `confluid` top-level.
+from confluid.state import _ENGINE_STATE, _active_report, _EngineState, get_active_context
 
 logger = get_logger("confluid.engine")
 
-
-@dataclass(frozen=True)
-class _EngineState:
-    """Immutable per-context engine state (one ContextVar, set/reset by token).
-
-    A ``contextvars.ContextVar`` — not ``threading.local()`` — so an active
-    materialization context is inherited by asyncio tasks and by
-    ``asyncio.to_thread`` workers (a ``threading.local`` silently dropped it,
-    making ``!ref:`` resolution fail inside an event-loop task). A raw
-    ``Thread`` / ``run_in_executor`` still does NOT inherit contextvars — see
-    :func:`active_context` for the boundary contract.
-    """
-
-    context: Optional[Dict[str, Any]] = None
-    flow_memo: Optional[Dict[int, Any]] = None
-    instance_memo: Optional[Dict[int, Any]] = None
-    suppress_solidify: bool = False
-    # Ambient ConfigurationReport installed by collect_report(). Mutable by
-    # design (like the memo dicts riding this frozen dataclass); every
-    # instrumentation site is ``if report is not None``-guarded so the
-    # default path stays zero-cost.
-    report: Optional[ConfigurationReport] = None
-
-
-_ENGINE_STATE: ContextVar[_EngineState] = ContextVar("confluid_engine_state", default=_EngineState())
-
-
-def get_active_context() -> Optional[Dict[str, Any]]:
-    return _ENGINE_STATE.get().context
-
-
-@contextmanager
-def active_context(context: Optional[Dict[str, Any]]) -> Iterator[None]:
-    """Activate ``context`` for bare ``flow()`` calls inside the block.
-
-    The public way to make ``!ref:``/broadcast resolution work for ``flow()``
-    calls made OUTSIDE a ``materialize()`` pass (e.g. domain code flowing a
-    deferred ``Lazy`` slot later, on another thread). Fresh flow/instance memos
-    are installed so dotted refs share one instance within the block; the
-    previous state is restored on exit (nesting-safe).
-
-    The mapping is activated VERBATIM when it has no dotted keys — live
-    instances in the context keep their identity (``flow(Reference("x")) is
-    ctx["x"]``). A context WITH dotted keys is expanded like ``materialize``
-    does (``expand_dotted_keys`` deep-copies non-Fluid leaves, so prefer
-    pre-nested dicts when identity of live values matters).
-
-    Thread/async boundary contract: the state rides a ``contextvars.ContextVar``,
-    so it IS inherited by asyncio tasks and ``asyncio.to_thread`` workers. It is
-    NOT inherited by a raw ``threading.Thread`` or ``loop.run_in_executor`` —
-    either wrap the target with ``contextvars.copy_context().run(...)`` or enter
-    ``active_context(...)`` inside the worker itself.
-    """
-    ctx = expand_dotted_keys(context) if context and any("." in k for k in context) else context
-    # Fresh memos, but the ambient report (collect_report) carries forward —
-    # a fresh state would silently stop the pass's tracking.
-    token = _ENGINE_STATE.set(_EngineState(context=ctx, flow_memo={}, instance_memo={}, report=_active_report()))
-    try:
-        yield
-    finally:
-        _ENGINE_STATE.reset(token)
-
-
-def _active_report() -> Optional[ConfigurationReport]:
-    """The ambient ConfigurationReport, if a ``collect_report()`` block is active."""
-    return _ENGINE_STATE.get().report
-
-
-@contextmanager
-def collect_report() -> Iterator[ConfigurationReport]:
-    """Collect a :class:`ConfigurationReport` for everything inside the block.
-
-    The engine-side counterpart of the report :func:`confluid.configure`
-    returns: ``load()`` / ``materialize()`` / ``flow()`` calls inside the
-    block record their applied broadcasts and document keys into the yielded
-    report, and a nested ``configure()`` adopts (and returns) the same
-    ambient report — so one report spans a load-then-configure pass::
-
-        with collect_report() as report:
-            model = load("config.yaml")
-            configure(model, config=overrides)
-        print(report.summary())
-
-    Nesting-safe: an already-active report is reused (the inner block
-    aggregates into it). On exit the aggregate unused-keys DEBUG summary is
-    logged once, by the outermost block only.
-    """
-    state = _ENGINE_STATE.get()
-    owns = state.report is None
-    report = state.report or ConfigurationReport()
-    token = _ENGINE_STATE.set(replace(state, report=report))
-    try:
-        yield report
-    finally:
-        _ENGINE_STATE.reset(token)
-        if owns:
-            report.log_unused()
+# Engine-owned introspection cache: non-@configurable ancestor attributes per
+# class (see _get_parent_attr_blacklist). Its OWN dict — it used to squat in a
+# broadcast-owned cache under suffixed '#parent_blacklist' keys,
+# violating that module's stated cache ownership. Registered with the ONE
+# per-pass clear (broadcast.clear_pass_caches — fired by materialize / resolve
+# / configure), so it never needs a second clear site.
+_parent_blacklist_cache: Dict[Any, FrozenSet[str]] = register_pass_cache({})
 
 
 def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any]) -> None:
@@ -151,251 +129,175 @@ def _register_document_keys(report: ConfigurationReport, config: Dict[str, Any])
     for k, v in config.items():
         if k in ("*", "**") and isinstance(v, dict):
             report.add_config_keys(f"{k}.{leaf}" for leaf, lv in v.items() if not isinstance(lv, dict))
-        elif not _contains_fluid(v):
+        elif not _is_definition_shaped(v):
             report.add_config_keys((k,))
 
 
-def _contains_fluid(value: Any) -> bool:
-    """True when ``value`` is / transitively holds a Fluid marker, or is a list."""
+def _is_definition_shaped(value: Any) -> bool:
+    """True when ``value`` is / transitively holds a Fluid marker, or is a list.
+
+    Named for its one JOB — excluding node DEFINITIONS from unused-key tracking —
+    because ``validation._contains_fluid`` shares neither its semantics (it treats
+    ANY list as fluid-shaped and never recurses tuples) nor its purpose, and the
+    shared name was a de-duplication trap.
+    """
     if isinstance(value, Fluid) or isinstance(value, list):
         return True
     if isinstance(value, dict):
-        return any(_contains_fluid(v) for v in value.values())
+        return any(_is_definition_shaped(v) for v in value.values())
     return False
 
 
 def materialize(data: Any, context: Optional[Dict[str, Any]] = None, solidify: bool = True) -> Any:
-    """Resolve config data and instantiate all Class objects recursively.
+    """Passes 7–9 on PREPARED data: settle, build every ``Target``, solidify.
+
+    The engine's entry — NOT a public name: the public spelling is ``load(x)``
+    (``load`` runs the passes an input still needs and ends here). Kept as the
+    engine's own function because a bare registry-configurable TYPE flowed
+    directly (:func:`_flow_bare_type`) also enters here.
 
     Within a single materialize pass, identical raw markers (reached directly
-    or via ``!ref:``) produce a single flowed ``Instance`` object, which is
-    materialized into a single live instance. ``!clone:`` opts out of this
-    sharing with an explicit deepcopy.
+    or via ``${ref:...}``) flow to a single marker object, which is
+    materialized into a single live instance. A marker written TWICE is two
+    instances — that is the one spelling for independence.
 
     ``solidify=False`` suppresses the post-flow ``solidify()`` hook for every
-    object built in this pass (see :func:`confluid.fluid.flow`) — for static
+    object built in this pass (see :func:`flow`) — for static
     introspection that needs live objects but must NOT pay for the expensive
     finalize (e.g. building a model backbone). The objects are still fully
     constructed (``__init__`` only stores values per the zero-arg / lazy-init
     convention), just not solidified.
     """
-    _acceptable_keys_cache.clear()
-    _post_init_attrs_cache.clear()
-    _param_kind_cache.clear()
-    if context:
-        context = expand_dotted_keys(context)
+    clear_pass_caches()
+    # Passes 5–6 (interpolation, dotted-key expansion) are NOT run here: ``load``
+    # runs them once, for ``data`` and for an explicit ``context``, before it hands
+    # the engine PREPARED data. The second walk this used to run cost 2.9 ms per
+    # 2,500-marker load (~1 %, measured 2026-08-17) — it went for ONE reason, not
+    # for speed: the pass has one home. ``_flow_bare_type`` reaches here with the
+    # ACTIVE context, which is a document ``load`` already prepared.
     report = _active_report()  # carry the ambient report through the fresh state
     if report is not None and isinstance(context, dict):
         _register_document_keys(report, context)
     token = _ENGINE_STATE.set(
-        _EngineState(context=context, flow_memo={}, instance_memo={}, suppress_solidify=not solidify, report=report)
+        _EngineState(
+            context=context,
+            flow_memo={},
+            instance_memo={},
+            memo_keepalive=[],
+            suppress_solidify=not solidify,
+            report=report,
+        )
     )
     try:
         result = _flow_recursive(data, parent_context=context)
-        return _deep_flow(result)
+        return instantiate(result)
     finally:
         _ENGINE_STATE.reset(token)
 
 
-def resolve(
-    data: Any,
-    *,
-    context: Optional[Dict[str, Any]] = None,
-    scopes: Optional[List[str]] = None,
-) -> Any:
-    """Broadcast-resolve a config to a Fluid marker graph WITHOUT instantiating.
+def settle(data: Any, *, context: Optional[Dict[str, Any]] = None) -> Any:
+    """Pass 7 alone — broadcast-resolve a PREPARED document to its settled marker graph.
 
-    Like :func:`materialize`, but stops before ``_deep_flow``: it parses,
-    resolves scopes/includes, applies broadcasting and ``!ref:`` resolution
-    (sharing referenced markers by identity via ``flow_memo`` — so a fan-out
-    ``!ref:`` is one object reached twice), and returns the resulting
-    ``Instance`` / ``Lazy`` / ``Class`` markers with their broadcast siblings
-    merged into ``.kwargs`` — WITHOUT constructing any live object.
-
-    Use for static structural introspection of a config (e.g. StreamStudio's
-    YAML→graph import) when even side-effect-free construction is undesirable.
+    Like :func:`materialize`, but stops before ``instantiate``: it applies
+    broadcasting and reference resolution (sharing referenced markers by
+    identity via ``flow_memo`` — so a fan-out ``${ref:...}`` is one object
+    reached twice), and returns the resulting ``Target`` / ``PartialClass`` markers
+    with their broadcast siblings merged into ``.kwargs`` — WITHOUT constructing
+    any live object. ``data`` is the pass-6 document (``load(x,
+    until="document")`` — interpolated and dotted-expanded, as is an explicit
+    ``context``; neither pass runs here); the public spelling is ``load(x, until="settled")``,
+    which is what a graph editor's YAML→graph import and ``hydraide`` read.
     ``materialize(data, solidify=False)`` is the instantiate-but-cheap
     counterpart; prefer it unless you specifically need un-built markers.
 
-    Caveat: a *dotted* ``!ref:a.b`` (attribute/method access) still instantiates
-    its target subtree to read the attribute — plain whole-object ``!ref:name``
-    stays a marker.
+    A *dotted* reference (``${ref:a.b}`` — attribute/method access) stays a
+    ``Reference`` here, exactly as a plain whole-object ``${ref:name}`` does:
+    reading ``split.train`` would mean BUILDING ``split``, and this function
+    constructs nothing. Use ``load()`` when you want the attribute's value —
+    it still resolves it off ONE shared instance.
     """
-    # The ONE deliberate engine->YAML seam: resolve() accepts a str/Path for
-    # convenience, which needs the YAML loader. Lazy import keeps the module
-    # graph one-directional (loader imports engine at top level, not vice versa).
-    from confluid.loader import load
-
-    prepared = load(data, flow=False, context=context, scopes=scopes)
-    ctx = context if context is not None else (prepared if isinstance(prepared, dict) else None)
-    if ctx:
-        ctx = expand_dotted_keys(ctx)
-    _acceptable_keys_cache.clear()
-    _post_init_attrs_cache.clear()
-    _param_kind_cache.clear()
+    ctx = context if context is not None else (data if isinstance(data, dict) else None)
+    clear_pass_caches()
     # replace() (not a fresh _EngineState) deliberately leaves suppress_solidify
-    # untouched — resolve() never managed that flag (it builds no objects).
-    token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), context=ctx, flow_memo={}, instance_memo={}))
+    # untouched — settle() never managed that flag (it builds no objects).
+    token = _ENGINE_STATE.set(
+        replace(
+            _ENGINE_STATE.get(),
+            context=ctx,
+            flow_memo={},
+            instance_memo={},
+            memo_keepalive=[],
+        )
+    )
     try:
-        return _flow_recursive(prepared, parent_context=ctx)
+        return _flow_recursive(data, parent_context=ctx)
     finally:
         _ENGINE_STATE.reset(token)
 
 
-def _deep_flow(data: Any) -> Any:
-    """Flow the top-level Fluid + any Instance objects in the tree.
+def instantiate(data: Any) -> Any:
+    """Build every ``Target`` in a SETTLED tree, at any depth — pass 8 (record 19, phase 3).
 
-    ``Lazy`` Fluids are left deferred at every level — they are
-    runtime-injection points whose construction happens later (e.g.
-    inside ``configure_optimizers`` once ``model.parameters()`` is
-    available). Flowing them here would either fail (missing runtime
-    args) or produce a partially-initialized object.
+    The tree is what pass 7 (``_flow_recursive`` — the document ``hydraide`` emits) produced:
+    every marker carries its final kwargs, every reference is resolved. So this walk is
+    plain: a ``Target`` is built (its nested markers are built by ``flow`` from their own
+    settled kwargs, a marker reached twice — a YAML alias, a shared reference — builds once
+    through the instance memo); a ``PartialClass`` stays deferred (a runtime-injection point,
+    built later by ``flow(partial, **runtime)`` with its nested markers); dicts and lists
+    are walked recursively, so a marker inside a plain mapping or list is built too — it
+    used to descend ONE level and hand back an unbuilt marker (F4).
     """
-    _flow = flow  # same-module; alias keeps the moved body verbatim
-
-    def _maybe_flow(v: Any) -> Any:
-        if isinstance(v, Lazy):
-            return v
-        if isinstance(v, Instance):
-            return _flow(v)
-        return v
-
-    if isinstance(data, Lazy):
-        return data
+    if isinstance(data, Target):
+        collapse_escapes(data)
+        return data if data.partial else flow(data)
     if isinstance(data, Fluid):
-        return _flow(data)
+        collapse_escapes(data)
+        return flow(data)
     if isinstance(data, dict):
-        return {k: _maybe_flow(v) for k, v in data.items()}
+        return {_unescape(k): instantiate(v) for k, v in data.items()}
     if isinstance(data, list):
-        return [_maybe_flow(item) for item in data]
-    return data
+        return [instantiate(item) for item in data]
+    return _unescape(data)
 
 
-_acceptable_keys_cache: Dict[str, Optional[frozenset[str]]] = {}
-_post_init_attrs_cache: Dict[str, frozenset[str]] = {}
-# Per-class: ``{param_name: "dict" | "list" | None}`` — None means "not annotated
-# as a dict/list-shaped type" (default scalar/Fluid-only broadcast rules apply).
-_param_kind_cache: Dict[str, Dict[str, Optional[str]]] = {}
-# Classes already warned about an unscannable ``__init__`` (compiled/frozen —
-# see :func:`_warn_if_init_unscannable`). Deliberately NOT cleared by
-# materialize/resolve: those clear the attr caches once per pass, which would
-# re-fire the warning on every config load. One warning per class per process.
-_warned_unscannable_inits: Set[str] = set()
+def _unescape(value: Any) -> Any:
+    """`$$` → `$` on a string — the document escape collapsing into the object world."""
+    return value.replace("$$", "$") if isinstance(value, str) and "$$" in value else value
 
 
-def _same_target(fluid_target: Any, cls: Callable[..., Any]) -> bool:
-    """True if ``fluid_target`` resolves to the same class object as ``cls``.
-
-    Identity-only comparison: two classes that share a short name across
-    different modules are NOT considered "same". This prevents the
-    self-broadcast guard from over-skipping fluids whose target happens to
-    share a name with the receiving class.
-
-    Handles three cases:
-      * ``fluid_target`` IS ``cls`` — fast path.
-      * ``fluid_target`` is a string and ``resolve_class`` resolves it to
-        ``cls`` — registry-confirmed match.
-      * ``fluid_target`` is a string equal to the fully-qualified
-        ``cls.__module__.__qualname__`` — last-resort match for classes
-        that aren't registered yet but whose dotted path is unambiguous.
-
-    Bare-name strings (``"Trainer"``) that can't be registry-resolved are
-    treated as "not same" — better to broadcast and let the receiver's
-    accept-list filter than to silently skip across module boundaries.
-    """
-    if fluid_target is cls:
-        return True
-    if isinstance(fluid_target, str):
-        resolved = resolve_class(fluid_target)
-        if resolved is cls:
-            return True
-        qualified = f"{cls.__module__}.{cls.__qualname__}"
-        if fluid_target == qualified:
-            return True
-    return False
+def collapse_escapes(node: Any) -> None:
+    """Collapse `$$` in a marker's kwargs / a mapping IN PLACE (keys and values, any depth) —
+    ONCE, at the document→objects boundary (PA14/CD5): pass 6 keeps the escape opaque so the
+    document stage is idempotent, and `dump()` re-escapes live strings, so the round trip holds."""
+    if isinstance(node, Fluid):
+        _collapse_dict(node.kwargs)
+    elif isinstance(node, dict):
+        _collapse_dict(node)
 
 
-def _get_post_init_attrs(target: type) -> frozenset[str]:
-    """Extract attribute names assigned in ``__init__`` bodies via AST.
-
-    Walks the class MRO, parses each class's ``__init__`` source, and collects
-    every ``self.<name> = ...`` target. Private names (underscore-prefixed) are
-    skipped to avoid broadcasting into implementation details. Results cache
-    per-class by dotted module name.
-
-    This is what lets broadcasting see post-init attributes (e.g.
-    ``self.loss_fn = nn.CrossEntropyLoss()`` in a Trainer's ``__init__``
-    body) in addition to the constructor signature — so a top-level YAML
-    ``loss_fn: !class:...`` flows into the Trainer without the user
-    duplicating the key under the trainer block.
-    """
-    cache_key = f"{target.__module__}.{target.__qualname__}"
-    if cache_key in _post_init_attrs_cache:
-        return _post_init_attrs_cache[cache_key]
-
-    # Declared escape hatch: ``@configurable(broadcast_attrs=[...])``. UNIONED
-    # with the scanned names, never a replacement — declaring can't lose scanned
-    # attrs (redundant in dev checkouts, load-bearing in compiled/frozen
-    # deployments where ``inspect.getsource`` fails and the scan is empty).
-    declared = getattr(target, "__confluid_broadcast_attrs__", None)
-    names: Set[str] = set(declared or ())
-    try:
-        mro = target.__mro__
-    except AttributeError:
-        result = frozenset(names)
-        _post_init_attrs_cache[cache_key] = result
-        return result
-
-    for klass in mro:
-        if klass is object:
-            continue
-        init = klass.__dict__.get("__init__")
-        if init is None:
-            continue
-        scanned = init_setattr_names(init)
-        names.update(scanned)
-        if not scanned:
-            # Source unavailable (compiled/frozen) or a genuinely empty body:
-            # fall back to the build-time bake table (``python -m confluid.bake``,
-            # emitted while source still existed). An empty-body class bakes an
-            # empty entry, so the union is a no-op for it. Applies per MRO
-            # class, so baked in-package base classes contribute too.
-            names.update(baked_init_attrs(klass) or ())
-
-    if declared is None:
-        _warn_if_init_unscannable(target, cache_key)
-
-    result = frozenset(names)
-    _post_init_attrs_cache[cache_key] = result
-    return result
+def _collapse_dict(mapping: Dict[str, Any]) -> None:
+    for key in list(mapping):
+        value = mapping[key]
+        if isinstance(value, Fluid):
+            collapse_escapes(value)
+        elif isinstance(value, dict):
+            _collapse_dict(value)
+        elif isinstance(value, list):
+            mapping[key] = [_collapse_item(item) for item in value]
+        else:
+            mapping[key] = _unescape(value)
+        new_key = _unescape(key)
+        if new_key != key:
+            mapping[new_key] = mapping.pop(key)
 
 
-def _warn_if_init_unscannable(target: type, cache_key: str) -> None:
-    """Warn ONCE per class when the TARGET's own ``__init__`` can't be AST-scanned.
-
-    In compiled / frozen / zip deployments ``inspect.getsource`` raises, the
-    body scan silently returns empty, and post-init broadcast attrs vanish —
-    a dev-vs-packaged behavioral divergence with no other diagnostic. Fires
-    only for the target's OWN ``__init__`` (from ``target.__dict__``) on a
-    ``@configurable`` class with no ``broadcast_attrs`` declaration AND no
-    build-time bake-table entry (``confluid.bake``); MRO parents with
-    unreadable source stay silent (builtins are normal).
-    """
-    if cache_key in _warned_unscannable_inits:
-        return
-    if not getattr(target, "__confluid_configurable__", False):
-        return
-    own_init = target.__dict__.get("__init__")
-    if own_init is None or init_source_available(own_init):
-        return
-    if baked_init_attrs(target) is not None:
-        return  # covered by a build-time bake table — packaged mode is healthy
-    _warned_unscannable_inits.add(cache_key)
-    logger.warning(
-        f"cannot scan __init__ body of {cache_key} (source unavailable — compiled/frozen?): "
-        f"post-init broadcast attrs are invisible; run 'confluid-bake <package>' at build time "
-        f"or declare @configurable(broadcast_attrs=[...])"
-    )
+def _collapse_item(item: Any) -> Any:
+    if isinstance(item, (Fluid, dict)):
+        collapse_escapes(item)
+        return item
+    if isinstance(item, list):
+        return [_collapse_item(i) for i in item]
+    return _unescape(item)
 
 
 def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
@@ -420,15 +322,16 @@ def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
     from ``vars(obj)`` so the configurable surface reflects only what the
     user (and Confluid's own broadcast machinery) put there.
     """
-    cache_key = f"{cls.__module__}.{cls.__qualname__}#parent_blacklist"
-    if cache_key in _post_init_attrs_cache:
-        return _post_init_attrs_cache[cache_key]
+    cache_key = _cache_key(cls)
+    hit = _parent_blacklist_cache.get(cache_key)
+    if hit is not None:
+        return hit
 
     blacklist: Set[str] = set()
     try:
         mro = cls.__mro__
     except AttributeError:
-        _post_init_attrs_cache[cache_key] = frozenset()
+        _parent_blacklist_cache[cache_key] = frozenset()
         return frozenset()
 
     for klass in mro:
@@ -450,7 +353,7 @@ def _get_parent_attr_blacklist(cls: type) -> frozenset[str]:
             blacklist.update(init_setattr_names(init))
 
     result = frozenset(blacklist)
-    _post_init_attrs_cache[cache_key] = result
+    _parent_blacklist_cache[cache_key] = result
     return result
 
 
@@ -467,7 +370,7 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
     declared, a post-construction setattr the user did themselves, or one
     Confluid's broadcast/Enable machinery wrote on the instance.
 
-    See [confluid/confluid/loader.py:_get_parent_attr_blacklist] for the
+    See :func:`_get_parent_attr_blacklist` (this module) for the
     blacklist construction.
     """
     cls = obj.__class__
@@ -475,795 +378,20 @@ def get_configurable_attrs(obj: Any) -> frozenset[str]:
     return frozenset(name for name in vars(obj).keys() if not name.startswith("_") and name not in blacklist)
 
 
-def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
-    """Return constructor params (+ configurable properties + post-init attrs) for a class.
-
-    Accepts either a class object or a string name (resolved via registry).
-    Returns None if the class cannot be resolved or accepts **kwargs (broadcast everything).
-
-    For ``@configurable`` targets the result also includes attribute names
-    assigned in the class's ``__init__`` body (via AST inspection). This
-    makes broadcasting see post-init attributes such as
-    ``self.loss_fn = nn.CrossEntropyLoss()`` even though they aren't listed
-    in the constructor signature — so a top-level YAML key matching one of
-    those names flows into the target without having to be duplicated under
-    the target's block.
-
-    Resolution order: a string name is resolved to its class FIRST, then
-    cached under the resolved class's fully-qualified name. This prevents
-    two classes that share a short name across different modules from
-    silently inheriting one another's accept-list.
-    """
-    target: Any
-    if isinstance(cls_or_name, type):
-        target = cls_or_name
-    else:
-        # Always resolve the string first so the cache key is module-qualified.
-
-        resolved = resolve_class(cls_or_name)
-        if resolved is None:
-            # Truly unresolvable — cache the negative result under the raw
-            # name so repeated lookups stay O(1). Two modules with the same
-            # unresolvable name collide, but the value is None in both cases
-            # so the collision is benign.
-            if cls_or_name in _acceptable_keys_cache:
-                return _acceptable_keys_cache[cls_or_name]
-            _acceptable_keys_cache[cls_or_name] = None
-            return None
-        target = resolved
-
-    cache_key = f"{target.__module__}.{target.__qualname__}"
-    if cache_key in _acceptable_keys_cache:
-        return _acceptable_keys_cache[cache_key]
-
-    keys: Set[str] = set()
-    try:
-        init_method = getattr(target, "__init__", None)
-        if init_method is None:
-            _acceptable_keys_cache[cache_key] = None
-            return None
-        sig = inspect.signature(init_method)
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-            # A **kwargs constructor makes the accept-list unknowable, and the
-            # gates treat ``None`` as accept-EVERYTHING: every bare top-level /
-            # glob-delivered key broadcasts into instances of this class. See
-            # docs/broadcasting.md → "Classes with **kwargs constructors".
-            logger.trace(
-                f"accept-list unknown for {cache_key} (**kwargs constructor) — "
-                f"bare broadcasts are unfiltered for this class"
-            )
-            _acceptable_keys_cache[cache_key] = None
-            return None
-        keys.update(p for p in sig.parameters if p not in ("self", "cls"))
-    except (ValueError, TypeError):
-        _acceptable_keys_cache[cache_key] = None
-        return None
-
-    if getattr(target, "__confluid_configurable__", False):
-        for name in dir(target):
-            if name.startswith("_") or name in keys:
-                continue
-            member = getattr(target, name, None)
-            if member is None or callable(member):
-                continue
-            if getattr(member, "__confluid_ignore__", False):
-                continue
-            if isinstance(member, property) and member.fset is None:
-                continue
-            keys.add(name)
-
-        # Fold in attribute names assigned in __init__'s body (AST scan).
-        # These are instance attributes not visible via dir(cls), but the
-        # post-init injection loop in confluid.fluid.flow already assigns
-        # any matching kwarg via setattr — broadcasting just needs to know
-        # the names so a top-level YAML key can flow into them.
-        keys.update(_get_post_init_attrs(target))
-
-    result = frozenset(keys)
-    _acceptable_keys_cache[cache_key] = result
-    return result
-
-
-def _get_param_kinds(cls_or_name: Any) -> Dict[str, Optional[str]]:
-    """Return ``{param_name: "dict" | "list" | None}`` for a target's ctor.
-
-    Used by :func:`_accepts` to decide whether a dict/list value at a
-    matching key in the parent context should be broadcast IN (when the
-    target's annotation says it expects a dict/list) or left to recurse as
-    a config sub-block (the default for un-annotated/scalar-shaped params).
-
-    Resolution is annotation-only (no runtime values); if a class doesn't
-    annotate, the value stays None and the legacy "skip dict/list" rule
-    applies. ``typing.get_type_hints`` is wrapped in a try/except because
-    forward references that can't be resolved would otherwise raise.
-    """
-    import typing
-
-    target: Any
-    if isinstance(cls_or_name, type):
-        target = cls_or_name
-    else:
-        from confluid.registry import resolve_class
-
-        target = resolve_class(cls_or_name)
-        if target is None:
-            return {}
-
-    cache_key = f"{target.__module__}.{target.__qualname__}"
-    if cache_key in _param_kind_cache:
-        return _param_kind_cache[cache_key]
-
-    kinds: Dict[str, Optional[str]] = {}
-    try:
-        init_method = getattr(target, "__init__", None)
-        if init_method is None:
-            _param_kind_cache[cache_key] = kinds
-            return kinds
-        sig = inspect.signature(init_method)
-    except (ValueError, TypeError):
-        _param_kind_cache[cache_key] = kinds
-        return kinds
-
-    # Try to resolve forward refs via typing.get_type_hints; fall back to
-    # the raw .annotation when that fails (common for self-referential or
-    # third-party-imported annotations).
-    try:
-        hints = typing.get_type_hints(init_method)
-    except Exception:
-        hints = {}
-
-    for name, param in sig.parameters.items():
-        if name in ("self", "cls"):
-            continue
-        ann = hints.get(name, param.annotation)
-        kinds[name] = _classify_annotation(ann)
-
-    _param_kind_cache[cache_key] = kinds
-    return kinds
-
-
-def _classify_annotation(ann: Any) -> Optional[str]:
-    """Map a type annotation to ``"dict"`` / ``"list"`` / None.
-
-    Recognizes the obvious built-ins (``dict``, ``list``, ``tuple``,
-    ``set``) and their ``typing`` analogues (``Dict``, ``List``, ``Tuple``,
-    ``Set``, ``Mapping``, ``Sequence``, ``MutableMapping``, etc.). Unions
-    that include any of these on either side count as the corresponding
-    kind — e.g. ``Optional[Dict[str, int]]`` classifies as ``"dict"``.
-
-    Returns None for anything else (including bare ``Any`` and unannotated).
-    """
-    import typing
-
-    if ann is inspect.Parameter.empty:
-        return None
-
-    # Direct built-ins.
-    if ann in (dict, list, tuple, set, frozenset):
-        return "dict" if ann is dict else "list"
-
-    # typing.* origins.
-    origin = typing.get_origin(ann)
-    if origin is not None:
-        if origin in (dict,) or origin is typing.Dict:  # type: ignore[attr-defined]
-            return "dict"
-        if origin in (list, tuple, set, frozenset):
-            return "list"
-        # Abstract collections from typing/collections.abc.
-        try:
-            import collections.abc as cabc
-        except ImportError:  # pragma: no cover
-            cabc = None  # type: ignore[assignment]
-        if cabc is not None:
-            if origin in (cabc.Mapping, cabc.MutableMapping):
-                return "dict"
-            if origin in (
-                cabc.Sequence,
-                cabc.MutableSequence,
-                cabc.Iterable,
-                cabc.Collection,
-            ):
-                return "list"
-        if origin is typing.Union:
-            for arg in typing.get_args(ann):
-                kind = _classify_annotation(arg)
-                if kind is not None:
-                    return kind
-    return None
-
-
-class _KeyScope(Enum):
-    """Broadcast scope of one key in a config view (see :class:`_View`).
-
-    * ``BARE`` — an un-addressed key (implicit ``**.key``): broadcasts to
-      every accepting node in the subtree. The default for untagged keys,
-      so a plain root document is all-BARE by construction.
-    * ``EXACT`` — an addressed value already delivered to its target node
-      (a Fluid's own kwarg, or a matched named block's scalar). Stays in
-      the view for document ordering and ``!ref:`` resolution but is never
-      re-applied below.
-    * ``STRICT`` — a routing sub-block (a deeper path segment such as the
-      ``opt`` in ``Trainer: {opt: {lr: …}}``, or a ``'*'`` glob block)
-      valid for exactly one more nesting level; dropped at the next Fluid
-      boundary by :func:`_splice_kwargs_at_slot`.
-    * ``ADDRESSED`` — used by the configurator's attr-recursion path: an
-      entry of a block addressed to exactly the object now consuming the
-      view (applied like matched-block contents, spent below it). Avoids
-      wrapping the sub-block under the child's class name, which would
-      collide with a floating block of the same name in same-class trees.
-    """
-
-    BARE = "bare"
-    EXACT = "exact"
-    STRICT = "strict"
-    ADDRESSED = "addressed"
-
-
-class _View(dict):
-    """An ordered config view whose keys carry broadcast-scope tags.
-
-    A plain ``dict`` subclass so every existing ``isinstance`` / iteration /
-    ``in`` / value-identity site keeps working; the ``scopes`` side-table
-    (missing key ⇒ ``BARE``) is what the scoping rules read. The dict-API
-    surface preserves the tags — ``_View(view)``, ``view.copy()``, and
-    ``view.update(other_view)`` all carry the side-table — so engine code can
-    copy views without silently flattening addressing. The ONE remaining
-    degradation is a copy through plain-dict syntax (``dict(view)`` /
-    ``{**view}``), which yields an untagged dict (all-BARE): correct for the
-    root document, lossy anywhere else — construct a ``_View`` instead.
-    """
-
-    __slots__ = ("scopes",)
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.scopes: Dict[str, _KeyScope] = {}
-        if args and isinstance(args[0], _View):
-            self.scopes.update(args[0].scopes)
-
-    def set(self, key: str, value: Any, scope: _KeyScope) -> None:
-        """Assign ``key`` (keeping its position if present) with a scope tag."""
-        self[key] = value
-        if scope is _KeyScope.BARE:
-            self.scopes.pop(key, None)
-        else:
-            self.scopes[key] = scope
-
-    def scope_of(self, key: str) -> _KeyScope:
-        return self.scopes.get(key, _KeyScope.BARE)
-
-    def pop(self, key: str, *default: Any) -> Any:  # type: ignore[override]
-        self.scopes.pop(key, None)
-        return super().pop(key, *default)
-
-    def copy(self) -> "_View":
-        """A ``_View`` copy carrying the scope tags — ``dict.copy()`` on a
-        subclass returns a plain ``dict``, which would silently drop them."""
-        return _View(self)
-
-    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
-        """``dict.update`` with last-write-wins on the scope tags.
-
-        Each updated key takes the SOURCE's scope: a ``_View`` source carries
-        its tag over; a plain-dict / iterable-of-pairs / keyword source is
-        untagged, so it CLEARS any existing tag (the key is now BARE) —
-        keeping the side-table consistent with the values under it.
-        """
-        if args and not isinstance(args[0], dict):
-            args = (list(args[0]), *args[1:])  # materialize a one-shot iterator
-        super().update(*args, **kwargs)
-        src = args[0] if args else None
-        if isinstance(src, _View):
-            for k in src:
-                if k in src.scopes:
-                    self.scopes[k] = src.scopes[k]
-                else:
-                    self.scopes.pop(k, None)
-        elif isinstance(src, dict):
-            for k in src:
-                self.scopes.pop(k, None)
-        elif src is not None:
-            for k, _ in src:
-                self.scopes.pop(k, None)
-        for k in kwargs:
-            self.scopes.pop(k, None)
-
-
-def _scope_of(view: Any, key: str) -> _KeyScope:
-    """Scope of ``key`` in ``view`` — plain (untagged) dicts are all-BARE."""
-    if isinstance(view, _View):
-        return view.scope_of(key)
-    return _KeyScope.BARE
-
-
-_GLOB_KEYS = ("*", "**")
-
-
-def _is_glob_key(key: Any) -> bool:
-    """True for the glob routing block names ``'*'`` / ``'**'``.
-
-    Glob keys are addressing metadata, never values: they must not reach
-    constructor kwargs, post-init setattrs, or ``__confluid_kwargs__``
-    capture.
-    """
-    return key in _GLOB_KEYS
-
-
-def _expand_block_keys(block: Dict[str, Any]) -> Dict[str, Any]:
-    """Expand dotted keys INSIDE a block / marker-kwargs mapping.
-
-    The in-block analogue of :func:`confluid.merger.expand_dotted_keys`
-    (which only processes the document's top-level keys): ``'**.lr'`` inside
-    a matched ``Trainer:`` block nests to ``{'**': {'lr': …}}``, so
-    ``Trainer: {'**.lr': 1}`` ≡ ``Trainer.**.lr: 1``. Unlike the merger
-    variant this shares every value by REFERENCE (never deep-copies), so
-    resolved ``!ref:`` identity survives; dicts descended into are
-    shallow-copied copy-on-write so the caller's input is never mutated
-    (a ``Fluid`` target's kwargs ARE descended into and extended in place,
-    mirroring the merger's traversal). No-op (same object) when no key
-    contains a dot.
-    """
-    if not any("." in k for k in block):
-        return block
-    out: Dict[str, Any] = {k: v for k, v in block.items() if "." not in k}
-    dotted = sorted((k for k in block if "." in k), key=lambda k: (k.count("."), k))
-    for key in dotted:
-        value = block[key]
-        parts = key.split(".")
-        cur: Dict[str, Any] = out
-        for part in parts[:-1]:
-            nxt = cur.get(part)
-            if isinstance(nxt, Fluid):
-                cur = nxt.kwargs
-                continue
-            if isinstance(nxt, dict):
-                copied = dict(nxt)
-                cur[part] = copied
-                cur = copied
-                continue
-            fresh: Dict[str, Any] = {}
-            cur[part] = fresh
-            cur = fresh
-        last = parts[-1]
-        prev = cur.get(last)
-        if isinstance(prev, dict) and isinstance(value, dict):
-            cur[last] = {**prev, **value}
-        else:
-            cur[last] = value
-    return out
-
-
-def _splice_kwargs_at_slot(
-    parent_context: Dict[str, Any],
-    self_key: Optional[str],
-    kwargs: Dict[str, Any],
-    receiver_cls: Any = None,
-) -> Dict[str, Any]:
-    """Build the receiver's child view: replace ``parent_context[self_key]``
-    with ``kwargs``'s items at the same position, preserving document
-    order. When ``self_key`` is not in ``parent_context`` (top-level call,
-    or identity match failed), kwargs are appended at the end.
-
-    This is where the scoping semantics flip (2026-07): the returned view is
-    a :class:`_View` whose tags decide what descendants may consume —
-
-    * inherited ``STRICT`` entries (and ``'*'`` glob blocks) from
-      ``parent_context`` are DROPPED: their one nesting level is spent at
-      this Fluid boundary (if they matched this receiver, their contents are
-      already in ``kwargs``);
-    * ``kwargs`` entries keep the scope :func:`_prepare_kwargs` assigned —
-      own kwargs / matched-block values are ``EXACT`` (visible for ordering
-      and ``!ref:`` resolution, never re-broadcast below: addressed keys no
-      longer cascade), bare-derived values stay ``BARE`` (a bare key keeps
-      cascading through the node it landed on), hoisted routing sub-blocks
-      are ``STRICT``, and a ``'**'`` glob block stays ``BARE`` so it floats
-      to every depth.
-
-    Collisions on a key ``kk`` that appears in BOTH ``parent_context`` and
-    ``kwargs`` are resolved by inspecting the receiver class's type:
-
-    * ``kwargs[kk]`` is a :class:`Reference` → keep parent's value
-      (avoids infinite recursion when ``foo: !ref:foo`` would resolve
-      against itself).
-    * ``kk`` is a typed param of the receiver (i.e. in its accept-list)
-      → keep parent's value. The receiver's constructor consumes
-      ``kwargs[kk]`` directly via ``resolved_kwargs``; the parent's
-      entry at ``kk`` is broadcast metadata aimed at descendants and
-      must remain visible in ``child_ctx``.
-    * Otherwise (``kk`` is NOT a typed param of the receiver) →
-      ``kwargs`` wins. The kwarg was placed on the receiver's YAML
-      block specifically to shield/override for descendants; it sits at
-      a later document position than the colliding parent broadcast, so
-      last-write-wins gives it the slot.
-    * ``receiver_cls`` is unknown or accepts ``**kwargs`` (accept-list
-      is ``None``) → keep parent's value. Conservative fallback that
-      preserves pre-existing dotted-broadcast behaviour.
-    """
-    acceptable = _get_acceptable_keys(receiver_cls) if receiver_cls is not None else None
-
-    def _parent_wins(kk: str, kv: Any) -> bool:
-        if kk == "**":
-            return False  # glob riders always re-emit, merged with the parent's
-        if kk not in parent_context:
-            return False
-        if isinstance(kv, Reference):
-            return True
-        if acceptable is None:
-            return True
-        return kk in acceptable
-
-    out = _View()
-
-    def _emit_parent(k: str, v: Any) -> None:
-        scope = _scope_of(parent_context, k)
-        if scope is _KeyScope.STRICT or (k == "*" and isinstance(v, dict)):
-            return  # one-level routing — spent at this Fluid boundary
-        if k == "**" and isinstance(v, dict):
-            prev = out.get("**")
-            if isinstance(prev, dict):
-                v = {**prev, **v}  # later parent rider merges over the own one
-        out.set(k, v, scope)
-
-    def _emit_merged(kk: str, kv: Any) -> None:
-        if kk == "**" and isinstance(kv, dict):
-            prev = out.get("**")
-            if isinstance(prev, dict):
-                kv = {**prev, **kv}  # a node's own rider merges with the parent's
-        out.pop(kk, None)
-        out.set(kk, kv, _scope_of(kwargs, kk) if isinstance(kwargs, _View) else _KeyScope.EXACT)
-
-    def _shield_glob_rider() -> None:
-        """Rewrite a floating ``'**'`` rider with the receiver's shield values.
-
-        An own/block value the receiver does NOT accept was placed on its
-        block to override the subtree (the wrapper-shield idiom — the same
-        not-a-typed-param signal ``_parent_wins`` reads). When a ``'**'``
-        glob rider carries the same key, the shield value replaces the
-        rider's entry for THIS subtree (copy-on-write — the parent's rider
-        dict is shared by sibling subtrees and must not be mutated).
-        """
-        rider = out.get("**")
-        if not isinstance(rider, dict) or not isinstance(kwargs, _View):
-            return
-        if acceptable is None:
-            return
-        replacements = {
-            kk: kv
-            for kk, kv in kwargs.items()
-            if kk in rider and kk not in acceptable and kwargs.scope_of(kk) is _KeyScope.EXACT
-        }
-        if replacements:
-            out.set("**", {**rider, **replacements}, out.scope_of("**"))
-
-    if self_key is None or self_key not in parent_context:
-        for k, v in parent_context.items():
-            _emit_parent(k, v)
-        for k, v in kwargs.items():
-            if _parent_wins(k, v):
-                continue
-            _emit_merged(k, v)
-        _shield_glob_rider()
-        return out
-    for k, v in parent_context.items():
-        if k == self_key:
-            for kk, kv in kwargs.items():
-                if _parent_wins(kk, kv):
-                    continue
-                _emit_merged(kk, kv)
-        elif k in kwargs and k != "**" and not _parent_wins(k, kwargs[k]):
-            # Wrapper's value at this key will win at the self_key slot;
-            # skip parent's value at its original position so the wrapper's
-            # value ends up at the slot.
-            continue
-        else:
-            _emit_parent(k, v)
-    _shield_glob_rider()
-    return out
-
-
-def _broadcast_blocked_keys(target_cls: Any) -> Optional[frozenset[str]]:
-    """Bare-broadcast exclusion set for a receiver, or ``None`` for block-everything.
-
-    ``None`` ⇒ the class carries ``@configurable(broadcast=False)`` — NO bare
-    key may land. Otherwise the (possibly empty) set of ``NoBroadcast[...]``
-    parameter names. Addressed ``ClassName:``/instance blocks and
-    ``configure()`` blocks are NEVER gated by this — the accept-list stays the
-    single settability authority; this is a broadcast-only overlay.
-    """
-    if target_cls is None:
-        return frozenset()
-    if getattr(target_cls, "__confluid_no_broadcast__", False):
-        return None
-    from confluid.no_broadcast import no_broadcast_param_names
-
-    return no_broadcast_param_names(target_cls)
-
-
 # ---------------------------------------------------------------------------
-# Public settability predicates
+# Marker materialization
 # ---------------------------------------------------------------------------
-# The accept-list and the broadcast overlay above are the engine's answer to
-# "may this key set this attribute?". External config front-ends (a CLI layer
-# turning `--lr 0.1` into a config change) need the SAME answer, and any
-# re-derivation of it drifts: a hand-rolled accept-list misses `**kwargs`
-# targets, `__init__`-body slots, and both broadcast opt-outs. These two
-# predicates are that answer, exported so there is exactly one implementation.
+# (The public settability predicates this section once introduced live in
+# ``confluid.broadcast`` — ``accepts_key`` / ``accepts_broadcast`` /
+# ``accepts_any_key`` — importable from there or from ``confluid`` top-level.)
 
 
-def accepts_key(target: Any, key: str) -> bool:
-    """True if ``key`` can set an attribute on ``target`` when ADDRESSED explicitly.
-
-    "Addressed" means the key names its receiver — a ``ClassName:`` block, an
-    exact dotted path, a marker's own kwargs, or a :func:`configure` block.
-    Such keys are gated by the accept-list ALONE: constructor parameters,
-    public settable class attributes, and ``__init__``-body slots (AST-scanned,
-    plus any ``broadcast_attrs=`` declaration and baked table). A target whose
-    constructor takes ``**kwargs`` accepts everything.
-
-    ``target`` may be a class, a live instance, or the dotted string a
-    ``!class:`` marker carries; an unresolvable target accepts nothing.
-
-    Example::
-
-        accepts_key(Trainer, "lr")        # True  — a ctor param
-        accepts_key(Trainer, "typo")      # False — nothing to set
-    """
-    cls = _settability_target(target)
-    if cls is None:
-        return False
-    acceptable = _get_acceptable_keys(cls)
-    return True if acceptable is None else key in acceptable
-
-
-def accepts_broadcast(target: Any, key: str) -> bool:
-    """True if a BARE (unaddressed) ``key`` may cascade onto ``target``.
-
-    Stricter than :func:`accepts_key`: on top of the accept-list this honours
-    the two broadcast opt-outs — ``@configurable(broadcast=False)`` on the
-    class (nothing bare ever lands) and ``NoBroadcast[T]`` on the parameter
-    (that one slot is excluded). Use this for a key the user did not address to
-    a specific receiver, so an opt-out declared in code is respected no matter
-    which front-end delivered the key.
-
-    Example::
-
-        @configurable(broadcast=False)
-        class Pinned:
-            def __init__(self, lr: float = 0.1) -> None: ...
-
-        accepts_key(Pinned, "lr")        # True  — `Pinned: {lr: …}` still works
-        accepts_broadcast(Pinned, "lr")  # False — a bare `lr:` must not land
-    """
-    if not accepts_key(target, key):
-        return False
-    blocked = _broadcast_blocked_keys(_settability_target(target))
-    if blocked is None:
-        return False  # @configurable(broadcast=False) — nothing bare lands
-    return key not in blocked
-
-
-def _settability_target(target: Any) -> Any:
-    """Normalize a class / instance / dotted-name into the class to introspect."""
-    if target is None:
-        return None
-    if isinstance(target, str):
-        return resolve_class(target)
-    return target if isinstance(target, type) else type(target)
-
-
-def _prepare_kwargs(
-    cls_name: str,
-    own_kwargs: Dict[str, Any],
-    parent_context: Dict[str, Any],
-    target: Any = None,
-    self_obj: Any = None,
-) -> "_View":
-    """Flat-view, document-order, last-write-wins kwarg assembly.
-
-    Walks ``parent_context`` in document order. The receiving Fluid's own
-    ``own_kwargs`` are unrolled at the position WHERE ``self_obj`` sits in
-    ``parent_context`` (matched by Python identity); when ``self_obj`` is
-    not found, they are applied at the end. Class-name and instance-name
-    dict blocks (``Foo: {...}``) are unrolled inline at their position.
-    Bare scalar/Fluid values broadcast when the key matches the receiving
-    class's ``acceptable`` set.
-
-    There is no "explicit kwargs > broadcast" priority — every source is
-    ordered by its YAML position. Whichever assignment comes last wins.
-
-    Scoping (2026-07 — addressed keys are exact, cascade is opt-in):
-
-    * Only ``BARE``-tagged parent entries broadcast; ``EXACT`` entries
-      (an ancestor's addressed values, kept visible for ordering/``!ref:``)
-      are skipped, so a value delivered to one node no longer cascades to
-      its descendants.
-    * A ``'**'`` glob block (``trainer.**.lr``) applies its contents like
-      bare keys — gated by the NoBroadcast opt-outs — to this node AND
-      keeps floating below (zero-or-more levels); a named dict inside it
-      matches like a floating block.
-    * A ``'*'`` glob block applies one level below its introducer only:
-      encountered in ``parent_context`` it addresses THIS node (any name);
-      introduced by own kwargs / a matched block it is hoisted as STRICT
-      routing for the direct children.
-    * A dict inside own kwargs / a matched block that is not consumed as a
-      dict-typed param value is hoisted as a STRICT routing sub-block — a
-      deeper path segment valid for the direct children only.
-    * Dotted keys inside blocks and marker kwargs are expanded here via
-      :func:`_expand_block_keys` (``Trainer: {'**.lr': 1}`` ≡
-      ``Trainer.**.lr: 1``).
-
-    ``cls_name`` is the receiver's target name (used for class-name block
-    matching and accept-list lookup). ``target`` is an optional class object
-    for parameter inspection (avoids name collisions). ``self_obj`` is the
-    Fluid being materialized — passed so we can locate its slot in
-    ``parent_context``.
-    """
-    if cls_name.endswith("()"):
-        cls_name = cls_name[:-2]
-    instance_name = own_kwargs.get("name")
-
-    acceptable = _get_acceptable_keys(target or cls_name)
-    target_cls = target if isinstance(target, type) else resolve_class(cls_name) if cls_name else None
-    param_kinds = _get_param_kinds(target_cls or cls_name) if (target_cls or cls_name) else {}
-    broadcast_blocked = _broadcast_blocked_keys(target_cls)
-
-    def _accepts(k: str, v: Any) -> bool:
-        if isinstance(v, Fluid):
-            if acceptable is None or k not in acceptable:
-                return False
-            # Skip same-target Fluids that are not self — broadcasting them
-            # in would loop on infinite re-materialization.
-            if target_cls is not None and _same_target(v.target, target_cls):
-                return False
-            return True
-        if isinstance(v, dict):
-            # Plain dict — only broadcast IN when the target annotates the
-            # param as a dict/mapping. Otherwise keep the legacy behavior
-            # (recurse as a config sub-block, do NOT pull the dict in as
-            # a value).
-            if param_kinds.get(k) == "dict":
-                return acceptable is None or k in acceptable
-            return False
-        if isinstance(v, list):
-            if param_kinds.get(k) == "list":
-                return acceptable is None or k in acceptable
-            return False
-        if acceptable is not None and k not in acceptable:
-            return False
-        return True
-
-    merged = _View()
-    self_unrolled = False
-
-    # Ambient ConfigurationReport (collect_report). ``origins`` tracks the
-    # origin of the LAST write per key so overwrites collapse to one applied
-    # record (last-write-wins); own kwargs erase an entry (a marker's own
-    # kwargs are definitions, not overrides). None-guarded — zero-cost off.
-    report = _ENGINE_STATE.get().report
-    origins: Dict[str, str] = {}
-
-    def _mark_used(k: str, origin: str) -> None:
-        if report is not None:
-            report.mark_used(f"**.{k}" if origin == "glob '**'" else f"*.{k}" if origin == "glob '*'" else k)
-
-    def _apply_gated(k: str, v: Any, origin: str, scope: _KeyScope) -> None:
-        """Bare-style application: NoBroadcast opt-outs gate, accept-list filters."""
-        if broadcast_blocked is not None and k not in broadcast_blocked and _accepts(k, v):
-            logger.trace(f"broadcast: {k!r} -> {cls_name} ({origin})")
-            merged.set(k, v, scope)
-            if report is not None:
-                origins[k] = origin
-                _mark_used(k, origin)
-
-    def _hoist_routing(k: str, v: Dict[str, Any]) -> None:
-        """Keep a routing block ('**' floats, '*'/named sub-blocks are one-level)."""
-        prev = merged.get(k)
-        if isinstance(prev, dict):
-            v = {**prev, **v}
-        merged.set(k, v, _KeyScope.BARE if k == "**" else _KeyScope.STRICT)
-
-    def _consume_block(block: Dict[str, Any], *, origin: str, gated: bool, floating: bool = False) -> None:
-        """Unroll a block addressed to this node into ``merged``.
-
-        ``gated=True`` for glob-delivered contents (the NoBroadcast opt-outs
-        apply, like bare keys); named-block contents bypass them (addressed).
-        ``floating=True`` for ``'**'`` contents: nested named dicts are
-        matched-or-ignored (the riding ``'**'`` entry keeps them floating)
-        instead of being hoisted as one-level STRICT routing.
-        """
-        for bk, bv in _expand_block_keys(block).items():
-            if bk == "**" and isinstance(bv, dict):
-                _consume_block(bv, origin="glob '**'", gated=True, floating=True)
-                _hoist_routing("**", bv)
-                continue
-            if bk == "*" and isinstance(bv, dict):
-                _hoist_routing("*", bv)
-                continue
-            if isinstance(bv, dict) and bk in (cls_name, instance_name) and (floating or not gated):
-                # Addressed to me again (``Cls.inst.attr`` form, or a named
-                # match while floating under '**') — unroll inline, ungated.
-                _consume_block(bv, origin=f"block {bk!r}", gated=False)
-                continue
-            if isinstance(bv, dict) and not _accepts(bk, bv):
-                if not floating:
-                    _hoist_routing(bk, bv)  # deeper path segment → direct children
-                continue
-            if gated:
-                _apply_gated(bk, bv, origin, _KeyScope.EXACT)
-            elif _accepts(bk, bv):
-                logger.trace(f"broadcast: {bk!r} -> {cls_name} ({origin})")
-                merged.set(bk, bv, _KeyScope.EXACT)
-                if report is not None:
-                    origins[bk] = origin
-
-    def _apply_own(kwargs: Dict[str, Any]) -> None:
-        """Unroll the receiver's own kwargs — addressed to me, thus EXACT."""
-        for k, v in _expand_block_keys(kwargs).items():
-            if k == "**" and isinstance(v, dict):
-                _consume_block(v, origin="glob '**'", gated=True, floating=True)
-                _hoist_routing("**", v)
-            elif k == "*" and isinstance(v, dict):
-                _hoist_routing("*", v)
-            elif isinstance(v, dict) and acceptable is not None and k not in acceptable:
-                # Not a param/attr of mine — a sub-block addressing a direct
-                # child by name (e.g. the expanded form of ``trainer.b.lr``).
-                _hoist_routing(k, v)
-            else:
-                merged.set(k, v, _KeyScope.EXACT)
-                origins.pop(k, None)  # own kwargs are definitions, not overrides
-
-    for k, v in parent_context.items():
-        # Receiving Fluid's own slot — unroll its kwargs at this position.
-        if self_obj is not None and v is self_obj and not self_unrolled:
-            _apply_own(own_kwargs)
-            self_unrolled = True
-            continue
-
-        # Same-target Fluid that isn't self — skip (would otherwise loop).
-        if isinstance(v, Fluid) and target_cls is not None and _same_target(v.target, target_cls):
-            continue
-
-        scope = _scope_of(parent_context, k)
-        if scope is _KeyScope.EXACT:
-            continue  # an ancestor's addressed value — ordering/!ref: visibility only
-
-        # '**' glob block — floats at every level; contents act like bare keys.
-        if k == "**" and isinstance(v, dict):
-            _consume_block(v, origin="glob '**'", gated=True, floating=True)
-            continue
-
-        # '*' glob block — introduced one level up; I am the "any child" it addresses.
-        if k == "*" and isinstance(v, dict):
-            _consume_block(v, origin="glob '*'", gated=True)
-            continue
-
-        # Class-name / instance-name dict block — unroll inline (addressed → ungated).
-        if k in (cls_name, instance_name) and isinstance(v, dict):
-            if report is not None:
-                report.mark_used(k)  # a named block is "used" once it matches an object
-            _consume_block(v, origin=f"block {k!r}", gated=False)
-            continue
-
-        if scope is _KeyScope.STRICT:
-            continue  # routing block for a sibling name — not mine
-
-        # Plain broadcast — the only path the NoBroadcast opt-out gates:
-        # addressed blocks above always work. ``blocked is None`` means the
-        # class opted out entirely (@configurable(broadcast=False)).
-        _apply_gated(k, v, "bare", _KeyScope.BARE)
-
-    if not self_unrolled:
-        _apply_own(own_kwargs)
-
-    if report is not None and origins:
-        label = f"{cls_name} {instance_name!r}" if isinstance(instance_name, str) else cls_name
-        for k, origin in origins.items():
-            report.record_applied(k, label, origin)
-
-    return merged
-
-
-def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) -> Any:
+def _flow_recursive(
+    data: Any,
+    parent_context: Optional[Dict[str, Any]] = None,
+    slot_key: Optional[str] = None,
+    descend_context: Optional[Dict[str, Any]] = None,
+) -> Any:
     # Shared-identity memo: ensures the same raw marker (reached directly or via
     # !ref:) always flows to the same Instance/Class marker object, so a single
     # live object is instantiated downstream.
@@ -1274,15 +402,40 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
     #    fresh BARE entries within the subtree).
     if isinstance(data, dict):
         if parent_context:
-            local_ctx = _View(parent_context)  # tags copied when parent is a _View
-            for k, v in data.items():
-                local_ctx.set(k, v, _KeyScope.BARE)
+            # Transparent for POSITION as well as for nesting: the group's entries are
+            # SPLICED at the group key's slot — the same "replace the slot with the
+            # contents" rule `_splice_kwargs_at_slot` applies at a marker boundary —
+            # never appended after every inherited key. Appending gave a marker inside
+            # a group an unbeatable position (its own kwargs sat after a later bare
+            # key / class block / rider — BC2), and `_View.set`'s keep-the-position
+            # rule let a key restated inside the group inherit an EARLIER root key's
+            # slot, so adding an earlier LOSING line flipped a later contest (BC9 —
+            # E4 re-opened). Built fresh in document order; every insertion re-anchors
+            # (pop + set), so a parent key AFTER the group still beats the group's copy.
+            local_ctx = _View()
+            if isinstance(parent_context, _View):
+                local_ctx.scopes.update(parent_context.scopes)
+            scope_of = parent_context.scope_of if isinstance(parent_context, _View) else (lambda _k: _KeyScope.BARE)
+            spliced = False
+            for k, v in parent_context.items():
+                if not spliced and k == slot_key and v is data:
+                    for gk, gv in data.items():
+                        local_ctx.pop(gk, None)
+                        local_ctx.set(gk, gv, _KeyScope.BARE)
+                    spliced = True
+                    continue
+                local_ctx.pop(k, None)
+                local_ctx.set(k, v, scope_of(k))
+            if not spliced:
+                for gk, gv in data.items():
+                    local_ctx.pop(gk, None)
+                    local_ctx.set(gk, gv, _KeyScope.BARE)
         else:
             local_ctx = _View(data)
-        return {k: _flow_recursive(v, parent_context=local_ctx) for k, v in data.items()}
+        return {k: _flow_recursive(v, parent_context=local_ctx, slot_key=k) for k, v in data.items()}
 
     # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
-    if isinstance(data, (Class, Instance)):
+    if isinstance(data, Target):
         if flow_memo is not None and id(data) in flow_memo:
             return flow_memo[id(data)]
         raw_id = id(data)
@@ -1295,71 +448,151 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
                 getattr(data.target, "__name__", ""),
             )
         )
-        actual_target = data.target if isinstance(data.target, type) else None
+        # Pass ANY already-resolved callable through (class OR builder function) —
+        # nulling a function target here made the receiver fall back to resolving
+        # the bare __name__, which for an unregistered code-built marker
+        # (``PartialClass(builder_fn)``) yielded accept-EVERYTHING and no NoBroadcast
+        # gates. The receiver normalizes via the one ``_settability_target``.
+        actual_target = data.target if not isinstance(data.target, str) else None
+        if actual_target is None:
+            # Pass 7 is the last pass an emitted document sees: an unresolvable STRING
+            # target used to sail through settle with the accept-EVERYTHING list (it
+            # absorbed every bare key) and `hydraide emit`/`check` blessed a typo'd
+            # class name with exit 0 (BUGS-2026-08-19 CD14). Nothing imports between
+            # pass 7 and pass 8 inside one load, so a target unresolvable here is
+            # unresolvable at construction too — refuse NOW, located, on the settled
+            # path exactly as `load()` refuses one pass later. Strict, like the
+            # construction funnel: an ambiguous name stops the run naming its
+            # candidates instead of reading as "unknown".
+            try:
+                if resolve_class(data.target, strict=True, context=get_active_context()) is None:
+                    raise UnknownClassError(
+                        f"Cannot resolve class: {data.target}{_at_yaml_loc(data)}{_selector_detail(data.target)}"
+                    )
+            except AmbiguousClassError as exc:
+                raise AmbiguousClassError(f"{exc}{_at_yaml_loc(data)}") from exc
+            except ConfigurationError as exc:
+                if isinstance(exc, UnknownClassError):
+                    raise
+                raise type(exc)(f"{exc}{_at_yaml_loc(data)}") from exc
         # Always prepared (even with no parent context) so own kwargs get
         # scope tags, glob routing, and in-marker dotted-key expansion.
+        # The slot this marker sits in: the key the caller descended through (a kwarg name,
+        # shared by every element of a list kwarg), else the entry that IS / holds the marker.
+        self_key = None
+        if parent_context:
+            if slot_key is not None and slot_key in parent_context:
+                self_key = slot_key
+            else:
+                self_key = next((k for k, v in parent_context.items() if v is data or holds_marker(v, data)), None)
         merged_kwargs = _prepare_kwargs(
-            target_name, data.kwargs, parent_context or {}, target=actual_target, self_obj=data
+            target_name, data.kwargs, parent_context or {}, target=actual_target, self_obj=data, self_key=self_key
         )
 
         # Splice this Fluid's prepared kwargs into its slot in parent_context to
         # preserve document order for downstream broadcasts.
-        self_key = None
-        if parent_context:
-            self_key = next((k for k, v in parent_context.items() if v is data), None)
-        child_ctx = _splice_kwargs_at_slot(parent_context or {}, self_key, merged_kwargs, receiver_cls=data.target)
+        # ``descend_context`` is the UN-narrowed view a C2-narrowed call rides in on
+        # (see ``_view_for`` below): the narrowed ``parent_context`` protects THIS
+        # marker's block-tuned own kwargs, but the verdict binds the addressed node
+        # only — descendants the block never addressed must still see the popped
+        # cascade keys, so the child view is built from the full context
+        # (BUGS-2026-08-19 BC5: `Trainer: {optimizer: {lr: 5}}` silently cut a later
+        # bare `lr: 9` off from optimizer's own child `sched`).
+        child_ctx = _splice_kwargs_at_slot(
+            (descend_context if descend_context is not None else parent_context) or {},
+            self_key,
+            merged_kwargs,
+            receiver_cls=data.target,
+        )
         # Routing entries ('**'/'*' glob blocks, STRICT sub-blocks) are
         # addressing metadata: they ride in child_ctx only, never into the
-        # marker's kwargs (→ ctor / post-init / dump / resolve() output).
+        # marker's kwargs (→ ctor / post-init / dump / settled output).
+        # A slot a BLOCK delivered was arbitrated at the block's position (C2): the bare
+        # keys the block out-positioned must not reach the marker nested at that slot
+        # through the child view — where the slot sits at THIS marker's earlier position
+        # and would lose to them again. Pop exactly those keys for that slot's descent, so
+        # pass 7 settles the contest itself (record 19, phase 4 — the settled document is
+        # what configure() applies, so it must already be right).
+        beaten = getattr(merged_kwargs, "beaten_per_slot", None) or {}
+
+        def _view_for(slot: str) -> Any:
+            lost = beaten.get(slot)
+            if not lost:
+                return child_ctx
+            narrowed = _View(child_ctx)
+            for bk in lost:
+                narrowed.pop(bk, None)
+            rider = narrowed.get("**")
+            if isinstance(rider, dict) and any(bk in rider for bk in lost):
+                # a `'**'` rider's scalar sits at the RIDER's index in the cascade — it lost too
+                narrowed.set("**", {rk: rv for rk, rv in rider.items() if rk not in lost}, narrowed.scope_of("**"))
+            return narrowed
+
         resolved_kwargs = {
-            k: _flow_recursive(v, parent_context=child_ctx)
+            k: _flow_recursive(
+                v,
+                parent_context=_view_for(k),
+                slot_key=k,
+                # A narrowed descent carries the full view alongside, so the
+                # narrowing stops at the addressed node (BC5, see child_ctx above).
+                descend_context=child_ctx if k in beaten else None,
+            )
             for k, v in merged_kwargs.items()
             if not (_is_glob_key(k) or merged_kwargs.scope_of(k) is _KeyScope.STRICT)
         }
         res_obj = copy(data)
         res_obj.kwargs = resolved_kwargs
+        # Keep the ADDRESSED/BARE split the pass above computed. `resolved_kwargs`
+        # is a plain dict on purpose (a `_View` would leak a dict SUBCLASS into
+        # settled output, `dump()` and anything that pickles a marker), so the
+        # provenance rides as a frozenset of names instead. Its one reader routes a
+        # `**kwargs` constructor's arguments — see `_flow_target`.
+        res_obj._addressed_keys = frozenset(
+            k for k in resolved_kwargs if merged_kwargs.scope_of(k) is not _KeyScope.BARE
+        )
+        # `_prepare_kwargs` above walked `parent_context` in DOCUMENT ORDER and
+        # unrolled this marker's own kwargs at its own slot's position, so an own
+        # kwarg competing with a bare key of the same name has already been settled
+        # by position — last spec wins. Record that, so the later broadcast pass
+        # leaves the outcome alone instead of re-applying the bare key blind.
+        res_obj._order_resolved = True
+        # The verdict per dict-valued slot: which cascade keys BEAT it. Computed
+        # from the slot's position for the marker's OWN dict kwargs — which is
+        # correct, they sit at the marker — then OVERRIDDEN for any slot a class
+        # block delivered, where the authoritative position is the BLOCK's and only
+        # the scanner still has it (C2). The scanner records the complement (the
+        # keys the block out-positioned), so the winners are the rest of the pool.
+        late = _late_bare_keys_per_slot(child_ctx, resolved_kwargs)
+        beaten = getattr(merged_kwargs, "beaten_per_slot", None)
+        if beaten:
+            pool = _cascade_scalar_positions(child_ctx)
+            for slot, out_positioned in beaten.items():
+                if slot in resolved_kwargs:
+                    late[slot] = frozenset(k for k in pool if k not in out_positioned)
+        res_obj._late_bare_keys = late
         if flow_memo is not None:
             flow_memo[raw_id] = res_obj
+            # The memo keys on id(data). Until the pass-7 dict-at-slot tune landed
+            # (C1, 2026-08-14) every marker flowed here was owned by the document and
+            # outlived the pass, so this write needed no pin; ``_MergeSink.dict_at_slot``
+            # now feeds it ``tune_marker`` COPIES that die with ``merged_kwargs``, and a
+            # recycled address read as a HIT handed one trainer ANOTHER trainer's
+            # optimizer (BUGS-2026-08-19 BC1: 22 of 300, measured). Pin what the memo
+            # keys on, like every other id()-keyed store (architecture record 16).
+            keepalive = _ENGINE_STATE.get().memo_keepalive
+            if keepalive is not None:
+                keepalive.append(data)
         return res_obj
 
-    # 3. Reference — resolve against parent context
+    # 3. Reference — resolved against the DOCUMENT ROOT, once, here (record 19, phase 3).
+    #    A `!ref:` means the root key it names: the enclosing plain mapping never shadows
+    #    it (a local probe is what used to recurse forever on `r: {x: !ref:x}` — F6), and
+    #    a reference to a plain VALUE is inlined now rather than left as a late-bound
+    #    marker for a consumer to materialize later (F5). The result: hydraide's
+    #    document is CLOSED — no `_ref_` survives — and construction never resolves a
+    #    reference. Unresolvable → a located error, at `until="settled"` and `"objects"` alike.
     if isinstance(data, Reference):
-        if parent_context and data.target in parent_context:
-            resolved = parent_context[data.target]
-            # Self-reference guard: a kwarg like ``foo: !ref:foo`` with no
-            # outer ``foo`` in scope splices itself into ``parent_context``,
-            # so the only ``foo`` it can resolve against is itself —
-            # recursing here would stack-overflow. Fail loudly instead.
-            if resolved is data:
-                loc = format_yaml_loc(data)
-                loc_str = f" at {loc}" if loc else ""
-                raise ReferenceResolutionError(
-                    f"Self-referential !ref:{data.target}{loc_str}: the only "
-                    f"{data.target!r} in scope is this reference itself. "
-                    f"Define a top-level {data.target!r} key (e.g. "
-                    f"`{data.target}: null`), or remove the kwarg."
-                )
-            return _flow_recursive(resolved, parent_context=parent_context)
-        # Support dotted paths and method calls (e.g., "obj.method()") via
-        # the unified rich resolver (attribute access, brackets, module import).
-        if parent_context:
-            resolved = resolve_reference_path(data.target, parent_context)
-            if resolved is not None:
-                return resolved
-        return data
-
-    # 3b. Clone — resolve reference then deepcopy, merging extra kwargs
-    if isinstance(data, Clone):
-        if parent_context and data.target in parent_context:
-            from copy import deepcopy
-
-            resolved = _flow_recursive(parent_context[data.target], parent_context=parent_context)
-            cloned = deepcopy(resolved)
-            if data.kwargs and isinstance(cloned, (Class, Instance)):
-                resolved_kwargs = {k: _flow_recursive(v, parent_context=parent_context) for k, v in data.kwargs.items()}
-                cloned.kwargs.update(resolved_kwargs)
-            return cloned
-        return data
+        return _settle_reference(data, parent_context)
 
     # 4. Generic Fluid — pass through
     if isinstance(data, Fluid):
@@ -1367,29 +600,161 @@ def _flow_recursive(data: Any, parent_context: Optional[Dict[str, Any]] = None) 
 
     # 5. Lists
     if isinstance(data, list):
-        return [_flow_recursive(item, parent_context=parent_context) for item in data]
+        return [_flow_recursive(item, parent_context=parent_context, slot_key=slot_key) for item in data]
 
     return data
 
 
-def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
-    """Instantiate a deferred object (Class, Reference, string tag) into a live instance.
+def _settle_reference(ref: Reference, parent_context: Optional[Dict[str, Any]]) -> Any:
+    """Resolve a ``Reference`` in pass 7 — nearest enclosing scope first, then the document root.
+
+    Scope: ``parent_context`` is the enclosing mapping's view (its own keys over its parents'),
+    so an included FRAGMENT's internal reference finds the fragment's key, and a top-level key is
+    the fallback. What a scope may NOT do is answer with the reference itself: ``r: {x: !ref:x}``
+    with a root ``x`` used to find its own marker in the enclosing scope and recurse forever (F6);
+    that hit is skipped and the root answers. The FIRST segment decides the rest (phase 2): an
+    exact key shares the marker (identity via ``flow_memo``), a dotted/bracketed path walks dict
+    keys and list indices and yields the VALUE (inlined — nothing is late-bound any more, F5),
+    a walk that leaves structure is refused as an attribute reference, and anything else is an
+    import path. A miss raises a located ``ReferenceResolutionError`` — so ``hydraide`` reports
+    it instead of emitting `_ref_`.
+    """
+    root: Any = get_active_context() or {}
+    scope: Any = parent_context if parent_context else root
+    target = ref.target
+
+    for ctx in (scope, root):
+        if target in ctx and ctx[target] is not ref:
+            return _flow_recursive(ctx[target], parent_context=parent_context)
+    if target in scope or target in root:
+        raise ReferenceResolutionError(
+            f"Self-referential !ref:{target}{_at_yaml_loc(ref)}: the only {target!r} in scope is this "
+            f"reference itself. Define a top-level {target!r} key, or remove the reference."
+        )
+    refuse_attribute_reference(target, root if _first_key(target) in root else scope, _at_yaml_loc(ref))
+    for ctx in (scope, root):
+        found = Resolver(context=ctx)._lookup_path_found(target, ctx)
+        if found is not PATH_MISS and found is not ref:
+            return (
+                _flow_recursive(found, parent_context=parent_context)
+                if isinstance(found, (Fluid, dict, list))
+                else found
+            )
+    imported = resolve_reference_path(target, root)  # an import path (`posixpath.join`), or None
+    if imported is not None:
+        return imported
+    raise ReferenceResolutionError(
+        f"Cannot resolve !ref:{target}{_at_yaml_loc(ref)}: no key in scope, no structural path and no "
+        "importable name matches it."
+    )
+
+
+def _first_key(target: str) -> str:
+    """The first path segment of a reference target (`split` for `split.train` / `packs[0].x`)."""
+    from confluid.resolver import _first_segment
+
+    return _first_segment(target)
+
+
+#: The DEFERRED-build cache — ONE remembered ``(fingerprint, object)`` per
+#: ``PartialClass`` marker. "One recipe + one argument set = one object" (user
+#: ruling 2026-08-24): a repeat ``flow()`` of an unchanged marker with the same
+#: arguments returns the remembered build; a tuned recipe, a different argument,
+#: or a different call shape rebuilds and REPLACES the entry (never a table —
+#: a keyed table would grow unboundedly and need hashing of arbitrary objects).
+#:
+#: Keyed WEAKLY by the marker itself, which makes two properties structural
+#: rather than rules: a marker COPY is a new key (copies never share a build —
+#: the per-host ctor-default copy, the document copy and ``to_markers`` stay
+#: correct with no exclusion code), and the entry dies with its marker.
+#: Deliberately NOT registered with ``register_pass_cache``: this is persistent
+#: semantic state, not a per-pass memo — clearing it per pass would defeat the
+#: contract. The fingerprint holds STRONG references to the compared values
+#: (the id()-pinning rule satisfied by construction: identity is compared
+#: between live objects, never raw addresses).
+_PARTIAL_BUILD_CACHE: "weakref.WeakKeyDictionary[Any, Tuple[Any, Any]]" = weakref.WeakKeyDictionary()
+
+#: Fingerprint atoms compared by VALUE; everything else compares by IDENTITY —
+#: equality on an arbitrary object is not safe (``==`` on a tensor returns a
+#: tensor, not a bool), so "provably the same" is the bar a cache hit must meet.
+_CACHE_SCALARS = (str, int, float, bool, type(None))
+
+
+class _ById:
+    """An identity-compared fingerprint wrapper for a non-scalar value (and its pin)."""
+
+    __slots__ = ("obj",)
+
+    def __init__(self, obj: Any) -> None:
+        self.obj = obj
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ById) and self.obj is other.obj
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+def _cache_snapshot_value(value: Any) -> Any:
+    """A value's fingerprint atom: scalars raw, a nested MARKER recursed, else identity.
+
+    The recursion into a nested marker's kwargs is what makes a TUNE invalidate:
+    ``configure()`` mutates nested recipes in place, so identity alone would keep
+    serving the pre-tune build.
+    """
+    if isinstance(value, Fluid):
+        return ("fluid", _ById(value), _cache_snapshot_kwargs(value.kwargs))
+    if isinstance(value, _CACHE_SCALARS):
+        return value
+    return _ById(value)
+
+
+def _cache_snapshot_kwargs(kwargs: Dict[str, Any]) -> Tuple[Tuple[str, Any], ...]:
+    return tuple((key, _cache_snapshot_value(value)) for key, value in kwargs.items())
+
+
+def _cache_fingerprint(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Tuple[Any, ...]:
+    """The full call shape: recipe kwargs, positional args, runtime kwargs, and the
+    ambient solidify suppression (a build-without-finalize is not the finalized build)."""
+    return (
+        _cache_snapshot_kwargs(obj.kwargs),
+        tuple(_cache_snapshot_value(a) for a in runtime_args),
+        _cache_snapshot_kwargs(runtime_kwargs),
+        _ENGINE_STATE.get().suppress_solidify,
+    )
+
+
+def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: Any) -> Any:
+    """Instantiate a deferred object (a ``Target`` / ``Reference`` marker) into a live instance.
 
     Idempotent: already-live objects are returned unchanged.
     Accepts runtime kwargs that merge with stored kwargs (runtime wins).
 
-    Within a ``materialize()`` pass, the same ``Instance`` marker (reached
-    directly or via ``!ref:``) produces a single live object — subsequent
+    **Positional runtime args.** A marker carries KWARGS only (that is all a
+    config mapping can express), but a target may take its inputs POSITIONALLY — the case
+    that forced this is a variadic signature, ``DataLoaders(*loaders, path=…,
+    device=…)``, where the loaders have no keyword to arrive under. So
+    ``flow(node, a, b, key=value)`` calls ``target(a, b, **merged_kwargs)``: the
+    positional half is runtime-only injection (never stored on a marker, never
+    round-tripped by ``dump()``), exactly like the ``params=`` / ``dataset=``
+    kwargs a deferred slot is flowed with. Passing them to a target that takes
+    none is the target's own ``TypeError``, raised through the located
+    construction wrapper.
+
+    Within a ``materialize()`` pass, the same ``Target`` marker (reached
+    directly or via ``${ref:...}``) produces a single live object — subsequent
     ``flow()`` calls on the same marker return the cached instance.
 
-    **Auto-solidification:** After instantiation, if the returned object has a
-    ``solidify()`` method, it is called automatically. This enables lazy
-    initialization patterns where an object defers materialization of internal
-    state until after construction is complete. Domain code does not need to
-    manually trigger solidification — ``flow(model)`` handles it transparently.
+    **Auto-solidification:** if the object has a ``solidify()`` method, it is
+    called — after instantiation for a marker, and on the pass-through for an
+    ALREADY-LIVE object, because "``flow(model)`` handles it transparently" has
+    to hold whichever way the model reached the slot. A model wired with a
+    ``_target_:`` marker (or handed in live from Python) otherwise arrives unbuilt, and
+    the failure lands far away: an optimizer flowed with ``params=`` gets an
+    empty parameter list. ``solidify()`` is therefore expected to be IDEMPOTENT
+    (build-once-and-cache), since a live object may be flowed more than once.
 
-    Pass ``solidify=False`` to SUPPRESS that post-flow ``solidify()`` for this
-    whole subtree — for static introspection that must build the object cheaply
+    Pass ``solidify=False`` to SUPPRESS that ``solidify()`` for this whole
+    subtree — for static introspection that must build the object cheaply
     without paying for the expensive finalize (e.g. a model backbone). The
     suppression rides a thread-local flag, so every nested ``flow()`` inherits
     it; ``materialize(..., solidify=False)`` uses the same channel.
@@ -1403,23 +768,27 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     if not solidify:
         token = _ENGINE_STATE.set(replace(_ENGINE_STATE.get(), suppress_solidify=True))
         try:
-            return flow(obj, **runtime_kwargs)
+            return flow(obj, *runtime_args, **runtime_kwargs)
         finally:
             _ENGINE_STATE.reset(token)
 
-    # Idempotency — already-live objects pass through.
+    # Idempotency — already-live objects pass through, still solidified (see the
+    # docstring). Runtime args/kwargs are DROPPED here rather than raising: the
+    # object is already built, and a slot flowed with `flow(slot, train, valid)`
+    # must stay safe when a config wired a live object into it.
     if not isinstance(obj, (Fluid, str, type, dict)):
+        _maybe_solidify(obj)
         return obj
 
-    # An EXPLICIT ``flow(lazy)`` call builds the Lazy — even with no runtime
-    # kwargs. A ``Lazy`` defers construction past the AUTO-flow walkers
-    # (``_deep_flow`` and ``materialize``'s recursive descent, which both skip it
+    # An EXPLICIT ``flow(lazy)`` call builds the PartialClass — even with no runtime
+    # kwargs. A ``PartialClass`` defers construction past the AUTO-flow walkers
+    # (``instantiate`` and ``materialize``'s recursive descent, which both skip it
     # without calling ``flow()``); a deliberate ``flow()`` by domain code is a
     # "build this now" request. The runtime-injection case still works because
     # the missing args are passed as ``runtime_kwargs`` (e.g.
     # ``flow(self.optimizer, params=model.parameters())``); a slot needing no
     # runtime args (e.g. a deferred ``lightning`` Trainer) is built by a bare
-    # ``flow(self.lightning)``. So there is NO Lazy early-return — a ``Lazy`` (a
+    # ``flow(self.lightning)``. So there is NO PartialClass early-return — a ``PartialClass`` (a
     # ``Class`` subclass) falls through to the Class instantiation path.
 
     context = get_active_context()
@@ -1428,101 +797,58 @@ def flow(obj: Any, *, solidify: bool = True, **runtime_kwargs: Any) -> Any:
     # when no runtime kwargs override the stored ones (overrides must yield a
     # fresh object).
     instance_memo = _ENGINE_STATE.get().instance_memo
-    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
+    if (
+        isinstance(obj, Target)
+        and not obj.partial
+        and instance_memo is not None
+        and not runtime_kwargs
+        and not runtime_args
+    ):
         cached = instance_memo.get(id(obj))
         if cached is not None:
             return cached
 
-    if isinstance(obj, (Class, Instance)):
-        return _flow_target(obj, context, instance_memo, runtime_kwargs)
+    if isinstance(obj, Target) and obj.partial:
+        # The deferred-build cache: ONE remembered build per marker. A repeat
+        # flow with an unchanged recipe and the SAME arguments (scalars by
+        # value, everything else by identity) returns the remembered object;
+        # anything else rebuilds and replaces it. See ``_PARTIAL_BUILD_CACHE``.
+        fingerprint = _cache_fingerprint(obj, runtime_args, runtime_kwargs)
+        entry = _PARTIAL_BUILD_CACHE.get(obj)
+        if entry is not None and entry[0] == fingerprint:
+            return entry[1]
+        instance = _flow_target(obj, context, instance_memo, runtime_args, runtime_kwargs)
+        if not getattr(type(instance), "__confluid_random__", False):
+            # A ``random=True`` class must re-execute every time — never remembered.
+            _PARTIAL_BUILD_CACHE[obj] = (fingerprint, instance)
+        return instance
+    if isinstance(obj, Target):
+        return _flow_target(obj, context, instance_memo, runtime_args, runtime_kwargs)
     if isinstance(obj, type):
-        return _flow_bare_type(obj, context, runtime_kwargs)
+        return _flow_bare_type(obj, context, runtime_args, runtime_kwargs)
     if isinstance(obj, Reference):
-        return _flow_reference(obj, context, runtime_kwargs)
-    if isinstance(obj, Clone):
-        return _flow_clone(obj, runtime_kwargs)
+        return _flow_reference(obj, context, runtime_args, runtime_kwargs)
     if isinstance(obj, Fluid):
-        return _flow_generic_fluid(obj, runtime_kwargs)
-    if isinstance(obj, str) and (obj.startswith("!class:") or obj.startswith("!ref:")):
-        return _flow_string_tag(obj, context, runtime_kwargs)
+        return _flow_generic_fluid(obj, runtime_args, runtime_kwargs)
     return obj
-
-
-def _pop_glob_routing(merged: Dict[str, Any], target: Any) -> Dict[str, Any]:
-    """Remove ``'*'``/``'**'`` glob blocks from ``merged``; return their scalar pool.
-
-    Direct-flow counterpart of the materialize path's glob handling for
-    hand-built markers: ``'**'`` contents additionally apply to the receiver
-    itself (gated by the accept-list and the NoBroadcast opt-outs, like bare
-    keys — zero-or-more levels includes the receiver); ``'*'`` contents only
-    feed the nested-Class pool (one level below = the marker's direct
-    children). Dict-valued contents are routing for deeper levels and stay
-    out of the pool (the nested-Class loop skips dicts anyway).
-    """
-    pool: Dict[str, Any] = {}
-    star = merged.pop("*", None)
-    if isinstance(star, dict):
-        pool.update({k: v for k, v in star.items() if not isinstance(v, dict)})
-    star2 = merged.pop("**", None)
-    if isinstance(star2, dict):
-        target_cls = target if isinstance(target, type) else None
-        acceptable = _get_acceptable_keys(target)
-        blocked = _broadcast_blocked_keys(target_cls)
-        report = _ENGINE_STATE.get().report
-        for gk, gv in star2.items():
-            if isinstance(gv, dict):
-                continue
-            pool[gk] = gv
-            if gk in merged or blocked is None or gk in blocked:
-                continue
-            if acceptable is not None and gk not in acceptable:
-                continue
-            merged[gk] = gv
-            if report is not None:
-                target_label = str(getattr(target, "__name__", target))
-                report.record_applied(gk, target_label, "glob '**'")
-                report.mark_used(f"**.{gk}")
-    return pool
-
-
-def _broadcast_pool(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten a context's ``'**'`` entry into the nested-Class broadcast pool.
-
-    The nested-Class broadcast loop in :func:`_resolve_kwarg_value` skips
-    dict/list values, so a ``'**'`` glob block at the top level of the active
-    context would be invisible to it; unroll its non-dict contents at the
-    block's document position (``'*'`` blocks are depth-addressed and stay
-    out — the recursive-descent path handles them).
-    """
-    if "**" not in ctx and "*" not in ctx:
-        return ctx
-    pool: Dict[str, Any] = {}
-    for k, v in ctx.items():
-        if k == "**" and isinstance(v, dict):
-            for gk, gv in v.items():
-                if not isinstance(gv, dict):
-                    pool[gk] = gv
-        elif k == "*" and isinstance(v, dict):
-            continue
-        else:
-            pool[k] = v
-    return pool
 
 
 def _flow_target(
     obj: Any,
     context: Optional[Dict[str, Any]],
     instance_memo: Optional[Dict[int, Any]],
+    runtime_args: Tuple[Any, ...],
     runtime_kwargs: Dict[str, Any],
 ) -> Any:
-    """Materialize a ``Class`` / ``Instance`` / ``Lazy`` marker into a live object.
+    """Materialize a ``Class`` / ``Instance`` / ``PartialClass`` marker into a live object.
 
     The phase sequence: resolve the target callable → merge + resolve kwargs →
     split constructor kwargs from post-init attrs → construct (under the YAML
-    validation mode) → memoize + stamp origin → apply post-init attrs →
-    broadcast onto remaining Fluid-valued instance attrs → auto-solidify.
+    validation mode, with any positional runtime args ahead of the kwargs) →
+    memoize + stamp origin → apply post-init attrs → broadcast onto remaining
+    Fluid-valued instance attrs → auto-solidify.
     """
-    target = _resolve_target_callable(obj.target)
+    target = _resolve_target_callable(obj)
 
     # kwargs already contain broadcasting (merged by _flow_recursive)
     merged: dict[str, Any] = dict(obj.kwargs)
@@ -1545,29 +871,57 @@ def _flow_target(
     # attribute 'setup'"). For those targets, eagerly materialize nested
     # Class fluids inside list/dict kwargs.
     #
-    # The nested-Class broadcast pool is the ACTIVE context (bare root keys
-    # + '**' contents) — never the receiver's own kwargs (addressed keys do
-    # not cascade); without a context only the marker's own glob blocks feed it.
-    is_configurable_target = bool(getattr(target, "__confluid_configurable__", False))
-    broadcast_ctx = _broadcast_pool(context) if context else glob_pool
+    # The marker's OWN kwargs were settled in pass 7 (record 19, phase 3): every bare
+    # key that reaches this marker or the markers nested in its kwargs is already IN
+    # ``obj.kwargs``, so no cascade pool feeds them here — only the marker's own glob
+    # blocks (`'**'` riders written on it) still route. The ACTIVE context's bare keys
+    # are needed ONLY below, for what pass 7 cannot see: markers born inside the
+    # constructor (a body slot `self.optimizer = PartialClass(...)`, a ctor default).
+    broadcast_ctx = glob_pool
+    root_pool = _broadcast_pool(context) if context else glob_pool
+    # A slot the RECEIVING class declared deferred (`Partial[T]`, or a body slot
+    # holding a `PartialClass(...)`) keeps its value unbuilt, whatever the value's
+    # own `partial` says. This is the receiver's declared contract — "this slot
+    # needs a runtime argument I will supply" — not the parent-context guessing
+    # that `Target` replaced: it is static, local to the class, and readable.
+    # Without it a config writing a plain `_target_:` into an optimizer slot would
+    # construct it here with no `params`, far from the config that caused it.
+    partial_slots = partial_param_names(target)
     merged = {
-        k: _resolve_kwarg_value(
-            v, context=context, broadcast_ctx=broadcast_ctx, eager_classes=not is_configurable_target
-        )
+        k: _resolve_kwarg_value(v, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=k in partial_slots)
         for k, v in merged.items()
     }
 
     params = _ctor_params(target)
     if params is None:
         return obj  # class without a resolvable __init__ — leave the marker as-is
-    ctor = {k: v for k, v in merged.items() if k in params} if params else merged
+    # Filter to the declared parameters. The ONLY case that passes everything is an
+    # unreadable signature — an EMPTY set is a real answer ("takes nothing") and must
+    # filter to nothing, or a zero-parameter constructor receives every config key.
+    ctor = dict(merged) if params is _UNKNOWN_PARAMS else {k: v for k, v in merged.items() if k in params}
+    if _takes_var_keyword(target):
+        ctor.update(_var_keyword_extras(obj, merged, runtime_kwargs))
 
-    instance = _construct(target, ctor, obj)
+    instance = _construct(target, runtime_args, ctor, obj)
 
     # Memoize so a second flow() of the same Instance marker returns this
-    # exact object (see module docstring).
-    if isinstance(obj, Instance) and instance_memo is not None and not runtime_kwargs:
+    # exact object (see module docstring). Positional runtime args override the
+    # stored spec exactly as kwargs do, so they suppress memoization too.
+    if (
+        isinstance(obj, Target)
+        and not obj.partial
+        and instance_memo is not None
+        and not runtime_kwargs
+        and not runtime_args
+    ):
         instance_memo[id(obj)] = instance
+        # The memo keys on id(); a marker handed to PUBLIC flow() (a ctor-local
+        # recipe, per the documented idiom) dies right after this call, and its
+        # recycled address then reads as a memo HIT for an unrelated node —
+        # measured: one maker's widget served to the next (BUGS-2026-08-13 X3).
+        keepalive = _ENGINE_STATE.get().memo_keepalive
+        if keepalive is not None:
+            keepalive.append(obj)
 
     # Preserve Confluid origin for serialization round-trip. The dumper reads
     # __confluid_kwargs__ two ways: as the whole-object representation for
@@ -1576,7 +930,7 @@ def _flow_target(
     # transformed a param instead of storing it verbatim (eager classes).
     # This overwrites any capture the @configurable validation wrap stamped
     # during __init__ — deliberately: the resolved ctor dict is the richer
-    # value (live children, Lazy markers). A capture=False class
+    # value (live children, PartialClass markers). A capture=False class
     # (__confluid_no_capture__) skips BOTH attrs together — they exist only
     # for the dump round-trip, and __confluid_class__ without
     # __confluid_kwargs__ would break the dumper's non-configurable branch.
@@ -1587,20 +941,61 @@ def _flow_target(
         except (TypeError, AttributeError):
             pass  # Built-in types / __slots__-only classes may reject arbitrary attrs
 
-    _apply_post_init_attrs(instance, target, merged, params)
-    _broadcast_onto_instance(instance, params, ctor, context, broadcast_ctx)
+    _apply_post_init_attrs(instance, target, merged, ctor, obj, context, root_pool)
+    _broadcast_onto_instance(instance, params, ctor, context, root_pool)
     _maybe_solidify(instance)
     return instance
 
 
-def _resolve_target_callable(target: Any) -> Any:
-    """Resolve a string target to its class/callable via the registry; pass callables through."""
-    if isinstance(target, str):
-        resolved = resolve_class(target)
-        if resolved is None:
-            raise UnknownClassError(f"Cannot resolve class: {target}")
-        return resolved
-    return target
+def _resolve_target_callable(node: Any) -> Any:
+    """Resolve a MARKER's string target to its class/callable; pass callables through.
+
+    Takes the marker, **never the bare target string**, because the marker is what carries
+    ``_yaml_loc`` — handed only the string, this reported ``Cannot resolve class:
+    pkg.sources.HDF5WindwoSource`` with no file and no line, leaving the reader a
+    30-frame traceback and a config tree to grep (measured 2026-08-11, on the exact defect a
+    rename produces). ``ConstructionError`` a few frames later named its line the whole time.
+
+    This is a CONSTRUCTION funnel, so it resolves ``strict=True``: an ambiguous name must
+    stop the run naming its candidates, never bind whichever module happened to import
+    last. It also passes the active document, which is what lets a ``@axis=$key`` selector
+    read the choice from the config (``!class:FourierOp@framework=$framework``) — the
+    context is available here even for a node nested inside another marker's kwargs.
+    """
+    target = getattr(node, "target", node)
+    if not isinstance(target, str):
+        return target
+    try:
+        resolved = resolve_class(target, strict=True, context=get_active_context())
+    except AmbiguousClassError as exc:
+        # Raised inside the registry, which has never seen the document — re-raise with the
+        # line that wrote the ambiguous name, keeping the candidate list the registry built.
+        raise AmbiguousClassError(f"{exc}{_at_yaml_loc(node)}") from exc
+    except ConfigurationError as exc:
+        # Same rule for every other registry-side refusal — a `@axis=$key` selector whose
+        # key is missing used to escape with no file:line while the marker held the
+        # location one frame up (BUGS-2026-08-19 SR14).
+        raise type(exc)(f"{exc}{_at_yaml_loc(node)}") from exc
+    if resolved is None:
+        raise UnknownClassError(f"Cannot resolve class: {target}{_at_yaml_loc(node)}{_selector_detail(target)}")
+    return resolved
+
+
+def _selector_detail(target: str) -> str:
+    """Explain a selector miss in terms of the RESOLVED filter, not the raw spelling.
+
+    ``!class:Loss@framework=$framework`` failing is otherwise reported verbatim, which
+    hides the thing the reader needs: which value ``$framework`` actually carried.
+    """
+    try:
+        name, selectors = parse_target_spec(target)
+    except ConfigurationError:
+        return ""
+    if not selectors:
+        return ""
+    resolved = _resolve_selector_values(selectors, get_active_context())
+    shown = ", ".join(f"{axis}={value!r}" for axis, value in resolved.items())
+    return f" — no class named {name!r} with {shown} is registered"
 
 
 def _resolve_kwarg_value(
@@ -1608,82 +1003,149 @@ def _resolve_kwarg_value(
     *,
     context: Optional[Dict[str, Any]],
     broadcast_ctx: Dict[str, Any],
-    eager_classes: bool = False,
+    slot_is_partial: bool = False,
 ) -> Any:
     """Resolve ONE kwarg value for a target under materialization.
 
-    A ``Lazy`` (a ``Class`` subclass) is a runtime-injection point: keep it
+    A ``PartialClass`` (a ``Class`` subclass) is a runtime-injection point: keep it
     deferred through materialization regardless of ``eager_classes`` — an
     explicit ``flow()`` by domain code builds it later; the auto-flow walkers
-    here must never instantiate it. ``Instance`` flows now; a ``Class`` stub
-    receives broadcasting from ``broadcast_ctx`` (with the self-broadcast and
-    Fluid-through-**kwargs guards) and stays deferred unless ``eager_classes``;
-    ``Reference`` flows when a context is active (unresolvable → kept deferred);
-    containers recurse.
+    here must never instantiate it. **It still receives broadcasting**, though,
+    because "do not BUILD it" and "do not CONFIGURE it" are different
+    statements and only the first is what deferral means: merging broadcast
+    keys into a marker's ``kwargs`` constructs nothing, which is exactly why the
+    ``Class`` branch below can do it and still hand back a deferred stub. A
+    ``PartialClass`` therefore takes that same branch (it IS a ``Class``) and only the
+    terminal ``eager_classes`` flow is withheld from it.
+
+    This was a real gap until 2026-08-03: an early ``return v`` here meant a
+    ``!lazy:`` marker written in the DOCUMENT received bare keys while an
+    identical one created in an ``__init__`` BODY did not — same marker type,
+    two answers. A consumer declaring ``self.optimizer = PartialClass(AdamW,
+    lr=1e-4)`` could not be retuned by ``lr:`` (or ``--lr``) at all: the run
+    trained at the hard-coded default and reported nothing, which is the silent
+    class of failure. ``Instance`` flows now; ``Reference`` flows when a context
+    is active (unresolvable → kept deferred); containers recurse.
     """
-    if isinstance(v, Lazy):
-        return v
-    if isinstance(v, Instance):
-        return flow(v)
-    if isinstance(v, Class):
+    if isinstance(v, Target):
+        # ONE instance per marker per pass — the invariant `!ref:` rests on. By the
+        # time a kwarg reaches here its `!ref:` has already been resolved to the
+        # TARGET MARKER, so two slots referencing one node arrive holding the same
+        # object; if the document also flowed it at top level, that instance already
+        # exists. Consult the memo before building, and record under the ORIGINAL
+        # marker after — the broadcast copy below would otherwise sit between the
+        # marker and its memo entry, and each slot would build its own.
+        instance_memo = _ENGINE_STATE.get().instance_memo
+        if instance_memo is not None and not v.partial:
+            cached = instance_memo.get(id(v))
+            if cached is not None:
+                return cached
+
         # Apply broadcasting: pull matching keys from full context
         report = _ENGINE_STATE.get().report
         broadcasted = dict(v.kwargs)
-        acceptable = _get_acceptable_keys(v.target)
-        inner_target_cls = (
-            v.target if isinstance(v.target, type) else resolve_class(v.target) if isinstance(v.target, str) else None
-        )
-        inner_blocked = _broadcast_blocked_keys(inner_target_cls)
-        for bk, bv in broadcast_ctx.items():
-            if bk in broadcasted or isinstance(bv, (dict, list)):
-                continue
-            if inner_blocked is None or bk in inner_blocked:
-                continue  # NoBroadcast param / broadcast=False class — bare keys never land
-            if isinstance(bv, Fluid):
-                # Fluids only broadcast through an explicit accepted
-                # key — never via the **kwargs catchall (which would
-                # pull the outer Class into nested targets and loop).
-                if acceptable is None or bk not in acceptable:
-                    continue
-                # Self-broadcast guard: skip a Fluid whose target is
-                # the same class we're filling. Avoids infinite
-                # recursion when an inherited attribute (e.g.
-                # pl.LightningModule.trainer) makes the class's own
-                # name an acceptable broadcast target.
-                if inner_target_cls is not None:
-                    if _same_target(bv.target, inner_target_cls):
-                        continue
-            elif acceptable is not None and bk not in acceptable:
-                continue
-            logger.trace(f"broadcast: {bk!r} -> {getattr(inner_target_cls, '__name__', v.target)} (nested-class)")
-            broadcasted[bk] = bv
+        inner_target_cls = _settability_target(v.target)
+        # Confluid has ONE precedence rule — document order, last spec wins — and this
+        # pass is NOT where it is decided. `_flow_recursive` already merged this marker's
+        # own kwargs against the surrounding bare keys BY POSITION and stamped
+        # `_order_resolved`; re-applying a bare key here would overwrite that outcome
+        # unconditionally, which is a specificity tier by another name.
+        #
+        # So the question is only "has the ordered merge run for this marker yet?".
+        # It has not for a marker built in CODE (a ctor default `engine: Any =
+        # Class(Engine, power=7)`, a body slot `self.optimizer = PartialClass(AdamW,
+        # lr=1e-4)`) — those are defaults that never appeared in the document and so
+        # never took a position; broadcasting exists to override exactly those, which is
+        # why a plain `def __init__(self, power=7)` loses to a bare `power:` too.
+        #
+        # This used to test `_yaml_loc is not None` — a PROXY for the same question that
+        # answered wrong for one shape: a marker the document only TUNED (`engine: {power:
+        # 50}`) inherits the code marker's empty location, so its author-written value was
+        # read as a default and any bare key beat it regardless of where either sat.
+        already_ordered = is_order_resolved(v)
+        label = str(getattr(inner_target_cls, "__name__", v.target))
+
+        def _record_nested(bk: str) -> None:
             if report is not None:
-                report.record_applied(bk, str(getattr(inner_target_cls, "__name__", v.target)), "nested-class")
+                report.record_applied(bk, label, "nested-class")
                 report.mark_used(bk)
+
+        # The gates themselves (containers, NoBroadcast, the Fluid declared-key +
+        # self-target guard) live in the ONE cascade function both paths call —
+        # only the ordering verdict is computed here, because the ordering MODEL
+        # is per-caller (see broadcast.merge_bare_pool_into_kwargs).
+        merge_bare_pool_into_kwargs(
+            broadcasted,
+            broadcast_ctx,
+            v.target,
+            protected=frozenset(broadcasted) if already_ordered else frozenset(),
+            on_applied=_record_nested if report is not None else None,
+        )
         v_copy = copy(v)
+        # The memos key on id(); a freed copy's address is reused and reads as a
+        # HIT for an unrelated node. Pin it for the pass (see _EngineState).
+        keepalive = _ENGINE_STATE.get().memo_keepalive
+        if keepalive is not None:
+            keepalive.append(v_copy)
         v_copy.kwargs = broadcasted
         v_copy._yaml_loc = getattr(v, "_yaml_loc", None)
-        if eager_classes:
-            return flow(v_copy)
-        return v_copy
+        # `partial` is the ONLY thing that withholds construction. A PartialClass is
+        # configured like any other marker but never built here — the point is
+        # that domain code supplies the missing runtime argument later
+        # (`flow(self.optimizer, params=...)`).
+        if v_copy.partial or slot_is_partial:
+            # A slot the receiver declared deferred keeps its marker unbuilt. The
+            # value is NOT rewritten to a PartialClass here — the ONE promotion site is
+            # the post-init guard in `_apply_post_init_attrs`, which also warns.
+            return v_copy
+        built = flow(v_copy)
+        if instance_memo is not None:
+            instance_memo[id(v)] = built
+            # ``v`` may be a SHORT-LIVED marker (the slot-tune path's tune_marker
+            # copy) — pin what the memo keys on, or a recycled address hands one
+            # slot another slot's instance (BUGS-2026-08-13 E1: 5 distinct
+            # objects for 12 tuned slots, measured).
+            if keepalive is not None:
+                keepalive.append(v)
+        return built
     if isinstance(v, Reference) and context:
         try:
             return flow(v)
-        except ValueError:
-            return v  # Unresolvable reference — keep deferred
+        except ReferenceResolutionError:
+            # Genuinely unresolvable HERE — keep deferred for a later flow. The catch
+            # is NARROW on purpose: ``ConfigurationError`` dual-inherits ``ValueError``,
+            # so a broad ``except ValueError`` also swallowed the REFERENT's own
+            # constructor crash and an UnknownClassError, silently leaving the
+            # Reference in the slot (BUGS-2026-08-19 ENG-3).
+            return v
     if isinstance(v, Fluid):
         return v  # Other Fluid types stay as-is
     if isinstance(v, list):
         return [
-            _resolve_kwarg_value(i, context=context, broadcast_ctx=broadcast_ctx, eager_classes=eager_classes)
+            _resolve_kwarg_value(i, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=slot_is_partial)
             for i in v
         ]
     if isinstance(v, dict):
         return {
-            dk: _resolve_kwarg_value(dv, context=context, broadcast_ctx=broadcast_ctx, eager_classes=eager_classes)
+            dk: _resolve_kwarg_value(dv, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=slot_is_partial)
             for dk, dv in v.items()
         }
     return v
+
+
+class _UnknownParams(Set[str]):
+    """A set that means "the signature could not be read", not "it takes nothing".
+
+    A plain ``set()`` cannot carry that distinction, and the two need OPPOSITE
+    handling: unreadable means pass every kwarg through (best effort), while a
+    genuinely empty parameter list means pass none. Subclasses ``set`` so it stays a
+    valid ``Set[str]`` for every reader; callers tell it apart by IDENTITY against
+    :data:`_UNKNOWN_PARAMS`, never by truthiness.
+    """
+
+
+#: The single instance of :class:`_UnknownParams` — compare with ``is``.
+_UNKNOWN_PARAMS = _UnknownParams()
 
 
 def _ctor_params(target: Any) -> Optional[Set[str]]:
@@ -1694,26 +1156,117 @@ def _ctor_params(target: Any) -> Optional[Set[str]]:
     callable itself. Using ``target.__init__`` for a function resolves
     ``object.__init__`` → ``(*args, **kwargs)``, so the ctor kwarg filter would
     keep only keys named ``args``/``kwargs`` — dropping EVERY real kwarg and
-    silently building the function's defaults. Returns ``None`` when a class
-    has no ``__init__`` at all (caller leaves the marker unbuilt); an
-    un-introspectable signature returns the empty set (caller passes every
-    kwarg to the call).
+    silently building the function's defaults.
+
+    Three outcomes, and they must stay distinguishable — conflating the last two is
+    what made a zero-parameter constructor unconfigurable:
+
+    * ``None`` — the class has no callable ``__init__``; the caller leaves the marker
+      unbuilt. This looks unreachable (every class inherits ``object.__init__``) and
+      is not: ``__init__ = None`` is a legal class attribute, and ``getattr`` then
+      returns ``None``. Such a class cannot be constructed by anyone — ``Nulled()``
+      raises ``TypeError: 'NoneType' object is not callable`` — so handing the marker
+      back unbuilt is a deliberate graceful degradation. Deleting the branch as dead
+      code would fall through to ``inspect.signature(None)``, which raises, yielding
+      :data:`_UNKNOWN_PARAMS` and a call to ``None(**kwargs)``: the same failure with
+      a worse message. (A located error might be better still than returning a
+      marker; that is a behaviour change, not a cleanup, and is deliberately not made
+      here.)
+    * :data:`_UNKNOWN_PARAMS` — the signature could not be read, so no filtering is
+      possible and the caller passes every kwarg through as a best effort.
+    * a set (possibly EMPTY) — the signature WAS read. An empty one means the target
+      genuinely takes no parameters, so the caller must pass none. Returning a plain
+      ``set()`` for the unreadable case made those two indistinguishable, and the
+      caller's ``if params else pass-everything`` fallback then fired for
+      ``def __init__(self)`` — handing every config key to a constructor that accepts
+      none (``TypeError: ZeroArg.__init__() got an unexpected keyword argument``).
+      That shape is one the class-design convention actively encourages: a minimal
+      constructor with the dependencies as ``__init__``-body slots, taken to its
+      limit of no parameters at all.
+
+    ``*args`` (VAR_POSITIONAL) and POSITIONAL_ONLY parameters are both EXCLUDED,
+    for one reason: their names can never be passed by keyword, so keeping them
+    would let a config key that happens to match one (``loaders`` for
+    ``DataLoaders(*loaders, …)``; ``k`` for ``__init__(self, k, /)``) through the
+    filter and into a ``TypeError`` from the call itself. A ``*args`` input arrives
+    as one of ``flow()``'s positional runtime args instead; a positional-only
+    parameter falls through to a post-init ``setattr``, which is what
+    ``configure()`` has always done for it — so both paths now agree.
+
+    A ``**kwargs`` (VAR_KEYWORD) parameter is deliberately KEPT, and the
+    asymmetry with ``*args`` is load-bearing rather than an oversight: its
+    presence is what makes the returned set non-empty, and a non-empty set is
+    what routes every unmatched key to a post-init ``setattr`` — which IS the
+    documented behaviour of a ``**kwargs`` ``@configurable`` class (every bare
+    broadcast key lands as an attribute; ``docs/broadcasting.md`` → "Classes with
+    ``**kwargs`` constructors", pinned by ``tests/test_broadcast_scoping.py``
+    and ``examples/broadcasting.py``). Dropping it would silently redirect those
+    keys into the constructor. What such a target ALSO needs — its runtime
+    kwargs, which are call arguments rather than config keys — is handled by
+    :func:`_takes_var_keyword` at the one call site in :func:`_flow_target`.
     """
+    if init_callable(target) is None:
+        return None
     try:
-        if inspect.isclass(target):
-            init_method = getattr(target, "__init__", None)
-            if init_method is None:
-                return None
-            sig = inspect.signature(init_method)
-        else:
-            sig = inspect.signature(target)
-        return {p for p in sig.parameters if p not in ("self", "cls")}
+        # ONE enumeration, one projection. ``var_positional`` and ``positional_only``
+        # are dropped for the reason above; ``var_keyword`` is KEPT, and that
+        # asymmetry is load-bearing rather than an oversight.
+        return slot_names(target, frozenset({"keyword", "var_keyword"}))
     except (ValueError, TypeError):
-        return set()
+        return _UNKNOWN_PARAMS
 
 
-def _construct(target: Any, ctor: Dict[str, Any], obj: Any) -> Any:
-    """Call the target with the ctor kwargs under the YAML validation mode.
+def _takes_var_keyword(target: Any) -> bool:
+    """Whether the target's own signature accepts arbitrary keywords (``**kwargs``).
+
+    Such a signature names no parameter for any of its inputs, so the
+    constructor-kwarg filter in :func:`_flow_target` drops every one of them and
+    builds the target with NOTHING. Measured against a ``transformers.Trainer``
+    subclass declaring ``def __init__(self, **kwargs)``: it died as *"`Trainer`
+    requires either a `model` or `model_init` argument"* — a message pointing
+    nowhere near confluid. :func:`_var_keyword_extras` says what to pass instead.
+    """
+    return any(slot.kind == "var_keyword" for slot in slots(target))
+
+
+def _var_keyword_extras(
+    obj: Any,
+    merged: Dict[str, Any],
+    runtime_kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """What a ``**kwargs`` constructor receives beyond its named parameters.
+
+    The rule is ADDRESSING, and it is the same rule the accept-list uses (see
+    ``docs/broadcasting.md`` → "Asking whether a key may land"): a key aimed AT
+    this node is an argument; a key that merely cascaded past it is not.
+
+    * **Runtime kwargs** — ``flow(node, model=…)`` — are call arguments by
+      construction and always pass.
+    * **Addressed config keys** — written on the marker (``!lazy:Trainer(a=1)``)
+      or delivered by a block naming it — are what the author asked this node to
+      be built with, so they pass too. Without this a forwarding subclass never
+      sees a config key: it would land as an ATTRIBUTE on the built object and
+      quietly do nothing.
+    * **Bare broadcast keys** — a top-level ``name:`` cascading into every
+      accepting node — do NOT. A ``**kwargs`` class has an unknowable accept-list,
+      so confluid errs permissive and every bare key reaches it; feeding those to
+      the constructor would turn "permissive broadcasting" into "the constructor
+      is called with whatever the document happens to contain". They keep landing
+      as post-init attributes, which is the documented behaviour (pinned by
+      ``tests/test_broadcast_scoping.py`` and ``examples/broadcasting.py``).
+
+    ``obj._addressed_keys`` is ``None`` for a marker that was never merged against
+    a document — a hand-built one, or a direct ``flow(marker)`` — where every
+    kwarg is by definition the marker's own.
+    """
+    addressed = addressed_keys_of(obj)
+    extras = {k: v for k, v in merged.items() if not _is_glob_key(k) and (addressed is None or k in addressed)}
+    extras.update({k: v for k, v in runtime_kwargs.items() if not _is_glob_key(k)})
+    return extras
+
+
+def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: Any) -> Any:
+    """Call the target with the positional runtime args + ctor kwargs, in YAML validation mode.
 
     YAML-driven materialization honours ``policy.yaml`` instead of
     ``policy.init`` so direct-Python instantiation and YAML loads can be tuned
@@ -1723,36 +1276,55 @@ def _construct(target: Any, ctor: Dict[str, Any], obj: Any) -> Any:
     (TypeError / ValueError / …); classes that can't be rebuilt from a plain
     string (pydantic's ``ValidationError``) fall back to ``ConstructionError``,
     chaining the original via ``__cause__``.
-    """
-    from confluid.validation import get_policy, override_init_mode
 
+    ``args`` comes from ``flow(node, a, b)`` and is empty for every marker built
+    from YAML — a tag carries kwargs only, so positional injection is a
+    runtime-only channel (see :func:`flow`).
+    """
+    from confluid.validation import _construction_where, get_policy, override_init_mode
+
+    where_token = _construction_where.set(_at_yaml_loc(obj))
     try:
         with override_init_mode(get_policy().yaml):
-            return target(**ctor)
+            return target(*args, **ctor)
     except Exception as exc:
         target_name = getattr(target, "__name__", str(target))
-        loc = format_yaml_loc(obj)
-        location = f" at {loc}" if loc else ""
-        msg = f"Failed to construct {target_name}{location}: {exc}"
+        msg = f"Failed to construct {target_name}{_at_yaml_loc(obj)}: {exc}"
         try:
             raise type(exc)(msg) from exc
         except TypeError:
             raise ConstructionError(msg) from exc
+    finally:
+        _construction_where.reset(where_token)
 
 
-def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], params: Set[str]) -> None:
-    """Assign non-constructor kwargs as attributes on a configurable instance.
+def _apply_post_init_attrs(
+    instance: Any,
+    target: Any,
+    merged: Dict[str, Any],
+    ctor: Dict[str, Any],
+    obj: Any = None,
+    context: Optional[Dict[str, Any]] = None,
+    broadcast_ctx: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Assign kwargs the CONSTRUCTOR did not take as attributes on a configurable instance.
+
+    The gate is ``ctor`` — what was actually passed — rather than the declared
+    parameter names, so a key can never be applied twice. The two agree wherever
+    the ctor dict is the name-filtered one; they diverge exactly where a
+    ``**kwargs`` target took a runtime kwarg no parameter is named for (see
+    :func:`_takes_var_keyword`), which must NOT then also be set as an attribute.
 
     Post-init attrs land on a live instance — if the value is still a Fluid
     marker (e.g. a nested ``!class:X`` that broadcasting carried in), it is
     materialized now: unlike constructor args, post-init attrs have no
     runtime-kwarg injection channel, so a deferred marker would just pollute a
     slot typed as the real dependency (``nn.Module.__setattr__`` would even
-    reject it). EXCEPTION — a ``Lazy`` (``!lazy:``) stays deferred: it is a
+    reject it). EXCEPTION — a ``PartialClass`` (``!lazy:``) stays deferred: it is a
     deliberate runtime-injection point the owning class flows when ready.
 
-    Misconfiguration guard: if the slot's OWN default is a ``Lazy`` (a deferred
-    runtime-injection body slot, e.g. ``self.optimizer = LazyClass(...)``), a
+    Misconfiguration guard: if the slot's OWN default is a ``PartialClass`` (a deferred
+    runtime-injection body slot, e.g. ``self.optimizer = PartialClass(...)``), a
     supplied deferred ``Class`` (``!class:`` no-parens) would be eagerly built
     here and break the slot (an optimizer built with no ``params``). The slot's
     laziness is inherited — the supplied value is auto-deferred with a warning
@@ -1765,35 +1337,237 @@ def _apply_post_init_attrs(instance: Any, target: Any, merged: Dict[str, Any], p
     round-trip.
     """
     if not getattr(target, "__confluid_configurable__", False):
+        # An UNREGISTERED target does not participate in the config graph (registry
+        # mandate), so nothing is applied — but the drop used to be SILENT: a typo'd
+        # key on a `_target_: torch.optim.Adam` marker vanished with an empty report
+        # while the same typo on a @configurable class warned (BUGS-2026-08-19 ENG-7).
+        # Say so, in the report's vocabulary; register() the class to accept the key.
+        label = getattr(target, "__name__", str(target))
+        report = _ENGINE_STATE.get().report
+        # Only a key WRITTEN on the marker can be a typo. A BARE key is offered to every node
+        # and matches nothing on most of them — that is its normal life; the accept-list drops
+        # it before here for any class that declares its parameters, and a `**kwargs` target
+        # (no accept-list) lands it here instead. Measured 2026-08-22: six bare keys reaching
+        # three torchmetrics classes fired 42 warnings + 42 `unknown-attribute` records per
+        # training run. `None` = never merged against a document: every kwarg is its own.
+        addressed = addressed_keys_of(obj)
+        for k in merged:
+            if _is_glob_key(k) or k in ctor:
+                continue
+            if addressed is not None and k not in addressed:
+                if trace_enabled(logger):
+                    logger.trace(f"{label}: bare key {k!r} matches nothing on an unregistered target — skipped")
+                continue
+            logger.warning(
+                f"{label} has no parameter {k!r}{_at_yaml_loc(obj)} — DROPPED: the target is not "
+                f"@configurable/registered, so post-init attributes are not applied. register() the "
+                f"class to accept extra keys, or remove the key."
+            )
+            if report is not None:
+                report.record_failed(k, label, "unknown-attribute")
         return
     extra_keys: list[str] = []
     for k, v in merged.items():
         if _is_glob_key(k):
             continue  # glob routing metadata — never an attribute
-        if params and k not in params:
+        if k not in ctor:
+            # A key naming a ``*args`` parameter reaches here because the ctor filter
+            # dropped it — and it must not become an attribute instead. See
+            # broadcast.refuse_if_variadic_name for why (and why BARE keys are exempt).
+            refuse_if_variadic_name(target, k, obj)
+            # B1: an undeclared key is AUDIBLE but still applied. This branch IS the
+            # post-init attribute mechanism (the docstring above), so refusing here
+            # would remove documented behaviour from the commonest spelling — that
+            # is the opt-in ``strict_attrs`` mark instead (TASKS.md). Silence was the
+            # real defect: the same typo is reported by ``configure()`` and, until
+            # 2026-08-12, set without a word here.
+            _warn_undeclared(instance, target, k, obj)
             member = getattr(target, k, None)
             if isinstance(member, property) and member.fset is None:
                 continue
-            if getattr(member, "__confluid_ignore__", False):
-                continue
-            if isinstance(v, Fluid) and not isinstance(v, Lazy):
-                existing = instance.__dict__.get(k)
-                if type(v) is Class and isinstance(existing, Lazy):
-                    logger.warning(
-                        f"Config slot {k!r} on {getattr(target, '__name__', target)} received a "
-                        "'!class:' value but the slot is a deferred (lazy) runtime-injection slot; "
-                        "treating it as '!lazy:'. Wire it '!lazy:' in YAML to make the intent "
-                        "explicit and silence this."
+            # A ``__slots__`` / immutable target has no ``__dict__`` and may refuse the
+            # attribute outright. "Last path that fits wins": the constructor was the
+            # earlier path and did not take this key, so a setattr is the only one left —
+            # and if it does not fit either, say so HERE, naming the key, the target and
+            # the YAML position. Letting the raw ``AttributeError`` out reports
+            # ``'S' object has no attribute '__dict__'`` from a line the author never
+            # wrote, which points at the engine instead of at their config.
+            existing = getattr(instance, "__dict__", {}).get(k)
+            slot_declared_deferred = isinstance(existing, PartialClass) or k in partial_param_names(target)
+            if isinstance(v, Fluid) and not getattr(v, "partial", False):
+                if isinstance(v, Target) and slot_declared_deferred:
+                    # BOTH deferral signals gate the promotion — the PartialClass VALUE
+                    # and the Partial[T] ANNOTATION (`self.optimizer: Partial[Optim] = None`
+                    # used to be built eagerly here, crashing a runtime-injection ctor —
+                    # BUGS-2026-08-19 ENG-17). The promoted marker KEEPS the original's
+                    # location and merge bookkeeping: a fresh PartialClass dropped them,
+                    # so the eventual flow() error named no file:line (ENG-11). DEBUG, not a
+                    # warning (user ruling 2026-08-22): the declaration is the receiver's
+                    # contract and the CONSTRUCTOR path honours it silently — the same
+                    # `!class:` spelling warned here for a body slot (`val_set`) and not for
+                    # its ctor-param sibling (`train_set`).
+                    logger.debug(
+                        f"Config slot {k!r} on {getattr(target, '__name__', target)} is declared deferred; "
+                        f"its '_target_:' value{_at_yaml_loc(v)} is kept as a marker for the owning "
+                        "class to build."
                     )
-                    v = Lazy(v.target, **v.kwargs)
+                    promoted = PartialClass(v.target)
+                    promoted.__dict__.update({dk: dv for dk, dv in v.__dict__.items() if dk != "partial"})
+                    promoted.partial = True
+                    v = promoted
                 else:
                     v = flow(v)
-            setattr(instance, k, v)
+            elif isinstance(v, dict) and dict_at_slot_kind(existing) == "configurable":
+                # C1b (BUGS-2026-08-13): the slot holds a LIVE @configurable child —
+                # walk INTO it and set its fields, exactly as configure() always has.
+                # The child OBJECT survives; nothing is reassigned on the host.
+                _apply_mapping_onto_live(existing, v, obj)
+                logger.trace(f"slot-apply: {k!r} -> live {type(existing).__name__} updated in place")
+                continue
+            elif isinstance(v, dict) and dict_at_slot_kind(existing) == "opaque":
+                # User decision 2026-08-13: a mapping must never silently replace a
+                # live object it cannot reach into. Refuse, located.
+                raise ConfigurationError(
+                    f"{getattr(target, '__name__', target)} slot {k!r}{_at_yaml_loc(obj)} holds a live "
+                    f"{type(existing).__name__}, which is not @configurable — a mapping cannot be "
+                    f"applied into it. Register the class (or mark it @configurable), wire the slot "
+                    f"from config with a _target_: marker, or replace the whole value in code."
+                )
+            elif isinstance(v, dict) and isinstance(existing, Target):
+                # A mapping addressed at a slot that already holds a deferred marker
+                # TUNES that marker — it does not replace it. Assigning the raw dict
+                # was the old behaviour and it destroyed the slot silently: the
+                # canonical `optimizer: {lr: 0.5}` left a plain dict where an
+                # optimizer belonged, so the value the user set was the only thing
+                # that survived and the target class was simply gone. Merging keeps
+                # the kwargs they did NOT mention (a `weight_decay` set in code
+                # stays set), which is the whole reason to spell it as a block
+                # rather than restating the marker.
+                tuned = tune_marker(existing, v)
+                # The mapping is an ADDRESSED value like any other, so document order
+                # decides it against a competing bare key — but it reaches here with no
+                # position of its own (see :func:`_late_bare_keys_per_slot`). The winner
+                # was worked out during the ordered merge and handed over as the set of
+                # bare keys that sit LATER than this slot; apply exactly those, through
+                # the normal resolver so the accept-list and NoBroadcast gates still run.
+                late = late_bare_keys_of(obj).get(k, frozenset())
+                pool = {bk: bv for bk, bv in (broadcast_ctx or {}).items() if bk in late}
+                if pool:
+                    # The declared deferral rides along: without it one later bare key
+                    # was enough to BUILD a Partial[T] slot's tuned marker (ENG-17).
+                    tuned = _resolve_kwarg_value(
+                        tuned, context=context, broadcast_ctx=pool, slot_is_partial=slot_declared_deferred
+                    )
+                # Settled either way now — a later bare key has been applied, an earlier
+                # one has lost. Mark it so the broadcast pass below does not re-run the
+                # contest and hand the win to whichever key it happens to visit.
+                # MARKERS only: _resolve_kwarg_value BUILDS a non-partial marker, so
+                # ``tuned`` may be the LIVE result — stamping that crashed __slots__
+                # targets and grew a stray attribute on everything else (E2).
+                if isinstance(tuned, Fluid):
+                    tuned._order_resolved = True
+                logger.trace(f"slot-tune: {k!r} -> {existing.target} merged {sorted(v)} into the deferred marker")
+                v = tuned
+            try:
+                setattr(instance, k, v)
+            except (AttributeError, TypeError) as exc:
+                # TypeError joins AttributeError (BUGS-2026-08-19 ENG-10): a validating
+                # __setattr__ — torch's "cannot assign 'int' as child module" — used to
+                # escape RAW and unlocated from a line the author never wrote.
+                # No path fits: the constructor did not take this key and the object
+                # refuses the attribute (``__slots__`` without a matching slot, a frozen
+                # dataclass, a C type). Raise WHERE the config can be seen — the raw
+                # AttributeError names ``__dict__`` or a read-only field and reads as an
+                # engine fault rather than a misconfigured key.
+                loc = format_yaml_loc(obj)
+                raise ConstructionError(
+                    f"{getattr(target, '__name__', target)} cannot accept {k!r}"
+                    f"{f' (set at {loc})' if loc else ''}: it is not a constructor "
+                    f"parameter and the object does not allow the attribute to be set "
+                    f"({exc}). Add it to the constructor, or remove it from the config."
+                ) from exc
             extra_keys.append(k)
     try:
         instance.__confluid_extra__ = extra_keys
     except (TypeError, AttributeError):
         pass
+
+
+def _apply_mapping_onto_live(child: Any, mapping: Dict[str, Any], node: Any) -> None:
+    """Walk a config mapping INTO a live ``@configurable`` object — the load path's recurse arm.
+
+    The load-path twin of ``configure()``'s addressed-block recursion (C1b,
+    BUGS-2026-08-13): each entry dispatches on what the CHILD's slot holds, via the
+    ONE ``dict_at_slot_kind`` classifier — a marker is tuned, a nested live
+    configurable child recurses, plain data is assigned, and an opaque live object
+    refuses with a located error. Values are treated as the sibling paths treat
+    them: a non-partial ``Target`` value is built, a ``PartialClass`` stays deferred,
+    and unknown names warn (or are refused under ``strict_attrs``) exactly as the
+    host's own-kwarg path warns.
+
+    Reads the child's slots from ``vars()`` only — no property getter ever runs.
+    """
+    cls = type(child)
+    for mk, mv in mapping.items():
+        if _is_glob_key(mk):
+            continue
+        refuse_if_variadic_name(cls, mk, node)
+        _warn_undeclared(child, cls, mk, node)
+        member = getattr(cls, mk, None)
+        if isinstance(member, property) and member.fset is None:
+            continue  # derived state — never a config knob
+        sub_existing = getattr(child, "__dict__", {}).get(mk)
+        if isinstance(mv, dict):
+            kind = dict_at_slot_kind(sub_existing)
+            if kind == "marker":
+                assert isinstance(sub_existing, Target)  # the classifier's "marker" arm guarantees it
+                setattr(child, mk, tune_marker(sub_existing, mv))
+                continue
+            if kind == "configurable":
+                _apply_mapping_onto_live(sub_existing, mv, node)
+                continue
+            if kind == "opaque":
+                raise ConfigurationError(
+                    f"{cls.__name__} slot {mk!r}{_at_yaml_loc(node)} holds a live "
+                    f"{type(sub_existing).__name__}, which is not @configurable — a mapping cannot "
+                    f"be applied into it. Register the class (or mark it @configurable), wire the "
+                    f"slot from config with a _target_: marker, or replace the whole value in code."
+                )
+            # kind == "assign" — the mapping IS the value
+        val = mv
+        if isinstance(val, Target) and not val.partial:
+            val = flow(val)
+        try:
+            setattr(child, mk, val)
+        except (AttributeError, TypeError) as exc:  # a validating __setattr__ raises TypeError (ENG-10)
+            raise ConstructionError(
+                f"{cls.__name__} cannot accept {mk!r}{_at_yaml_loc(node)}: the object does not "
+                f"allow the attribute to be set ({exc})."
+            ) from exc
+
+
+def _warn_undeclared(instance: Any, target: Any, key: str, node: Any) -> None:
+    """Warn + record when ``key`` names nothing ``target`` declares. Applies anyway (B1).
+
+    "Declared" is the accept-list — constructor parameters, public settable class
+    attributes, and ``__init__``-body slots. A ``**kwargs`` target has no
+    accept-list (``None`` = accept-everything) and is therefore never reported: it
+    accepts every key by design.
+
+    Located, so the message is actionable: the marker carries ``_yaml_loc``.
+    """
+    refuse_if_undeclared(target, key, node)  # a strict class closes here instead
+    acceptable = _get_acceptable_keys(target)
+    if acceptable is None or key in acceptable:
+        return
+    label = getattr(target, "__name__", str(target))
+    logger.warning(
+        f"{label} has no attribute {key!r}{_at_yaml_loc(node)} — set as a post-init attribute "
+        f"anyway. Declare it as a constructor parameter or an __init__-body slot, or remove it."
+    )
+    report = _ENGINE_STATE.get().report
+    if report is not None:
+        report.record_failed(key, label, "unknown-attribute")
 
 
 def _broadcast_onto_instance(
@@ -1814,32 +1588,75 @@ def _broadcast_onto_instance(
     are skipped. A second sweep covers ctor-default params that don't appear
     on ``__dict__`` (e.g. slot descriptors that getattr resolves but vars()
     misses).
+
+    A slot the class declared DEFERRED (``Partial[T]``, or a body slot holding a
+    ``PartialClass(...)``) is broadcast into but never BUILT here — the same rule
+    ``_flow_target`` applies to the constructor kwargs. Without it this sweep undid
+    that decision moments after the constructor honoured it: the instance was built
+    with the marker intact, then this loop re-resolved the attribute with no
+    knowledge of the slot and constructed it anyway, so an optimizer declared
+    ``Partial[Optimizer]`` reached its constructor without the ``params`` it was
+    waiting for (caught downstream by a CLI's flow-mode test, not here).
     """
     seen: set[str] = set()
+    cls = type(instance)
+    partial_slots = partial_param_names(cls)
+    class_defaults = {s.name: s.default for s in slots(cls) if isinstance(s.default, Fluid)}
     instance_vars = getattr(instance, "__dict__", None)
     for attr_name, attr_val in list(instance_vars.items()) if instance_vars else []:
         if attr_name.startswith("__confluid_"):
             continue
         if not isinstance(attr_val, Fluid):
             continue
-        resolved = _resolve_kwarg_value(attr_val, context=context, broadcast_ctx=broadcast_ctx)
+        if class_defaults.get(attr_name) is attr_val:
+            # A ctor-DEFAULT marker is ONE object, evaluated at class definition and
+            # reached from every instance — the id()-keyed instance memo then handed
+            # every host in one pass the FIRST host's built child (two Cars, one
+            # Engine — BUGS-2026-08-19 ENG-16), where the same code outside a pass
+            # and the body-slot spelling both build one per host. A default is a
+            # RECIPE, not a shared node: copy it per instance so the memo keys a
+            # per-host object (the memo write pins it — record 16). Sharing keeps its
+            # one spelling, `!ref:`.
+            attr_val = copy(attr_val)
+            attr_val.kwargs = dict(attr_val.kwargs)
+            setattr(instance, attr_name, attr_val)
+        resolved = _resolve_kwarg_value(
+            attr_val, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=attr_name in partial_slots
+        )
         if resolved is not attr_val:
             try:
                 setattr(instance, attr_name, resolved)
-            except (AttributeError, TypeError):
-                pass  # Read-only property or __slots__
+            except (AttributeError, TypeError) as exc:
+                # Read-only property or __slots__ — but a property setter that
+                # RAISES one of these from its own validation lands here too,
+                # and the broadcast result is dropped either way. Say so: the
+                # sibling post-init path raises a located ConstructionError
+                # for the same event, so this asymmetry must at least be
+                # visible in the log.
+                logger.debug(
+                    f"broadcast: {attr_name!r} on {type(instance).__name__} not settable "
+                    f"({exc}) — nested-broadcast result dropped"
+                )
         seen.add(attr_name)
 
     for param_name in params - seen:
         if param_name not in ctor:
             attr_val = getattr(instance, param_name, None)
             if isinstance(attr_val, Fluid):
-                resolved = _resolve_kwarg_value(attr_val, context=context, broadcast_ctx=broadcast_ctx)
+                resolved = _resolve_kwarg_value(
+                    attr_val,
+                    context=context,
+                    broadcast_ctx=broadcast_ctx,
+                    slot_is_partial=param_name in partial_slots,
+                )
                 if resolved is not attr_val:
                     try:
                         setattr(instance, param_name, resolved)
-                    except (AttributeError, TypeError):
-                        pass  # Read-only property or __slots__
+                    except (AttributeError, TypeError) as exc:
+                        logger.debug(
+                            f"broadcast: {param_name!r} on {type(instance).__name__} not settable "
+                            f"({exc}) — nested-broadcast result dropped"
+                        )
 
 
 def _maybe_solidify(instance: Any) -> None:
@@ -1856,7 +1673,12 @@ def _maybe_solidify(instance: Any) -> None:
             solidify_method()
 
 
-def _flow_bare_type(obj: type, context: Optional[Dict[str, Any]], runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_bare_type(
+    obj: type,
+    context: Optional[Dict[str, Any]],
+    runtime_args: Tuple[Any, ...],
+    runtime_kwargs: Dict[str, Any],
+) -> Any:
     """A bare type passed directly (e.g. ``flow(MyClass, x=1)``).
 
     A registry-configurable type is wrapped in an ``Instance`` marker (kwargs
@@ -1865,67 +1687,64 @@ def _flow_bare_type(obj: type, context: Optional[Dict[str, Any]], runtime_kwargs
     a plain type is just called.
     """
     if get_registry().is_configurable(obj):
-        marker = Instance(obj)
+        if runtime_args:
+            # A marker carries kwargs only, and the broadcast pass reads it — so
+            # there is nowhere for positional args to ride. Wrap the class in a
+            # `Class`/`PartialClass` marker and flow THAT if you need both.
+            raise ConstructionError(
+                f"flow({obj.__name__}, <positional args>) is not supported for a registry-configurable "
+                "class: it materializes through a marker, which carries keyword arguments only. "
+                "Pass the arguments by keyword, or flow a Class/PartialClass marker instead."
+            )
+        marker = Target(obj)
         marker.kwargs.update(runtime_kwargs)
         return materialize(marker, context=context)
-    return obj(**runtime_kwargs)
+    return obj(*runtime_args, **runtime_kwargs)
 
 
-def _flow_reference(obj: Any, context: Optional[Dict[str, Any]], runtime_kwargs: Dict[str, Any]) -> Any:
-    """Resolve a ``Reference``: exact context key → rich path resolver → structural fallback.
+def _flow_reference(
+    obj: Any,
+    context: Optional[Dict[str, Any]],
+    runtime_args: Tuple[Any, ...],
+    runtime_kwargs: Dict[str, Any],
+) -> Any:
+    """Resolve a ``Reference``: exact context key → import path → structural fallback.
 
     The exact whole-object key flows the referenced value (sharing identity);
-    ``resolve_reference_path`` handles dotted attribute access, brackets, and
-    module imports; the structural ``_resolve_ref`` is the last resort for
-    nested paths. Unresolvable → typed ``ReferenceResolutionError``.
+    ``resolve_reference_path`` REFUSES an attribute / method-call reference (record 19,
+    phase 2) and resolves an import path; the structural ``_resolve_ref`` is the last
+    resort for nested dict/list paths. Unresolvable → typed ``ReferenceResolutionError``.
     """
     if context and obj.target in context:
-        return flow(context[obj.target], **runtime_kwargs)
+        return flow(context[obj.target], *runtime_args, **runtime_kwargs)
     if context:
+        refuse_attribute_reference(obj.target, context, _at_yaml_loc(obj))
         dotted = resolve_reference_path(obj.target, context)
         if dotted is not None:
             return dotted
     resolver = Resolver(context=context or {})
     resolved = resolver._resolve_ref(obj.target)
-    if resolved is not None and resolved != f"!ref:{obj.target}":
-        return flow(resolved, **runtime_kwargs)
-    raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}")
+    if resolved is not None:
+        return flow(resolved, *runtime_args, **runtime_kwargs)
+    raise ReferenceResolutionError(f"Cannot resolve Reference: {obj.target}{_at_yaml_loc(obj)}")
 
 
-def _flow_clone(obj: Any, runtime_kwargs: Dict[str, Any]) -> Any:
-    """Resolve a ``Clone``: flow the referenced value, deepcopy it, apply overrides."""
-    from copy import deepcopy
-
-    resolved = flow(Reference(obj.target), **runtime_kwargs)
-    cloned = deepcopy(resolved)
-    for k, v in obj.kwargs.items():
-        setattr(cloned, k, v)
-    return cloned
-
-
-def _flow_generic_fluid(obj: Any, runtime_kwargs: Dict[str, Any]) -> Any:
+def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
     """Generic ``Fluid`` fallback — treat as a Class when the target resolves."""
     target = obj.target
     if isinstance(target, str):
-        resolved = resolve_class(target)
+        # A construction funnel like _resolve_target_callable — same strictness, same
+        # context (so a `@axis=$key` selector resolves against the active document), and
+        # the same rule that both misses name the YAML line that wrote the name.
+        try:
+            resolved = resolve_class(target, strict=True, context=get_active_context())
+        except AmbiguousClassError as exc:
+            raise AmbiguousClassError(f"{exc}{_at_yaml_loc(obj)}") from exc
         if resolved is not None:
             base_kwargs = {**obj.kwargs, **runtime_kwargs}
-            return resolved(**base_kwargs)
-        raise UnknownClassError(f"Class '{target}' not found in registry.")
-    return flow(target, **{**obj.kwargs, **runtime_kwargs})
-
-
-def _flow_string_tag(obj: str, context: Optional[Dict[str, Any]], runtime_kwargs: Dict[str, Any]) -> Any:
-    """String tags (``"!class:Name"`` / ``"!ref:path"``) — resolve then flow.
-
-    An unresolvable tag string is returned verbatim (deferred for a later
-    pass), mirroring the resolver's leave-the-literal convention.
-    """
-    resolver = Resolver(context=context)
-    resolved = resolver.resolve(obj)
-    if isinstance(resolved, str) and (resolved.startswith("!class:") or resolved.startswith("!ref:")):
-        return obj
-    return flow(resolved, **runtime_kwargs)
+            return resolved(*runtime_args, **base_kwargs)
+        raise UnknownClassError(f"Class '{target}' not found in registry{_at_yaml_loc(obj)}.")
+    return flow(target, *runtime_args, **{**obj.kwargs, **runtime_kwargs})
 
 
 def cast(obj: Any, cls: Type[T], **runtime_kwargs: Any) -> T:

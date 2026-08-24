@@ -15,31 +15,28 @@ from confluid import Reference, ReferenceResolutionError, active_context, config
 @configurable
 class Model:
     def __init__(self, layers: int = 3) -> None:
-        """A model exposing parameters for the classic optimizer wiring.
+        """A model — the object a reference resolves to.
 
         Args:
             layers: Layer count.
         """
         self.layers = layers
 
-    def parameters(self) -> List[str]:
-        """Stand-in for torch's ``Module.parameters()``."""
-        return [f"w{i}" for i in range(self.layers)]
-
 
 def main() -> None:
     model = Model(layers=2)
 
-    # active_context makes a bare flow() resolve dotted references (incl. a method call).
+    # active_context makes a bare flow() resolve a reference against that context —
+    # the whole-object ref hands back the very object the context holds.
     with active_context({"model": model}):
-        params = flow(Reference("model.parameters()"))
-        assert params == ["w0", "w1"]
-        print(f"main thread, inside active_context: {params}")
+        same_model = flow(Reference("model"))
+        assert same_model is model
+        print(f"main thread, inside active_context: Model(layers={same_model.layers})")
 
         # A raw Thread starts with a CLEAN context — the reference cannot resolve there.
         def resolve_in_worker(sink: List[Any]) -> None:
             try:
-                sink.append(flow(Reference("model.parameters()")))
+                sink.append(flow(Reference("model")))
             except ReferenceResolutionError as exc:
                 sink.append(exc)
 
@@ -53,13 +50,11 @@ def main() -> None:
         # copy_context() carries the caller's context into the worker.
         ctx = contextvars.copy_context()
         carried_result: List[Any] = []
-        t2 = threading.Thread(
-            target=lambda: ctx.run(lambda: carried_result.append(flow(Reference("model.parameters()"))))
-        )
+        t2 = threading.Thread(target=lambda: ctx.run(lambda: carried_result.append(flow(Reference("model")))))
         t2.start()
         t2.join()
-        assert carried_result[0] == ["w0", "w1"]
-        print(f"Thread via copy_context(): {carried_result[0]}")
+        assert carried_result[0] is model
+        print(f"Thread via copy_context(): Model(layers={carried_result[0].layers})")
 
 
 if __name__ == "__main__":
