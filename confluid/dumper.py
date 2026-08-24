@@ -1,10 +1,12 @@
+import inspect
 import types
 from copy import copy
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import yaml
 from loggair import get_logger
 
+from confluid.exceptions import ConfigurableDefinitionError
 from confluid.introspect import NO_DEFAULT, slots
 from confluid.registry import get_registry
 
@@ -66,6 +68,41 @@ logger = get_logger("confluid.dumper")
 #: Once-per-type loudness for the placeholder below — a dump may hold thousands of one shape.
 _OPAQUE_WARNED: set = set()
 
+#: Registered document spellings for third-party VALUE types — the extension point
+#: behind the built-in faithful spellings in :func:`_represent_opaque`. Keyed by
+#: type, consulted along ``type(value).__mro__`` (exact class first). Process-global
+#: like the class registry; see :func:`register_dump_spelling`.
+_DUMP_SPELLINGS: Dict[type, Callable[[Any], Any]] = {}
+
+
+def register_dump_spelling(cls: type, spell: Callable[[Any], Any]) -> None:
+    """Register the document SPELLING of a third-party value type.
+
+    ``spell(value)`` returns the value's document form — a
+    :class:`~confluid.fluid.Target` marker (rebuilt by the ordinary load
+    machinery, so the round trip needs no load-side change) or a plain
+    YAML-clean value — or ``None`` to DECLINE, keeping the bare
+    ``{_target_: <module.qualname>}`` placeholder and its once-per-type warning
+    (a recipe declines when the value is faithful only up to a point, e.g. a
+    tensor above a size cap).
+
+    This generalizes the built-in faithful spellings (a PathLike dumps as its
+    string, an Enum as its value, a numpy scalar as ``.item()``): those stay
+    hardcoded and WIN over a registered spelling. The lookup walks the value's
+    MRO, exact class first, so a subclass (``nn.Parameter``) hits its base's
+    recipe unless it registers its own. The in-memory document
+    (:func:`to_markers` / ``configure()``) is deliberately NOT affected — live
+    values stay live there, because identity is what ``configure()`` maps
+    settled values back onto.
+    """
+    if not isinstance(cls, type):
+        raise ConfigurableDefinitionError(f"register_dump_spelling: {cls!r} is not a type — register the value's CLASS")
+    if not callable(spell):
+        raise ConfigurableDefinitionError(
+            f"register_dump_spelling: {spell!r} is not callable — pass spell(value) -> document form"
+        )
+    _DUMP_SPELLINGS[cls] = spell
+
 
 def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Fallback: emit a bare ``{_target_: <module.qualname>}`` marker mapping.
@@ -97,6 +134,22 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
         # A numpy SCALAR dumps as the Python scalar it wraps (`np.float32(1.5)`
         # reloaded as `np.float32(0.0)` through the placeholder).
         return dumper.represent_data(data.item())
+    for base in type(data).__mro__:
+        spell = _DUMP_SPELLINGS.get(base)
+        if spell is None:
+            continue
+        spelled = spell(data)
+        if spelled is not None:
+            # A Target renders through the registered Fluid representer; a plain
+            # value through its own — either way the document reloads faithfully.
+            return dumper.represent_data(spelled)
+        break  # the recipe DECLINED this value — the placeholder below says so, loudly
+    if is_dumpable_object(data):
+        # A stamped instance that ESCAPED the discovery pre-walk — it surfaced only
+        # DURING serialization (inside a registered spelling's marker, or inside an
+        # opaque container the walk cannot see through). The dumper knows this class;
+        # degrading it to the placeholder below would lose kwargs it can reconstruct.
+        return _represent_object(dumper, data)
     cls = data.__class__
     name = f"{cls.__module__}.{cls.__qualname__}"
     # Not reconstructible: the placeholder keeps the dump COMPLETE, but it used to be
@@ -112,7 +165,7 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
     return dumper.represent_dict({"_target_": name})
 
 
-def _target_name(target: Any) -> str:
+def _target_name(target: Any, qualified: bool = False) -> str:
     """A marker target's dumpable spelling.
 
     The REGISTRY answers first, exactly as it does for a live instance a few
@@ -135,6 +188,10 @@ def _target_name(target: Any) -> str:
     """
     if isinstance(target, str):
         return target
+    if qualified:
+        path = _importable_path(target)
+        if path:
+            return path
     key = get_registry().key_for(target)
     if key:
         return key
@@ -142,6 +199,20 @@ def _target_name(target: Any) -> str:
     if module and qualname:
         return f"{module}.{qualname}"
     return str(target)
+
+
+def _importable_path(target: Any) -> Optional[str]:
+    """``module.qualname`` when that dotted path genuinely IMPORTS to ``target`` — else ``None``.
+
+    Two shapes are excluded because their path names nothing useful: a factory-built
+    class carries ``<locals>``, and ``__main__.X`` names whatever module the READING
+    process happens to run. Both fall back to the registry key, today's spelling.
+    """
+    module = getattr(target, "__module__", None)
+    qualname = getattr(target, "__qualname__", None)
+    if module and qualname and "<" not in qualname and module != "__main__":
+        return f"{module}.{qualname}"
+    return None
 
 
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
@@ -154,17 +225,34 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # by confluid. Reload fidelity is unchanged: both spellings parse to the same
     # markers (docs/plain-format.md, architecture record 11).
 
+    qualified = getattr(dumper, "_confluid_qualified", False)
+
     if isinstance(data, Reference):
         return dumper.represent_mapping("tag:yaml.org,2002:map", {REF_KEY: data.target, **data.kwargs})
 
     if isinstance(data, Target):
         # ``_partial_`` is emitted only when true — ``false`` is the default and
         # restating it is noise in an archived config.
-        body: dict[str, Any] = {TARGET_KEY: _target_name(data.target)}
+        body: dict[str, Any] = {TARGET_KEY: _target_name(data.target, qualified=qualified)}
         if data.partial:
             body[PARTIAL_KEY] = True
         body.update(data.kwargs)
         return dumper.represent_mapping("tag:yaml.org,2002:map", body)
+
+    # A registered dump spelling is THE document spelling of its type — it wins
+    # over the generic reconstruction below even for a discovered/registered
+    # instance, because a spelling exists precisely where the generic slot walk
+    # gets the type wrong (a ``**kwargs`` base whose body slots the constructor
+    # chain refuses back). Consulted AFTER the Fluid branches: markers are
+    # already document form and never respelled.
+    for _base in type(data).__mro__:
+        _spell = _DUMP_SPELLINGS.get(_base)
+        if _spell is None:
+            continue
+        _spelled = _spell(data)
+        if _spelled is not None:
+            return dumper.represent_data(_spelled)
+        break  # declined — fall through to the generic reconstruction
 
     # Objects materialized via Confluid but not @configurable — use stored origin metadata
     if hasattr(data, "__confluid_class__") and not hasattr(data.__class__, "__confluid_configurable__"):
@@ -172,7 +260,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         # fallback. This branch carried its own inline copy, and for a registered
         # FUNCTION target it fell through to str() — a memory address in the artifact
         # (`_target_: <function build_widget at 0x…>`, BUGS-2026-08-19 CD12).
-        cls_name = _target_name(data.__confluid_class__)
+        cls_name = _target_name(data.__confluid_class__, qualified=qualified)
         return dumper.represent_mapping(
             "tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **getattr(data, "__confluid_kwargs__", {})}
         )
@@ -183,12 +271,16 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     # THIS class rather than to whichever namesake happens to win a bare lookup. Asking the
     # registry (rather than reading a stamped attribute) is what keeps that correct: a name
     # becomes ambiguous at the second registration, when this class is already stamped.
-    cls_name = get_registry().key_for(data.__class__) or getattr(data, "__confluid_name__", data.__class__.__name__)
-    kwargs = {p: _class_value_spelling(v) for p, v in dumpable_kwargs(data).items()}
+    cls_name = (
+        (_importable_path(data.__class__) if qualified else None)
+        or get_registry().key_for(data.__class__)
+        or getattr(data, "__confluid_name__", data.__class__.__name__)
+    )
+    kwargs = {p: _class_value_spelling(v, qualified=qualified) for p, v in dumpable_kwargs(data).items()}
     return dumper.represent_mapping("tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **kwargs})
 
 
-def _class_value_spelling(val: Any) -> Any:
+def _class_value_spelling(val: Any, qualified: bool = False) -> Any:
     """A class-VALUED kwarg in the YAML spelling — the in-memory document keeps the class."""
     from confluid.loader import TARGET_KEY
 
@@ -196,7 +288,12 @@ def _class_value_spelling(val: Any) -> Any:
         return val
     if hasattr(val, "__confluid_configurable__"):
         # Same reasoning as the instance branch: a class-VALUED kwarg needs the
-        # unambiguous key, not the shared short name.
+        # unambiguous key, not the shared short name — or, ``qualified``, the
+        # importable path so the artifact reloads with no registrations.
+        if qualified:
+            path = _importable_path(val)
+            if path:
+                return {TARGET_KEY: path}
         key = get_registry().key_for(val) or getattr(val, "__confluid_name__", None)
         return {TARGET_KEY: key or val.__name__}
     return f"{val.__module__}.{val.__qualname__}"
@@ -250,6 +347,21 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
             continue
         if hasattr(data, p):
             val = getattr(data, p)
+            if callable(val):
+                # A body slot REBINDING one of the object's own methods
+                # (``self.update = self._wrap_update(self.update)`` — the
+                # torchmetrics idiom) is machinery, not configuration: no
+                # document can carry it, the constructor re-creates it, and a
+                # ``**kwargs`` reload fed it back as a REFUSED constructor
+                # argument. The stored value may be the bound method itself OR
+                # a ``functools.wraps`` closure over it (what torchmetrics
+                # stores — a plain function whose ``__wrapped__`` chain ends at
+                # the bound method), so unwrap before testing. The narrow
+                # ``__self__ is data`` guard keeps a deliberately stored OTHER
+                # object's bound method (a callback slot) dumping as before.
+                unwrapped = inspect.unwrap(val)
+                if inspect.ismethod(unwrapped) and unwrapped.__self__ is data:
+                    continue
             if not _skip_none(p, val):
                 kwargs[p] = val
         elif p in captured:
@@ -334,7 +446,7 @@ def _represent_escaped_str(dumper: Any, data: str) -> Any:
     return dumper.represent_str(data.replace("$", "$$") if "$" in data else data)
 
 
-def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
+def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None, qualified: bool = False) -> str:
     """Serialize a (potentially nested) object tree to YAML.
 
     ``anchor_names`` maps ``id(value)`` → the anchor NAME to emit when that value
@@ -342,9 +454,18 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None) -> str:
     preprocessor passes names derived from each shared value's shortest path in
     the document (``preprocess_0``), so an emitted artefact reads without a
     lookup table. A value not in the map keeps PyYAML's default name.
+
+    ``qualified=True`` names each class by its IMPORTABLE dotted path
+    (``module.qualname``) instead of the registry key, so the emitted document
+    reloads in a COLD process — no registrations, no imports beyond the load
+    itself. A class whose path imports to nothing (a ``<locals>`` factory class,
+    ``__main__``) keeps the registry key, today's best spelling. The default
+    stays the registry key: it is shorter, and it is what a human config writes.
     """
 
     class _LocalDumper(CompactDumper):
+        _confluid_qualified = qualified
+
         def generate_anchor(self, node: Any) -> Any:  # noqa: ANN401 - PyYAML's own signature
             # PyYAML's Serializer names anchors from a counter. The representer kept
             # ``represented_objects[id(value)] = node`` for every aliasable value, so

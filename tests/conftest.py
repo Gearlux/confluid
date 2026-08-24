@@ -58,6 +58,19 @@ def _registry_isolation() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _dump_spelling_isolation() -> Iterator[None]:
+    """Restore the dump-spelling registry (a process-global, like the class registry)."""
+    from confluid import dumper
+
+    saved = dict(dumper._DUMP_SPELLINGS)
+    try:
+        yield
+    finally:
+        dumper._DUMP_SPELLINGS.clear()
+        dumper._DUMP_SPELLINGS.update(saved)
+
+
+@pytest.fixture(autouse=True)
 def _app_name_isolation() -> Iterator[None]:
     """Restore the XDG-lookup app name (another process-global) after every test."""
     from confluid import get_app_name, set_app_name

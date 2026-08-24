@@ -147,6 +147,18 @@ c: !class:Engine(cylinders=12)
     assert identity["c"] is not identity["proto"] and identity["c"].cylinders == 12
     print("!ref: shares one instance; a marker written twice is two instances")
 
+    # --- repeat flows are cached: one recipe + one argument set = one object ------------
+    recipe = PartialClass(Engine, cylinders=8)
+    first = flow(recipe)
+    assert flow(recipe) is first, "same marker + same call shape = one build"
+    diesel = flow(recipe, fuel="diesel")
+    assert diesel is not first, "a different argument builds fresh (and replaces the entry)"
+    assert flow(recipe, fuel="diesel") is diesel, "…and the new build is the remembered one"
+    recipe.kwargs["cylinders"] = 12
+    retuned = flow(recipe)
+    assert retuned is not first and retuned.cylinders == 12, "a tune invalidates"
+    print("repeat flow: cached until the recipe or the arguments change")
+
 
 if __name__ == "__main__":
     main()

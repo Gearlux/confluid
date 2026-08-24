@@ -85,5 +85,44 @@ def main() -> None:
     print("\n[SUCCESS] Hierarchy reconstructed with 100% fidelity; derived state rebuilt lazily.")
 
 
+class _Series:
+    """A third-party value type — not configurable, no registry entry."""
+
+    def __init__(self, values: list) -> None:
+        self.values = list(values)
+
+
+def _series_from_values(values: list) -> "_Series":
+    """The reload target of the spelling below — an ordinary callable."""
+    return _Series(values)
+
+
+def dump_spellings() -> None:
+    """`register_dump_spelling` — a faithful spelling for a value the dumper cannot respell.
+
+    Without it, an opaque value degrades to a bare `{_target_: X}` placeholder that
+    reloads DEFAULT-constructed. The registered recipe emits an ordinary marker, so
+    the reload needs nothing beyond the load machinery that already exists.
+    """
+    from confluid import Target, register, register_dump_spelling
+
+    @configurable(name="SeriesHost")
+    class SeriesHost:
+        def __init__(self) -> None:
+            self.payload: object = None
+
+    register(_series_from_values, name="SeriesFromValues")
+    register_dump_spelling(_Series, lambda s: Target(_series_from_values, values=s.values))
+
+    host = SeriesHost()
+    host.payload = _Series([0.25, 0.5, 1.0])
+    text = dump(host)
+    assert "SeriesFromValues" in text and "_Series" not in text, "the placeholder is gone"
+    reloaded = load(text)
+    assert isinstance(reloaded.payload, _Series) and reloaded.payload.values == [0.25, 0.5, 1.0]
+    print("[SUCCESS] registered dump spelling: the opaque value round-trips as its VALUES.")
+
+
 if __name__ == "__main__":
     main()
+    dump_spellings()

@@ -417,16 +417,22 @@ def _get_acceptable_keys(cls_or_name: Any) -> Optional[frozenset[str]]:
         _acceptable_keys_cache[cache_key] = None
         return None
     if any(slot.kind == "var_keyword" for slot in target_slots):
-        # A **kwargs constructor makes the accept-list unknowable, and the
-        # gates treat ``None`` as accept-EVERYTHING: every bare top-level /
-        # glob-delivered key broadcasts into instances of this class. See
-        # docs/broadcasting.md → "Classes with **kwargs constructors".
-        logger.trace(
-            f"accept-list unknown for {_dotted_name(target)} (**kwargs constructor) — "
-            f"bare broadcasts are unfiltered for this class"
-        )
-        _acceptable_keys_cache[cache_key] = None
-        return None
+        if not getattr(target, "__confluid_broadcast_declared__", False):
+            # A **kwargs constructor makes the accept-list unknowable, and the
+            # gates treat ``None`` as accept-EVERYTHING: every bare top-level /
+            # glob-delivered key broadcasts into instances of this class. See
+            # docs/broadcasting.md → "Classes with **kwargs constructors".
+            logger.trace(
+                f"accept-list unknown for {_dotted_name(target)} (**kwargs constructor) — "
+                f"bare broadcasts are unfiltered for this class"
+            )
+            _acceptable_keys_cache[cache_key] = None
+            return None
+        # ``broadcast="declared"``: the registrar closed the ``**kwargs`` cascade
+        # surface, so the declared/scanned slots below ARE the accept-list.
+        # Constructor routing is untouched — which keys ride ``**kwargs`` into
+        # the constructor follows the ADDRESSING rule (``engine._var_keyword_extras``),
+        # never this set.
 
     # The packaged-mode diagnostic. It used to ride inside the body-slot scan; with
     # the scan moved to ``introspect`` (stdlib-only, so it has no logger) the warning

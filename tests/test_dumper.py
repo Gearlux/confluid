@@ -337,6 +337,53 @@ def test_a_body_slot_is_dumped_even_when_it_equals_its_default() -> None:
     assert emitted["epochs"] == 1, "an untouched body slot is still recorded"
 
 
+def test_a_body_slot_rebinding_the_objects_own_method_is_not_dumped() -> None:
+    """``self.step = self._wrap(self.step)`` is MACHINERY, not configuration.
+
+    The method-wrapping idiom (torchmetrics wraps ``update``/``compute`` this way)
+    makes the method name a body slot whose value is a bound method of the object
+    itself — no document can carry it, the constructor re-creates it, and on a
+    ``**kwargs`` class the reload fed it back as a REFUSED constructor argument
+    (`Unexpected keyword arguments: compute, update`). The same rule the
+    class-attr scan applies to methods, one enumeration over.
+    """
+    import functools
+    from typing import Any, Callable
+
+    _ = Callable  # the annotation lives on the methods below
+
+    @configurable(name="SelfWrapHost")
+    class SelfWrapHost:
+        def __init__(self, **kwargs: Any) -> None:
+            self.rate = float(kwargs.pop("rate", 1.0))
+            # BOTH shapes seen in the wild: the plain rebinding, and the
+            # ``functools.wraps`` closure torchmetrics actually stores (a plain
+            # FUNCTION whose ``__wrapped__`` is the bound method).
+            self.recompute = self.recompute  # type: ignore[has-type, method-assign, no-redef]
+            self.restep = self._wrap(self.restep)  # type: ignore[has-type, method-assign, no-redef]
+            if kwargs:
+                raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+        def recompute(self) -> int:  # type: ignore[no-redef]
+            return 1
+
+        def restep(self) -> int:  # type: ignore[no-redef]
+            return 2
+
+        def _wrap(self, fn: Callable[[], int]) -> Callable[[], int]:
+            @functools.wraps(fn)
+            def wrapped() -> int:
+                return fn()
+
+            return wrapped
+
+    text = dump(SelfWrapHost(rate=2.0))
+    assert "recompute" not in text and "restep" not in text, "neither shape reaches the document"
+    reloaded = load(text)
+    assert reloaded.rate == 2.0
+    assert reloaded.recompute() == 1 and reloaded.restep() == 2, "the constructor re-created both"
+
+
 def test_a_MARKER_body_slot_survives_dump_and_reload() -> None:
     """The C4 round trip: a marker tuned by configure() must come back tuned."""
     import yaml as _yaml
@@ -734,3 +781,81 @@ def test_dollar_keys_nested_in_a_markers_kwargs_round_trip() -> None:
 
     reloaded = load(dump(BoxCD5(a={"$k": 1, "a$b": 2, "lit": "$$ money"})))
     assert reloaded.a == {"$k": 1, "a$b": 2, "lit": "$$ money"}
+
+
+# --- qualified=True: names are importable paths, so the artifact reloads COLD ------------------
+
+
+class _QualifiedWidget:
+    def __init__(self, size: int = 1) -> None:
+        self.size = size
+
+
+_DOTTED = f"{_QualifiedWidget.__module__}.{_QualifiedWidget.__qualname__}"
+
+
+def test_a_qualified_dump_names_the_importable_path_and_reloads() -> None:
+    from confluid import Target, flow
+
+    register(_QualifiedWidget, name="QualifiedPinned")
+    live = flow(Target(_QualifiedWidget, size=3))
+    text = dump(live, qualified=True)
+    assert f"_target_: {_DOTTED}" in text, text
+    reloaded = load(text)
+    assert isinstance(reloaded, _QualifiedWidget) and reloaded.size == 3
+
+
+def test_a_qualified_dump_of_a_marker_names_the_importable_path() -> None:
+    from confluid import Target
+
+    register(_QualifiedWidget, name="QualifiedPinned")
+    text = dump(Target(_QualifiedWidget, size=3), qualified=True)
+    assert f"_target_: {_DOTTED}" in text, text
+
+
+def test_qualified_off_keeps_the_registry_key() -> None:
+    from confluid import Target, flow
+
+    register(_QualifiedWidget, name="QualifiedPinned")
+    text = dump(flow(Target(_QualifiedWidget, size=3)))
+    assert "_target_: QualifiedPinned" in text, text
+
+
+def test_a_locals_class_falls_back_to_the_registry_key() -> None:
+    """A factory-built class's dotted path carries ``<locals>`` and imports to nothing —
+    the registry key stays the best available spelling."""
+
+    def _factory() -> Any:
+        @configurable(name="LocalsPinned")
+        class Widget:
+            def __init__(self, size: int = 1) -> None:
+                self.size = size
+
+        return Widget
+
+    built = _factory()(size=2)
+    text = dump(built, qualified=True)
+    assert "LocalsPinned" in text and "<locals>" not in text, text
+    assert load(text).size == 2
+
+
+def test_a_main_module_class_falls_back_to_the_registry_key() -> None:
+    """``__main__.X`` names whatever module the READING process happens to run —
+    not importable in any useful sense, so the registry key wins."""
+    main_widget = type("MainWidget", (), {"__init__": lambda self, size=1: setattr(self, "size", size)})
+    main_widget.__module__ = "__main__"
+    register(main_widget, name="MainPinned")
+    text = dump(main_widget(size=4), qualified=True)
+    assert "MainPinned" in text and "__main__" not in text, text
+
+
+def test_a_class_valued_kwarg_is_qualified_too() -> None:
+    register(_QualifiedWidget, name="QualifiedPinned")
+
+    @configurable
+    class Holder:
+        def __init__(self, factory: Any = None) -> None:
+            self.factory = factory
+
+    text = dump(Holder(factory=_QualifiedWidget), qualified=True)
+    assert _DOTTED in text, text

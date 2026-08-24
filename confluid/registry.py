@@ -260,6 +260,7 @@ class ConfluidRegistry:
         strict_typing: bool = False,
         display_name: Optional[str] = None,
         no_broadcast: bool = False,
+        broadcast_declared: bool = False,
         no_capture: bool = False,
         strict_attrs: bool = False,
         broadcast_attrs: Optional[Sequence[str]] = None,
@@ -272,8 +273,8 @@ class ConfluidRegistry:
         — each mark falls back to the class's EXISTING mark when the argument is
         unset, so a partial re-register never drops tags stamped earlier.
         ``random``/``constant``/``eager``/``strict_typing``/``display_name``/
-        ``no_broadcast``/``no_capture``/``broadcast_attrs`` are stamp-only (no
-        reverse index).
+        ``no_broadcast``/``broadcast_declared``/``no_capture``/``broadcast_attrs``
+        are stamp-only (no reverse index).
 
         A name already taken by ANOTHER class is resolved by the tags:
 
@@ -330,6 +331,7 @@ class ConfluidRegistry:
         strict_typing = strict_typing or bool(getattr(cls, "__confluid_strict_typing__", False))
         display_name = display_name if display_name is not None else getattr(cls, "__confluid_display_name__", None)
         no_broadcast = no_broadcast or bool(getattr(cls, "__confluid_no_broadcast__", False))
+        broadcast_declared = broadcast_declared or bool(getattr(cls, "__confluid_broadcast_declared__", False))
         no_capture = no_capture or bool(getattr(cls, "__confluid_no_capture__", False))
         strict_attrs = strict_attrs or bool(getattr(cls, "__confluid_strict_attrs__", False))
         # ``()`` is a DELIBERATE declaration ("no post-init broadcast attrs"),
@@ -389,6 +391,12 @@ class ConfluidRegistry:
                 setattr(cls, "__confluid_display_name__", display_name)
             if no_broadcast:
                 setattr(cls, "__confluid_no_broadcast__", True)
+            if broadcast_declared:
+                # ``broadcast="declared"``: the registrar closed a ``**kwargs``
+                # constructor's cascade surface — the accept-list is built from
+                # the declared/scanned slots instead of degrading to
+                # accept-EVERYTHING (read by ``broadcast._get_acceptable_keys``).
+                setattr(cls, "__confluid_broadcast_declared__", True)
             if strict_attrs:
                 # A CLOSED config surface: a key naming nothing this class declares
                 # is refused rather than absorbed as a post-init attribute. Opt-in —
@@ -822,6 +830,7 @@ class Marks:
     eager: bool  #: plain constructor — ``__init__`` does real work from its params
     strict_typing: bool  #: opts into stricter annotation handling
     no_broadcast: bool  #: bare/glob cascade keys never land on instances
+    broadcast_declared: bool  #: a ``**kwargs`` accept-list is CLOSED to the declared/scanned slots
     no_capture: bool  #: ctor-kwargs capture (the dump round-trip aid) is skipped
     strict_attrs: bool  #: a key the class declares nowhere is REFUSED, not absorbed
     broadcast_attrs: Optional[Tuple[str, ...]]  #: declared post-init broadcast slots, or None
@@ -856,6 +865,7 @@ def marks(target: Any) -> Marks:
         eager=bool(getattr(cls, "__confluid_eager__", False)),
         strict_typing=bool(getattr(cls, "__confluid_strict_typing__", False)),
         no_broadcast=bool(getattr(cls, "__confluid_no_broadcast__", False)),
+        broadcast_declared=bool(getattr(cls, "__confluid_broadcast_declared__", False)),
         no_capture=bool(getattr(cls, "__confluid_no_capture__", False)),
         strict_attrs=bool(getattr(cls, "__confluid_strict_attrs__", False)),
         broadcast_attrs=tuple(raw_attrs) if raw_attrs is not None else None,
