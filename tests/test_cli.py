@@ -6,6 +6,7 @@ emitted document contains is ``tests/test_hydraide.py``'s job.
 """
 
 import importlib
+import os
 import sys
 from pathlib import Path
 from typing import Iterator, List
@@ -227,8 +228,14 @@ def test_hydraide_prints_one_line_for_an_undecodable_file_and_for_an_engine_defe
     cycle = tmp_path / "cycle.yaml"
     cycle.write_text("a: !ref:b\nb: !ref:a\n")
     for path, needle in ((undecodable, "not a UTF-8 text file"), (cycle, "RecursionError")):
+        # NO_COLOR: loguru's auto-detect colorizes in CI (GitHub renders ANSI), which
+        # would wrap escape codes around "INFO" and defeat the banner filter below.
         run = subprocess.run(
-            [sys.executable, "-m", "confluid.cli", "emit", str(path)], capture_output=True, text=True, cwd=tmp_path
+            [sys.executable, "-m", "confluid.cli", "emit", str(path)],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={**os.environ, "NO_COLOR": "1"},
         )
         lines = [line for line in run.stderr.splitlines() if "| INFO" not in line]
         assert run.returncode == 1
