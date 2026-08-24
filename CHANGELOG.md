@@ -4,7 +4,7 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
-## [0.3.0] — unreleased (tag deliberately held pending downstream verification)
+## [0.3.0] - 2026-08-24
 
 ### Added
 

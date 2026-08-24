@@ -32,12 +32,11 @@ neither warns (user ruling 2026-08-15, architecture record 19). Attribute refere
 runtime consumes the settled document, and `configure()` runs through it (record 19); there is no
 copy marker (record 18).
 
-**Published on PyPI — v0.1.0 and v0.2.0. v0.3.0 is prepared and DELIBERATELY HELD** (user
-instruction 2026-08-04): do not tag it until confluid's functionality is verified complete against
-every downstream consumer. The hold is a decision, not an oversight — ask before tagging. Keep
-adding to the `[0.3.0]` CHANGELOG section rather than minting a second unreleased minor; two
-versions that exist only in the working tree cannot be told apart by any consumer. Update this
-line in the same change as a version bump.
+**Published on PyPI — v0.1.0 through v0.3.0** (v0.3.0 tagged 2026-08-24 after the downstream
+verification the 2026-08-04 hold required: every consumer suite green against the release
+commit). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
+proposes its version WITH rationale and waits for the user's confirmation before tagging.
+Update this line in the same change as a version bump.
 
 Consequence: confluid is a standalone product. Feature/fix PRs go on `Gearlux/confluid`
 (`main` ← `dev/main`), never bundled into a workspace PR, and its README/`docs/` stay
