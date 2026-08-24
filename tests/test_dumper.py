@@ -2,7 +2,6 @@ import enum
 import pathlib as _pathlib
 from typing import Any
 
-import numpy as np
 import pytest
 import yaml
 
@@ -634,6 +633,8 @@ def test_a_path_valued_attribute_round_trips_as_its_string() -> None:
 
 
 def test_numpy_scalars_and_enums_round_trip_by_value() -> None:
+    np = pytest.importorskip("numpy")  # optional in the dev env — the house convention (omegaconf, pydantic)
+
     class _Color(enum.Enum):
         RED = "red"
         BLUE = "blue"
