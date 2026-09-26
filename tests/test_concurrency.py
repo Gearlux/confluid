@@ -19,8 +19,9 @@ import pytest
 
 import confluid.broadcast as broadcast
 import confluid.engine as engine
-from confluid import configurable
+from confluid import Target, configurable, load
 from confluid.pydantic_export import to_pydantic
+from confluid.validation import ValidationPolicy, get_policy, reset_policy, set_policy
 
 
 class _HostileDict(Dict[Any, Any]):
@@ -100,3 +101,76 @@ def test_concurrent_first_calls_to_to_pydantic_hand_out_ONE_model_class() -> Non
     assert len(results) == thread_count
     assert len({id(model) for model in results}) == 1
     assert results[0] is to_pydantic(Fresh)
+
+
+# --------------------------------------------------------------------------- #
+# X2 — the YAML-mode switch around a document-built constructor was a swap of the
+# PROCESS-global policy: a direct construction on another thread validated under
+# the YAML mode while a load() ran, and two overlapping loads restoring out of
+# order left the YAML mode behind for the rest of the process. The switch is now
+# context-local; the process policy is never written by a load().
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _init_strict_yaml_off() -> Any:
+    reset_policy()
+    set_policy(init="strict", yaml="off")
+    yield
+    reset_policy()
+
+
+def _checked_and_slow(gates: Dict[str, Any]) -> Any:
+    @configurable
+    class Checked:
+        def __init__(self, lr: float = 0.1) -> None:
+            self.lr = lr
+
+    @configurable
+    class Slow:  # a constructor that takes a while — a dataset scan, a download
+        def __init__(self, gate: str = "a") -> None:
+            entered, release = gates[gate]
+            entered.set()
+            release.wait(10)
+
+    return Checked, Slow
+
+
+def test_a_load_on_another_thread_does_not_relax_direct_construction(_init_strict_yaml_off: Any) -> None:
+    pydantic = pytest.importorskip("pydantic")
+    gates = {"a": (threading.Event(), threading.Event())}
+    checked, slow = _checked_and_slow(gates)
+    loader = threading.Thread(target=load, args=({"s": Target(slow, gate="a")},))
+    loader.start()
+    assert gates["a"][0].wait(10)
+    try:
+        with pytest.raises(pydantic.ValidationError):
+            checked(lr="oops")  # accepted, silently, before the fix
+    finally:
+        gates["a"][1].set()
+        loader.join()
+
+
+def test_overlapping_loads_leave_the_process_policy_unchanged(_init_strict_yaml_off: Any) -> None:
+    pydantic = pytest.importorskip("pydantic")
+    gates = {g: (threading.Event(), threading.Event()) for g in "ab"}
+    checked, slow = _checked_and_slow(gates)
+    first = threading.Thread(target=load, args=({"s": Target(slow, gate="a")},))
+    second = threading.Thread(target=load, args=({"s": Target(slow, gate="b")},))
+    first.start()
+    assert gates["a"][0].wait(10)
+    second.start()
+    assert gates["b"][0].wait(10)
+    gates["a"][1].set()
+    first.join()  # the first load finishes first ...
+    gates["b"][1].set()
+    second.join()  # ... the second one last — the order that left 'off' behind
+    assert get_policy() == ValidationPolicy(init="strict", yaml="off", tool="strict")
+    with pytest.raises(pydantic.ValidationError):
+        checked(lr="oops")
+
+
+def test_a_document_built_object_still_follows_the_yaml_mode(_init_strict_yaml_off: Any) -> None:
+    """The con case: the switch still applies INSIDE a load()."""
+    checked, _ = _checked_and_slow({})
+    assert load({"c": Target(checked, lr="oops")})["c"].lr == "oops"

@@ -32,6 +32,11 @@ set_policy(yaml="warn")
 # Or via env: CONFLUID_VALIDATE_INIT=warn python train.py
 ```
 
+The YAML setting applies only to the objects a `load()` builds. A direct
+`Optimizer(lr="not a float")` elsewhere — on another thread while that load runs,
+or after two loads overlapped — is validated under `policy.init`, and a load never
+changes the policy `get_policy()` returns.
+
 **Tightening constraints** lives on the annotation, not the body:
 
 ```python

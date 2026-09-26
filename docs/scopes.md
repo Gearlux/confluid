@@ -82,6 +82,19 @@ same merge an included file gets (see [Interpolation & config files](interpolati
   bare key wins never depends on whether the block is active;
 - two active blocks that each carry an `include:` combine them into a list
   (`include:` accepts one) — both files are read, in document order.
+- a block's own `include:` is found **next to the file the block is written
+  in**, however the document is loaded — in one call, or read first and
+  activated later (`raw = load(path, until="raw")` then
+  `load(raw, scopes=[...])`, which is what a CLI does). A same-named file in the
+  directory you run from is never picked instead. An inactive block's file is
+  still never opened:
+
+  ```yaml
+  # configs/train.yaml                     # configs/torch.yaml
+  lr: 0.1                                  lr: 0.3
+  torch_settings: !scope:framework=torch
+    include: torch.yaml                    # -> {'lr': 0.3} with framework=torch, both ways
+  ```
 
 ## What a block's body may be
 
@@ -113,7 +126,12 @@ reserved-key spelling the same thing is a LIST whose FIRST item is the `_scope_`
 mapping (`- - _scope_: {extra: "yes"}`, then the body items) — the only way to
 write a conditional list *item* there, because a YAML node is a mapping or a
 sequence and never both. A one-item body is how a scalar body is spelled, and it
-is type-coerced the same way: `- 42` splices the integer `42`.
+is type-coerced the same way: `- 42` splices the integer `42`. The first item is
+the **condition only**: a key written beside `_scope_` there (`- - _scope_:
+{extra: }` with `note: x` under it) raises a `ConfigurationError` naming the
+file and line — write it as its own item of the body. The condition may be
+anchored and reused (`- - &extra_only {_scope_: {extra: }}` in one list,
+`- - *extra_only` in another); each list keeps its own body.
 
 Quote a value YAML would read as a boolean. `{extra: yes}` becomes `True`, which
 then never matches the `extra=yes` string an activation carries — confluid

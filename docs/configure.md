@@ -93,7 +93,17 @@ Trainer.lr: 0.5      # dotted spelling of the same addressed form
   entry addressing a configurable *child* recurses into it at the block's
   position.
 - Whichever assignment sits **later in the document wins**, whatever its
-  spelling — there is no "addressed beats bare".
+  spelling — there is no "addressed beats bare". That includes a key that
+  **names** an object you passed: it takes effect at the line it is written,
+  and only for the settings it names — `load()` of the same document gives the
+  same answer:
+
+  ```python
+  t = Trainer(lr=0.001, momentum=0.9)
+  configure(trainer=t, config="lr: 2.0\ntrainer: {lr: 1.0}\n")         # t.lr == 1.0 (later line)
+  configure(trainer=t, config="trainer: {lr: 1.0}\nlr: 2.0\n")         # t.lr == 2.0 (later line)
+  configure(trainer=t, config="lr: 2.0\ntrainer: {momentum: 0.5}\n")   # t.lr == 2.0, t.momentum == 0.5
+  ```
 - A present `null` **sets** `None`; a typo'd key inside an object's own block
   gets a warning naming the receiver.
 

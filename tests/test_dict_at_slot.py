@@ -14,11 +14,24 @@ A YAML mapping addressed at a slot means, by what the slot currently HOLDS:
 The classes live in a real module file where noted — the AST body-slot scan needs source.
 """
 
+import inspect
 from typing import Any, Dict
 
 import pytest
 
-from confluid import ConfigurationError, configurable, configure, get_registry, load
+from confluid import (
+    ConfigurationError,
+    Partial,
+    PartialClass,
+    configurable,
+    configure,
+    flow,
+    get_registry,
+    load,
+    register,
+)
+from confluid.fluid import Target
+from confluid.validation import ValidationMode, reset_policy, set_policy
 
 
 @pytest.fixture(autouse=True)
@@ -183,3 +196,95 @@ def register_all() -> None:
 
     for cls in (Engine, Host, PlainHost, Encoder, Trainer, WithDict):
         register(cls)
+
+
+# --------------------------------------------------------------------------- #
+# BUGS-2026-08-22 ENG-1 — a mapping at a CONSTRUCTOR param whose DEFAULT is a
+# marker was handed to the constructor as a plain dict: the deferred optimizer
+# became `{'lr': 0.1}` (warn/off) or construction failed (strict), while the
+# body-slot spelling of the same setting tuned its marker. Both spellings now tune
+# a copy of the code-built marker, through the ONE engine._tune_slot_marker.
+# --------------------------------------------------------------------------- #
+
+
+class Adam:  # stands in for torch.optim.Adam
+    def __init__(self, params: Any = None, lr: float = 0.001, weight_decay: float = 0.0) -> None:
+        self.lr, self.weight_decay = lr, weight_decay
+
+
+class SGD:
+    def __init__(self, params: Any = None, lr: float = 0.01) -> None:
+        self.lr = lr
+
+
+def _optimizer_hosts() -> Any:
+    register(Adam)
+    register(SGD)
+
+    @configurable
+    class CtorDefault:  # the spelling docs/targets.md teaches
+        def __init__(self, optimizer: Partial[Adam] = PartialClass(Adam, lr=0.001, weight_decay=0.01)) -> None:
+            self.optimizer = optimizer
+
+    @configurable
+    class BodySlot:  # the same setting, written in the __init__ body
+        def __init__(self) -> None:
+            self.optimizer: Partial[Adam] = PartialClass(Adam, lr=0.001, weight_decay=0.01)
+
+    return CtorDefault, BodySlot
+
+
+@pytest.mark.parametrize("mode", ["strict", "warn"])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "trainer: !class:{cls}\n  optimizer: {{lr: 0.1}}\n",
+        "trainer: !class:{cls}\ntrainer.optimizer.lr: 0.1\n",
+        "trainer: !class:{cls}\n{cls}: {{optimizer: {{lr: 0.1}}}}\n",
+    ],
+)
+def test_a_mapping_tunes_a_partial_ctor_default_like_the_body_slot(spelling: str, mode: ValidationMode) -> None:
+    ctor_default, _ = _optimizer_hosts()
+    set_policy(yaml=mode)
+    try:
+        answers = [load(spelling.format(cls=cls))["trainer"].optimizer for cls in ("CtorDefault", "BodySlot")]
+    finally:
+        reset_policy()
+    for optimizer in answers:
+        assert isinstance(optimizer, PartialClass) and optimizer.target is Adam
+        assert optimizer.kwargs == {"lr": 0.1, "weight_decay": 0.01}
+    default = inspect.signature(ctor_default.__init__).parameters["optimizer"].default
+    assert default.kwargs == {"lr": 0.001, "weight_decay": 0.01}  # a COPY was tuned
+
+
+@pytest.mark.parametrize(
+    "doc, lr",
+    [
+        ("lr: 0.9\ntrainer: !class:{cls}\n  optimizer: {{lr: 0.1}}\n", 0.1),  # the mapping is later
+        ("trainer: !class:{cls}\n  optimizer: {{lr: 0.1}}\nlr: 0.9\n", 0.9),  # the bare key is later
+    ],
+)
+def test_the_tuned_ctor_default_competes_with_a_bare_key_by_document_order(doc: str, lr: float) -> None:
+    _optimizer_hosts()
+    for cls in ("CtorDefault", "BodySlot"):
+        assert load(doc.format(cls=cls))["trainer"].optimizer.kwargs == {"lr": lr, "weight_decay": 0.01}, cls
+
+
+def test_a_full_marker_at_the_ctor_default_slot_still_replaces_it() -> None:
+    _optimizer_hosts()
+    optimizer = load("trainer: !class:CtorDefault\n  optimizer: !partial:SGD {lr: 0.1}\n")["trainer"].optimizer
+    built = flow(optimizer)
+    assert type(built) is SGD and built.lr == 0.1
+
+
+def test_a_mapping_tunes_an_eager_ctor_default_marker_and_builds_it() -> None:
+    """The same rule for a non-deferred default: the slot holds a marker, so the
+    mapping tunes it and the child is BUILT with the merged kwargs."""
+
+    @configurable
+    class Car:
+        def __init__(self, engine: Any = Target(Engine, power=7)) -> None:
+            self.engine = engine
+
+    car = load("car: !class:Car\n  engine: {power: 50}\n")["car"]
+    assert type(car.engine) is Engine and car.engine.power == 50

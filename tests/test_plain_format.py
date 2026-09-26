@@ -263,6 +263,27 @@ def test_a_one_item_list_body_is_the_scalar_case() -> None:
     assert load(doc, scopes=["v"])["ops"] == ["first", 42]
 
 
+@pytest.mark.parametrize("key", ["_scope_", "_notscope_"])
+def test_a_key_beside_the_scope_marker_in_a_list_block_is_refused(key: str) -> None:
+    """BUGS-2026-08-13 P4(a) — the list body replaced the marker mapping's body,
+    so ``note:`` vanished with no error. The first item is the CONDITION only."""
+    doc = f"ops:\n  - always\n  - - {key}: {{extra: }}\n      note: beside\n    - extra_op\n"
+    with pytest.raises(ConfigurationError, match=r"'note' at <unicode string>:3:7"):
+        load(doc, scopes=["extra"])
+
+
+def test_an_anchored_scope_marker_reused_in_two_lists_keeps_each_body() -> None:
+    """BUGS-2026-08-13 P4(b) — PyYAML hands both aliases the SAME marker object,
+    and the block constructor overwrote its body per list: ``train_ops`` lost
+    ``augment`` and received ``normalize``. Each list builds its own block."""
+    doc = (
+        "train_ops:\n  - - &extra_only\n      _scope_: {extra: }\n    - augment\n"
+        "eval_ops:\n  - - *extra_only\n    - normalize\n"
+    )
+    assert load(doc, scopes=["extra"]) == {"train_ops": ["augment"], "eval_ops": ["normalize"]}
+    assert load(doc) == {"train_ops": [], "eval_ops": []}
+
+
 def test_asking_for_an_undeclared_scope_value_still_raises() -> None:
     with pytest.raises(ScopeError, match="No scope block matches"):
         load(SCOPED, scopes=["model=typo"])

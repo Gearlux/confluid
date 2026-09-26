@@ -44,6 +44,7 @@ from typing import (
     Any,
     Dict,
     FrozenSet,
+    Iterator,
     List,
     Literal,
     NamedTuple,
@@ -168,6 +169,9 @@ def scan_init_body(init_func: Any) -> Tuple[BodySlot, ...]:
     are included — pinned behavior), every:
 
     * ``self.x = …``                      → kind ``"assign"`` (value captured)
+    * ``self.x, self.y = …`` / ``self.x, *self.y = …`` → one ``"assign"`` per
+      attribute (value paired element-wise when the right side is a same-length
+      literal tuple/list; ``for``/``with`` targets are deliberately not slots)
     * ``self.x: T = …``                   → kind ``"annassign"`` (annotation +
       value captured; a bare ``self.x: T`` declaration has ``value=None``)
     * ``self.x += …``                     → kind ``"augassign"``
@@ -202,12 +206,34 @@ def scan_init_body(init_func: Any) -> Tuple[BodySlot, ...]:
             return target.attr
         return None
 
+    def _assigned(target: Any, value: Any) -> Iterator[Tuple[str, Any]]:
+        # ``self.start, self.stop = 0, 10`` declares the same two slots as two plain
+        # assignments (BUGS-2026-08-13 I1 — the tuple form was invisible, so a bare key
+        # silently did not land). Each element is paired with its own right-hand
+        # element when the right side is a same-length literal tuple/list, so the
+        # literal default reaches ``Slot.default``; otherwise no value is captured.
+        # ``for self.i in …`` / ``with … as self.x`` stay invisible on purpose: a loop
+        # counter or an open resource is not a setting.
+        if isinstance(target, (ast.Tuple, ast.List)):
+            pairs = (
+                isinstance(value, (ast.Tuple, ast.List))
+                and len(value.elts) == len(target.elts)
+                and not any(isinstance(e, ast.Starred) for e in (*target.elts, *value.elts))
+            )
+            for i, elt in enumerate(target.elts):
+                yield from _assigned(elt, value.elts[i] if pairs else None)
+        elif isinstance(target, ast.Starred):
+            yield from _assigned(target.value, None)
+        else:
+            name = _self_attr(target)
+            if name is not None:
+                yield name, value
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for t in node.targets:
-                name = _self_attr(t)
-                if name is not None:
-                    slots.append(BodySlot(name, "assign", None, node.value))
+                for attr, value in _assigned(t, node.value):
+                    slots.append(BodySlot(attr, "assign", None, value))
         elif isinstance(node, ast.AnnAssign):
             name = _self_attr(node.target)
             if name is not None:
@@ -447,7 +473,12 @@ def slots(target: Any) -> Tuple["Slot", ...]:
     seen: Set[str] = set()
 
     init = init_callable(target)
-    if init is not None:
+    # A class with no ``__init__`` anywhere resolves to ``object.__init__`` —
+    # ``(*args, **kwargs)``, which every reader took as "accepts EVERY key": each
+    # bare key in the document landed on it, and an addressed key reached
+    # ``object.__init__`` and crashed (BUGS-2026-08-13 I3). It declares no
+    # constructor parameters, exactly like ``def __init__(self): pass``.
+    if init is not None and init is not object.__init__:
         try:
             hints = get_type_hints(init, include_extras=True)
         except Exception:  # noqa: BLE001 - an unresolvable hint must not lose the SLOT

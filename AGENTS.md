@@ -32,9 +32,10 @@ neither warns (user ruling 2026-08-15, architecture record 19). Attribute refere
 runtime consumes the settled document, and `configure()` runs through it (record 19); there is no
 copy marker (record 18).
 
-**Published on PyPI — v0.1.0 through v0.3.0** (v0.3.0 tagged 2026-08-24 after the downstream
+**Published on PyPI — v0.1.0 through v0.3.1** (v0.3.0 tagged 2026-08-24 after the downstream
 verification the 2026-08-04 hold required: every consumer suite green against the release
-commit). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
+commit; v0.3.1 on 2026-09-26 — the nine S1 fixes and `__version__`, all twelve consumer suites
+green against it). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
 proposes its version WITH rationale and waits for the user's confirmation before tagging.
 Update this line in the same change as a version bump.
 
@@ -125,6 +126,16 @@ and why. It catches `Exception`, not `TypeError`: the narrow clause let pydantic
 escape a constructor. `set_policy()` normalizes its modes through `_normalize_mode` exactly like
 the env-var reader — `set_policy(init="stict")` raises `ValidationModeError` instead of being
 stored and read as warn-mode.
+
+**Rule — the YAML-mode switch is CONTEXT-LOCAL; a load never writes the process policy
+(2026-09-26, BUGS-2026-08-13 X2).** `override_init_mode` sets `validation._init_override` (a
+`ContextVar`) and `get_policy()` overlays it — the swap it replaced mutated the global `_policy`,
+so a direct construction on another thread validated under the YAML mode while a load ran, and
+two overlapping loads restoring out of order left `init='off'` for the rest of the process.
+`set_policy()` reads `_process_policy()`, never the overlaid view, so a call inside a load
+cannot persist the override. Do not reintroduce a global swap.
+**Pins.** the X2 group in `tests/test_concurrency.py`.
+
 **Pins.** `tests/test_optional_pydantic.py`,
 `tests/test_validation.py::test_a_class_whose_mirror_cannot_be_built_still_constructs_and_says_so_once` /
 `::test_set_policy_refuses_a_typo_like_the_env_var_does`. **Docs.** `docs/validation.md`.
@@ -223,6 +234,20 @@ keyword, so a config key of that name addresses nothing. `positional_only` IS se
 asymmetry is deliberate — it falls through to a post-init `setattr`, which is what `configure()`
 has always done for it, so both paths agree. `var_keyword` makes the accept-list `None`
 (accept-everything) and is kept by `_ctor_params`; it is never a DECLARED name.
+
+**Rule — a class with no `__init__` anywhere declares NOTHING, and one line may declare several
+slots (2026-09-26, BUGS-2026-08-13 I3/I1).** `object.__init__` is `(*args, **kwargs)`; read as a
+signature it made the accept-list accept-EVERYTHING, so every bare key in the document landed on
+a stateless op and an addressed key reached `object.__init__` and crashed. `slots()` skips it —
+such a class answers exactly like `def __init__(self): pass` (the schema already did,
+`pydantic_export.py`). `scan_init_body` unpacks tuple/list/starred targets (`self.start,
+self.stop = 0, 10`, `self.head, *self.tail = …`), pairing each element with its literal when the
+right side is a same-length tuple so `Slot.default` stays right; `for self.i in …` and
+`with … as self.x` stay invisible ON PURPOSE (a counter or an open resource is not a setting —
+as slots, `dump()` would try to write them).
+**Pins.** `tests/test_introspect.py` — the I1 group (incl.
+`::test_private_loop_and_with_targets_stay_invisible`) and the I3 group (incl.
+`::test_a_class_attribute_and_an_inherited_init_still_declare_their_slots`).
 
 **Rule — what the class-attr scan admits and skips (2026-08-20, BUGS-2026-08-19 N6/N7/N8).**
 A public class attribute declares its slot whatever its VALUE is — `timeout = None` and an
@@ -758,6 +783,16 @@ walkers. **Deferral withholds CONSTRUCTION only: a `PartialClass` IS broadcast i
 slot already holding a deferred marker TUNES it, never replaces it. A marker kwarg set in CODE is a
 DEFAULT and does not block a bare key.
 
+**Rule — both CODE spellings of a marker slot tune through ONE site, `engine._tune_slot_marker`
+(2026-09-26, BUGS-2026-08-22 ENG-1).** A body slot (`self.optimizer = PartialClass(...)`, the
+post-init arm) and a constructor DEFAULT (`optimizer: Partial[Adam] = PartialClass(...)`,
+`engine._ctor_default_markers`, applied in `_flow_target` before the constructor call — pass 7
+never sees a default) both tune a COPY and then apply the bare keys the document ordered after
+the slot. The default spelling used to hand the mapping to the constructor as data (`{'lr': 0.1}`
+in warn mode, a ConstructionError in strict). A runtime kwarg is a call argument, never a tune; a
+full marker at the slot still replaces the default. Never add a third copy of the tune.
+**Pins.** the ENG-1 group in `tests/test_dict_at_slot.py`.
+
 **Rule — repeat flows of a deferred marker are CACHED: one recipe + one argument set = ONE object
 (user ruling 2026-08-24).** A `PartialClass` remembers its LAST build (`engine._PARTIAL_BUILD_CACHE`,
 a `WeakKeyDictionary` keyed by the marker): a repeat `flow()` with an unchanged recipe and the same
@@ -1022,7 +1057,15 @@ keys and rider entries) — and the verdict binds the ADDRESSED node only: the n
 protects that marker's own kwargs, while its child view is rebuilt from the UN-narrowed context
 (`descend_context`), because a grandchild the block never addressed must still see the cascade
 (2026-08-19, BUGS-2026-08-19 BC5 — the pop used to cut a later bare key off from the whole
-subtree). So the settled document already carries the answer;
+subtree). **A slot holding a MARKER is no longer narrowed at all (2026-09-26, BUGS-2026-08-22
+BC1):** the per-slot pop was one level deep — a grandchild the block tuned
+(`Trainer: {sched: {opt: {lr: 0.5}}}`) got the value at its own earlier position and lost to an
+earlier bare `lr`, and the middle node the block never set lost that bare key altogether.
+`_MergeSink.dict_at_slot` now stamps every kwarg the block writes into the tuned marker, at every
+depth, with the top-level keys written before the block (`_stamp_block_positions`, fed
+`keys_before` by the scanner) — the SAME stamp a top-level dotted line carries (BC4), read by the
+same `_dotted_protected` gate and re-emitted by `dump()` as a dotted line. `beaten_per_slot` (and
+the narrowing) remain for a slot that holds no marker. So the settled document already carries the answer;
 `_late_bare_keys_per_slot` still computes the verdict for a marker's OWN dict kwargs and the
 engine's post-init tune consumes it for a body slot pass 7 cannot see. Deleting either half is
 wrong: the second answers a question the first cannot.
@@ -1030,7 +1073,8 @@ wrong: the second answers a question the first cannot.
 middle one — node first, bare key, then the block, i.e. the ordinary layout — had no pin and
 diverged, `load()` answering 99 where `configure()` answered 50 (C2).
 **Pins.** the C2 group in `tests/test_cross_path_pins.py` — all three orderings, per path AND
-compared across paths.
+compared across paths; the BC1 group beside it (five spellings × both orderings × both paths, the
+same-class chain, the hydraide replay).
 
 **Rule.** The three engine fields on `Fluid` are read through `fluid.addressed_keys_of` /
 `is_order_resolved` / `late_bare_keys_of`, NEVER a bare `getattr`.
@@ -1047,8 +1091,9 @@ rule-level pin that two orderings of one spelling must DISAGREE, and
 
 **Rule.** `configure(*objs, config=…, **named)` = `dumper.to_markers(objs)` (the objects as a
 marker document — the SAME reconstruction rule `dump()` uses, `dumpable_kwargs`) → the config
-merged after it (a key naming an object tunes that object's marker IN PLACE — P1's `deep_merge`
-— so a bare key beside it still competes on position; other keys append) → `load(until="settled")` (pass 7,
+merged after it (a key naming an object becomes dotted lines at its own line — see "a config key
+that NAMES an object" below — so it competes with a bare key by position, per key; other keys
+append) → `load(until="settled")` (pass 7,
 recording into the call's report) → `_apply`: a settled plain value is set (validated under the
 init policy; the eager-class note rides the pass-7 record); a settled marker at a slot holding a
 MARKER is tuned in place (`kwargs.update`, identity kept, markers inside it stay markers); a
@@ -1088,9 +1133,14 @@ is structure and never registers as an unused override.
 mapping to a child records at the RECEIVER the block addressed).
 
 **Rule — a config key that NAMES an object is a delivery, and is reported as one (2026-08-18).**
-The naming key (`trainer: {…}` / `trainer: !class:Trainer {…}` / `trainer.model.lr`) is folded
-into the object's marker BEFORE pass 7 (P1's `deep_merge`, so a bare key beside it still
-competes on position), which means pass 7 sees its keys as the marker's OWN and records
+The naming key (`trainer: {…}` / `trainer: !class:Trainer {…}` / `trainer.model.lr`) is written
+into the merged document as DOTTED LINES at the line it was written
+(`configurator._overlay_as_dotted_lines`, 2026-09-26, BUGS-2026-08-22 CD1) — the fold into the
+object's marker put its keys at the object's position, the FRONT of the document, so a bare key
+written BEFORE the override still beat it while `load()` of the same document gave the override.
+Pass 5 orders the dotted lines per key (the BC4 stamp); only the keys the override names move.
+A shape the dotted grammar cannot carry (a marker leaf, a glob key, a non-identifier key, a
+different-target marker) keeps the in-place fold (P1's `deep_merge`). Either way pass 7 sees its keys as the marker's OWN and records
 nothing — so `configure()` writes the record itself, in the scanner's vocabulary
 (`_record_named_overlay`): each key the overlay hands the object that the object accepts is
 ONE applied record at `"Class 'name'"`, origin `"addressed"`, and the raw config key (dotted
@@ -1550,6 +1600,13 @@ sequence and never both. Registered as a DEFAULT SEQUENCE tag constructor that t
 node's keys, so an ordinary list keeps PyYAML's own path. Do NOT add a body key (a `_content_`-style
 reserved key): it would need a second body-shape rule AND a scalar special case, both of which this
 shape avoids (a scalar body is a one-item list, and `_resolve_list` already extends).
+The first item is the CONDITION ONLY (2026-09-26, BUGS-2026-08-13 P4): a key beside `_scope_`
+there (the marker mapping's body) is refused, located — the list body used to replace it
+silently — and `seq_constructor` builds a NEW `ScopeBlock` per sequence, never assigning the
+constructed block's `contents`: an anchored condition (`- - *cond`) is ONE object PyYAML hands to
+every alias, so the assignment gave every list the LAST list's body.
+**Pins.** `tests/test_plain_format.py::test_a_key_beside_the_scope_marker_in_a_list_block_is_refused` /
+`::test_an_anchored_scope_marker_reused_in_two_lists_keeps_each_body`.
 
 **Rule.** A dimension VALUE that YAML reads as a boolean is REJECTED with a quote-it message.
 `{extra: yes}` becomes `True` and then never matches the `extra=yes` string an activation carries —
@@ -1579,10 +1636,19 @@ files including each other from inside scope blocks expose one another's directi
 load: measured 0.11 ms against a 9–23 ms load of a 27 KB config. The two malformed spellings
 raise instead of degrading — `include: {path: …}` consumed the key and spliced NOTHING, and a
 non-string list entry was skipped among its siblings.
+**A deferred include is ANCHORED to its block's file (2026-09-26, BUGS-2026-08-22 PA1):** by the
+time the block activates, the document no longer knows which file it was written in — the settle
+resolved the include against the entry file, and through the two-step door every CLI uses
+(`load(x, until="raw")` → `load(raw, scopes=…)`) against the CALLER's working directory, reading a
+same-named file there silently. `loader._anchor_deferred_include` runs in the ScopeBlock branch
+of the pass-3 walk, while `current_path` IS the block's file, and rewrites each entry the search
+tiers FIND to the path found. It PROBES (`exists`), never opens or records; a total miss keeps
+the entry as written.
 **Pins.** the P15 group in `tests/test_includes.py`, incl.
 `::test_include_inside_an_INACTIVE_scope_block_is_never_opened` (the property the alternation
 exists for), `::test_an_included_file_may_itself_carry_a_scoped_include` (why once is not enough)
-and `::test_a_scoped_include_cycle_is_bounded`.
+and `::test_a_scoped_include_cycle_is_bounded`; the PA1 group (two-step door, the decoy, a block in
+an included file, the never-opened and working-directory-fallback con cases).
 
 **Rule.** There are THREE walkers that must agree on which nodes can carry a block —
 `scopes._walk_dimensions`, `scopes._resolve_value`, and `loader._process_includes_recursive` — over
@@ -1889,14 +1955,22 @@ constructor alone, so an `__init__`-body attribute vanished from the document �
 configured to 50 dumped as bare `_target_: BodyHost` and reloaded as 1 (F2). Every OTHER surface
 treats a body slot as first-class (`configure()` sets it, `to_pydantic` types it, the accept-list
 admits it), so the omission contradicted the round-trip rule above. `dumper._DUMP_KINDS` therefore
-carries `body_slot`. Never "optimize" the dumper to emit only what differs from a default: a value
+carries `body_slot` — OWNER-filtered like the schema and the hierarchy (`dumper._dump_slots`,
+2026-09-26, BUGS-2026-08-22 N1): a body slot is dumped only when a `@configurable` class declared
+it, because a `keras.Model` subclass dumped eight framework internals plus a placeholder that
+reloaded `call_signature_parameters` EMPTY, and every Lightning module dumped
+`prepare_data_per_node`. Accepted cost (user triage 2026-09-26): such a base attribute stays
+SETTABLE, and a key a document set on it during `load()` still rides `__confluid_extra__` into the
+dump — a value set in code or by `configure()` is not recorded, so the reload restores the base's.
+Never "optimize" the dumper to emit only what differs from a default: a value
 is dumped even when it equals its default (as ctor params always were), because that is what makes
 a dumped document self-contained — otherwise editing a default in the source later would silently
 change what every existing dump reloads to. `__confluid_extra__` stays and is complementary: this
 projection covers DECLARED slots, that list covers names nothing declares.
 **Pins.** the body-slot group in `tests/test_dumper.py`, incl.
 `::test_a_body_slot_is_dumped_even_when_it_equals_its_default` and
-`::test_a_setterless_property_is_still_not_dumped` (derived state recomputes; it stays out).
+`::test_a_setterless_property_is_still_not_dumped` (derived state recomputes; it stays out); the
+N1 group (`::test_a_library_base_classes_body_attributes_are_not_dumped` and its two con cases).
 
 **Detail.** Two mechanisms serve it: the dumper reconstructs kwargs per param (live same-named
 attribute preferred, CAPTURED ctor kwargs as the fallback for eager classes that transform params),

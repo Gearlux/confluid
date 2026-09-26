@@ -79,8 +79,11 @@ class _RecordingSink:
         self.events.append(("apply", key, value, origin, scope, own, gated))
         self.positions.append((key, pos))
 
-    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
+    def dict_at_slot(
+        self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str], keys_before: FrozenSet[str]
+    ) -> None:
         self.events.append(("dict_at_slot", key, block, origin, bare_before))
+        self.keys_before = keys_before
 
     def route(self, key: str, block: Dict[str, Any]) -> None:
         self.events.append(("route", key, block))
@@ -155,6 +158,7 @@ def test_a_dict_at_a_declared_slot_carries_its_bare_before_verdict() -> None:
     _, key, block, origin, bare_before = slots[0]
     assert key == "optimizer" and block == {"lr": 0.5}
     assert bare_before == {"lr"}  # 'tag' sits LATER than the block — not beaten
+    assert sink.keys_before == {"lr"}  # the per-key stamp a tuned marker gets (BC1) — every earlier top-level key
     assert ("route", "not_a_slot", {"x": 1}) in sink.events  # undeclared dict → routing
 
 

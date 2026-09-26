@@ -848,8 +848,22 @@ def _register_constructors() -> None:
         if not isinstance(block, ScopeBlock):  # pragma: no cover - the node test already decided
             yield items
             return
-        block.contents = items[1:]
-        yield _stamp_loc(block, loader, node)
+        # The first item is the CONDITION only. A key written beside `_scope_:` became
+        # the marker mapping's body, which the list body then replaced — dropped with
+        # no error (BUGS-2026-08-13 P4a). Checked on the constructed body, so a key a
+        # `<<:` merge brought in is caught too.
+        if isinstance(block.contents, dict) and block.contents:
+            raise ConfigurationError(
+                f"a conditional list block's first item is its condition and carries only "
+                f"{SCOPE_KEY}/{NOTSCOPE_KEY} — {', '.join(repr(k) for k in block.contents)} at "
+                f"{_node_where(node.value[0], loader)} would be dropped. Write it as its own item of the "
+                f"block's body, after the condition."
+            )
+        # A NEW block per sequence: an anchored first item (`- - *cond`) is ONE object
+        # PyYAML hands to every alias, so assigning its `contents` gave every list the
+        # LAST list's body (BUGS-2026-08-13 P4b).
+        fresh = ScopeBlock(dims=dict(block.dims), negate=block.negate, contents=items[1:])
+        yield _stamp_loc(fresh, loader, node)
 
     ConfluidLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_SEQUENCE_TAG, seq_constructor)
 
@@ -997,6 +1011,7 @@ def _process_includes_recursive(
             data.contents = {
                 k: _process_includes_recursive(v, current_path, _included, spliced) for k, v in data.contents.items()
             }
+            _anchor_deferred_include(data.contents, current_path)
         else:
             data.contents = _process_includes_recursive(data.contents, current_path, _included, spliced)
         return data
@@ -1018,6 +1033,35 @@ def _process_includes_recursive(
         processed_dict = _splice_includes(processed_dict, current_path, _included, spliced)
 
     return processed_dict
+
+
+def _anchor_deferred_include(contents: Dict[str, Any], current_path: Path) -> None:
+    """Pin a scope block's OWN ``include:`` entries to the file the block is written in.
+
+    That include is deliberately left unopened until the block is activated (an
+    inactive overlay need not exist), and by then the document no longer knows which
+    file the block came from: activation splices it wherever the settle runs, which for
+    the two-step door every CLI uses (``load(x, until="raw")`` → ``load(raw, scopes=…)``)
+    is the CALLER's working directory — not found, or a same-named file there read
+    silently (BUGS-2026-08-22 PA1; an included file's block hit the same root,
+    BUGS-2026-08-19 PA1). This runs while ``current_path`` IS the block's file, so an
+    entry found in the search tiers is rewritten to the path found. The file is only
+    probed (``exists``), never opened or recorded. A total miss keeps the entry as
+    written, so the settle-time lookup and its not-found message stay as they were.
+    """
+    entries = contents.get("include")
+    if isinstance(entries, str):
+        contents["include"] = _anchor_include_entry(entries, current_path)
+    elif isinstance(entries, list):
+        contents["include"] = [_anchor_include_entry(e, current_path) for e in entries]
+
+
+def _anchor_include_entry(entry: Any, current_path: Path) -> Any:
+    """One entry of :func:`_anchor_deferred_include` — malformed entries pass through for the settle to refuse."""
+    if not isinstance(entry, str) or not entry.strip():
+        return entry
+    found = resolve_config_path(entry, base_dir=current_path.parent)
+    return str(found) if found.exists() else entry
 
 
 #: Backstop for :func:`_settle_scopes_and_includes`. Two files that each include
