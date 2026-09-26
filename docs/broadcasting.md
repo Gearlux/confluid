@@ -76,6 +76,18 @@ path; matching scalars are applied in **YAML document order** with
 its document position. There are **no specificity tiers**: an exact
 `trainer.lr` earlier in the document loses to a later `**.lr`, and vice versa.
 
+A block keeps its position however deep it reaches, and it wins only for the
+settings it names — the three spellings below give the same answer:
+
+```yaml
+trainer: !class:Trainer
+  sched: !class:Sched
+    opt: !class:Opt
+lr: 0.01                             # default for everything
+Trainer: {sched: {opt: {lr: 0.5}}}   # or Trainer.sched.opt.lr: 0.5, or trainer.sched.opt.lr: 0.5
+# -> trainer.lr = 0.01, sched.lr = 0.01, opt.lr = 0.5
+```
+
 `configure()` (post-construction configuration of live objects) follows the
 same matching rule: `ClassName:` / instance-name blocks unroll at their
 position, bare keys broadcast, globs opt back in, and whichever assignment

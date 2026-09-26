@@ -72,6 +72,24 @@ substituted: the reload leaves `$$` alone through every document stage and turns
 it back into `$` when the document becomes objects. This is why the convention asks for a
   recomputing `@property` rather than a stored attribute: a property stays out
   of the document, while a stored one is a body slot and is dumped.
+- **A library base class's attributes** — what the `__init__` of a base you do
+  not own sets (a class that is not `@configurable`: `keras.Model`,
+  `LightningModule`, …) is not written; the base's constructor sets it again on
+  reload. The dump carries the settings the schema (`to_pydantic`) lists:
+
+  ```python
+  @configurable
+  class Net(keras.Model):
+      def __init__(self, width: int = 8):
+          super().__init__()
+          self.width = width
+
+  print(dump(Net(width=4)))   # _target_: Net / width: 4 — no compiled, built, supports_jit, …
+  ```
+
+  Such an attribute is still settable from a config, and a value a document set
+  on it during `load()` is recorded and written. A value set on it in Python code
+  or by `configure()` is not — the reload restores the base's own value.
 - **Runtime-injected arguments** — the `params=` / positional inputs handed
   to `flow()` at build time are call arguments, not configuration; the slot
   they fed round-trips as its `_partial_` recipe.
