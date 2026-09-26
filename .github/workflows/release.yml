@@ -69,6 +69,13 @@ jobs:
         obj = confluid.load("smoke: !class:SmokeCfg {value: 42}")["smoke"]
         assert obj.value == 42
         assert confluid.load(confluid.dump(obj)).value == 42
+        # `__version__` is the RELEASED number: read from the wheel's own metadata, which the
+        # tag guard above matched to pyproject.toml. Missing or typed-in-and-stale fails here,
+        # before anything reaches PyPI.
+        import os
+
+        tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+        assert confluid.__version__ == version("confluid") == tag, (confluid.__version__, version("confluid"), tag)
         print("wheel smoke-test OK, version:", version("confluid"))
         EOF
     - uses: actions/upload-artifact@v4

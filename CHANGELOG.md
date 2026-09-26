@@ -4,6 +4,14 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
+## [Unreleased]
+
+### Added
+
+- **`confluid.__version__`** reports the installed version, read from the package metadata
+  (`importlib.metadata.version("confluid")`), so it always matches `pyproject.toml`; an uninstalled
+  source tree reports `0.0.0.dev0`.
+
 ## [0.3.0] - 2026-08-24
 
 ### Added

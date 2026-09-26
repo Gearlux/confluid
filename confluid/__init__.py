@@ -13,6 +13,7 @@ marker internals) stays importable from its home module but is deliberately
 not re-exported here.
 """
 
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 # Each name from its REAL home — laundering these through the `engine` compat
@@ -66,6 +67,13 @@ from confluid.schema import (
 from confluid.scopes import default_scopes, discover_dimension_values, discover_dimensions
 from confluid.state import active_context, collect_report
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
+
+try:
+    # Single source of truth: the installed distribution's metadata, i.e. pyproject.toml's
+    # `version` (the distribution is `confluid`). Never type the number in here as well.
+    __version__ = version("confluid")
+except PackageNotFoundError:  # pragma: no cover - uninstalled source checkout
+    __version__ = "0.0.0.dev0"
 
 # --------------------------------------------------------------------------- #
 __all__ = [
