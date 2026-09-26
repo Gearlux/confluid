@@ -409,3 +409,82 @@ def test_an_include_overlay_marker_of_the_same_class_tunes_the_base_marker(tmp_p
     (tmp_path / "exp.yaml").write_text(f"include: {tmp_path}/base.yaml\nmodel: !class:collections.Counter {{lr: 1}}\n")
     document = load(str(tmp_path / "exp.yaml"), until="document")
     assert document["model"].kwargs == {"layers": 5, "lr": 1}
+
+
+# --------------------------------------------------------------------------- #
+# BUGS-2026-08-22 PA1 — a scope block's own `include:` is deliberately NOT opened
+# before activation, and by then the document no longer knew which file the block
+# was written in: the two-step door every CLI uses (`load(x, until="raw")`, then
+# `load(raw, scopes=…)`) looked next to the CALLER — not found, or a same-named file
+# where the command ran from, read silently. The include is now anchored to the
+# block's own file while that file is being read (the path is probed, never opened).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _scoped_include_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_CONFIG_DIRS", "")
+    monkeypatch.chdir(tmp_path)  # run from the folder ABOVE configs/
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "train.yaml").write_text(
+        "lr: 0.1\ntorch_settings: !scope:framework=torch\n  include: torch.yaml\n"
+    )
+    (tmp_path / "configs" / "torch.yaml").write_text("lr: 0.3\n")
+    return tmp_path
+
+
+def test_the_two_step_door_finds_a_scoped_include_next_to_its_file(_scoped_include_tree: Path) -> None:
+    one_step = load("configs/train.yaml", scopes=["framework=torch"], until="document")
+    raw = load("configs/train.yaml", until="raw")
+    two_steps = load(raw, until="document", scopes=["framework=torch"])
+    assert one_step == two_steps == {"lr": 0.3}
+
+
+def test_a_same_named_file_where_the_command_runs_is_not_read(_scoped_include_tree: Path) -> None:
+    (_scoped_include_tree / "torch.yaml").write_text("lr: 0.9\n")  # a decoy next to the caller
+    raw = load("configs/train.yaml", until="raw")
+    assert load(raw, until="document", scopes=["framework=torch"]) == {"lr": 0.3}
+
+
+def test_a_scoped_include_in_an_INCLUDED_file_resolves_next_to_that_file(_scoped_include_tree: Path) -> None:
+    """The same root one level down (BUGS-2026-08-19 PA1): the block lives in an
+    included file in ANOTHER directory, and its include is relative to that file."""
+    sub = _scoped_include_tree / "configs" / "sub"
+    sub.mkdir()
+    (sub / "base.yaml").write_text("depth: 1\nextra: !scope:framework=torch\n  include: overrides.yaml\n")
+    (sub / "overrides.yaml").write_text("depth: 2\n")
+    (_scoped_include_tree / "configs" / "main.yaml").write_text("include: sub/base.yaml\n")
+    assert load("configs/main.yaml", scopes=["framework=torch"], until="document") == {"depth": 2}
+    raw = load("configs/main.yaml", until="raw")
+    assert load(raw, scopes=["framework=torch"], until="document") == {"depth": 2}
+
+
+def test_an_inactive_scoped_include_is_still_never_opened(_scoped_include_tree: Path) -> None:
+    """The con case: anchoring PROBES the path, it never opens the file."""
+    doc, paths = load("configs/train.yaml", until="document", return_paths=True)
+    assert doc == {"lr": 0.1}
+    assert [p.name for p in paths] == ["train.yaml"]
+
+
+def test_a_scoped_include_found_only_where_the_command_runs_still_resolves(_scoped_include_tree: Path) -> None:
+    """The con case: a file that exists ONLY in the working directory keeps today's
+    fallback tier — anchoring applies when the block's own directory has the file."""
+    (_scoped_include_tree / "configs" / "torch.yaml").unlink()
+    (_scoped_include_tree / "torch.yaml").write_text("lr: 0.7\n")
+    assert load("configs/train.yaml", scopes=["framework=torch"], until="document") == {"lr": 0.7}
+
+
+def test_a_LIST_of_scoped_includes_is_anchored_entry_by_entry(_scoped_include_tree: Path) -> None:
+    configs = _scoped_include_tree / "configs"
+    (configs / "extra.yaml").write_text("epochs: 3\n")
+    (configs / "train.yaml").write_text("lr: 0.1\ntorch: !scope:framework=torch\n  include: [torch.yaml, extra.yaml]\n")
+    raw = load("configs/train.yaml", until="raw")
+    assert load(raw, until="document", scopes=["framework=torch"]) == {"lr": 0.3, "epochs": 3}
+
+
+def test_a_malformed_scoped_include_entry_is_still_refused_when_activated(_scoped_include_tree: Path) -> None:
+    (_scoped_include_tree / "configs" / "train.yaml").write_text("torch: !scope:framework=torch\n  include: [42]\n")
+    assert load("configs/train.yaml", until="document") == {}  # inactive: never examined
+    with pytest.raises(ValueError, match="include: entries must be paths"):
+        load("configs/train.yaml", until="document", scopes=["framework=torch"])

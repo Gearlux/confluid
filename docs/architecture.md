@@ -1152,6 +1152,20 @@ and with both paths' pins updated together (`tests/test_dict_at_slot.py`). What 
 back is a per-path dispatch: two arms on one path and three on the other is exactly how the
 silent destruction shipped.
 
+*Addendum 2026-09-26 — a constructor DEFAULT is what a slot holds too.* The marker arm fired for
+a body slot (`self.optimizer = PartialClass(...)`) but not for the same marker written as a
+constructor default (`optimizer: Partial[Adam] = PartialClass(Adam, …)`), because pass 7 never
+sees a default (it is not in the document) and the constructor filter handed the mapping to the
+constructor as data — the optimizer became `{'lr': 0.1}` (BUGS-2026-08-22 ENG-1). Both code
+spellings now go through ONE engine site, `engine._tune_slot_marker` (tune a copy, then apply the
+bare keys the document ordered after the slot), called post-init for a body slot and before the
+constructor call for a default (`engine._ctor_default_markers`).
+
+```yaml
+trainer: !class:Trainer          # def __init__(self, optimizer: Partial[Adam] = PartialClass(Adam, lr=1e-3, weight_decay=0.01))
+  optimizer: {lr: 0.1}           # -> PartialClass(Adam, {'lr': 0.1, 'weight_decay': 0.01})
+```
+
 ---
 
 ## 16. An id()-keyed store pins what it keys on — by construction
@@ -1277,6 +1291,23 @@ two callers; the third site the P1 record counted (composition) has a fourth (sp
 # scopes._splice_key — the whole rule
 merged = deep_merge({key: existing}, {key: value})[key]   # tune / deep-merge / replace
 out.pop(key); out[key] = merged                           # re-anchor at the later writer
+```
+
+*Addendum 2026-09-26 — a deferred include remembers its file.* Deferring a block's own
+`include:` past activation also deferred WHERE it is looked up: by then the document no longer
+knew the block's file, so the settle resolved it against the entry file — and, through the
+two-step door every CLI uses (`load(x, until="raw")` → `load(raw, scopes=…)`), against the
+caller's working directory, reading a same-named file there silently (BUGS-2026-08-22 PA1; an
+included file's block, BUGS-2026-08-19 PA1). The decision keeps the deferral and adds one step
+while the block's file is being read: `loader._anchor_deferred_include` rewrites each entry the
+search tiers FIND to the path found. It probes, never opens — an inactive overlay still need not
+exist — and a total miss keeps the entry as written, so the not-found message is unchanged.
+Rejected: carrying the origin on the block through `resolve_scopes` (the splice drops it) or a
+path-carrying `str` subclass (the dumper cannot represent it).
+
+```python
+raw = load("configs/train.yaml", until="raw")        # torch_settings: !scope:framework=torch {include: torch.yaml}
+load(raw, until="document", scopes=["framework=torch"])   # reads configs/torch.yaml, never ./torch.yaml
 ```
 
 ---
@@ -1458,6 +1489,26 @@ the invariants: hydraide's output for the two spellings of one document is byte-
 construct hydraide cannot express in plain YAML is REPORTED, never emitted as data; and the
 runtime never re-derives precedence — if a runtime path needs the rule, it goes through the
 document.
+
+*Addendum 2026-09-26 — a block's position is kept per KEY, and so is a named override's.* Two
+pass-7 mechanisms carried a position per SLOT and were one level deep. (1) The C2 verdict popped
+the bare keys a class block out-positioned from the whole view of the slot it tuned: a grandchild
+the block reached (`Trainer: {sched: {opt: {lr: 0.5}}}`) got its value at its own earlier
+position and lost to an earlier bare `lr`, while the middle node the block never set lost that
+bare key altogether (BUGS-2026-08-22 BC1). A block tuning a marker now stamps every kwarg it
+writes, at every depth, with the top-level keys written before it
+(`broadcast._stamp_block_positions`) — the stamp a top-level dotted line already carries (BC4),
+read by the same `_dotted_protected` gate and re-emitted by `dump()` the same way; the per-slot
+narrowing stays only for a slot that holds no marker. (2) `configure()` folded a key naming an
+object into that object's marker, which sits at the front of the merged document, so every bare
+key beat it (CD1). The override is now written as dotted lines at its own line
+(`configurator._overlay_as_dotted_lines`), the spelling pass 5 already orders per key; a shape the
+dotted grammar cannot carry (a marker leaf, a glob key) keeps the fold.
+
+```yaml
+lr: 0.01
+Trainer: {sched: {opt: {lr: 0.5}}}   # emit() -> ... lr: 0.01 / trainer.sched.opt.lr: 0.5 — replays identically
+```
 
 ---
 

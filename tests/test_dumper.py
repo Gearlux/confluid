@@ -860,3 +860,77 @@ def test_a_class_valued_kwarg_is_qualified_too() -> None:
 
     text = dump(Holder(factory=_QualifiedWidget), qualified=True)
     assert _DOTTED in text, text
+
+
+# --------------------------------------------------------------------------- #
+# BUGS-2026-08-22 N1 — dump() emitted every __init__-body attribute of a base class
+# that is NOT @configurable (a keras.Model subclass dumped `compiled`, `built`,
+# `supports_jit`, … and a placeholder that reloaded as an EMPTY list; a Lightning
+# module dumped `prepare_data_per_node`). The dump now carries the slots the schema
+# and the hierarchy declare — body slots owned by a @configurable class.
+# --------------------------------------------------------------------------- #
+
+
+class _LibraryBase:  # a class you do not own — not @configurable
+    def __init__(self) -> None:
+        self.training = True
+        self.compiled = False
+
+
+class _DetectorBase:
+    def __init__(self) -> None:
+        self.threshold = 0.5
+
+
+def test_a_library_base_classes_body_attributes_are_not_dumped() -> None:
+    @configurable
+    class Net(_LibraryBase):
+        def __init__(self, width: int = 8) -> None:
+            super().__init__()
+            self.width = width
+
+    assert yaml.safe_load(dump(Net(width=4))) == {"_target_": "Net", "width": 4}
+    reloaded = load(dump(Net(width=4)))
+    assert (reloaded.width, reloaded.training, reloaded.compiled) == (4, True, False)  # the base sets them again
+
+
+def test_a_library_base_attribute_is_dumped_only_when_a_config_set_it_on_load() -> None:
+    """The con case of the 2026-09-26 triage, measured milder than presented: a key a
+    config set on load() rides ``__confluid_extra__`` (the engine records every
+    post-construction set), so it is still written and round-trips. A value set in
+    Python code or by configure() is not recorded — the reload restores the base's."""
+
+    @configurable
+    class Detector(_DetectorBase):
+        def __init__(self, width: int = 8) -> None:
+            super().__init__()
+            self.width = width
+
+    d = load("d: !class:Detector\nthreshold: 0.9\n")["d"]
+    assert d.threshold == 0.9
+    assert yaml.safe_load(dump(d))["threshold"] == 0.9
+    assert load(dump(d)).threshold == 0.9
+
+    live = Detector()
+    configure(d=live, config="threshold: 0.9\n")
+    assert live.threshold == 0.9  # still settable
+    assert "threshold" not in yaml.safe_load(dump(live))
+    assert load(dump(live)).threshold == 0.5
+
+
+def test_a_configurable_base_classes_body_slot_is_still_dumped() -> None:
+    @configurable
+    class Base:
+        def __init__(self) -> None:
+            self.depth = 3
+
+    @configurable
+    class Child(Base):
+        def __init__(self, width: int = 8) -> None:
+            super().__init__()
+            self.width = width
+
+    child = Child()
+    child.depth = 7
+    assert yaml.safe_load(dump(child)) == {"_target_": "Child", "width": 8, "depth": 7}
+    assert load(dump(child)).depth == 7

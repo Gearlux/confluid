@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 import pytest
 
-from confluid import Partial, PartialClass, configurable, configure, configure_from_file, flow
+from confluid import Partial, PartialClass, configurable, configure, configure_from_file, flow, load
 from confluid.report import ConfigurationReport
 
 
@@ -235,3 +235,84 @@ def test_configure_from_file_forwards_the_activation(tmp_path: Any) -> None:
     model = _ScModel2()
     configure_from_file(model, path=str(path), scopes=["framework=torch"])
     assert model.lr == 0.3
+
+
+# --------------------------------------------------------------------------- #
+# BUGS-2026-08-22 CD1 — a named override was folded into the object's marker, which
+# sits at the FRONT of the document (the objects come first), so every bare key
+# beat it whatever order the user wrote; load() of the same document gave the
+# override. The override now lands as dotted lines at the line it was written —
+# the spelling the load path already orders per key.
+# --------------------------------------------------------------------------- #
+
+
+@configurable
+class COrderTrainer:
+    def __init__(self, lr: float = 0.001, momentum: float = 0.9) -> None:
+        self.lr, self.momentum = lr, momentum
+
+
+@pytest.mark.parametrize(
+    "config, load_twin, expected",
+    [
+        # the override is later — it wins
+        ("lr: 2.0\ntrainer: {lr: 1.0}\n", "lr: 2.0\ntrainer: !class:COrderTrainer {lr: 1.0}\n", (1.0, 0.9)),
+        ("lr: 2.0\ntrainer.lr: 1.0\n", "trainer: !class:COrderTrainer\nlr: 2.0\ntrainer.lr: 1.0\n", (1.0, 0.9)),
+        (
+            "lr: 2.0\ntrainer: !class:COrderTrainer {lr: 1.0}\n",
+            "lr: 2.0\ntrainer: !class:COrderTrainer {lr: 1.0}\n",
+            (1.0, 0.9),
+        ),
+        # the bare key is later — it wins
+        ("trainer: {lr: 1.0}\nlr: 2.0\n", "trainer: !class:COrderTrainer {lr: 1.0}\nlr: 2.0\n", (2.0, 0.9)),
+        # a key the override does not name still takes the bare key
+        ("lr: 2.0\ntrainer: {momentum: 0.5}\n", "lr: 2.0\ntrainer: !class:COrderTrainer {momentum: 0.5}\n", (2.0, 0.5)),
+    ],
+)
+def test_configure_gives_the_later_line_the_win_exactly_like_load(config: str, load_twin: str, expected: Any) -> None:
+    live = COrderTrainer()
+    configure(trainer=live, config=config)
+    built = load(load_twin)["trainer"]
+    assert (live.lr, live.momentum) == (built.lr, built.momentum) == expected
+
+
+def test_a_winning_override_is_ONE_applied_record() -> None:
+    report = configure(trainer=COrderTrainer(), config="lr: 2.0\ntrainer: {lr: 1.0}\n")
+    assert [(a.key, a.target, a.origin) for a in report.applied if a.key == "lr"] == [
+        ("lr", "COrderTrainer 'trainer'", "addressed")
+    ]
+
+
+def test_an_override_of_a_live_childs_setting_is_ordered_too() -> None:
+    trainer = CTrainer(model=CModel(lr=0.0))
+    configure(trainer=trainer, config="lr: 2.0\ntrainer: {model: {lr: 1.0}}\n")
+    assert trainer.model.lr == 1.0
+    trainer = CTrainer(model=CModel(lr=0.0))
+    configure(trainer=trainer, config="trainer: {model: {lr: 1.0}}\nlr: 2.0\n")
+    assert trainer.model.lr == 2.0
+
+
+def test_an_override_shape_the_dotted_grammar_cannot_carry_keeps_the_in_place_fold() -> None:
+    """Each fallback of the dotted-lines rewrite — the fold that was the only path before."""
+    from confluid.configurator import _overlay_as_dotted_lines
+    from confluid.fluid import Target
+
+    held = Target(COrderTrainer)
+    assert _overlay_as_dotted_lines("trainer", held, {"lr": 1.0, "opt": {"lr": 2.0}}) == {
+        "trainer.lr": 1.0,
+        "trainer.opt.lr": 2.0,
+    }
+    assert _overlay_as_dotted_lines("trainer", held, Target(CModel, hidden=3)) is None  # a different target: a swap
+    assert _overlay_as_dotted_lines("trainer", {"lr": 0.0}, {"lr": 1.0}) is None  # not held as a marker
+    assert _overlay_as_dotted_lines("trainer", held, {}) is None  # nothing to write
+    assert _overlay_as_dotted_lines("trainer", held, {"**": {"lr": 1.0}}) is None  # a glob key
+    assert _overlay_as_dotted_lines("trainer", held, {"opt": Target(CAdam)}) is None  # a marker leaf
+
+
+def test_the_fallback_shapes_still_configure_as_before() -> None:
+    trainer = CTrainer(model=CModel(hidden=16))
+    configure(trainer=trainer, config="trainer: {model: !class:CModel {hidden: 99}}\n")  # a same-target marker leaf
+    assert (type(trainer.model), trainer.model.hidden) == (CModel, 99)
+    trainer = CTrainer(model=CModel(lr=0.0))
+    configure(trainer=trainer, config="trainer:\n  '**': {lr: 0.7}\n")  # a glob rider inside the override
+    assert trainer.model.lr == 0.7

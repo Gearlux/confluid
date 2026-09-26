@@ -47,7 +47,7 @@ from confluid.engine import (
 from confluid.exceptions import ConfigurationError
 from confluid.fluid import Fluid, ScopeBlock, Target
 from confluid.loader import ConfluidLoader, load
-from confluid.merger import deep_merge, expand_dotted_keys
+from confluid.merger import _same_marker_target, deep_merge, expand_dotted_keys
 from confluid.report import ConfigurationReport
 from confluid.resolver import Resolver, hoist_marker_placeholders, parse_value
 from confluid.state import _ENGINE_STATE, _active_report
@@ -143,16 +143,32 @@ def configure(
     #    naming key is used (as a matched class block is), and each key the overlay hands the
     #    object is one applied record at that object — the leaf sets it causes on children are
     #    not records, exactly as for a block delivery.
+    #
+    #    POSITION (BUGS-2026-08-22 CD1): folding the overlay into the marker put its keys at the
+    #    object's position — the FRONT of the document — so a bare key written BEFORE the
+    #    override still beat it, while load() of the same document gave the override. The
+    #    override is therefore written as dotted lines AT THE LINE IT WAS WRITTEN
+    #    (`trainer.lr: 1.0`), the spelling pass 5 already orders per key against a bare key
+    #    (record 19's BC4 stamp) — only the keys the override names move; the object's other
+    #    current values keep the object's position. A shape the dotted grammar cannot carry
+    #    (a marker value, a glob key, a non-string key) keeps the in-place fold.
     expanded = expand_dotted_keys(config)
-    addressed = {k: v for k, v in expanded.items() if k in document}
-    rest = {k: v for k, v in expanded.items() if k not in document}
-    for k, v in addressed.items():
-        document[k] = deep_merge({k: document[k]}, {k: v})[k]  # P1: an overlay mapping TUNES a marker
+    addressed: Set[str] = set()
+    merged: Dict[str, Any] = dict(document)
+    for k, v in expanded.items():
+        if k not in document:
+            merged[k] = v
+            continue
+        addressed.add(k)
         _record_named_overlay(report, objects[k], k, v)
+        lines = _overlay_as_dotted_lines(k, document[k], v)
+        if lines is None:
+            merged[k] = deep_merge({k: merged[k]}, {k: v})[k]  # P1: an overlay mapping TUNES a marker
+        else:
+            merged.update(lines)
     for raw_key in config:
         if raw_key.split(".", 1)[0] in addressed:
             report.mark_used(raw_key)
-    merged = {**document, **rest}
 
     # 3. Pass 7 settles the whole thing, recording into THIS report. configure() is an
     #    entry point exactly like load(): a class redefined since the
@@ -215,6 +231,45 @@ def configure_from_file(
 # --------------------------------------------------------------------------- #
 # Applying a settled marker back onto the live object it stands for
 # --------------------------------------------------------------------------- #
+
+
+def _overlay_as_dotted_lines(name: str, held: Any, overlay: Any) -> Optional[Dict[str, Any]]:
+    """A named override as the dotted lines it means — ``trainer: {model: {lr: 1}}`` →
+    ``{"trainer.model.lr": 1}`` — or ``None`` when the dotted grammar cannot carry it.
+
+    A same-target marker overlay (``trainer: !class:Trainer {lr: 1}``) tunes, like the
+    mapping (CD5), so its kwargs flatten the same way. ``None`` for: an object not held as a
+    marker, a different target (a genuine swap), an empty overlay, a key that is not a plain
+    identifier-like string (a glob, a dotted or bracketed name, a digit index), and any leaf
+    holding a marker or a scope block — those keep the in-place fold, as before.
+    """
+    if isinstance(overlay, Target):
+        if not (
+            isinstance(held, Target)
+            and type(overlay) is type(held)
+            and _same_marker_target(held.target, overlay.target)
+        ):
+            return None
+        overlay = overlay.kwargs
+    if not isinstance(held, Target) or not isinstance(overlay, dict) or not overlay:
+        return None
+    lines: Dict[str, Any] = {}
+
+    def walk(prefix: str, mapping: Dict[Any, Any]) -> bool:
+        for key, value in mapping.items():
+            if not isinstance(key, str) or not key or key.isdigit() or any(c in key for c in ".[]*"):
+                return False
+            path = f"{prefix}.{key}"
+            if type(value) is dict and value:
+                if not walk(path, value):
+                    return False
+            elif isinstance(value, ScopeBlock) or _contains_marker(value):
+                return False
+            else:
+                lines[path] = value
+        return True
+
+    return lines if walk(name, overlay) else None
 
 
 def _contains_marker(node: Any) -> bool:

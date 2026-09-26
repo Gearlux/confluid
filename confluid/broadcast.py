@@ -26,6 +26,7 @@ import inspect
 import typing
 from copy import copy
 from enum import Enum
+from itertools import islice
 from typing import (
     Annotated,
     Any,
@@ -765,6 +766,29 @@ def tune_marker(existing: Fluid, mapping: Dict[str, Any]) -> Fluid:
     return tuned
 
 
+def _stamp_block_positions(tuned: Fluid, block: Dict[str, Any], keys_before: FrozenSet[str]) -> None:
+    """Stamp every kwarg a block wrote into ``tuned`` (at any depth) with the keys the block beat.
+
+    ``tuned`` is :func:`tune_marker`'s output, whose nested markers are fresh copies too,
+    so stamping never touches a document marker. The stamp dict is REPLACED, never
+    mutated — ``copy()`` shares the original marker's. Read by the scanner's
+    ``_dotted_protected`` gate and re-emitted by ``dump()`` as dotted lines, exactly like
+    a top-level dotted line's stamp (``fluid.dotted_positions_of``).
+    """
+    stamps = dict(dotted_positions_of(tuned))
+    for key, value in block.items():
+        if not isinstance(key, str) or key in ("*", "**"):
+            continue
+        held = tuned.kwargs.get(key)
+        if isinstance(held, Target) and isinstance(value, dict):
+            _stamp_block_positions(held, value, keys_before)
+        else:
+            stamps[key] = keys_before
+    if stamps:
+        # Not a declared ``Fluid`` field — the same undeclared mark pass 5 writes (merger).
+        setattr(tuned, "_dotted_out_positioned", stamps)
+
+
 def _merge_routing(out: "_View", key: str, block: Dict[str, Any]) -> None:
     """Hoist a routing block — ``'**'`` floats (BARE), anything else one-level (STRICT).
 
@@ -1486,7 +1510,9 @@ class _ScanSink(Protocol):
 
     def apply(self, key: str, value: Any, origin: str, scope: _KeyScope, own: bool, gated: bool, pos: int) -> None: ...
 
-    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None: ...
+    def dict_at_slot(
+        self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str], keys_before: FrozenSet[str]
+    ) -> None: ...
 
     def route(self, key: str, block: Dict[str, Any]) -> None: ...
 
@@ -1549,6 +1575,13 @@ def _scan_view(
         pos = current_pos
         return frozenset(k for k, i in _positions.items() if i < pos)
 
+    def _keys_before() -> FrozenSet[str]:
+        # Every top-level key of the view written before the delivering block — the
+        # `via` identities a cascade delivery arrives under (a bare key, a block's name,
+        # the rider's `'**'`), i.e. what a top-level dotted line stamps (BC4). A block
+        # tuning a nested marker stamps the keys it writes with this set (BC1).
+        return frozenset(k for k in islice(view, current_pos) if isinstance(k, str))
+
     def _consume(block: Dict[str, Any], *, origin: str, delivery: _Delivery, via: str = "") -> None:
         """Unroll a block addressed to this node — the ONE branch ladder.
 
@@ -1581,7 +1614,7 @@ def _scan_view(
                 # deliberately differ on when, see the D5 pin), or routing for
                 # the direct children (spent while floating).
                 if receiver.dict_slot(bk, delivery):
-                    dict_at_slot(bk, bv, origin, _bare_before())
+                    dict_at_slot(bk, bv, origin, _bare_before(), _keys_before())
                     continue
                 if not floating:
                     route(bk, bv)
@@ -1774,27 +1807,36 @@ class _MergeSink:
         if gated:
             self._mark_used(key, origin)
 
-    def dict_at_slot(self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str]) -> None:
+    def dict_at_slot(
+        self, key: str, block: Dict[str, Any], origin: str, bare_before: FrozenSet[str], keys_before: FrozenSet[str]
+    ) -> None:
         if _trace_on:  # per-KEY site — see the log-gate block
             logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin}, slot value)")
         # C1 (BUGS-2026-08-13): a mapping delivered at a slot whose merged value is
         # already a MARKER (the receiver's own kwarg — a nested ``_target_:``) TUNES
         # that marker instead of replacing it; the nested child then BUILDS with the
-        # merged kwargs. Value-state dispatch, same as the live sink's — not a new
-        # key/scope gate (those stay in the scanner).
+        # merged kwargs. Value-state dispatch — not a new key/scope gate (those stay in
+        # the scanner).
         prev = self.merged.get(key)
         if isinstance(prev, Target):
-            self.merged.set(key, tune_marker(prev, block), _KeyScope.EXACT)
+            # The block's position is kept PER KEY it writes, at every depth — the stamp
+            # a top-level dotted line carries (BC4) — so each tuned key beats exactly
+            # the cascade keys the block out-positioned, and nothing else is cut off
+            # (BUGS-2026-08-22 BC1: the per-SLOT verdict below protected one level only,
+            # so a grandchild the block tuned lost to an earlier bare key, while the
+            # middle node it never set lost that bare key altogether).
+            tuned = tune_marker(prev, block)
+            _stamp_block_positions(tuned, block, keys_before)
+            self.merged.set(key, tuned, _KeyScope.EXACT)
         else:
             self.merged.set(key, block, _KeyScope.EXACT)
-        # KEEP the scanner's verdict. It is computed at THIS BLOCK's position, which
-        # is the only place that position still exists — by the time the engine sees
-        # the merged kwargs they have been spliced at the MARKER's slot, and a second
-        # verdict computed from there answers a different question (C2). The live
-        # sink has always recorded it; this one accepted the argument and dropped it,
-        # so the two paths disagreed for the ordinary "node first, overrides below"
-        # layout while both edge orderings agreed.
-        self.beaten_per_slot[key] = bare_before
+            # KEEP the scanner's verdict for a slot that holds no marker (a body slot the
+            # engine tunes post-init, plain data). It is computed at THIS BLOCK's
+            # position, which is the only place that position still exists — by the
+            # time the engine sees the merged kwargs they have been spliced at the
+            # MARKER's slot, and a second verdict computed from there answers a
+            # different question (C2).
+            self.beaten_per_slot[key] = bare_before
         if self.report is not None:
             self.origins[key] = origin
 

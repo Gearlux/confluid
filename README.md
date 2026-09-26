@@ -12,6 +12,13 @@ pip install "confluid[pydantic]"    # + pydantic-powered schema export & validat
 pip install "confluid[cli]"         # + the `hydraide` command (Click; `eval "$(hydraide completion bash)"`)
 ```
 
+The installed version (read from the package metadata):
+
+```python
+import confluid
+print(confluid.__version__)  # e.g. 0.3.1
+```
+
 ## Quick Start
 
 The whole walkthrough is [`examples/quickstart.py`](https://github.com/Gearlux/confluid/blob/main/examples/quickstart.py) — runnable, and every number below is asserted there.

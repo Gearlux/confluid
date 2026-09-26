@@ -48,8 +48,13 @@ clean, and fixes it with `contextvars.copy_context()`.
 
 ## Concurrent passes never fault each other
 
-Two guarantees hold for threads running isolated passes (each under its own
+Three guarantees hold for threads running isolated passes (each under its own
 context):
+
+- **A load's YAML validation mode stays inside that load.** With
+  `set_policy(init="strict", yaml="off")`, a `load()` on one thread builds its
+  objects under `"off"` while a direct `Cls(bad=…)` on another thread still raises,
+  and the process policy is the same after any number of overlapping loads.
 
 - **Per-pass cache reads are atomic.** Another pass's entry `clear_pass_caches()`
   may land at any instruction; every cache consult is one `.get()` (with a MISS

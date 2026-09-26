@@ -44,6 +44,12 @@ to construct. Four rules:
      degrades that one slot to `Any` and leaves its siblings alone;
    - assign a **fresh `PartialClass(...)` per instance** in the body — never a shared mutable default.
 
+   One line may declare several slots: `self.start, self.stop = 0, 10` is the same as two
+   assignments (`self.head, *self.tail = …` too). A loop target (`for self.i in …`) and a
+   `with … as self.stream` target are not slots — a counter or an open resource is not a
+   setting. A class with **no `__init__` anywhere** declares no constructor settings, exactly
+   like `def __init__(self): pass` — a bare key meant for another object does not land on it.
+
    The body scan reads `__init__` *source*, so a compiled/frozen/zip deployment needs the
    build-time bake step (`confluid-bake <package>`) or an explicit
    `@configurable(broadcast_attrs=[...])` declaration — see

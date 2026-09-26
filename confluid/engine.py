@@ -887,6 +887,17 @@ def _flow_target(
     # Without it a config writing a plain `_target_:` into an optimizer slot would
     # construct it here with no `params`, far from the config that caused it.
     partial_slots = partial_param_names(target)
+    # A mapping at a constructor param whose DEFAULT is a marker (`optimizer:
+    # Partial[Adam] = PartialClass(Adam, …)`) TUNES a copy of that default — the
+    # body-slot spelling of the same setting always did (the post-init arm), while
+    # this one handed the dict to the constructor: the optimizer became `{'lr': 0.1}`
+    # (warn/off) or construction failed (strict) — BUGS-2026-08-22 ENG-1. Pass 7 cannot
+    # see a default (it is not in the document), so the tune happens here. A runtime
+    # kwarg is a call argument, never a tune.
+    for k, default in _ctor_default_markers(target).items():
+        v = merged.get(k)
+        if isinstance(v, dict) and k not in runtime_kwargs:
+            merged[k] = _tune_slot_marker(default, v, k, obj, context, root_pool, deferred=k in partial_slots)
     merged = {
         k: _resolve_kwarg_value(v, context=context, broadcast_ctx=broadcast_ctx, slot_is_partial=k in partial_slots)
         for k, v in merged.items()
@@ -1298,6 +1309,57 @@ def _construct(target: Any, args: Tuple[Any, ...], ctor: Dict[str, Any], obj: An
         _construction_where.reset(where_token)
 
 
+def _ctor_default_markers(target: Any) -> Dict[str, Target]:
+    """Constructor parameters whose DEFAULT is a code-built marker, by name."""
+    return {s.name: s.default for s in slots(target) if s.source == "signature" and isinstance(s.default, Target)}
+
+
+def _tune_slot_marker(
+    existing: Target,
+    mapping: Dict[str, Any],
+    key: str,
+    obj: Any,
+    context: Optional[Dict[str, Any]],
+    broadcast_ctx: Optional[Dict[str, Any]],
+    *,
+    deferred: bool,
+) -> Any:
+    """A mapping addressed at a slot holding a CODE-built marker tunes a copy of it.
+
+    The ONE site for both code spellings of such a slot — a body slot
+    (``self.optimizer = PartialClass(...)``, from :func:`_apply_post_init_attrs`) and a
+    constructor DEFAULT (``optimizer: Partial[Adam] = PartialClass(...)``, from
+    :func:`_flow_target`). Assigning the raw dict was the historical bug: the canonical
+    ``optimizer: {lr: 0.5}`` left a plain dict where an optimizer belonged and every
+    kwarg set in code (``weight_decay``) vanished with it — and the constructor-default
+    spelling kept that bug after the body slot was fixed (BUGS-2026-08-22 ENG-1).
+    :func:`~confluid.broadcast.tune_marker` copies, so a class-level default is never
+    mutated.
+
+    The mapping is an ADDRESSED value, so document order decides it against a
+    competing bare key — but it reaches here with no position of its own (see
+    :func:`_late_bare_keys_per_slot`). The winner was worked out during the ordered
+    merge and handed over as the set of bare keys that sit LATER than this slot; apply
+    exactly those, through the normal resolver so the accept-list and NoBroadcast gates
+    still run. ``deferred`` rides along: without it one later bare key was enough to
+    BUILD a ``Partial[T]`` slot's tuned marker (ENG-17).
+    """
+    tuned: Any = tune_marker(existing, mapping)
+    late = late_bare_keys_of(obj).get(key, frozenset())
+    pool = {bk: bv for bk, bv in (broadcast_ctx or {}).items() if bk in late}
+    if pool:
+        tuned = _resolve_kwarg_value(tuned, context=context, broadcast_ctx=pool, slot_is_partial=deferred)
+    # Settled either way now — a later bare key has been applied, an earlier one has
+    # lost. Mark it so a later broadcast pass does not re-run the contest and hand the
+    # win to whichever key it happens to visit. MARKERS only: _resolve_kwarg_value BUILDS
+    # a non-partial marker, so ``tuned`` may be the LIVE result — stamping that crashed
+    # __slots__ targets and grew a stray attribute on everything else (E2).
+    if isinstance(tuned, Fluid):
+        tuned._order_resolved = True
+    logger.trace(f"slot-tune: {key!r} -> {existing.target} merged {sorted(mapping)} into the code-built marker")
+    return tuned
+
+
 def _apply_post_init_attrs(
     instance: Any,
     target: Any,
@@ -1435,39 +1497,8 @@ def _apply_post_init_attrs(
                 )
             elif isinstance(v, dict) and isinstance(existing, Target):
                 # A mapping addressed at a slot that already holds a deferred marker
-                # TUNES that marker — it does not replace it. Assigning the raw dict
-                # was the old behaviour and it destroyed the slot silently: the
-                # canonical `optimizer: {lr: 0.5}` left a plain dict where an
-                # optimizer belonged, so the value the user set was the only thing
-                # that survived and the target class was simply gone. Merging keeps
-                # the kwargs they did NOT mention (a `weight_decay` set in code
-                # stays set), which is the whole reason to spell it as a block
-                # rather than restating the marker.
-                tuned = tune_marker(existing, v)
-                # The mapping is an ADDRESSED value like any other, so document order
-                # decides it against a competing bare key — but it reaches here with no
-                # position of its own (see :func:`_late_bare_keys_per_slot`). The winner
-                # was worked out during the ordered merge and handed over as the set of
-                # bare keys that sit LATER than this slot; apply exactly those, through
-                # the normal resolver so the accept-list and NoBroadcast gates still run.
-                late = late_bare_keys_of(obj).get(k, frozenset())
-                pool = {bk: bv for bk, bv in (broadcast_ctx or {}).items() if bk in late}
-                if pool:
-                    # The declared deferral rides along: without it one later bare key
-                    # was enough to BUILD a Partial[T] slot's tuned marker (ENG-17).
-                    tuned = _resolve_kwarg_value(
-                        tuned, context=context, broadcast_ctx=pool, slot_is_partial=slot_declared_deferred
-                    )
-                # Settled either way now — a later bare key has been applied, an earlier
-                # one has lost. Mark it so the broadcast pass below does not re-run the
-                # contest and hand the win to whichever key it happens to visit.
-                # MARKERS only: _resolve_kwarg_value BUILDS a non-partial marker, so
-                # ``tuned`` may be the LIVE result — stamping that crashed __slots__
-                # targets and grew a stray attribute on everything else (E2).
-                if isinstance(tuned, Fluid):
-                    tuned._order_resolved = True
-                logger.trace(f"slot-tune: {k!r} -> {existing.target} merged {sorted(v)} into the deferred marker")
-                v = tuned
+                # TUNES that marker — it does not replace it (see _tune_slot_marker).
+                v = _tune_slot_marker(existing, v, k, obj, context, broadcast_ctx, deferred=slot_declared_deferred)
             try:
                 setattr(instance, k, v)
             except (AttributeError, TypeError) as exc:
