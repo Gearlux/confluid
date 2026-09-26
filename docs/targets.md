@@ -266,6 +266,14 @@ class Trainer:
         return flow(self.optimizer, params=self.parameters())
 ```
 
+A mapping in the config **tunes** that default, in this constructor spelling and in
+the `__init__`-body spelling alike — the arguments you do not mention stay:
+
+```yaml
+trainer: !class:Trainer
+  optimizer: {lr: 0.1}     # -> PartialClass(Adam, {'lr': 0.1}); a full marker (!partial:SGD {...}) replaces it
+```
+
 Subscript with the **interface the slot eventually flows into** — the abstract
 base (`Partial[Optimizer]`), not the concrete default (`Partial[Adam]`). Because
 `Partial[T]` expands to `Union[T, Fluid]`, the annotation is honest to strict type

@@ -406,3 +406,93 @@ def test_a_block_verdict_protects_the_slot_but_not_its_descendants(
     optimizer = load(_BC5_TREE + tail)["t"].optimizer
     assert optimizer.lr == want_opt, label
     assert optimizer.sched.lr == want_sched, f"{label}: the grandchild was never addressed by the block"
+
+
+# ---------------------------------------------------------------------------
+# BUGS-2026-08-22 BC1 — a class-name block reaching a GRANDCHILD, written after a
+# bare key, lost to it: the block's value landed in the grandchild's own kwargs at
+# the grandchild's EARLIER position, and the per-slot verdict (pop the beaten bare
+# keys from the addressed slot's view) cut the bare key off from the middle node
+# the block never set. The block now protects exactly the keys it writes, at
+# every depth — the per-key stamp a dotted line already carries (BC4) — and the
+# per-slot narrowing is gone for a slot holding a marker.
+# ---------------------------------------------------------------------------
+
+
+@configurable
+class BC1Opt:
+    def __init__(self, lr: float = 0.0) -> None:
+        self.lr = lr
+
+
+@configurable
+class BC1Sched:
+    def __init__(self, lr: float = 0.0, opt: Any = None) -> None:
+        self.lr, self.opt = lr, opt
+
+
+@configurable
+class BC1Trainer:
+    def __init__(self, lr: float = 0.0, sched: Any = None) -> None:
+        self.lr, self.sched = lr, sched
+
+
+_BC1_TREE = "trainer: !class:BC1Trainer\n  sched: !class:BC1Sched\n    opt: !class:BC1Opt\n"
+_BC1_OVERRIDES = [
+    "BC1Trainer: {sched: {opt: {lr: 0.5}}}",
+    "BC1Trainer.sched.opt.lr: 0.5",
+    "trainer.sched.opt.lr: 0.5",
+    "BC1Sched: {opt: {lr: 0.5}}",
+    "BC1Opt: {lr: 0.5}",
+]
+
+
+def _bc1_values(trainer: Any) -> Any:
+    return (trainer.lr, trainer.sched.lr, trainer.sched.opt.lr)
+
+
+@pytest.mark.parametrize("override", _BC1_OVERRIDES)
+def test_an_override_written_after_a_bare_key_wins_at_every_depth_on_both_paths(override: str) -> None:
+    config = f"lr: 0.01\n{override}\n"
+    via_load = _bc1_values(load(_BC1_TREE + config)["trainer"])
+    live = BC1Trainer(sched=BC1Sched(opt=BC1Opt()))
+    configure(trainer=live, config=config)
+    assert via_load == _bc1_values(live) == (0.01, 0.01, 0.5)
+
+
+@pytest.mark.parametrize("override", _BC1_OVERRIDES)
+def test_an_override_written_before_a_bare_key_loses_at_every_depth(override: str) -> None:
+    """The con case — the bare key is the later line, so it wins everywhere."""
+    assert _bc1_values(load(_BC1_TREE + f"{override}\nlr: 0.01\n")["trainer"]) == (0.01, 0.01, 0.01)
+
+
+@configurable
+class BC1Node:
+    def __init__(self, lr: float = 0.0, child: Any = None) -> None:
+        self.lr, self.child = lr, child
+
+
+def test_a_same_class_block_matched_at_every_level_wins_at_every_level() -> None:
+    tree = "a: !class:BC1Node\n  child: !class:BC1Node\n    child: !class:BC1Node\n"
+    a = load(tree + "lr: 9.0\nBC1Node: {child: {lr: 5.0}}\n")["a"]
+    assert (a.lr, a.child.lr, a.child.child.lr) == (9.0, 5.0, 5.0)
+
+
+def test_the_emitted_document_replays_the_block_win() -> None:
+    """hydraide emits the settled document; plain YAML cannot carry a position, so the
+    protected key is re-emitted as a dotted line after the keys it beat (BC4's rule)."""
+    from confluid.hydraide import emit
+
+    source = _BC1_TREE + "lr: 0.01\nBC1Trainer: {sched: {opt: {lr: 0.5}}}\n"
+    emitted = emit(source)
+    assert emit(emitted) == emitted
+    assert _bc1_values(load(emitted)["trainer"]) == _bc1_values(load(source)["trainer"]) == (0.01, 0.01, 0.5)
+
+
+def test_a_glob_key_inside_a_block_is_routing_and_carries_no_position_stamp() -> None:
+    from confluid.broadcast import _stamp_block_positions, tune_marker
+    from confluid.fluid import Target, dotted_positions_of
+
+    tuned = tune_marker(Target(BC1Sched), {"**": {"lr": 0.3}, "lr": 0.2})
+    _stamp_block_positions(tuned, {"**": {"lr": 0.3}, "lr": 0.2}, frozenset({"lr"}))
+    assert dotted_positions_of(tuned) == {"lr": frozenset({"lr"})}

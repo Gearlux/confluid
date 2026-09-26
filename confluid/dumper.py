@@ -7,7 +7,7 @@ import yaml
 from loggair import get_logger
 
 from confluid.exceptions import ConfigurableDefinitionError
-from confluid.introspect import NO_DEFAULT, slots
+from confluid.introspect import NO_DEFAULT, Slot, slots
 from confluid.registry import get_registry
 
 #: The slot kinds the dumper walks — the signature, minus the variadics. A ``*args``
@@ -30,6 +30,27 @@ from confluid.registry import get_registry
 #: DECLARED slots, ``__confluid_extra__`` covers names nothing declares (a key
 #: setattr'd onto a ``**kwargs`` class).
 _DUMP_KINDS = frozenset({"keyword", "positional_only", "body_slot"})
+
+
+def _dump_slots(cls: type) -> List[Slot]:
+    """The slots an object of ``cls`` dumps: ``_DUMP_KINDS``, and a body slot only when
+    a ``@configurable`` class declared it.
+
+    The OWNER filter is the one ``to_pydantic`` and ``get_hierarchy`` apply. ``slots()``
+    walks the WHOLE MRO because the accept-list wants a framework base's
+    ``self.compiled`` (a bare key may still set it); a DOCUMENT must not carry it — a
+    ``keras.Model`` subclass dumped eight internals plus a placeholder that reloaded
+    ``call_signature_parameters`` as an EMPTY list, and every Lightning module dumped
+    ``prepare_data_per_node`` (BUGS-2026-08-22 N1). Accepted cost (triage 2026-09-26):
+    a value a config set on such a base attribute is not recorded, so a reload
+    restores the base's own value. Shared by the representer and the discovery walk
+    so emission and discovery cannot disagree.
+    """
+    return [
+        s
+        for s in slots(cls)
+        if s.kind in _DUMP_KINDS and (s.kind != "body_slot" or getattr(s.owner, "__confluid_configurable__", False))
+    ]
 
 
 class CompactDumper(yaml.SafeDumper):
@@ -313,7 +334,7 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
     # order by construction, which is what the dump-key round-trip is pinned on;
     # an unreadable signature yields no signature slots (the old except branch).
     all_slots = slots(data.__class__)
-    dump_slots = [s for s in all_slots if s.kind in _DUMP_KINDS]
+    dump_slots = _dump_slots(data.__class__)
     params = [s.name for s in dump_slots]
     defaults: Dict[str, Any] = {s.name: s.default for s in dump_slots}
 
@@ -526,9 +547,7 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None, qualified: 
             # Traverse constructor params — the same _DUMP_KINDS projection the
             # representer walks, so discovery and emission cannot disagree.
             param_set: set[str] = set()
-            for s in slots(target.__class__):
-                if s.kind not in _DUMP_KINDS:
-                    continue
+            for s in _dump_slots(target.__class__):
                 param_set.add(s.name)
                 if isinstance(getattr(target.__class__, s.name, None), property):
                     continue  # derived state — the emission reads the captured kwarg, not the getter (CD2)

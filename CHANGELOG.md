@@ -12,6 +12,40 @@ All notable changes to confluid are documented here. The format follows
   (`importlib.metadata.version("confluid")`), so it always matches `pyproject.toml`; an uninstalled
   source tree reports `0.0.0.dev0`.
 
+### Fixed
+
+- **A class-name block reaching a grandchild wins by position, at every depth.** With `lr: 0.01`
+  followed by `Trainer: {sched: {opt: {lr: 0.5}}}` (or `Trainer.sched.opt.lr: 0.5`), `opt.lr` is
+  now 0.5 and `sched.lr` 0.01 — it was 0.01 and 0.0. The block keeps its position per key it
+  writes, like a dotted line. (BUGS-2026-08-22 BC1)
+- **`configure()`: a key naming an object takes effect at the line it is written.**
+  `configure(trainer=t, config="lr: 2.0\ntrainer: {lr: 1.0}")` sets 1.0 — it set 2.0, while
+  `load()` of the same document gave 1.0. (BUGS-2026-08-22 CD1)
+- **A mapping tunes a `Partial[T]` constructor default.**
+  `optimizer: Partial[Adam] = PartialClass(Adam, lr=1e-3, weight_decay=0.01)` with
+  `optimizer: {lr: 0.1}` gives `PartialClass(Adam, {'lr': 0.1, 'weight_decay': 0.01})`, as the
+  `__init__`-body spelling always did; it gave the dict `{'lr': 0.1}` (warn/off) or a
+  `ConstructionError` (strict). (BUGS-2026-08-22 ENG-1)
+- **A scope block's `include:` is found next to the file the block is written in** — also when
+  the document is read first and activated later (`load(x, until="raw")` → `load(raw,
+  scopes=…)`), and for a block inside an included file. It looked in the working directory:
+  not found, or a same-named file there read silently. (BUGS-2026-08-22 PA1, BUGS-2026-08-19 PA1)
+- **`dump()` writes only the settings the schema lists.** A `keras.Model` subclass dumped
+  `compiled`, `built`, `supports_jit`, … and reloaded with `call_signature_parameters` emptied; a
+  Lightning module dumped `prepare_data_per_node`. Attributes a non-`@configurable` base sets are
+  no longer written — unless a document set one during `load()`. (BUGS-2026-08-22 N1)
+- **The YAML validation mode stays inside the `load()` that uses it.** With
+  `set_policy(init="strict", yaml="off")`, a direct `Cls(bad=…)` on another thread during a load —
+  or anywhere after two loads overlapped — was accepted. (BUGS-2026-08-13 X2)
+- **`self.start, self.stop = 0, 10` declares both settings**, like two assignments: a bare
+  `stop: 50` now lands and the schema lists `start`/`stop`. (BUGS-2026-08-13 I1)
+- **A `@configurable` class with no `__init__` declares no settings**, like one with an empty
+  `__init__`: every bare key in the document landed on it, and an addressed key crashed with
+  `takes no arguments`. (BUGS-2026-08-13 I3)
+- **The list-form scope block keeps its data.** A key written beside `_scope_` in the first item
+  is refused with its file and line (it vanished), and an anchored condition reused in two lists
+  keeps each list's own body (the first list received the second's). (BUGS-2026-08-13 P4)
+
 ## [0.3.0] - 2026-08-24
 
 ### Added

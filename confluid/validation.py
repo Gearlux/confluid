@@ -22,7 +22,8 @@ Each mode is one of:
 * ``"off"`` — validation is skipped entirely; identical to pre-validation
   behaviour.
 
-The policy is process-wide. Defaults to ``("strict", "strict", "strict")``,
+The policy is process-wide; the YAML-mode switch of point 2 is context-local and
+never writes it. Defaults to ``("strict", "strict", "strict")``,
 overridable via env vars at first :func:`get_policy` access:
 
 * ``CONFLUID_VALIDATE_INIT``
@@ -146,12 +147,32 @@ def _policy_from_env() -> ValidationPolicy:
     )
 
 
-def get_policy() -> ValidationPolicy:
-    """Return the active :class:`ValidationPolicy` (initialised from env vars on first use)."""
+#: The ``init`` mode :func:`override_init_mode` applies to the code running inside
+#: it — a ``ContextVar``, never a write to the process policy. The swap it replaced
+#: mutated ``_policy``: a direct construction on ANOTHER thread validated under the
+#: YAML mode while a ``load()`` ran, and two overlapping loads restoring out of order
+#: left the YAML mode behind for the rest of the process (BUGS-2026-08-13 X2). A raw
+#: ``Thread`` starts with an empty context, so it never sees another thread's override.
+_init_override: ContextVar[Optional[ValidationMode]] = ContextVar("confluid_init_override", default=None)
+
+
+def _process_policy() -> ValidationPolicy:
+    """The process-wide policy (initialised from env vars on first use), no override applied."""
     global _policy
     if _policy is None:
         _policy = _policy_from_env()
     return _policy
+
+
+def get_policy() -> ValidationPolicy:
+    """Return the active :class:`ValidationPolicy` (initialised from env vars on first use).
+
+    Inside :func:`override_init_mode` the ``init`` field reads the override, for the
+    current context only.
+    """
+    policy = _process_policy()
+    override = _init_override.get()
+    return policy if override is None else replace(policy, init=override)
 
 
 def set_policy(
@@ -161,7 +182,9 @@ def set_policy(
     tool: Optional[ValidationMode] = None,
 ) -> ValidationPolicy:
     """Replace one or more knobs on the active policy and return the new policy."""
-    current = get_policy()
+    # The PROCESS policy — an active ``override_init_mode`` must not be persisted by a
+    # ``set_policy`` call that happens to run inside it.
+    current = _process_policy()
     updates: Dict[str, ValidationMode] = {}
     # Validate against the closed Literal like the env-var reader does — a typo
     # (``set_policy(init="stict")``) used to be stored and then read as warn-mode
@@ -191,19 +214,18 @@ def reset_policy() -> None:
 
 @contextmanager
 def override_init_mode(mode: ValidationMode) -> Iterator[None]:
-    """Temporarily set :attr:`ValidationPolicy.init` to ``mode``.
+    """Temporarily set :attr:`ValidationPolicy.init` to ``mode`` for the current context.
 
     Used by :func:`confluid.flow` to apply :attr:`ValidationPolicy.yaml`
-    semantics during YAML materialization without permanently mutating the
-    policy.
+    semantics during YAML materialization. The override is CONTEXT-LOCAL
+    (:data:`_init_override`): other threads keep the process policy, and the
+    process policy is never written.
     """
-    previous = get_policy()
-    set_policy(init=mode)
+    token = _init_override.set(_normalize_mode(mode, env_var="override_init_mode(...)"))
     try:
         yield
     finally:
-        global _policy
-        _policy = previous
+        _init_override.reset(token)
 
 
 #: The YAML location of the marker currently being constructed — set by the

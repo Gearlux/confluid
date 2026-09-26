@@ -8,7 +8,7 @@ are broadcast-visible NAMES but never pydantic fields or lazy slots.
 
 from typing import Any
 
-from confluid import PartialClass, configurable
+from confluid import PartialClass, collect_report, configurable, dump, load, to_pydantic
 from confluid.broadcast import _get_param_kinds
 from confluid.introspect import init_partial_setattr_names, init_setattr_names, scan_init_body, slots
 from confluid.partial import Partial, partial_param_names
@@ -65,6 +65,117 @@ def test_lazy_projection_matches_bare_and_qualified_calls_only() -> None:
 def test_scan_returns_empty_without_source() -> None:
     assert scan_init_body(dict.__init__) == ()
     assert init_setattr_names(dict) == set()
+
+
+# BUGS-2026-08-13 I1 — `self.start, self.stop = 0, 10` declares the same two slots as
+# two plain assignments; the scan read only a bare `self.x` target, so both were
+# invisible: a bare key silently did not land and the schema listed no fields.
+
+
+@configurable
+class _TwoLines:
+    def __init__(self) -> None:
+        self.start = 0
+        self.stop = 10
+
+
+@configurable
+class _OneLine:
+    def __init__(self) -> None:
+        self.start, self.stop = 0, 10
+
+
+@configurable
+class _Starred:
+    def __init__(self) -> None:
+        self.head, *self.tail = [1, 2, 3]
+
+
+def test_a_tuple_assignment_declares_each_self_attribute() -> None:
+    by_name = {s.name: s for s in slots(_OneLine)}
+    assert {n: (s.kind, s.default) for n, s in by_name.items()} == {
+        "start": ("body_slot", 0),  # the literal PAIRED with its target, not the whole tuple
+        "stop": ("body_slot", 10),
+    }
+    assert {s.name for s in slots(_Starred)} == {"head", "tail"}
+
+
+def test_a_tuple_assigned_class_behaves_like_the_two_line_one() -> None:
+    for cls in ("_TwoLines", "_OneLine"):
+        with collect_report() as report:
+            w = load(f"w: !class:{cls}\nstop: 50\n")["w"]
+            addressed = load(f"w: !class:{cls} {{stop: 60}}\n")["w"]
+        assert (w.stop, addressed.stop) == (50, 60), cls
+        assert report.failed == [], cls  # no "has no attribute 'stop'"
+    assert list(to_pydantic(_OneLine).model_fields) == list(to_pydantic(_TwoLines).model_fields) == ["start", "stop"]
+
+
+class _NotSettings:
+    def __init__(self, path: str = "x") -> None:
+        self._a, self._b = 0, 1  # private: never a slot
+        for self.i in range(3):  # a loop counter is not a setting
+            pass
+        with open(path) as self.stream:  # nor is an open resource
+            pass
+
+
+def test_private_loop_and_with_targets_stay_invisible() -> None:
+    assert {s.name for s in scan_init_body(_NotSettings.__init__)} == set()
+
+
+# BUGS-2026-08-13 I3 — a class with no ``__init__`` anywhere resolves to
+# ``object.__init__`` = ``(*args, **kwargs)``, which read as "accepts every key":
+# every bare key in the document landed on it, and an addressed key reached
+# ``object.__init__`` and crashed. It declares nothing, like an empty ``__init__``.
+
+
+@configurable
+class _NoInit:
+    def __call__(self, x: float) -> float:
+        return x / 255
+
+
+@configurable
+class _EmptyInit:
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, x: float) -> float:
+        return x / 255
+
+
+@configurable
+class _ClassAttrNoInit:
+    factor = 255.0
+
+
+class _BaseWithInit:
+    def __init__(self, size: int = 8) -> None:
+        self.size = size
+
+
+@configurable
+class _InheritsInit(_BaseWithInit):
+    pass
+
+
+def test_a_class_without_any_init_declares_nothing_like_an_empty_init() -> None:
+    assert slots(_NoInit) == slots(_EmptyInit) == ()
+    for cls in ("_NoInit", "_EmptyInit"):
+        op = load(f"op: !class:{cls}\nbatch_size: 32\nname: resnet50\n")["op"]
+        assert not hasattr(op, "batch_size") and not hasattr(op, "name"), cls
+        assert "batch_size" not in dump(op), cls
+        with collect_report() as report:
+            addressed = load(f"op: !class:{cls} {{batch_size: 32}}\n")["op"]  # was a crash for _NoInit
+        assert addressed.batch_size == 32, cls
+        assert [(f.key, f.reason) for f in report.failed] == [("batch_size", "unknown-attribute")], cls
+
+
+def test_a_class_attribute_and_an_inherited_init_still_declare_their_slots() -> None:
+    s = load("op: !class:_ClassAttrNoInit\nfactor: 1.0\nbatch_size: 32\n")["op"]
+    assert (s.factor, hasattr(s, "batch_size")) == (1.0, False)
+    c = load("op: !class:_InheritsInit\nsize: 64\nbatch_size: 32\n")["op"]
+    assert (c.size, hasattr(c, "batch_size")) == (64, False)
 
 
 def test_scan_sees_through_configurable_wrapper() -> None:
