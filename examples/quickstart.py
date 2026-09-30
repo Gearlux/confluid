@@ -69,6 +69,13 @@ def main() -> None:
         assert isinstance(trainer, Trainer) and isinstance(trainer.model, Model)
         assert (trainer.lr, trainer.model.layers, trainer.model.dropout) == (0.0001, 10, 0.1)
 
+        # Files held in memory (an editor's unsaved files): read from the text, never written.
+        texts = {"variant.yaml": "include: experiment.yaml\ntrainer.model.layers: 4\n"}  # never saved
+        trainer = load("variant.yaml", texts=texts)["trainer"]
+        print(trainer.model.layers)  # 4 — the folder still holds experiment.yaml alone
+        assert trainer.model.layers == 4 and trainer.lr == 0.0001
+        assert sorted(p.name for p in Path(tmp).iterdir()) == ["experiment.yaml", "overrides.yaml"]
+
         # ---- 3. …or configure objects you already have -----------------------------------------
         model = Model()
         trainer = Trainer(model=model)

@@ -66,6 +66,7 @@ data are idempotent, so `load(load(x, until="document"))` is `load(x)`.
 | `load(x)` (`until="objects"`) | 1–9 | live objects | the normal path |
 | `load(x, solidify=False)` | 1–8 | live but unfinalized objects | you want objects without paying for the expensive finalize |
 | `load(x, …, return_paths=True)` | as above | `(result, [every file read])` | logging the include tree as a run artifact |
+| `load(x, …, texts={path: text})` | as above | the same, with each file whose resolved path is a key parsed from its text — nothing read from disk for it, nothing written | an editor holding files it has not saved (see [Files you hold in memory](interpolation.md#files-you-hold-in-memory--texts)) |
 | `configure(obj, config=…)` | 5–7, 9 | the same document applied to objects that already exist | post-construction configuration |
 
 ## What the order answers

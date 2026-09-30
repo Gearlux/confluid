@@ -21,6 +21,17 @@ For a relative path `name.yaml`, the first existing candidate wins:
    is treated as unset, per the
    [XDG Base Directory spec](https://specifications.freedesktop.org/basedir-spec/latest/).
 
+A file held in memory for the call — `load(path, texts={…})`, see
+[Files you hold in memory](interpolation.md#files-you-hold-in-memory--texts) —
+counts as existing at its own tier, exactly like a file on disk. For
+`include: common.yaml` written in `graph/flow.yaml`:
+
+| Held in memory | On disk | Read |
+|---|---|---|
+| `graph/common.yaml` | `./common.yaml` | the held `graph/common.yaml` — tier 1 beats tier 2 |
+| `./common.yaml` | `graph/common.yaml` | `graph/common.yaml` from disk — a held file does not jump the order |
+| `graph/common.yaml` | `graph/common.yaml` | the held text — it is the same file, and the held text wins |
+
 On a total miss, `load(path)` raises `ConfigFileNotFoundError` listing every
 location that was searched. (A `Path`, or a one-line string ending in `.yaml` /
 `.yml`, always names a FILE — a missing one raises rather than parsing as YAML

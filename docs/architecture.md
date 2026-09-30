@@ -1525,8 +1525,9 @@ signature and its own idea of which input shapes it took — one was path-only, 
 root while another handed it back unbuilt, one parsed no YAML at all — so a caller had to know
 five names to reach four states, and two consumers were measured holding the wrong one.
 
-**Decision.** `load(data, *, until: Stage = "objects", context, scopes, solidify, return_paths)`
-is the one door. `Stage = Literal["raw", "document", "settled", "objects"]` names the STATE handed
+**Decision.** `load(data, *, until: Stage = "objects", context, scopes, solidify, return_paths,
+texts)` is the one door (`texts`, the files a caller holds in memory, joined on 2026-09-30 —
+record 25). `Stage = Literal["raw", "document", "settled", "objects"]` names the STATE handed
 back (`_STAGES = get_args(Stage)` is the runtime tuple; an unknown value raises `ConfigurationError`
 rather than defaulting to objects). `load` accepts a path, YAML text or already-parsed data of any
 shape and runs the passes the input still needs; passes already applied are idempotent, so
@@ -1786,3 +1787,83 @@ comparison is safe exactly where equality is total and returns a bool. What must
 equality comparison of arbitrary objects in the fingerprint, a multi-entry table, a cache that
 survives its marker, or respelling this as a second sharing mechanism — `!ref:` remains the one
 spelling of sharing between config sites.
+
+---
+
+## 25. A caller can hand `load` the texts of the files it holds — nothing is staged on disk
+
+*2026-09-30*
+
+**Context.** A program that edits configuration — an editor holding a document split across
+several files — keeps every edit in memory until the user saves. `include:` read its target from
+disk only, so a file that so far exists only in the editor (a part the user just moved into a file
+of its own, not yet saved) could not be loaded at all. The one way around it open to such a caller
+was to STAGE: write each held text into the folder for the length of the load, then put the disk
+back. Measured 2026-09-30 with a script that loads one entry file on disk plus one held include,
+staged vs. handed over (the document lists its own folder from a `solidify()`, i.e. DURING the
+load):
+
+```text
+folder during a staged load:      ['demo.yaml', 'prep.steps.yaml']
+folder during load(texts=...):    ['demo.yaml']
+staged load, read-only folder:    PermissionError: Permission denied
+load(texts=...), read-only folder: ok
+disk after two overlapping staged loads: steps: A-unsaved
+```
+
+Three failures, each inherent to staging rather than to that script: every load shows the
+unsaved file to every other reader of the folder (a file watcher, a version-control status, a
+second process); a folder the caller may read but not write cannot be loaded at all; and two
+overlapping loads of one file corrupt the disk — the second one snapshots the first one's staged
+text as the "original" and restores it last, leaving an unsaved edit on disk that nobody saved.
+Making staging safe takes a process-wide lock that serializes every load, save and read of the
+files — and still leaves the first two.
+
+**Decision.** `load(..., texts=None)` — keyword-only, every overload — maps a file's path to the
+text to use for it. Keys are resolved once (`Path(key).expanduser().resolve()`), so a relative or
+`~` key names the same file as the absolute path. The resolved map rides a `_HELD_TEXTS`
+ContextVar set for the call, the pattern `_INCLUDE_ACCUMULATOR` already uses, and exactly two
+sites read it: `_exists`, the probe `resolve_config_path` runs for every search-tier candidate (and
+the two probes built on the resolver — a scope block's deferred-include anchoring and the
+suffix-less "does this string name a file?" test), so a held file exists AT ITS OWN TIER; and
+`_load_config_file`, which parses the held text through a stream carrying the real path as its
+name (`_HeldStream`) — exactly what `open(path)` hands PyYAML, so every `file:line:col` and every
+YAML error mark names the real file. Nothing downstream changed: circular-include detection, the
+include accumulator (`return_paths`), the not-found message for a file that is not held. Two
+shapes are refused because they could only be guessed at: a text that is not a `str`, and two
+keys naming one file with different texts. This is an I/O option — not a YAML spelling, not a
+precedence rule, not a tag — so it sits inside the "configuration utility, not a compiler" ruling.
+
+**Consequences.** A caller holding files needs no lock and no write permission, and the folder
+never shows a file the user has not saved. A held file wins over the same file on disk and never
+jumps a tier (a held `./common.yaml` still loses to `graph/common.yaml` on disk for an include
+written in `graph/`). A load run INSIDE the call — a `solidify()` that loads a file — sees the
+same texts, because a ContextVar is inherited by the call's own code; another thread's call sees
+its own. The parameter is typed as a union of three `Mapping`s because a `Mapping`'s key type is
+invariant: `Mapping[Union[str, Path], str]` alone refused a caller's `Dict[Path, str]` (measured,
+mypy `arg-type`). With `texts=None` the only new work is a ContextVar read for a candidate that
+does not exist on disk. The one identity is the resolved path AS SPELLED: `Path.resolve()` follows symlinks but keeps letter
+case, so on a filesystem that ignores case a key spelled `Prep.steps.yaml` does not match
+`include: prep.steps.yaml` — measured 2026-09-30 on macOS: with that file on disk the include read
+the disk text and the held one went unused; with none on disk the include was not found. It is a
+documented limit (`docs/interpolation.md` → "Spelling"), not a second identity: matching by what
+the disk says is the same file (inode, case-folding) would need the file to exist, which a held
+file need not.
+
+**Example.**
+
+```python
+from pathlib import Path
+
+from confluid import load
+
+graph = Path("graph")                                  # on disk: graph/flow.yaml = "include: prep.steps.yaml"
+texts = {graph / "prep.steps.yaml": "steps: 2\n"}      # held, never saved
+doc = load(graph / "flow.yaml", until="document", texts=texts)   # {'steps': 2}; nothing written
+load(graph / "flow.yaml", until="document")            # ConfigFileNotFoundError — not on disk
+```
+
+**What you may change.** Which sites consult the held texts — a NEW site that reads a config file
+must read through `_held_text` too, or it silently reads the disk behind the caller's back. What
+must not come back: writing a held text to disk so a load can see it, a second identity for a file
+(keys are resolved paths, full stop), or held texts outliving the call that received them.

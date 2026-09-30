@@ -2,16 +2,17 @@
 
 Writes a two-file include tree to a temp directory, then shows env-var
 interpolation (``${VAR}``), config-key interpolation (``${dotted.path}``, native
-type preserved on a whole-string match), and ``load(..., return_paths=True)`` returning
-every contributing YAML file. Note interpolation is applied at MATERIALIZATION
-(``load`` from ``until="document"`` on) — ``load(until="raw")`` returns the raw parse.
+type preserved on a whole-string match), ``load(..., return_paths=True)`` returning
+every contributing YAML file, and ``load(..., texts=…)`` reading files held in memory.
+Note interpolation is applied at MATERIALIZATION (``load`` from ``until="document"`` on)
+— ``load(until="raw")`` returns the raw parse.
 """
 
 import os
 import tempfile
 from pathlib import Path
 
-from confluid import configurable, load
+from confluid import ConfigFileNotFoundError, configurable, format_yaml_loc, load
 
 
 @configurable
@@ -87,6 +88,33 @@ sink: !class:ExampleSink
         cfg = load(str(marked))
         assert cfg["sink"].out_dir == "/store/exp42", cfg["sink"].out_dir
         print(f"marker kwarg: {cfg['sink'].out_dir}")
+
+        held_texts(Path(tmp))
+
+
+def held_texts(tmp: Path) -> None:
+    """``load(..., texts=…)`` — files held in memory (an editor's unsaved files), never written."""
+    graph = tmp / "graph"
+    graph.mkdir()
+    (graph / "flow.yaml").write_text("include: prep.steps.yaml\nsteps: 2\n")  # the only file on disk
+    texts = {
+        graph / "prep.steps.yaml": "include: shared.yaml\nsink: !class:ExampleSink\n  out_dir: out\n",
+        graph / "shared.yaml": "mode: fast\n",
+    }
+
+    doc, paths = load(graph / "flow.yaml", until="settled", texts=texts, return_paths=True)
+    print(f"held: mode={doc['mode']} steps={doc['steps']} sink at {format_yaml_loc(doc['sink'])}")
+    print(f"held: include tree {[p.name for p in paths]}, folder {sorted(p.name for p in graph.iterdir())}")
+    assert (doc["mode"], doc["steps"]) == ("fast", 2)
+    assert format_yaml_loc(doc["sink"]) == f"{(graph / 'prep.steps.yaml').resolve()}:2:7", "the REAL path"
+    assert [p.name for p in paths] == ["flow.yaml", "prep.steps.yaml", "shared.yaml"]
+    assert sorted(p.name for p in graph.iterdir()) == ["flow.yaml"], "nothing was written"
+
+    try:  # con: the same call without the held texts
+        load(graph / "flow.yaml", until="settled")
+        raise AssertionError("the include is not on disk — this must raise")
+    except ConfigFileNotFoundError as exc:
+        print(f"without texts: {type(exc).__name__}: {str(exc).split(' (searched')[0]}")
 
 
 if __name__ == "__main__":

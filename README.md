@@ -74,6 +74,18 @@ construction — and stops where you say: `load(path, until="document")` gives y
 merged document before anything is built, `until="settled"` the markers with their final
 kwargs (see [The Lifecycle](https://github.com/Gearlux/confluid/blob/main/docs/lifecycle.md)).
 
+Files you hold in memory — an editor's unsaved files — are handed over as `texts=`
+(path → text). Each is read from its text instead of the disk, an `include:` finds it like a
+file on disk, it need not exist there, and nothing is written:
+
+```python
+texts = {"variant.yaml": "include: experiment.yaml\ntrainer.model.layers: 4\n"}   # never saved
+trainer = load("variant.yaml", texts=texts)["trainer"]
+print(trainer.model.layers)   # 4 — the folder still holds experiment.yaml alone
+```
+
+See [Files you hold in memory](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md#files-you-hold-in-memory--texts).
+
 ### 4. …or configure objects you already have
 
 A mapping at a slot tunes the live object **in place** — the existing `Model` stays the
@@ -148,7 +160,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | [Post-Construction Configuration](https://github.com/Gearlux/confluid/blob/main/docs/configure.md) | `configure()` / `configure_from_file` — applying a document to LIVE objects: the same one matching rule, deferred-slot tuning, layered calls, values-before-finalize ordering | `configure.py` |
 | [Closing the Config Surface](https://github.com/Gearlux/confluid/blob/main/docs/strict-attrs.md) | `strict_attrs=True` — refuse an addressed key the class declares nowhere (the permissive default warns and applies it); what stays untouched: bare keys, `**kwargs` targets, declared slots; `register(..., strict_attrs=True)` for classes you don't own | `strict_attrs.py` |
 | [Configuration Reports](https://github.com/Gearlux/confluid/blob/main/docs/report.md) | `ConfigurationReport` — applied/failed/unused override keys; `configure()`'s return value, the `collect_report()` context manager for `load()`/`load()`/`flow()` | `report.py` |
-| [Interpolation & Config Files](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md) | `${ENV}` + `${config.key}` interpolation, capturing the `include:` tree | `interpolation_includes.py` |
+| [Interpolation & Config Files](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md) | `${ENV}` + `${config.key}` interpolation, capturing the `include:` tree, files held in memory (`load(..., texts=…)`) | `interpolation_includes.py` |
 | [Config-File Search Paths](https://github.com/Gearlux/confluid/blob/main/docs/search-paths.md) | XDG-last resolution of relative paths and `include:` entries (CWD → `./config/` → XDG base dirs), `set_app_name` namespacing, `resolve_config_path` | `search_paths.py` |
 | [Class Design](https://github.com/Gearlux/confluid/blob/main/docs/class-design.md) | Lazy init & zero-arg construction — the four-rule convention for reconfigurable classes | `ml_pipeline.py`, `basic_registration.py` |
 | [Eager Classes](https://github.com/Gearlux/confluid/blob/main/docs/eager-classes.md) | Plain constructors — required params, work in `__init__`, full dump round-trip via captured kwargs, the `capture=False` opt-out, the `eager=True` staleness warning | `eager_classes.py` |
