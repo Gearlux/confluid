@@ -32,10 +32,10 @@ neither warns (user ruling 2026-08-15, architecture record 19). Attribute refere
 runtime consumes the settled document, and `configure()` runs through it (record 19); there is no
 copy marker (record 18).
 
-**Published on PyPI — v0.1.0 through v0.3.1** (v0.3.0 tagged 2026-08-24 after the downstream
+**Published on PyPI — v0.1.0 through v0.4.0** (v0.3.0 tagged 2026-08-24 after the downstream
 verification the 2026-08-04 hold required: every consumer suite green against the release
 commit; v0.3.1 on 2026-09-26 — the nine S1 fixes and `__version__`, all twelve consumer suites
-green against it). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
+green against it; v0.4.0 on 2026-09-30 — `load(texts=...)`, every consumer suite green against it). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
 proposes its version WITH rationale and waits for the user's confirmation before tagging.
 Update this line in the same change as a version bump.
 
@@ -196,11 +196,32 @@ A missing one raises `ConfigFileNotFoundError` — a typo'd path must not parse 
 load as nothing. The length guard applies only to the suffix-less existence probe. Any other `str` keeps the exists-under-the-search-tiers probe and otherwise parses as
 text (`loader._names_a_file`).
 
+**Rule — `texts=` hands over the files a caller HOLDS; nothing is ever staged on disk (2026-09-30,
+architecture record 25).** `load(..., texts={path: text})` (keyword-only, typed `loader.HeldTexts`):
+a file whose RESOLVED path (`Path(key).expanduser().resolve()`) is a key is parsed from that text
+instead of read — the entry file and every `include:`, nested or exposed by a scope block — and
+need not exist on disk. The map rides `loader._HELD_TEXTS`, a ContextVar set for the call (a load
+nested INSIDE the call inherits it; another thread's call has its own), and is read at TWO sites
+only: `loader._exists`, the probe every search-tier candidate goes through (so a held file exists
+AT ITS OWN TIER and never jumps one), and `_load_config_file`, which parses through `_HeldStream`
+(a `StringIO` named after the real path — what `open()` hands PyYAML — so every `file:line:col`
+and YAML error mark names the real file). A NEW site that reads a config file MUST read through
+`_held_text`, or it silently reads the disk behind the caller. Refused with a `ConfigurationError`
+naming the key: a non-`str` text, and two keys naming one file with different texts. A key
+matches the resolved path AS SPELLED — on a filesystem that ignores case, `Prep.steps.yaml` does
+not match `include: prep.steps.yaml` (documented limit, pinned by
+`test_on_a_disk_that_folds_case_a_key_matches_the_spelling_the_include_resolves_to`). Do NOT
+reintroduce staging (writing a held text into the folder for the length of a load) — measured:
+the unsaved file shows in the folder during every load, a read-only folder fails with
+`PermissionError`, and two overlapping loads left an unsaved text on disk. `texts=None` is
+exactly the old behaviour (pinned by message).
+
 **Pins.** `tests/test_load_stages.py` (the four stages on one document, the list-root pro/con, the
 idempotence, `return_paths` incl. the scope-spliced include and the stage that never opened it,
-the exact signature, the seam, the missing-file rule and its con case).
-**Docs.** `docs/lifecycle.md` → "Where you can stop", `docs/api-index.md`,
-`docs/architecture.md` record 20.
+the exact signature, the seam, the missing-file rule and its con case); `tests/test_held_texts.py`
+(every `texts=` property above, each with its con case).
+**Docs.** `docs/lifecycle.md` → "Where you can stop", `docs/interpolation.md` → "Files you hold in
+memory", `docs/api-index.md`, `docs/architecture.md` records 20 and 25.
 
 **Rule.** The engine state rides ONE `contextvars.ContextVar`, so it is inherited by asyncio tasks
 and `asyncio.to_thread` workers — NOT by a raw `Thread` / `run_in_executor`, which need
@@ -371,6 +392,9 @@ handing Fluid markers to unrelated libraries and masking bugs behind import orde
 
 **Rule.** Every relative config path (the entry path AND each `include:`) resolves through
 `loader.resolve_config_path` — the ONLY path-probe site. Never add a second `.exists()` chain.
+Its existence test is `loader._exists` (on disk, OR a text the active `load(texts=…)` call holds),
+and the probes that test a resolver result (`_anchor_include_entry`, `_names_a_file`) use it too —
+never a bare `.exists()`, which would not see a held file.
 
 **Detail.** A leading `~` expands first (`Path.expanduser`, 2026-08-20 — PA27: `~/x.yaml` was
 probed as `<cwd>/~/x.yaml`). Tier order, first existing wins: including file's directory (includes only) → CWD →

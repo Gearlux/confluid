@@ -4,6 +4,22 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
+## [0.4.0] - 2026-09-30
+
+### Added
+
+- **`load(..., texts={path: text})` reads the files a caller holds in memory.** An editor with
+  unsaved files hands their texts over; a file whose resolved path is a key is parsed from its text
+  instead of read from disk — the entry file and every `include:` (nested, or exposed by a scope
+  block) — and need not exist on disk. Nothing is written. With `graph/flow.yaml` on disk saying
+  `include: prep.steps.yaml` and `prep.steps.yaml` never saved,
+  `load("graph/flow.yaml", texts={"graph/prep.steps.yaml": "steps: 2\n"})` gives `{'steps': 2}`;
+  without `texts` it raises `ConfigFileNotFoundError`. A held file is found through the same search
+  tiers as a file on disk, wins over the same file on disk, is listed by `return_paths`, and every
+  location names its real path (`.../graph/prep.steps.yaml:<line>:<col>`). `texts=None` reads the disk as
+  before. A key matches the path an include resolves to, spelled the same way: on a filesystem that ignores
+  case, key the file the way the include spells it.
+
 ## [0.3.1] - 2026-09-26
 
 ### Added

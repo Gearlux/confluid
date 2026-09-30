@@ -18,10 +18,11 @@ imports it. Docs: ``docs/lifecycle.md`` (the nine passes), ``docs/plain-format.m
 """
 
 import importlib
+import io
 import os
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple, Union, cast, get_args, overload
+from typing import Any, Dict, FrozenSet, List, Literal, Mapping, Optional, Set, Tuple, Union, cast, get_args, overload
 
 import yaml
 from loggair import get_logger
@@ -56,6 +57,13 @@ _INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_in
 #: document lost its imports and could not reload in a fresh process (BUGS-2026-08-19 CD13).
 #: `hydraide.emit()` activates it to re-emit the directive; None = off (zero cost).
 _IMPORT_ACCUMULATOR: ContextVar[Optional[List[str]]] = ContextVar("confluid_import_accumulator", default=None)
+#: The files the caller of ``load(..., texts=…)`` holds in memory, by RESOLVED path — set for that
+#: call only, None = every file comes from disk (zero cost). Read by the ONE path probe
+#: (:func:`_exists`, so a held file counts as existing at its own search tier) and by
+#: :func:`_load_config_file` (which parses the held text instead of opening the file). A ContextVar
+#: like its two siblings: concurrent loads on other threads/tasks never see each other's texts, and a
+#: load nested INSIDE the call (a ``solidify()`` that loads a file) sees the same ones.
+_HELD_TEXTS: ContextVar[Optional[Dict[Path, str]]] = ContextVar("confluid_held_texts", default=None)
 
 
 # Process-wide application identity for the XDG search path (see
@@ -119,19 +127,39 @@ def _search_candidates(rel: Path, base_dir: Optional[Path]) -> List[Path]:
     return candidates
 
 
+def _held_text(path: Path) -> Optional[str]:
+    """The text the active ``load(..., texts=…)`` call holds for ``path``, or None (read the disk)."""
+    held = _HELD_TEXTS.get()
+    if held is None:
+        return None
+    return held.get(path.expanduser().resolve())
+
+
+def _exists(path: Path) -> bool:
+    """Does ``path`` exist — on disk, or as a text the active ``load(..., texts=…)`` call holds?
+
+    A held file need not exist on disk (an editor's file that was never saved), yet an include
+    naming it must resolve through the SAME tiers as a file on disk: it counts as existing at its
+    own tier, so it neither loses to a disk file at a later tier nor beats one at an earlier tier.
+    """
+    return path.exists() or _held_text(path) is not None
+
+
 def resolve_config_path(path: Union[str, Path], *, base_dir: Optional[Path] = None) -> Path:
     """Resolve a config-file path through the search tiers (XDG last).
 
     An absolute path — or a relative one that exists as given — is returned
     unchanged. Otherwise the first EXISTING candidate from
     :func:`_search_candidates` wins. On a total miss the path is returned
-    as given, so the caller's normal not-found handling fires.
+    as given, so the caller's normal not-found handling fires. Inside a
+    ``load(..., texts=…)`` call a file held there exists at its tier like a
+    file on disk.
     """
     rel = Path(path).expanduser()  # `~/configs/x.yaml` is a home path, not `<cwd>/~/...` (PA27)
     if rel.is_absolute():
         return rel
     for candidate in _search_candidates(rel, base_dir):
-        if candidate.exists():
+        if _exists(candidate):
             if candidate != rel and candidate != Path.cwd() / rel:
                 logger.debug(f"resolved config path {str(rel)!r} -> {candidate}")
             return candidate
@@ -873,6 +901,22 @@ def _register_constructors() -> None:
 _register_constructors()
 
 
+class _HeldStream(io.StringIO):
+    """A held text read like the file it stands for: PyYAML names every mark after ``stream.name``.
+
+    A plain ``str`` would be named ``<unicode string>``; a stream named after the real path makes
+    a held file indistinguishable from the same text read from disk, error marks included.
+    """
+
+    def __init__(self, text: str, name: str) -> None:
+        super().__init__(text)
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+
 def _load_config_file(
     path: Union[str, Path],
     _included: "Optional[Dict[Path, None]]" = None,
@@ -885,7 +929,8 @@ def _load_config_file(
     resolved through the config search tiers (CWD → ``CWD/config`` → XDG base
     dirs — see :func:`resolve_config_path`) BEFORE canonicalization, so
     circular-include detection and the include accumulator operate on the
-    real file.
+    real file. A file the active ``load(..., texts=…)`` call holds is parsed
+    from that text instead of read, and need not exist on disk.
     """
     requested = Path(path)
     base_dir = including.parent if including is not None else None
@@ -900,6 +945,14 @@ def _load_config_file(
         raise CircularIncludeError(f"Circular include: {chain}")
     _included[path] = None
     _record_loaded_path(path)
+
+    text = _held_text(path)
+    if text is not None:
+        # The caller holds this file (``load(..., texts=…)``): its text wins over the disk, and the
+        # file need not exist. Parsed as a stream carrying the REAL path as its name — exactly what
+        # ``open(path)`` hands PyYAML — so every marker's ``file:line:col`` names the real file.
+        data = yaml.load(_HeldStream(text, str(path)), Loader=ConfluidLoader) or {}
+        return cast(Dict[str, Any], _import_and_include(data, path, _included))
 
     if path.is_dir():
         # `open()` on a directory raised a raw IsADirectoryError from deep inside the
@@ -1061,7 +1114,7 @@ def _anchor_include_entry(entry: Any, current_path: Path) -> Any:
     if not isinstance(entry, str) or not entry.strip():
         return entry
     found = resolve_config_path(entry, base_dir=current_path.parent)
-    return str(found) if found.exists() else entry
+    return str(found) if _exists(found) else entry  # a file the call holds is found like one on disk
 
 
 #: Backstop for :func:`_settle_scopes_and_includes`. Two files that each include
@@ -1192,6 +1245,12 @@ Stage = Literal["raw", "document", "settled", "objects"]
 _STAGES: Tuple[str, ...] = get_args(Stage)
 
 
+#: What ``load(texts=…)`` takes: a file's path (``str`` or ``Path``, relative or ``~``) → its text.
+#: Three arms because a ``Mapping``'s KEY type is invariant: ``Mapping[Union[str, Path], str]`` alone
+#: refuses a caller's ``Dict[Path, str]`` (measured, mypy ``arg-type``), which is the common shape.
+HeldTexts = Union[Mapping[Path, str], Mapping[str, str], Mapping[Union[str, Path], str]]
+
+
 @overload
 def load(
     data: Any,
@@ -1201,6 +1260,7 @@ def load(
     scopes: Optional[List[str]] = ...,
     solidify: bool = ...,
     return_paths: Literal[False] = ...,
+    texts: Optional[HeldTexts] = ...,
 ) -> Any: ...
 
 
@@ -1213,6 +1273,7 @@ def load(
     scopes: Optional[List[str]] = ...,
     solidify: bool = ...,
     return_paths: Literal[True],
+    texts: Optional[HeldTexts] = ...,
 ) -> Tuple[Any, List[Path]]: ...
 
 
@@ -1224,6 +1285,7 @@ def load(
     scopes: Optional[List[str]] = None,
     solidify: bool = True,
     return_paths: bool = False,
+    texts: Optional[HeldTexts] = None,
 ) -> Any:
     """Load a config — from a path, YAML text or already-parsed data — up to a stage.
 
@@ -1244,18 +1306,33 @@ def load(
     ``return_paths=True`` returns ``(result, paths)``: ``paths`` is every file
     read for this call, in read order, deduplicated — the entry file and every
     ``include:`` it pulled in, including one spliced by an activated scope
-    block. It is empty when nothing was read from disk.
+    block. It is empty when nothing was read from a file.
+
+    ``texts`` maps a file's path to the text to use for it (an editor holding
+    files it has not saved). A file whose RESOLVED path is a key is parsed from
+    that text instead of read from disk — the entry file when ``data`` names
+    it, and every ``include:``, nested or exposed by a scope block — and it
+    need not exist on disk; nothing is written. It is found through the same
+    search tiers as a file on disk, every location names the real path, and
+    ``return_paths`` lists it like a file read. A key may be relative (to the
+    working directory) or start with ``~``. The texts hold for this call only
+    (a load run inside it — a ``solidify()`` that loads a file — sees them
+    too); ``None`` reads every file from disk.
     """
     if until not in _STAGES:
         raise ConfigurationError(f"load(until={until!r}): must be one of {', '.join(repr(s) for s in _STAGES)}")
-    if not return_paths:
-        return _load(data, until=until, context=context, scopes=scopes, solidify=solidify)
-    accum: List[Path] = []
-    token = _INCLUDE_ACCUMULATOR.set(accum)
+    held_token = _HELD_TEXTS.set(_resolve_held_texts(texts)) if texts is not None else None
+    accum: Optional[List[Path]] = [] if return_paths else None
+    accum_token = _INCLUDE_ACCUMULATOR.set(accum) if accum is not None else None
     try:
         result = _load(data, until=until, context=context, scopes=scopes, solidify=solidify)
     finally:
-        _INCLUDE_ACCUMULATOR.reset(token)
+        if accum_token is not None:
+            _INCLUDE_ACCUMULATOR.reset(accum_token)
+        if held_token is not None:
+            _HELD_TEXTS.reset(held_token)
+    if accum is None:
+        return result
     seen: Set[Path] = set()
     ordered: List[Path] = []
     for p in accum:
@@ -1263,6 +1340,31 @@ def load(
             seen.add(p)
             ordered.append(p)
     return result, ordered
+
+
+def _resolve_held_texts(texts: HeldTexts) -> Dict[Path, str]:
+    """``load``'s ``texts`` keyed by RESOLVED path — the identity every file probe compares against.
+
+    Refuses the two shapes that could only be guessed at: a text that is not a ``str`` (the
+    caller decoded nothing, and a held file has no encoding to apply), and two keys naming one
+    file with DIFFERENT texts (two spellings of one path — which one did the caller mean?).
+    """
+    held: Dict[Path, str] = {}
+    spelled: Dict[Path, Union[str, Path]] = {}
+    for key, text in cast(Mapping[Union[str, Path], Any], texts).items():
+        path = Path(key).expanduser().resolve()
+        if not isinstance(text, str):
+            raise ConfigurationError(
+                f"load(texts=...): the text held for {key} must be a str, got {type(text).__name__}"
+            )
+        if path in held and held[path] != text:
+            raise ConfigurationError(
+                f"load(texts=...): two different texts for {path} — the keys {spelled[path]!s} and {key!s} "
+                f"name the same file. Pass one."
+            )
+        held[path] = text
+        spelled.setdefault(path, key)
+    return held
 
 
 _CONFIG_SUFFIXES = (".yaml", ".yml")
@@ -1288,7 +1390,7 @@ def _names_a_file(data: Union[str, Path]) -> bool:
         return True  # a suffix names a file at ANY length (PA17 — a 255+ char path parsed as text)
     if len(data) >= 255:
         return False  # too long for a bare (suffix-less) existence probe
-    return resolve_config_path(data).exists()
+    return _exists(resolve_config_path(data))
 
 
 def _load(

@@ -193,7 +193,8 @@ def test_return_paths_is_per_call(tmp_path: Path) -> None:
 def test_the_signature_is_exactly_the_one_door() -> None:
     """One door: ``load`` carries exactly these keywords, and no sibling entry point exists beside it."""
     params = inspect.signature(load).parameters
-    assert set(params) == {"data", "until", "context", "scopes", "solidify", "return_paths"}
+    assert set(params) == {"data", "until", "context", "scopes", "solidify", "return_paths", "texts"}
+    assert all(params[name].kind is inspect.Parameter.KEYWORD_ONLY for name in params if name != "data")
     loading_names = {n for n in confluid.__all__ if n.startswith("load")}
     assert loading_names == {"load", "load_configurables"}
 

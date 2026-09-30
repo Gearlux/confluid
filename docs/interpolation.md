@@ -233,10 +233,62 @@ data, paths = load("experiment.yaml", until="raw", return_paths=True)
 returns `(objects, paths)` — and lists a file an activated scope block spliced in
 as well. Without it `load` returns the result alone.
 
+## Files you hold in memory — `texts=`
+
+A program that edits config files — an editor holding files it has not saved yet —
+hands their texts to `load` instead of writing them first. `texts` maps a file's path
+to its text; a file whose **resolved** path is a key is parsed from that text instead of
+read from disk, and it need not exist there. Nothing is written.
+
+```yaml
+# graph/flow.yaml — the ONLY file on disk
+include: prep.steps.yaml
+steps: 2
+```
+
+```python
+from pathlib import Path
+
+from confluid import format_yaml_loc, load
+
+graph = Path("graph")
+texts = {  # held in memory, never saved (ExampleSink: a @configurable class the runnable example defines)
+    graph / "prep.steps.yaml": "include: shared.yaml\nsink: !class:ExampleSink\n  out_dir: out\n",
+    graph / "shared.yaml": "mode: fast\n",
+}
+
+doc, paths = load(graph / "flow.yaml", until="settled", texts=texts, return_paths=True)
+doc["mode"], doc["steps"]        # ('fast', 2)
+format_yaml_loc(doc["sink"])     # '.../graph/prep.steps.yaml:2:7'   — the real path
+[p.name for p in paths]          # ['flow.yaml', 'prep.steps.yaml', 'shared.yaml']
+sorted(p.name for p in graph.iterdir())   # ['flow.yaml'] — nothing was written
+```
+
+Without `texts` the same call raises
+`ConfigFileNotFoundError: .../graph/flow.yaml includes prep.steps.yaml: Not found: prep.steps.yaml (searched: .../graph/prep.steps.yaml, …)`.
+
+What a held file does, and what stays as it is:
+
+| | |
+|---|---|
+| **Which files** | the entry file (when `load` is handed its path) and every `include:` — one inside a held file, one a scope block exposes |
+| **Where an `include:` finds it** | through the [same search tiers](search-paths.md) as a file on disk: a held file exists at its own tier, so it never jumps ahead of a file on disk at an earlier tier |
+| **A held file that also exists on disk** | the held text wins; the disk file is not read |
+| **Locations** | every `file:line:col` names the real path, as above — so does a construction error from that marker (`Failed to construct ExampleSink at .../graph/prep.steps.yaml:2:7: …`) and a YAML syntax error's mark |
+| **`return_paths`** | lists a held file like a file read |
+| **Circular includes** | detected through held files as through files on disk |
+| **A path that is not held** | read from disk; its not-found message is unchanged |
+| **Keys** | a `str` or `Path`, absolute, relative (to the working directory) or starting with `~`; two keys naming one file with different texts are refused, as is a text that is not a `str` |
+| **Spelling** | a key matches the path an `include:` resolves to, spelled the same way — resolving follows symlinks but does not change letter case. On a filesystem that ignores case (macOS, Windows by default) `include: prep.steps.yaml` and the key `Prep.steps.yaml` are one file to the disk but two paths here: the include reads the disk file, or, with none on disk, is not found. Spell the key as the include spells the file |
+| **Lifetime** | this call only — and a load run inside it (a `solidify()` that loads a file) sees the same texts; another thread's call sees its own |
+
+`texts=None` (the default) reads every file from disk, exactly as before.
+
 ## Runnable example
 
 [`examples/interpolation_includes.py`](../examples/interpolation_includes.py)
 writes a small include tree to a temp directory, then demonstrates env-var and
-config-key interpolation plus `return_paths=True`. The
+config-key interpolation, `return_paths=True`, and a file held in memory with
+`texts=`. The
 [`examples/modular_includes/`](../examples/modular_includes/) directory holds a
 standalone include-tree demo as well.
