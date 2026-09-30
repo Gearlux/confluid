@@ -13,7 +13,7 @@ plugs into the passes, and from the eight names most configs need:
 
 | Name | One line |
 |---|---|
-| `load` | The ONE door: text, path or parsed data → `until="raw"` (1–3) / `"document"` (1–6) / `"settled"` (1–7) / `"objects"` (1–9, default); `return_paths=True` adds the list of every file read |
+| `load` | The ONE door: text, path or parsed data → `until="raw"` (1–3) / `"document"` (1–6) / `"settled"` (1–7) / `"objects"` (1–9, default); `return_paths=True` adds the list of every file read; `texts={path: text}` reads the files a caller holds in memory from their texts ([Files you hold in memory](interpolation.md#files-you-hold-in-memory--texts)) |
 | `flow` | Build one node now — with runtime args/kwargs for deferred slots |
 | `cast` | `flow` that also narrows the static type for checkers ([Introspection](introspection.md)) |
 
