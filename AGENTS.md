@@ -32,10 +32,10 @@ neither warns (user ruling 2026-08-15, architecture record 19). Attribute refere
 runtime consumes the settled document, and `configure()` runs through it (record 19); there is no
 copy marker (record 18).
 
-**Published on PyPI — v0.1.0 through v0.3.1** (v0.3.0 tagged 2026-08-24 after the downstream
+**Published on PyPI — v0.1.0 through v0.4.0** (v0.3.0 tagged 2026-08-24 after the downstream
 verification the 2026-08-04 hold required: every consumer suite green against the release
 commit; v0.3.1 on 2026-09-26 — the nine S1 fixes and `__version__`, all twelve consumer suites
-green against it). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
+green against it; v0.4.0 on 2026-09-30 — `load(texts=...)`, every consumer suite green against it). New work opens a fresh `[Unreleased]` CHANGELOG section when it lands; a release
 proposes its version WITH rationale and waits for the user's confirmation before tagging.
 Update this line in the same change as a version bump.
 
