@@ -183,7 +183,7 @@ def test_a_dotted_attribute_ref_is_refused_not_resolved() -> None:
 def test_ref_inside_list_shares_instance() -> None:
     """!ref: inside a YAML list must resolve to the same Target marker as the source.
 
-    Note: _deep_flow only materializes Target markers at the top dict level;
+    Note: liquifai.di.deep_flow only materializes Target markers at the top dict level;
     markers buried inside plain lists remain as Target markers. The identity
     invariant we care about (``!ref: == same object``) is tested on the raw
     markers via ``until="document"``.

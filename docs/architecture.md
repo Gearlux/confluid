@@ -694,6 +694,25 @@ bind), and not to flow-time substitution (it re-opens the two-answers problem as
 aliasing — is an acceptable refinement if in-place mutation of hand-built templates ever bites
 in practice.
 
+*Addendum 2026-08-22 — the escape collapses once, where the document becomes objects.* The
+first placement collapsed `$$` during interpolation, which made the document stage
+non-idempotent: `load(load(x, until="document"))` re-expanded a `$NAME` the first call had just
+un-escaped. And the key half lived in the plain-dict branch only, so a dict inside a marker's
+kwargs kept its `$$`. Pass 6 now leaves `$$` exactly as written (each side of a `$$` split
+interpolates on its own and the parts are re-joined with `$$`), and the collapse happens ONCE,
+at the boundary where the document becomes objects: `engine.collapse_escapes` in `instantiate`
+(keys and values, any depth, marker kwargs included) and in `configure()` after its settle.
+`hydraide.emit` collapses the settled tree before `dump()`, which escapes every `$` again, so
+the emitted file carries `$$`. The resolver never collapses, and `dump()` takes no parameter
+for it.
+
+```python
+doc = 'cmd: "echo $$HOME"\n'
+load(doc, until="document")                       # {'cmd': 'echo $$HOME'}  — and again on its own output
+load(doc)                                         # {'cmd': 'echo $HOME'}
+dump(load('j: !class:Job {cmd: "echo $$HOME"}\n')["j"])   # cmd: echo $$HOME
+```
+
 ---
 
 ## 8. One scanner — the walk exists once
@@ -1867,3 +1886,157 @@ load(graph / "flow.yaml", until="document")            # ConfigFileNotFoundError
 must read through `_held_text` too, or it silently reads the disk behind the caller's back. What
 must not come back: writing a held text to disk so a load can see it, a second identity for a file
 (keys are resolved paths, full stop), or held texts outliving the call that received them.
+
+---
+
+## 26. An annotation reaches a reader as a type or `Any` — never as text
+
+*2026-08-13; nested forward references 2026-08-20*
+
+**Context.** Every slot reader asks a question OF an annotation: is this slot deferred
+(`Partial[T]`)? mandatory? does it take a list or a mapping? Two spellings put a *string* where
+a type belongs, and both reached the readers as text:
+
+- a **quoted** annotation (`thing: "Thing"`, or a body slot `self.x: "Optional[str]"`) — its
+  AST node is a string constant, so evaluating it returned the text, and the forward-reference
+  check let a plain `str` through;
+- **PEP 563** (`from __future__ import annotations`) turns every annotation in a module into a
+  string, and `typing.get_type_hints` is all-or-nothing: one name imported only under
+  `TYPE_CHECKING` made it raise, and every parameter of the class fell back to its raw string.
+
+A string answers *no* to every question a reader asks, and nothing raises. So one unrelated
+unresolvable name cost a whole class its deferral marks and its container routing: a deferred
+optimizer slot was built eagerly, an addressed list was refused. The same failure had two more
+homes: `marked_param_names` ran its own `get_type_hints`, and a forward reference nested in a
+subscript (`Partial["Optim"]`) is never a plain string, so the quoted-annotation path never
+fired for it.
+
+**Decision.** `introspect.resolve_string_annotation` is the one resolver for both spellings,
+with the scope and the degradation `resolve_ast_annotation` already had: each annotation
+resolves in the defining function's globals or degrades to `Any`; it never comes back as a
+`str`. `marked_param_names` projects from `slots()` (filtered to `source == "signature"`)
+instead of reading hints itself — record 12's one enumeration, applied to the last private
+read. A forward reference nested in a subscript is evaluated in the same scope before degrading
+(`_evaluate_forwardrefs`, through `get_type_hints` on a probe function, extras kept). And
+`resolve_ast_annotation` unwraps (`inspect.unwrap`) before reading `__globals__`: the validation
+wrapper's globals are confluid's own, and reading them typed every body slot `Any`.
+
+**Consequences.**
+
+- An unresolvable name costs only its own slot: that slot becomes `Any` (no deferral mark, no
+  container routing), and every other slot of the class keeps its type.
+- `slots()` is best-effort by design; `to_pydantic` keeps its documented contract and raises
+  `IntrospectionError` (its probe still calls `get_type_hints`). For the example below:
+  `IntrospectionError: Cannot introspect Trainer.__init__: name 'Thing' is not defined`, so the
+  class constructs with validation OFF and says so once at WARNING (see [Validation](validation.md)).
+- A body slot spelled identically to a constructor parameter gets the same answer, deferral
+  included.
+
+**Example.**
+
+```python
+from __future__ import annotations                 # every annotation below is a string
+
+from typing import TYPE_CHECKING, List, Optional
+from confluid import Partial, configurable
+
+if TYPE_CHECKING:
+    from heavy_dependency import Thing             # importable only for the type checker
+
+class Optim: ...
+
+@configurable
+class Trainer:
+    def __init__(self, optimizer: Partial[Optim] = None, thing: Optional[Thing] = None,
+                 layers: List[int] = None) -> None: ...
+
+partial_param_names(Trainer)                       # {'optimizer'}
+{s.name: s.annotation for s in slots(Trainer)}
+# optimizer -> Annotated[Union[Optim, Fluid], '__confluid_partial__']
+# thing     -> Any            (unresolvable: degraded, alone)
+# layers    -> List[int]
+```
+
+**What you may change.** The scope an annotation resolves in (adding a namespace, say), as long
+as both spellings keep going through the one resolver. What must not come back: a reader that
+calls `get_type_hints` privately, or any path on which an annotation reaches a reader as a `str`.
+Pins: the string-annotation group in `tests/test_introspect.py` (fixtures in
+`tests/pep563_helpers.py`), incl. `::test_one_unresolvable_hint_does_not_punish_the_whole_signature`
+and `::test_a_quoted_forward_ref_INSIDE_a_subscript_keeps_the_deferral`;
+`tests/test_pydantic_export.py::test_an_unresolvable_annotation_still_raises_introspection_error`.
+
+---
+
+## 27. A key shape that would load as silent data is refused at parse time, at one site
+
+*2026-08-15; extended 2026-08-20*
+
+**Context.** The reserved-key format exists to end silent degradation (record 11): a malformed
+marker raises instead of loading as something plausible. Several key SHAPES still slipped
+through, each loading as data with no error:
+
+- **A duplicate key.** PyYAML keeps the last value. Two `include:` lines lost a whole file, and
+  the surviving key sat at the FIRST occurrence's position, which inverted the later-line-wins
+  rule.
+- **A reserved key inside a dotted key** (`model._target_: Box`). The conversion to markers runs
+  while the YAML is parsed and dotted keys are expanded afterwards, so `_target_` ended up as a
+  literal key of a plain dict.
+- **`_partial_` beside `_ref_` / `_scope_` / `_notscope_`.** Each of those discriminators returns
+  before the `_target_` branch reads the modifier, so it was dropped and the node flowed EAGERLY.
+- **A `<<:` merge from a tag-spelled anchor.** A YAML merge copies keys, never a tag, so the
+  merged node loaded as an inert dict, while the same merge from a reserved-key anchor became a
+  marker.
+- **An empty dotted segment** (`a..b`) minted a `''` key nothing can address.
+
+**Decision.** Refuse each shape with a located `ConfigurationError`, at ONE site:
+`loader._refuse_malformed_keys`. Both mapping constructors call it — `map_constructor` for
+untagged mappings (before the fast path to PyYAML), and `_str_keyed_mapping`, the one helper the
+four tag constructors share — so the two spellings cannot drift apart. The `_partial_` check sits
+in `_reserved_to_marker` right after the discriminator is chosen, before the per-discriminator
+branches. Two identity rules keep the duplicate check honest: a key is `(tag, value)`, so `1:`
+and `"1":` are different keys; and merge keys are skipped, because a merged key the node also
+writes literally is an override, not a duplicate.
+
+Repair was rejected. Re-converting a reserved key after dotted expansion would be a second
+conversion site (record 11 allows exactly one), and a marker built there has no YAML node, so
+every later error about it would lose its `file:line:col`.
+
+**Consequences.**
+
+- A document is valid or invalid independently of the run's `--scope`: the refusals are
+  parse-time, so an inactive scope block is checked too.
+- The false-positive guards are pinned beside each refusal: only the six reserved names are
+  special (`model._custom_: 3` and `model.size: 3` load), a dotted kwarg merging into a marker
+  written as a nested block still builds, and a scope block without `_partial_` is untouched.
+- A dotted write INTO a list (`a.0: 99`) is not a key shape the parser can see; it is refused at
+  expansion, in `merger.expand_dotted_mapping`.
+
+**Example.**
+
+```yaml
+include: a.yaml
+lr: 0.1
+include: b.yaml     # duplicate key 'include' at main.yaml:3:1 (first written at line 1) …
+                    #   write ONE key with a list: include: [a.yaml, b.yaml]
+```
+
+```yaml
+model._target_: Box   # 'model._target_' at main.yaml:1:1 puts the reserved key '_target_'
+                      #   inside a DOTTED key … write it as a nested block instead
+```
+
+```yaml
+opt:
+  _ref_: proto
+  _partial_: true     # _partial_ only modifies _target_, but this mapping carries _ref_ —
+                      #   put it on the node _ref_ points at (at main.yaml:2:3)
+```
+
+**What you may change.** The wording of each message, and the set of refused shapes — a new
+key-shape rule is added inside `_refuse_malformed_keys`. What must not come back: a refusal added
+to one caller only, a mapping-building constructor that bypasses `_str_keyed_mapping`, or a
+repair step that re-converts reserved keys after expansion. Pins: the duplicate-key group in
+`tests/test_loader.py`; the P16, P10 and merge-key groups in `tests/test_plain_format.py`;
+`tests/test_loader.py::test_an_empty_dotted_segment_is_refused`;
+`tests/test_plain_format.py::test_a_merge_from_a_TAG_spelled_anchor_is_refused`;
+`tests/test_merger.py::test_a_dotted_write_into_a_list_is_refused`.
