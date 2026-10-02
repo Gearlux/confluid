@@ -102,8 +102,8 @@ if_classification:
     _target_: Model
     layers: 3
 
-# Keyed scope (function-call form) — semantically identical to the
-# assignment form above. Use whichever reads better in context.
+# A second keyed scope. Fires for `--env prod`, and also when no `--env` is
+# given at all, because `default_scopes:` above makes `prod` the default.
 if_prod:
   _scope_: {env: prod}
   log_level: WARNING

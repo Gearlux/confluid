@@ -393,8 +393,8 @@ def _flow_recursive(
     descend_context: Optional[Dict[str, Any]] = None,
 ) -> Any:
     # Shared-identity memo: ensures the same raw marker (reached directly or via
-    # !ref:) always flows to the same Instance/Class marker object, so a single
-    # live object is instantiated downstream.
+    # !ref:) always flows to the same marker object, so a single live object is
+    # instantiated downstream.
     flow_memo: Optional[Dict[int, Any]] = _ENGINE_STATE.get().flow_memo
 
     # 1. Plain dictionaries — pass merged context down (a grouping dict is
@@ -434,7 +434,7 @@ def _flow_recursive(
             local_ctx = _View(data)
         return {k: _flow_recursive(v, parent_context=local_ctx, slot_key=k) for k, v in data.items()}
 
-    # 2. Class/Instance from YAML tags — apply broadcasting to kwargs
+    # 2. Target / PartialClass markers from YAML — apply broadcasting to kwargs
     if isinstance(data, Target):
         if flow_memo is not None and id(data) in flow_memo:
             return flow_memo[id(data)]
@@ -789,7 +789,7 @@ def flow(obj: Any, *runtime_args: Any, solidify: bool = True, **runtime_kwargs: 
     # ``flow(self.optimizer, params=model.parameters())``); a slot needing no
     # runtime args (e.g. a deferred ``lightning`` Trainer) is built by a bare
     # ``flow(self.lightning)``. So there is NO PartialClass early-return — a ``PartialClass`` (a
-    # ``Class`` subclass) falls through to the Class instantiation path.
+    # ``Target`` subclass) falls through to the Target instantiation path.
 
     context = get_active_context()
 
@@ -840,7 +840,7 @@ def _flow_target(
     runtime_args: Tuple[Any, ...],
     runtime_kwargs: Dict[str, Any],
 ) -> Any:
-    """Materialize a ``Class`` / ``Instance`` / ``PartialClass`` marker into a live object.
+    """Materialize a ``Target`` / ``PartialClass`` marker into a live object.
 
     The phase sequence: resolve the target callable → merge + resolve kwargs →
     split constructor kwargs from post-init attrs → construct (under the YAML
@@ -858,18 +858,18 @@ def _flow_target(
     # The materialize path strips them before markers reach flow(); a
     # hand-built marker flowed directly still honours them here: '**'
     # contents apply to the receiver (gated like bare keys) and both feed
-    # the nested-Class broadcast pool below.
+    # the nested-marker broadcast pool below.
     glob_pool = _pop_glob_routing(merged, target)
 
-    # Flow Instance values (instant), keep Class/Reference deferred for
-    # configurable targets (which manually flow their kwargs with runtime
-    # injection — e.g. ``configure_optimizers`` flows the optimizer Class
-    # with ``params=self.parameters()``). For NON-configurable targets
-    # (e.g. ``pytorch_lightning.Trainer``) the constructor receives the
-    # kwargs verbatim and never flow()s them, so deferred Class fluids
-    # would reach attribute hooks unconverted ("'Class' object has no
-    # attribute 'setup'"). For those targets, eagerly materialize nested
-    # Class fluids inside list/dict kwargs.
+    # Flow ``Target`` values (built here); keep ``PartialClass`` markers, slots the
+    # receiver declared deferred, and ``Reference``s that cannot resolve yet unbuilt
+    # (the owning class flows those itself with runtime injection — e.g.
+    # ``configure_optimizers`` flows the optimizer ``PartialClass`` with
+    # ``params=self.parameters()``). A NON-configurable target (e.g.
+    # ``pytorch_lightning.Trainer``) receives the kwargs verbatim and never flow()s
+    # them, so an unbuilt ``Target`` would reach its attribute hooks unconverted
+    # ("'Target' object has no attribute 'setup'"); ``Target`` fluids nested inside
+    # list/dict kwargs are therefore built too.
     #
     # The marker's OWN kwargs were settled in pass 7 (record 19, phase 3): every bare
     # key that reaches this marker or the markers nested in its kwargs is already IN
@@ -915,7 +915,7 @@ def _flow_target(
 
     instance = _construct(target, runtime_args, ctor, obj)
 
-    # Memoize so a second flow() of the same Instance marker returns this
+    # Memoize so a second flow() of the same marker returns this
     # exact object (see module docstring). Positional runtime args override the
     # stored spec exactly as kwargs do, so they suppress memoization too.
     if (
@@ -1018,16 +1018,15 @@ def _resolve_kwarg_value(
 ) -> Any:
     """Resolve ONE kwarg value for a target under materialization.
 
-    A ``PartialClass`` (a ``Class`` subclass) is a runtime-injection point: keep it
-    deferred through materialization regardless of ``eager_classes`` — an
-    explicit ``flow()`` by domain code builds it later; the auto-flow walkers
-    here must never instantiate it. **It still receives broadcasting**, though,
+    A ``PartialClass`` (a ``Target`` subclass) is a runtime-injection point: keep it
+    deferred through materialization — an explicit ``flow()`` by domain code builds it
+    later; the auto-flow walkers here must never instantiate it. **It still receives broadcasting**, though,
     because "do not BUILD it" and "do not CONFIGURE it" are different
     statements and only the first is what deferral means: merging broadcast
     keys into a marker's ``kwargs`` constructs nothing, which is exactly why the
-    ``Class`` branch below can do it and still hand back a deferred stub. A
-    ``PartialClass`` therefore takes that same branch (it IS a ``Class``) and only the
-    terminal ``eager_classes`` flow is withheld from it.
+    ``Target`` branch below can do it and still hand back a deferred stub. A
+    ``PartialClass`` therefore takes that same branch (it IS a ``Target``) and only the
+    terminal ``flow()`` is withheld from it.
 
     This was a real gap until 2026-08-03: an early ``return v`` here meant a
     ``!lazy:`` marker written in the DOCUMENT received bare keys while an
@@ -1035,8 +1034,8 @@ def _resolve_kwarg_value(
     two answers. A consumer declaring ``self.optimizer = PartialClass(AdamW,
     lr=1e-4)`` could not be retuned by ``lr:`` (or ``--lr``) at all: the run
     trained at the hard-coded default and reported nothing, which is the silent
-    class of failure. ``Instance`` flows now; ``Reference`` flows when a context
-    is active (unresolvable → kept deferred); containers recurse.
+    class of failure. A plain ``Target`` flows (is built) here; ``Reference`` flows when a
+    context is active (unresolvable → kept deferred); containers recurse.
     """
     if isinstance(v, Target):
         # ONE instance per marker per pass — the invariant `!ref:` rests on. By the
@@ -1064,7 +1063,7 @@ def _resolve_kwarg_value(
         #
         # So the question is only "has the ordered merge run for this marker yet?".
         # It has not for a marker built in CODE (a ctor default `engine: Any =
-        # Class(Engine, power=7)`, a body slot `self.optimizer = PartialClass(AdamW,
+        # Target(Engine, power=7)`, a body slot `self.optimizer = PartialClass(AdamW,
         # lr=1e-4)`) — those are defaults that never appeared in the document and so
         # never took a position; broadcasting exists to override exactly those, which is
         # why a plain `def __init__(self, power=7)` loses to a bare `power:` too.
@@ -1107,7 +1106,7 @@ def _resolve_kwarg_value(
         if v_copy.partial or slot_is_partial:
             # A slot the receiver declared deferred keeps its marker unbuilt. The
             # value is NOT rewritten to a PartialClass here — the ONE promotion site is
-            # the post-init guard in `_apply_post_init_attrs`, which also warns.
+            # the post-init guard in `_apply_post_init_attrs`, which logs it at DEBUG.
             return v_copy
         built = flow(v_copy)
         if instance_memo is not None:
@@ -1387,11 +1386,11 @@ def _apply_post_init_attrs(
 
     Misconfiguration guard: if the slot's OWN default is a ``PartialClass`` (a deferred
     runtime-injection body slot, e.g. ``self.optimizer = PartialClass(...)``), a
-    supplied deferred ``Class`` (``!class:`` no-parens) would be eagerly built
+    supplied ``Target`` (``!class:``, with or without parentheses) would be built
     here and break the slot (an optimizer built with no ``params``). The slot's
-    laziness is inherited — the supplied value is auto-deferred with a warning
-    to wire it ``!lazy:``. (An ``Instance``, ``!class:Foo()``, is a deliberate
-    eager request and is NOT auto-deferred.) The slot's current default is read
+    deferral is inherited — the supplied marker is promoted to a ``PartialClass``
+    (logged at DEBUG; a ``Partial[T]`` annotation gates the same promotion) and the
+    owning class builds it. The slot's current default is read
     from ``__dict__`` — never ``getattr``, which would execute a property
     getter (e.g. ``LightningModule.trainer`` raises when unattached).
 
@@ -1611,7 +1610,7 @@ def _broadcast_onto_instance(
     """Apply broadcasting to any Fluid-valued instance attribute.
 
     Covers attrs from constructor defaults AND ``__init__``-body assignments
-    (e.g. ``self.lightning = Class(L.Trainer)`` without a ``lightning`` ctor
+    (e.g. ``self.lightning = Target(L.Trainer)`` without a ``lightning`` ctor
     parameter) — this is what lets users keep ``@configurable`` signatures
     clean without sacrificing broadcast reach. A callable target may return a
     ``__dict__``-less object (a plain dict / primitive / ``__slots__``-only
@@ -1712,7 +1711,7 @@ def _flow_bare_type(
 ) -> Any:
     """A bare type passed directly (e.g. ``flow(MyClass, x=1)``).
 
-    A registry-configurable type is wrapped in an ``Instance`` marker (kwargs
+    A registry-configurable type is wrapped in a ``Target`` marker (kwargs
     assigned post-construction so a runtime kwarg literally named ``target``
     can't collide) and materialized so broadcasting from ``context`` applies;
     a plain type is just called.
@@ -1721,7 +1720,7 @@ def _flow_bare_type(
         if runtime_args:
             # A marker carries kwargs only, and the broadcast pass reads it — so
             # there is nowhere for positional args to ride. Wrap the class in a
-            # `Class`/`PartialClass` marker and flow THAT if you need both.
+            # `Target`/`PartialClass` marker and flow THAT if you need both.
             raise ConstructionError(
                 f"flow({obj.__name__}, <positional args>) is not supported for a registry-configurable "
                 "class: it materializes through a marker, which carries keyword arguments only. "
@@ -1761,7 +1760,7 @@ def _flow_reference(
 
 
 def _flow_generic_fluid(obj: Any, runtime_args: Tuple[Any, ...], runtime_kwargs: Dict[str, Any]) -> Any:
-    """Generic ``Fluid`` fallback — treat as a Class when the target resolves."""
+    """Generic ``Fluid`` fallback — treat it like a ``Target`` when the target resolves."""
     target = obj.target
     if isinstance(target, str):
         # A construction funnel like _resolve_target_callable — same strictness, same

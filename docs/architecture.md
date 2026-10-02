@@ -464,7 +464,7 @@ build.
 Three rules follow, and they are load-bearing together:
 
 1. **Nothing auto-builds a `PartialClass`.** Not the recursive descent of a materialization pass, not the
-   post-init attribute step, not an external deep-flow walker. A bare `Class` stub in the same
+   post-init attribute step, not an external deep-flow walker. A bare `Target` (`!class:`) in the same
    position *is* built eagerly — that difference is the whole distinction between the two markers,
    and it is why a slot needing a runtime argument must be `!lazy:` and not `!class:`.
 2. **An explicit `flow()` builds it, deliberately.** `flow()` means "build this now", so the
@@ -503,7 +503,7 @@ class Trainer:
         self.optimizer = PartialClass(Optimizer, lr=1e-4)   # a default, not a decision
 
 trainer = load("lr: 0.5\nt: !class:Trainer()\n")["t"]
-type(trainer.optimizer)            # Partial — the pass did NOT build it
+type(trainer.optimizer)            # PartialClass — the pass did NOT build it
 trainer.optimizer.kwargs           # {"lr": 0.5} — but it DID configure it
 flow(trainer.optimizer)            # ValueError: Optimizer needs params
 flow(trainer.optimizer, params=p)  # built, at lr=0.5, when the owner has the model
@@ -684,9 +684,9 @@ reproduces the original run.
 
 *Addendum 2026-08-20 — `$$` is the literal-`$` escape (CD10).* Burn-in made a dumped `$NAME`
 re-interpolate on reload, breaking the round-trip rule. `dump()` now emits every `$` as `$$` and
-the loader collapses `$$` to `$` (values via interpolation, mapping keys via the same pass —
-uniform, because a representer cannot tell keys from values). One spelling, borrowed from the
-compose convention, no new resolution semantics.
+loading collapses `$$` back to `$` — values and mapping keys alike, uniform because a
+representer cannot tell keys from values; where the collapse happens is the 2026-08-22 addendum
+below. One spelling, borrowed from the compose convention, no new resolution semantics.
 
 **What you may change.** Not to a full `load(until="settled")` of kwargs (it changes when deferred values
 bind), and not to flow-time substitution (it re-opens the two-answers problem as a
@@ -811,7 +811,7 @@ compatibility commitment either way.
 | Tier | Members | Why kept |
 |---|---|---|
 | **Escape hatches** — value is existence, not usage | `!notscope:`, `NoBroadcast[T]`, `broadcast=False`, `capture=False` | the design's default posture (cascade-on, capture-on, positive scopes) is safe only while the opt-out exists; `!notscope:` additionally defines the declared-value check's third exemption (record 1) |
-| **Awaiting their consumer** | `@axis=value` / `$key` selectors, `eager=`, `constant=` | built for recurring situations (a real registry collision in a config; the next plain-constructor class; the next pure value producer); the first real user activates them, and the consuming machinery for `constant=` already ships in a visual editor |
+| **Awaiting their consumer** | `@axis=value` / `$key` selectors, `eager=` | built for recurring situations (a real registry collision in a config; the next plain-constructor class); the first real user activates them |
 | **Review at 1.0** | `${dotted.key}` config-path interpolation, `strict_typing=` | no escape-hatch or consumer-in-waiting argument on file; if still unused when 1.0 approaches, these are the prune candidates |
 
 **Consequences.** An audit that greps a census member and finds zero users STOPS HERE — a new
@@ -822,9 +822,9 @@ own entry with a tier and a reason, added when it ships.
 **Example.** The shape of a census hit in an audit report:
 `!notscope:` — zero configs → census tier "escape hatch" (record 10) → no finding.
 
-**What you may change.** The tier of a member, with evidence (a `constant=` producer shipping
-moves it out entirely). The 1.0 trigger date, never the existence of a trigger — an undated
-"someday" is how the census would rot back into per-audit re-litigation.
+**What you may change.** The tier of a member, with evidence (a shipping user moves a member out
+entirely). The 1.0 trigger date, never the existence of a trigger — an undated "someday" is how
+the census would rot back into per-audit re-litigation.
 
 ---
 
