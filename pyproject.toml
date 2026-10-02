@@ -29,14 +29,14 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0",
     "loggair>=0.1.0",
-    # PEP 696 TypeVar(default=...) for the generic Lazy[T] fluid (fluid.py); the
+    # PEP 696 TypeVar(default=...) for the generic PartialClass[T] fluid (fluid.py); the
     # stdlib typing gained `default` only in 3.13, py-floor is 3.12 so use the backport.
     "typing-extensions>=4.6.0",
 ]
 requires-python = ">=3.12"
 
 [project.optional-dependencies]
-# Schema export (`to_pydantic`, `confluid_class_of`, `lazy_param_names_of`) and
+# Schema export (`to_pydantic`, `confluid_class_of`) and
 # init/YAML/tool validation are pydantic-powered. Without this extra, confluid
 # still imports and runs — validation degrades to "off" (logged once) and the
 # schema-export API raises ImportError pointing here.

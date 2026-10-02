@@ -635,8 +635,8 @@ def _register_constructors() -> None:
         dropped whole, and a spaced inline (`!class:Foo(a=1, b=2)` — YAML cuts the tag
         at the space) surfaced much later as `Cannot resolve class: Foo(a=1,`. A
         malformed marker raises a located ConfigurationError at load — that failure
-        mode is precisely what the plain format exists to end, and the AGENTS
-        two-spellings rule names the spaced inline as the motivating failure.
+        mode is precisely what the plain format exists to end, and `docs/architecture.md`
+        record 11 (Context) names the spaced inline as the motivating failure.
         """
         where = _node_where(node, loader)
         if "(" in tag_suffix and instant is None:
