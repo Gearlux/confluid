@@ -447,7 +447,11 @@ def _wrap_callable_with_validation(func: C) -> C:
                     if sig.parameters[param_name].kind
                     not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
                 }
-                validate_kwargs(func, cleaned, mode)
+                converted = validate_kwargs(func, cleaned, mode)
+                if converted:
+                    # An accepted string for a number or bool parameter is passed as the value it stands for.
+                    bound.arguments.update(converted)
+                    return func(*bound.args, **bound.kwargs)
         return func(*args, **kwargs)
 
     setattr(wrapper, "__confluid_validated__", True)
@@ -527,7 +531,13 @@ def _wrap_init_with_validation(cls: Type[Any]) -> None:
                 if sig.parameters[name].kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
             }
             if mode != "off":
-                validate_kwargs(cls, cleaned, mode)
+                converted = validate_kwargs(cls, cleaned, mode)
+                if converted:
+                    # An accepted string for a number or bool parameter is passed — and captured — as the
+                    # value it stands for (``validation._accepted_scalar``): the object never holds the text.
+                    bound.arguments.update(converted)
+                    cleaned.update(converted)
+                    args, kwargs = bound.args[1:], bound.kwargs
         original_init(self, *args, **kwargs)
         if cleaned is not None and not getattr(cls, "__confluid_no_capture__", False):
             # Capture the explicitly-passed ctor kwargs so dump() can

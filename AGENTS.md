@@ -120,6 +120,11 @@ inventories.
   normalizes through `_normalize_mode`, so a typo raises `ValidationModeError`.
   (`tests/test_validation.py::test_a_class_whose_mirror_cannot_be_built_still_constructs_and_says_so_once`,
   `::test_set_policy_refuses_a_typo_like_the_env_var_does`)
+- **A string accepted for a number or a bool is passed as that value.** `validate_kwargs` returns the kwargs whose
+  `str` validated into an `int`/`float`/`bool` (`validation._accepted_scalar`); both wrappers pass — and capture —
+  those, and `validate_setattr` returns the value `configure()` sets. Only `str` → `int`/`float`/`bool`: never adopt
+  pydantic's other coercions (an `int` for a `float` stays an `int`, a `Union[float, str]` or `Union[bool, str]` keeps
+  its text); nothing under `off`, nothing after a `warn` failure. §28. (`tests/test_accepted_strings.py`)
 - The YAML-mode switch is context-local: `override_init_mode` sets the `_init_override`
   ContextVar that `get_policy()` overlays; `set_policy()` reads `_process_policy()`. Never a global
   swap. (the X2 group in `tests/test_concurrency.py`; `docs/validation.md`, `docs/concurrency.md`)

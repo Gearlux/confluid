@@ -2040,3 +2040,49 @@ repair step that re-converts reserved keys after expansion. Pins: the duplicate-
 `tests/test_loader.py::test_an_empty_dotted_segment_is_refused`;
 `tests/test_plain_format.py::test_a_merge_from_a_TAG_spelled_anchor_is_refused`;
 `tests/test_merger.py::test_a_dotted_write_into_a_list_is_refused`.
+
+## 28. A string accepted for a number or a bool reaches the object as that value
+
+*2026-10-03; bools 2026-10-04*
+
+**Context.** The constructor wrap validates a call's arguments against `to_pydantic(cls)` and then called the real
+`__init__` with the arguments as given. Pydantic's lax mode accepts the text of a number for an `int` / `float` field
+and `"false"` / `"0"` / `"off"` for a `bool` one, so validation passed and the object held the text:
+`Optimizer(lr="1e-4").lr == "1e-4"`, `Loader(shuffle="false").shuffle == "false"` — which is truthy. YAML 1.1 makes
+the number case common — `1e-4`, `5220e6` and `40.0e6` are strings to it (a float needs a dot and a signed exponent) —
+so a document that looks numeric built objects holding strings, `dump()` wrote them back as strings, and arithmetic
+failed far from the document (`"5e3" - "1e3"` is a `TypeError`). A value set after construction through
+`configure()` behaved the same.
+
+**Decision.** Validation hands back the conversion it made — for strings that became numbers or bools only.
+`validate_kwargs` returns the kwargs whose `str` value validated into an `int`, `float` or `bool`
+(`validation._accepted_scalar` is the one predicate), the `__init__` and function wrappers rebind those arguments
+(positional ones included) before the call and in the captured `__confluid_kwargs__`, and `validate_setattr` returns
+the value `configure()` sets. Rejected: adopting every value pydantic validated (it would also turn an `int` into a
+`float`, a list into a tuple, a `str` into a `Path` — changes nobody asked for, across every class); reading `1e-4` as
+a float in the loader (YAML 1.2's rule — but then a `str` parameter given `1e3` would be refused, and only documents
+would be fixed, not Python callers); a per-class opt-in.
+
+**Consequences.** A number-like or true/false string can no longer reach a number or bool parameter as text through
+any validated path. What validation did not check is untouched: under `"off"` nothing is converted, a value refused
+under `"warn"` passes as given, and a plain attribute assignment in Python is not confluid's to see. A `str`
+parameter, a `Union[float, str]` or `Union[bool, str]` (pydantic's smart union keeps the exact `str` match) and every
+non-string value keep their identity.
+
+**Example.**
+
+```python
+@configurable
+class Optimizer:
+    def __init__(self, lr: float = 1e-3, name: str = "sgd", nesterov: bool = False) -> None:
+        self.lr, self.name, self.nesterov = lr, name, nesterov
+
+Optimizer(lr="1e-4").lr                          # 0.0001 (before: '1e-4')
+Optimizer(nesterov="false").nesterov             # False (before: 'false', truthy)
+load("!class:Optimizer {lr: 1e-4, name: 1e3}")   # lr=0.0001; name='1e3' stays text
+Optimizer(lr=1).lr                               # 1 — an int, as given
+```
+
+**What you may change.** Which validated types count as the value a string stands for — widen `_accepted_scalar`
+only with a measured case. Not: adopting pydantic's coercions for non-strings, or converting where nothing was
+validated. Pin: `tests/test_accepted_strings.py`.

@@ -42,7 +42,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional, Set, Type
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Literal, Optional, Set, Tuple, Type
 
 from confluid.exceptions import ValidationModeError
 
@@ -235,7 +235,21 @@ def override_init_mode(mode: ValidationMode) -> Iterator[None]:
 _construction_where: ContextVar[str] = ContextVar("confluid_construction_where", default="")
 
 
-def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> None:
+def _accepted_scalar(original: Any, validated: Any) -> bool:
+    """Whether ``validated`` is the number or bool an accepted string stands for — the one conversion validation hands
+    back.
+
+    YAML 1.1 reads ``5220e6`` and ``40.0e6`` as text (a float needs a dot AND a signed exponent), and the lax schema
+    accepts such text for an ``int`` / ``float`` field, and ``"false"`` / ``"0"`` / ``"off"`` for a ``bool`` one; the
+    object must then hold the value, not the text (``"5e3" - "1e3"`` is a ``TypeError``, the text ``"false"`` is
+    truthy, ``"5220e6"`` dumps back as text). Only a ``str`` that became an ``int``, ``float`` or ``bool`` counts:
+    every other value the schema checks reaches the constructor exactly as given (an ``int`` for a ``float`` field
+    stays an ``int``; a ``Union[float, str]`` or ``Union[bool, str]`` keeps its text).
+    """
+    return isinstance(original, str) and isinstance(validated, (bool, int, float))
+
+
+def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> Dict[str, Any]:
     """Validate constructor / call kwargs against ``to_pydantic(cls)`` under ``mode``.
 
     ``cls`` may be a class OR a callable (a ``@configurable`` builder function),
@@ -250,6 +264,12 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     * ``"warn"`` — log a warning and return so the wrapped ``__init__`` can
       proceed (it may still fail naturally on the bad value).
     * ``"off"`` — return immediately without building the schema.
+
+    Returns:
+        The kwargs whose accepted string stands for a number or a bool, mapped to that value (``{"lr": 0.001}`` for
+        ``lr="1e-3"`` on a ``float`` field, ``{"shuffle": False}`` for ``shuffle="false"`` on a ``bool`` one) — the
+        caller passes these instead of the strings (see :func:`_accepted_scalar`).
+        Empty under ``"off"``, when nothing validated, or when a ``"warn"`` validation failed.
 
     Fluid markers (``Class``, ``Instance``, ``Reference``, ``Partial``, …) in
     ``kwargs`` represent deferred construction — the live object hasn't been
@@ -269,7 +289,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     as deferred and skipped.
     """
     if mode == "off" or not _have_pydantic():
-        return
+        return {}
 
     # Partial import: ``pydantic_export`` pulls pydantic + inspect, which is
     # heavier than this module needs to be eligible to import. ``Fluid`` is
@@ -281,7 +301,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
 
     model = _model_or_none(cls)
     if model is None:
-        return
+        return {}
 
     # Split kwargs into "concrete" (eager pydantic check) and "deferred"
     # (Fluid markers — skipped here, validated at flow time). Containers
@@ -295,31 +315,40 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     if not concrete:
         # Whole call is deferred — nothing to check now. The flow() pass that
         # materialises each Fluid will revalidate at that point.
-        return
+        return {}
 
+    from confluid.pydantic_export import field_name_for
+
+    converted: Dict[str, Any] = {}
     try:
         if not deferred_keys:
             # Fast path: every kwarg is concrete, validate the whole model in
             # one shot (catches model-level cross-field validators too).
-            model.model_validate(kwargs)
+            validated = model.model_validate(kwargs)
+            for name, value in kwargs.items():
+                field = field_name_for(model, name)
+                if field is not None and _accepted_scalar(value, getattr(validated, field, None)):
+                    converted[name] = getattr(validated, field)
         else:
             # Mixed: validate concrete kwargs field-by-field so the
             # deferred-Fluid fields don't trigger "is_instance_of" failures
             # nor "field required" errors. ``validate_assignment`` checks one
             # field against the model's schema; ``model_construct`` builds an
             # un-validated stub instance to give it a target.
-            from confluid.pydantic_export import field_name_for
-
             stub = model.model_construct()
             for name, value in concrete.items():
                 field = field_name_for(model, name)
                 if field is None:
                     continue
                 model.__pydantic_validator__.validate_assignment(stub, field, value)
+                if _accepted_scalar(value, getattr(stub, field, None)):
+                    converted[name] = getattr(stub, field)
     except ValidationError as exc:
         if mode == "strict":
             raise
         logger.warning(f"{cls.__name__}: invalid configuration{_construction_where.get()}\n{exc}")
+        return {}
+    return converted
 
 
 _unvalidatable_warned: Set[Any] = set()
@@ -351,7 +380,7 @@ def _model_or_none(cls: Callable[..., Any]) -> Optional[Type[BaseModel]]:
         return None
 
 
-def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> Optional[str]:
+def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> Tuple[Any, Optional[str]]:
     """Validate a post-construction setattr against the field's pydantic type.
 
     Mirrors :func:`validate_kwargs` for the single-field case used by
@@ -361,33 +390,37 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     plain instance attributes).
 
     Returns:
-        The stringified validation error on a WARN-mode failure (so the
-        caller can record it in a ``ConfigurationReport``), ``None`` on
-        pass / off / unknown field. Strict mode still raises.
+        The value to set — the number or bool an accepted string stands for
+        (see :func:`_accepted_scalar`), otherwise ``value`` as given — and the stringified
+        validation error on a WARN-mode failure (so the caller can record it
+        in a ``ConfigurationReport``), ``None`` on pass / off / unknown field.
+        Strict mode still raises.
     """
     if mode == "off" or not _have_pydantic():
-        return None
+        return value, None
 
     from pydantic import ValidationError
 
     model = _model_or_none(cls)
     if model is None:
-        return None
+        return value, None
 
     from confluid.pydantic_export import field_name_for
 
     field = field_name_for(model, name)
     if field is None:
-        return None
+        return value, None
 
+    stub = model.model_construct()
     try:
-        model.__pydantic_validator__.validate_assignment(model.model_construct(), field, value)
+        model.__pydantic_validator__.validate_assignment(stub, field, value)
     except ValidationError as exc:
         if mode == "strict":
             raise
         logger.warning(f"{cls.__name__}.{name}: invalid value\n{exc}")
-        return str(exc)
-    return None
+        return value, str(exc)
+    validated = getattr(stub, field, None)
+    return (validated if _accepted_scalar(value, validated) else value), None
 
 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:
