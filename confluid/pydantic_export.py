@@ -29,6 +29,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    ForwardRef,
     FrozenSet,
     List,
     Literal,
@@ -223,6 +224,10 @@ def _convert_annotation_unwrapped(anno: Any) -> Any:
             # at runtime ``ParentConfig(child=SimpleLeaf(...))`` is the legal
             # call we must validate as-is. ``arbitrary_types_allowed=True`` on
             # ``_StrictConfigBase`` makes the source-class branch isinstance-checked.
+            if anno in _IN_FLIGHT:
+                # A class met again while its own model is being built — a tree's children, two classes
+                # holding each other: name its model by a forward reference, resolved once it is built.
+                return Union[anno, ForwardRef(_IN_FLIGHT[anno])]  # type: ignore[return-value]
             nested = to_pydantic(anno)
             return Union[anno, nested]  # type: ignore[return-value]
         if _is_opaque_type(anno):
@@ -462,6 +467,26 @@ def _post_init_field_specs(
 
 _MODEL_CACHE: Dict[Any, Type[BaseModel]] = {}
 _MODEL_LOCK = threading.RLock()
+#: A cycle of classes (a class whose field names its own class, or two that hold each other): the classes whose
+#: model is being built, each by the forward reference a field met inside the build names its model by; the models
+#: built, by that reference — the namespace a waiting model resolves in; and the models built but waiting for a
+#: class still in flight, visible only to the build holding the lock until every reference resolves.
+_IN_FLIGHT: Dict[Any, str] = {}
+_REFERENCES: Dict[str, Type[BaseModel]] = {}
+_WAITING: Dict[Any, Type[BaseModel]] = {}
+
+
+def _reference(cls: Any) -> str:
+    """A forward reference unique to ``cls`` (two classes may share a ``__name__``)."""
+    return f"_ConfluidModel_{id(cls):x}"
+
+
+def _publish_finished() -> None:
+    """Resolve every waiting model whose references are now built, and publish the finished ones."""
+    for cls, model in list(_WAITING.items()):
+        if model.__pydantic_complete__ or model.model_rebuild(raise_errors=False, _types_namespace=_REFERENCES):
+            _MODEL_CACHE[cls] = model
+            del _WAITING[cls]
 
 
 def _plain_marker_form(marker: Any) -> Optional[Dict[str, Any]]:
@@ -523,15 +548,33 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     if hit is not None:
         return hit
     with _MODEL_LOCK:
-        hit = _MODEL_CACHE.get(cls)
+        hit = _MODEL_CACHE.get(cls) or _WAITING.get(cls)
         if hit is not None:
             return hit
-        model = _build_model(cls)
-        _MODEL_CACHE[cls] = model
+        _IN_FLIGHT[cls] = _reference(cls)
+        try:
+            model = _build_model(cls)
+        except BaseException:
+            if len(_IN_FLIGHT) == 1:  # the outermost build failed: nothing it left waiting can finish now
+                _WAITING.clear()
+            raise
+        finally:
+            del _IN_FLIGHT[cls]
+        _REFERENCES[_reference(cls)] = model
+        _WAITING[cls] = model
+        _publish_finished()
         return model
 
 
-to_pydantic.cache_clear = _MODEL_CACHE.clear  # type: ignore[attr-defined]  # the lru_cache-era reset, kept
+def _cache_clear() -> None:
+    """Forget every model (the ``lru_cache``-era reset, kept)."""
+    with _MODEL_LOCK:
+        _MODEL_CACHE.clear()
+        _REFERENCES.clear()
+        _WAITING.clear()
+
+
+to_pydantic.cache_clear = _cache_clear  # type: ignore[attr-defined]
 
 
 def _build_model(cls: Callable[..., Any]) -> Type[BaseModel]:
@@ -539,10 +582,10 @@ def _build_model(cls: Callable[..., Any]) -> Type[BaseModel]:
 
     Called only under :func:`to_pydantic`'s lock. Nested
     ``@configurable`` parameter types are recursively wrapped via the same
-    function, which gives correct identity for shared sub-types and breaks
-    most reference cycles (the cache returns the in-flight class on second
-    visit before recursion fully unwinds; explicit cycles would still need
-    forward refs — not common in ML configs).
+    function, which gives correct identity for shared sub-types. A class met
+    again while its own model is being built (a field naming its own class, two
+    classes holding each other) is named by a forward reference instead, and
+    :func:`to_pydantic` publishes the models once every reference resolves.
 
     The returned model has:
 

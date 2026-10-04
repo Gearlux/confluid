@@ -75,6 +75,10 @@ What goes into the generated model:
   for the parameter name.
 - The internal marker aliases (`Partial[T]`, `Mandatory[T]`, `NoBroadcast[T]`)
   are **stripped** — they shape engine behaviour, not the schema.
+- **A class may contain itself.** A field naming its own class — a tree node's
+  `children: Optional[List["Node"]]` — or two classes holding each other give
+  a finite model: the schema's `$defs` hold the model once, with a `$ref` to
+  itself, and a nested document validates at every depth.
 
 `to_pydantic` accepts a plain **builder function** as well as a class — the
 function's own signature is introspected, which is what lets a registered

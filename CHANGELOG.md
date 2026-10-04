@@ -8,6 +8,14 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A class that contains itself has a model.** `to_pydantic` built a field naming its own class (a tree node's
+  `children: Optional[List["Node"]]`) or two classes holding each other by building the same model again, until
+  Python's stack ran out: `to_pydantic(Node)` raised `RecursionError`, so `model_json_schema()` failed for the class
+  and every class holding it, and constructor validation was silently off for them. Now the second visit names the
+  model by a forward reference, resolved once the model is built: the schema is finite (`$defs` with a `$ref` to
+  itself), a nested document validates at every depth, and the constructor is validated again. A model is handed out
+  only once every reference it holds resolves, so the lock-free cache never returns one that cannot validate yet.
+
 - **A string accepted for a number or a bool becomes that value.** Validation accepted the text of a number for an
   `int` or `float` parameter, and `"false"` for a `bool` one, but passed the text on, so the object held a string:
   `Optimizer(lr="1e-4").lr` was `'1e-4'`, a YAML `lr: 1e-4` (text to YAML 1.1, which needs `1.0e-4`) built the same,
