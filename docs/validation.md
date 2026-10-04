@@ -10,6 +10,24 @@ Every `@configurable` class has its `__init__` wrapped at decoration time to val
 
 All three default to `"strict"` — pydantic `ValidationError` is raised. `"warn"` logs the error to `confluid.validation` and lets the call proceed; for a document-driven construction the warning names the marker's `file:line:col`, the same location the strict path's `ConstructionError` carries. `"off"` skips validation entirely. `set_policy()` and the env vars refuse any other spelling with `ValidationModeError` — a typo never silently downgrades a knob.
 
+**A string accepted for a number or a bool becomes that value.** The schema accepts the text of a number for an `int`
+or `float` parameter, and `"true"` / `"false"` (also `"1"` / `"0"`, `"yes"` / `"no"`, `"on"` / `"off"`) for a `bool`
+one; the object then holds the value, never the text — at construction (direct, positional or from a document), on a
+`@configurable` function's call, and through `configure()`. It matters most for YAML, which reads `1e-4` and `40.0e6`
+as text (a YAML 1.1 float needs a dot AND a signed exponent: `1.0e-4`), and for a quoted `"false"`, which as text is
+truthy:
+
+```python
+Optimizer(lr="1e-4").lr                       # 0.0001, a float
+load("!class:Optimizer {lr: 1e-4}").lr        # 0.0001 — and dump() writes lr: 0.0001
+Loader(shuffle="false").shuffle               # False, not the truthy text "false"
+```
+
+Only a string that validated into an `int`, `float` or `bool` is replaced. Everything else reaches the constructor
+exactly as given: a `str` parameter keeps `"5e6"`, a `Union[float, str]` or `Union[bool, str]` keeps its text, an
+`int` passed to a `float` parameter stays an `int`, a value refused under `"warn"` is passed through unchanged, and
+under `"off"` nothing is touched.
+
 **A class whose schema mirror cannot be built is never blocked — and never silently unvalidated.** If `to_pydantic(cls)` fails (a C-extension constructor with no Python signature, an annotation that cannot be resolved at runtime), the constructor still runs and confluid logs **once per class**, at WARNING: `X: validation is OFF for this class — no schema mirror can be built (IntrospectionError: …)`. Fix the annotation, add the import, or opt the class out explicitly with `@configurable(validate=False)`.
 
 **Pydantic is an optional dependency** (`pip install 'confluid[pydantic]'`). The core — loading, references, scopes, `flow()`, `configure()` — never needs it. Without the extra, every validation point degrades to `"off"` (a one-time log line records the downgrade) and the schema-export API (`to_pydantic`, `confluid_class_of`) raises `ImportError` naming the extra. Packages that rely on schema export or want validation enforced must depend on `confluid[pydantic]`.

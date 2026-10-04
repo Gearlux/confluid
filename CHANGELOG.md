@@ -4,6 +4,20 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
+## [Unreleased]
+
+### Fixed
+
+- **A string accepted for a number or a bool becomes that value.** Validation accepted the text of a number for an
+  `int` or `float` parameter, and `"false"` for a `bool` one, but passed the text on, so the object held a string:
+  `Optimizer(lr="1e-4").lr` was `'1e-4'`, a YAML `lr: 1e-4` (text to YAML 1.1, which needs `1.0e-4`) built the same,
+  `dump()` wrote it back as text, a `@configurable` function computing `high - low` from `"5e3"` and `"1e3"` raised
+  `TypeError`, and `Loader(shuffle="false").shuffle` was the truthy text `'false'`. Now the constructor, the function
+  and `configure()` receive the value (`0.0001`, `False`), and the captured constructor arguments hold it. Only a
+  string that validated into an `int`, `float` or `bool` is replaced: a `str` parameter, a `Union[float, str]` or
+  `Union[bool, str]`, an `int` given to a `float`, a value refused under `"warn"` and every value under `"off"` are
+  passed exactly as given.
+
 ## [0.4.0] - 2026-09-30
 
 ### Added
