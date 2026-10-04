@@ -526,6 +526,13 @@ inventories.
 - One model per class across threads: lock-free `_MODEL_CACHE.get()`, build under an `RLock`
   (reentrant on purpose). Never back to a bare `lru_cache`; `to_pydantic.cache_clear` stays.
   (`tests/test_concurrency.py::test_concurrent_first_calls_to_to_pydantic_hand_out_ONE_model_class`)
+- A class met again while its own model is being built (a field naming its own class, two classes holding each
+  other) is a `ForwardRef` to its model (`_IN_FLIGHT`), never a second build; the models wait in `_WAITING` (seen
+  only under the lock) until `model_rebuild` resolves every reference against `_REFERENCES`, and only then reach
+  `_MODEL_CACHE`. `cache_clear` clears all three. (`docs/architecture.md` §29;
+  `tests/test_pydantic_export.py::test_a_class_that_contains_itself_has_a_finite_model`,
+  `::test_two_classes_that_refer_to_each_other_share_their_models`, `::test_only_finished_models_are_handed_out`,
+  `::test_a_failed_build_leaves_nothing_waiting`)
 - The mirror builds for every legal signature: abc `Callable` and a non-runtime-checkable
   `Protocol` → `Any`; any other unschemable leaf → `Annotated[T, WithJsonSchema({})]` (decided by
   `_json_schemable`); a leading-underscore or `BaseModel`-attribute name gets a mangled field name

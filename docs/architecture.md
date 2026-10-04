@@ -2086,3 +2086,42 @@ Optimizer(lr=1).lr                               # 1 — an int, as given
 **What you may change.** Which validated types count as the value a string stands for — widen `_accepted_scalar`
 only with a measured case. Not: adopting pydantic's coercions for non-strings, or converting where nothing was
 validated. Pin: `tests/test_accepted_strings.py`.
+
+## 29. A class met again while its model is built is a forward reference
+
+*2026-10-04*
+
+**Context.** `to_pydantic` builds a class's model by converting each parameter's annotation, and a parameter typed
+with another `@configurable` class becomes `Union[TheClass, to_pydantic(TheClass)]`. A model reached the cache only
+when its build finished, so a field naming its own class — a tree node's `children: Optional[List["Node"]]` — started
+the same build again, and again, until Python's stack ran out (`RecursionError`). Two classes holding each other did
+the same. The failure was wide: `model_json_schema()` of the class and of every class holding it raised, and the
+constructor-validation hook, which catches a mirror that cannot be built, silently stopped validating them.
+
+**Decision.** The classes whose model is being built are tracked (`_IN_FLIGHT`); meeting one of them again names its
+model by a `ForwardRef` unique to the class, instead of building it. A finished build registers its model under that
+reference (`_REFERENCES`) and waits (`_WAITING`) until `model_rebuild` resolves every reference it holds; only then is
+it published to the lock-free cache. Rejected: returning the in-flight model class itself (it does not exist until
+`create_model` returns); module-level names for the references (pydantic would resolve them, but the module's
+namespace would grow a name per class); a depth limit (a schema cut at depth N is a different schema).
+
+**Consequences.** A recursive class has a finite schema (`$defs` holding its model once, a `$ref` to itself) and
+validates a nested document at every depth; its constructor is validated again. Another thread never receives a model
+that cannot validate yet: a waiting model is visible only to the build holding the lock (the reentrant re-entry of a
+nested field). A build that fails part-way leaves nothing waiting.
+
+**Example.**
+
+```python
+@configurable
+class Node:
+    def __init__(self, value: int = 0, children: Optional[List["Node"]] = None) -> None:
+        self.value, self.children = value, children
+
+Model = to_pydantic(Node)                                    # before: RecursionError
+Model(children=[{"value": 2, "children": [{"value": 3}]}])   # validates every level
+Node(children=[Node(), "not a node"])                        # ValidationError — the constructor is checked again
+```
+
+**What you may change.** How the reference is spelled. Not: publishing a model before its references resolve, or a
+second build of a class while its first is in flight. Pin: `tests/test_pydantic_export.py` (the four cycle tests).
