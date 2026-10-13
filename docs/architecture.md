@@ -2107,7 +2107,7 @@ container's type. Pin: `tests/test_accepted_strings.py`.
 
 ## 29. A class met again while its model is built is a forward reference
 
-*2026-10-04*
+*2026-10-04; resolved in the models' own module 2026-10-13*
 
 **Context.** `to_pydantic` builds a class's model by converting each parameter's annotation, and a parameter typed
 with another `@configurable` class becomes `Union[TheClass, to_pydantic(TheClass)]`. A model reached the cache only
@@ -2117,16 +2117,24 @@ the same. The failure was wide: `model_json_schema()` of the class and of every 
 constructor-validation hook, which catches a mirror that cannot be built, silently stopped validating them.
 
 **Decision.** The classes whose model is being built are tracked (`_IN_FLIGHT`); meeting one of them again names its
-model by a `ForwardRef` unique to the class, instead of building it. A finished build registers its model under that
-reference (`_REFERENCES`) and waits (`_WAITING`) until `model_rebuild` resolves every reference it holds; only then is
-it published to the lock-free cache. Rejected: returning the in-flight model class itself (it does not exist until
-`create_model` returns); module-level names for the references (pydantic would resolve them, but the module's
-namespace would grow a name per class); a depth limit (a schema cut at depth N is a different schema).
+model by a `ForwardRef` unique to the class, instead of building it. Every generated model is created in the module
+`confluid._models` (its `__module__`), and a finished build registers its model there under that reference — the
+namespace pydantic's own `model_rebuild()` resolves a forward reference in, so no private pydantic argument carries
+it. The model waits (`_WAITING`) until `model_rebuild()` resolves every reference it holds; only then is it published
+to the lock-free cache. Rejected: returning the in-flight model class itself (it does not exist until `create_model`
+returns); handing the references to `model_rebuild` through its private `_types_namespace` parameter (the first fix
+did — pydantic may drop the parameter in any 2.x release, and the day it does every recursive class fails, measured
+2026-10-13 as `TypeError` from `to_pydantic` and `PydanticUserError: NodeConfig is not fully defined` from the
+constructor); names in `pydantic_export`'s own namespace (a real module's globals should not grow generated names,
+which is why `_models` holds nothing else); a depth limit (a schema cut at depth N is a different schema).
 
 **Consequences.** A recursive class has a finite schema (`$defs` holding its model once, a `$ref` to itself) and
 validates a nested document at every depth; its constructor is validated again. Another thread never receives a model
 that cannot validate yet: a waiting model is visible only to the build holding the lock (the reentrant re-entry of a
-nested field). A build that fails part-way leaves nothing waiting.
+nested field). A failure after the build — pydantic refusing to resolve the references — is treated like a failed
+build: the waiting models and their names are dropped, the next call builds afresh, and meanwhile the constructor
+degrades to validation off with one WARNING (never a half-built model handed out as finished, which the first fix
+did). A generated model reports `__module__ == "confluid._models"`.
 
 **Example.**
 
@@ -2141,5 +2149,45 @@ Model(children=[{"value": 2, "children": [{"value": 3}]}])   # validates every l
 Node(children=[Node(), "not a node"])                        # ValidationError — the constructor is checked again
 ```
 
-**What you may change.** How the reference is spelled. Not: publishing a model before its references resolve, or a
-second build of a class while its first is in flight. Pin: `tests/test_pydantic_export.py` (the four cycle tests).
+**What you may change.** How the reference is spelled, and the module that holds it. Not: publishing a model before
+its references resolve, a second build of a class while its first is in flight, or a private pydantic parameter.
+Pins: `tests/test_pydantic_export.py` (the four cycle tests,
+`::test_a_reference_resolves_through_pydantic_public_api_only`,
+`::test_the_models_live_in_confluid_models_and_name_their_references`,
+`::test_a_failed_publish_leaves_nothing_waiting_and_the_constructor_degrades`).
+
+## 30. The reserved key names live in a leaf module
+
+*2026-10-13*
+
+**Context.** The loader parses the reserved keys (`_target_`, `_partial_`, `_ref_`, `_scope_`, `_notscope_`, and
+the removed `_clone_` it still refuses), and it imports the resolver at the top of the file. The resolver (a quoted
+marker's refusal names the plain spelling to write) and the dumper (a dump emits the plain spelling) need the same
+names, and the only way to take them from `loader` without a circular import was a function-local import — three of
+them, in two modules, existing for four strings. A function-local import is the workspace's escape hatch for a real
+cycle; here the cycle was manufactured by where the strings lived.
+
+**Decision.** `confluid.keys` holds the names and `RESERVED_KEYS`, and imports nothing from confluid. The loader,
+the resolver and the dumper import from it at the top of the file; the loader keeps what is about PARSING the keys
+(`_DISCRIMINATORS`, the marker gate, the refusals). Rejected: leaving the lazy imports (each one is a line a reader
+must explain, and the explanation was "to dodge the loader"); moving the names into `fluid` (the markers do not own
+their YAML spelling — `spelling` and `hydraide` convert between two spellings of the same marker).
+
+**Consequences.** `resolver` and `dumper` no longer import `loader` at all. The names have one home, so a literal
+`"_notscope_"` in the resolver's refusal became `NOTSCOPE_KEY`. The names stay reachable as `confluid.loader.TARGET_KEY`
+because the loader imports them, not because it defines them. No module but `keys` writes a reserved key as a string
+literal any more — `spelling` (its `_RESERVED` tuple and every comparison), `pydantic_export` (the plain-marker form)
+and `fluid` (a scope block's `repr`) spell them by the constant, pinned by a token scan of the package.
+
+**Example.**
+
+```python
+from confluid.keys import RESERVED_KEYS, TARGET_KEY
+
+RESERVED_KEYS                 # frozenset({'_target_', '_partial_', '_ref_', '_clone_', '_scope_', '_notscope_'})
+{TARGET_KEY: "pkg.Model"}     # the plain spelling the dumper writes and the resolver names in a refusal
+```
+
+**What you may change.** The set of names, together with the loader's gate that reads it. What must not come
+back: an import of anything confluid into `keys`, a function-local import of `loader` in a module below it, or a
+reserved key written as a string literal outside `keys`. Pin: `tests/test_layering.py`.

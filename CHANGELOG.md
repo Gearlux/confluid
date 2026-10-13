@@ -14,7 +14,10 @@ All notable changes to confluid are documented here. The format follows
   and every class holding it, and constructor validation was silently off for them. Now the second visit names the
   model by a forward reference, resolved once the model is built: the schema is finite (`$defs` with a `$ref` to
   itself), a nested document validates at every depth, and the constructor is validated again. A model is handed out
-  only once every reference it holds resolves, so the lock-free cache never returns one that cannot validate yet.
+  only once every reference it holds resolves, so the lock-free cache never returns one that cannot validate yet —
+  and a failure while resolving drops the waiting models, so a later call builds afresh instead of receiving a
+  half-built model. The references resolve through pydantic's public `model_rebuild()`, in the module every generated
+  model now lives in: a model's `__module__` reads `confluid._models` (it read `confluid.pydantic_export`).
 
 - **A string accepted for a number or a bool becomes that value.** Validation accepted the text of a number for an
   `int` or `float` parameter, and `"false"` for a `bool` one, but passed the text on, so the object held a string:

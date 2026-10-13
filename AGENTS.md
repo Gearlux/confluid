@@ -73,7 +73,7 @@ inventories.
   the next section.
 - **Clone is removed (user ruling 2026-08-15).** There is no copy marker: independence is a second
   marker (`<<:` an anchored base for a long recipe), sharing is `_ref_` / `${ref:}`. Never
-  reintroduce one. The removal stays LOUD: `_clone_` stays in `loader.RESERVED_KEYS` and `clone`
+  reintroduce one. The removal stays LOUD: `_clone_` stays in `keys.RESERVED_KEYS` and `clone`
   in `resolver._MARKER_RESOLVERS` only so every spelling is refused with a location — they are not
   dead entries. (the Clone-removal group in `tests/test_plain_format.py`) §18.
 
@@ -221,6 +221,10 @@ inventories.
   `tests/test_introspect.py`) §26.
 
 ## Parsing: two spellings, one IR (§11, §19, §27)
+
+- The reserved key names (`TARGET_KEY` … `RESERVED_KEYS`) live in `confluid.keys`, a leaf module that imports
+  nothing from confluid; `loader`, `resolver` and `dumper` take them from there at the top of the file — never a
+  function-local import of `loader` to reach a string (§30; `tests/test_layering.py`).
 
 - The Fluid family is the only in-memory marker form; there is no dict marker. Code synthesizing
   a marker builds `Target(name)` and then `.kwargs.update(...)`.
@@ -530,12 +534,16 @@ inventories.
   (reentrant on purpose). Never back to a bare `lru_cache`; `to_pydantic.cache_clear` stays.
   (`tests/test_concurrency.py::test_concurrent_first_calls_to_to_pydantic_hand_out_ONE_model_class`)
 - A class met again while its own model is being built (a field naming its own class, two classes holding each
-  other) is a `ForwardRef` to its model (`_IN_FLIGHT`), never a second build; the models wait in `_WAITING` (seen
-  only under the lock) until `model_rebuild` resolves every reference against `_REFERENCES`, and only then reach
-  `_MODEL_CACHE`. `cache_clear` clears all three. (`docs/architecture.md` §29;
-  `tests/test_pydantic_export.py::test_a_class_that_contains_itself_has_a_finite_model`,
+  other) is a `ForwardRef` to its model (`_IN_FLIGHT`), never a second build. Every model is created in
+  `confluid._models` and its reference registered there as a name, so pydantic's PUBLIC `model_rebuild()` resolves
+  it — never a private pydantic parameter (`_types_namespace` was one). The models wait in `_WAITING` (seen only
+  under the lock) until every reference resolves, and only then reach `_MODEL_CACHE`; a failed build OR publish
+  drops the waiting models with their names. `cache_clear` clears the cache, the waiting table and the names.
+  (`docs/architecture.md` §29; `tests/test_pydantic_export.py::test_a_class_that_contains_itself_has_a_finite_model`,
   `::test_two_classes_that_refer_to_each_other_share_their_models`, `::test_only_finished_models_are_handed_out`,
-  `::test_a_failed_build_leaves_nothing_waiting`)
+  `::test_a_failed_build_leaves_nothing_waiting`, `::test_a_reference_resolves_through_pydantic_public_api_only`,
+  `::test_the_models_live_in_confluid_models_and_name_their_references`,
+  `::test_a_failed_publish_leaves_nothing_waiting_and_the_constructor_degrades`)
 - The mirror builds for every legal signature: abc `Callable` and a non-runtime-checkable
   `Protocol` → `Any`; any other unschemable leaf → `Annotated[T, WithJsonSchema({})]` (decided by
   `_json_schemable`); a leading-underscore or `BaseModel`-attribute name gets a mangled field name
