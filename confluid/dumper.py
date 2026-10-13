@@ -8,6 +8,7 @@ from loggair import get_logger
 
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.introspect import NO_DEFAULT, Slot, slots
+from confluid.keys import PARTIAL_KEY, REF_KEY, TARGET_KEY
 from confluid.registry import get_registry
 
 #: The slot kinds the dumper walks — the signature, minus the variadics. A ``*args``
@@ -183,7 +184,7 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
             f"{{_target_: {name}}} placeholder, which reloads DEFAULT-constructed. Register the "
             f"class (or mark it @configurable) for a faithful round trip."
         )
-    return dumper.represent_dict({"_target_": name})
+    return dumper.represent_dict({TARGET_KEY: name})
 
 
 def _target_name(target: Any, qualified: bool = False) -> str:
@@ -239,7 +240,6 @@ def _importable_path(target: Any) -> Optional[str]:
 def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     """Represent @configurable objects and Fluid citizens as YAML tags."""
     from confluid.fluid import Reference, Target
-    from confluid.loader import PARTIAL_KEY, REF_KEY, TARGET_KEY
 
     # A dump emits the PLAIN-YAML spelling, so the artifact a run archives is
     # readable by anything — `yaml.safe_load`, `yq`, a diff viewer — and not only
@@ -303,8 +303,6 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
 
 def _class_value_spelling(val: Any, qualified: bool = False) -> Any:
     """A class-VALUED kwarg in the YAML spelling — the in-memory document keeps the class."""
-    from confluid.loader import TARGET_KEY
-
     if not isinstance(val, type):
         return val
     if hasattr(val, "__confluid_configurable__"):

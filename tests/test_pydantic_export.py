@@ -1232,3 +1232,57 @@ def test_a_failed_build_leaves_nothing_waiting() -> None:
         to_pydantic(HoldsBrokenR1)
     assert not _IN_FLIGHT and not _WAITING
     assert to_pydantic(TreeNodeR1)(children=[{"value": 1}]).children[0].value == 1
+
+
+def test_a_reference_resolves_through_pydantic_public_api_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The forward reference a cycle names a model by resolves in the model's own module, so ``model_rebuild()`` is
+    called with its public parameters only — a pydantic offering nothing but those still builds the cycle."""
+    original = BaseModel.model_rebuild.__func__  # type: ignore[attr-defined]
+
+    def public_only(cls: type, *, force: bool = False, raise_errors: bool = True) -> Optional[bool]:
+        return original(cls, force=force, raise_errors=raise_errors)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(BaseModel, "model_rebuild", classmethod(public_only))
+    to_pydantic.cache_clear()
+    ping = to_pydantic(PingR1)
+    assert ping.__pydantic_complete__ and to_pydantic(PongR1).__pydantic_complete__
+    assert ping(pong={"ping": {"pong": {"depth": 2}}}).pong.ping.pong.depth == 2
+
+
+def test_the_models_live_in_confluid_models_and_name_their_references() -> None:
+    """Every generated model's ``__module__`` is ``confluid._models``, and the name a cycle refers to a model by is an
+    attribute of that module while the model is cached; ``cache_clear`` removes the names with the models."""
+    from confluid import _models
+    from confluid.pydantic_export import _reference
+
+    to_pydantic.cache_clear()
+    model = to_pydantic(TreeNodeR1)
+    assert model.__module__ == _models.__name__
+    assert getattr(_models, _reference(TreeNodeR1)) is model
+    to_pydantic.cache_clear()
+    assert not hasattr(_models, _reference(TreeNodeR1))
+    assert not [name for name in vars(_models) if name.startswith("_ConfluidModel_")]
+
+
+def test_a_failed_publish_leaves_nothing_waiting_and_the_constructor_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure AFTER the build — pydantic refusing to resolve the references — leaves no waiting model behind for
+    a later caller to receive as finished: the next ``to_pydantic`` fails afresh, the constructor runs with validation
+    off (the one-WARNING degradation), and once pydantic cooperates again the model builds."""
+    from confluid import _models
+    from confluid.pydantic_export import _IN_FLIGHT, _WAITING, _reference
+
+    def refusing(cls: type, **kwargs: Any) -> Optional[bool]:
+        raise RuntimeError("pydantic changed")
+
+    monkeypatch.setattr(BaseModel, "model_rebuild", classmethod(refusing))
+    to_pydantic.cache_clear()
+    with pytest.raises(RuntimeError, match="pydantic changed"):
+        to_pydantic(TreeNodeR1)
+    assert not _IN_FLIGHT and not _WAITING and not hasattr(_models, _reference(TreeNodeR1))
+    with pytest.raises(RuntimeError, match="pydantic changed"):  # afresh, not a half-built model from the cache
+        to_pydantic(TreeNodeR1)
+    assert TreeNodeR1(value="not a number").value == "not a number"  # type: ignore[arg-type]  # constructs, unvalidated
+    monkeypatch.undo()
+    to_pydantic.cache_clear()
+    with pytest.raises(ValidationError):
+        TreeNodeR1(value="not a number")  # type: ignore[arg-type]

@@ -47,9 +47,11 @@ from annotated_types import Ge, Gt, Interval, Le, Lt
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
 from pydantic.json_schema import WithJsonSchema
 
+from confluid import _models
 from confluid.exceptions import IntrospectionError
 from confluid.fluid import Fluid
 from confluid.introspect import NO_DEFAULT, Slot, slots
+from confluid.keys import PARTIAL_KEY, REF_KEY, TARGET_KEY
 from confluid.mandatory import _MANDATORY_MARKER
 from confluid.no_broadcast import _NO_BROADCAST_MARKER
 from confluid.partial import _PARTIAL_MARKER
@@ -468,25 +470,36 @@ def _post_init_field_specs(
 _MODEL_CACHE: Dict[Any, Type[BaseModel]] = {}
 _MODEL_LOCK = threading.RLock()
 #: A cycle of classes (a class whose field names its own class, or two that hold each other): the classes whose
-#: model is being built, each by the forward reference a field met inside the build names its model by; the models
-#: built, by that reference — the namespace a waiting model resolves in; and the models built but waiting for a
-#: class still in flight, visible only to the build holding the lock until every reference resolves.
+#: model is being built, each by the forward reference a field met inside the build names its model by, and the
+#: models built but waiting for a class still in flight, visible only to the build holding the lock until every
+#: reference resolves. The references themselves are names in :mod:`confluid._models`, the module every model is
+#: created in — the namespace pydantic's own ``model_rebuild()`` resolves a forward reference in, so no private
+#: pydantic parameter carries them (record 29).
 _IN_FLIGHT: Dict[Any, str] = {}
-_REFERENCES: Dict[str, Type[BaseModel]] = {}
 _WAITING: Dict[Any, Type[BaseModel]] = {}
+_REFERENCE_PREFIX = "_ConfluidModel_"
 
 
 def _reference(cls: Any) -> str:
-    """A forward reference unique to ``cls`` (two classes may share a ``__name__``)."""
-    return f"_ConfluidModel_{id(cls):x}"
+    """The forward reference unique to ``cls`` (two classes may share a ``__name__``), a name in ``_models``."""
+    return f"{_REFERENCE_PREFIX}{id(cls):x}"
 
 
 def _publish_finished() -> None:
-    """Resolve every waiting model whose references are now built, and publish the finished ones."""
+    """Resolve every waiting model whose references are now named, and publish the finished ones."""
     for cls, model in list(_WAITING.items()):
-        if model.__pydantic_complete__ or model.model_rebuild(raise_errors=False, _types_namespace=_REFERENCES):
+        if model.__pydantic_complete__ or model.model_rebuild(raise_errors=False):
             _MODEL_CACHE[cls] = model
             del _WAITING[cls]
+
+
+def _forget_waiting() -> None:
+    """Drop every waiting model with its name: after a failed build or publish, nothing left waiting can finish, and
+    a later caller must build afresh rather than receive a model that cannot validate."""
+    for cls in _WAITING:
+        if hasattr(_models, _reference(cls)):
+            delattr(_models, _reference(cls))
+    _WAITING.clear()
 
 
 def _plain_marker_form(marker: Any) -> Optional[Dict[str, Any]]:
@@ -501,7 +514,7 @@ def _plain_marker_form(marker: Any) -> Optional[Dict[str, Any]]:
     from confluid.fluid import PartialClass, Reference
 
     if isinstance(marker, Reference):
-        return {"_ref_": marker.target} if isinstance(marker.target, str) else None
+        return {REF_KEY: marker.target} if isinstance(marker.target, str) else None
     target = marker.target
     name: Optional[str]
     if isinstance(target, str):
@@ -514,9 +527,9 @@ def _plain_marker_form(marker: Any) -> Optional[Dict[str, Any]]:
         name = registered or (dunder if isinstance(dunder, str) else None)
     if name is None:
         return None
-    plain: Dict[str, Any] = {"_target_": name}
+    plain: Dict[str, Any] = {TARGET_KEY: name}
     if isinstance(marker, PartialClass):
-        plain["_partial_"] = True
+        plain[PARTIAL_KEY] = True
     for key, value in marker.kwargs.items():
         if isinstance(value, Fluid):
             nested = _plain_marker_form(value)
@@ -554,15 +567,15 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
         _IN_FLIGHT[cls] = _reference(cls)
         try:
             model = _build_model(cls)
+            setattr(_models, _reference(cls), model)
+            _WAITING[cls] = model
+            _publish_finished()
         except BaseException:
-            if len(_IN_FLIGHT) == 1:  # the outermost build failed: nothing it left waiting can finish now
-                _WAITING.clear()
+            if len(_IN_FLIGHT) == 1:  # the outermost build or publish failed: nothing it left waiting can finish now
+                _forget_waiting()
             raise
         finally:
             del _IN_FLIGHT[cls]
-        _REFERENCES[_reference(cls)] = model
-        _WAITING[cls] = model
-        _publish_finished()
         return model
 
 
@@ -570,8 +583,9 @@ def _cache_clear() -> None:
     """Forget every model (the ``lru_cache``-era reset, kept)."""
     with _MODEL_LOCK:
         _MODEL_CACHE.clear()
-        _REFERENCES.clear()
         _WAITING.clear()
+        for name in [name for name in vars(_models) if name.startswith(_REFERENCE_PREFIX)]:
+            delattr(_models, name)
 
 
 to_pydantic.cache_clear = _cache_clear  # type: ignore[attr-defined]
@@ -584,7 +598,8 @@ def _build_model(cls: Callable[..., Any]) -> Type[BaseModel]:
     ``@configurable`` parameter types are recursively wrapped via the same
     function, which gives correct identity for shared sub-types. A class met
     again while its own model is being built (a field naming its own class, two
-    classes holding each other) is named by a forward reference instead, and
+    classes holding each other) is named by a forward reference instead — a name
+    in :mod:`confluid._models`, the module the model is created in — and
     :func:`to_pydantic` publishes the models once every reference resolves.
 
     The returned model has:
@@ -682,7 +697,7 @@ def _build_model(cls: Callable[..., Any]) -> Type[BaseModel]:
     model: Type[BaseModel] = create_model(  # type: ignore[call-overload]
         f"{cls.__name__}Config",
         __base__=_StrictConfigBase,
-        __module__=__name__,
+        __module__=_models.__name__,  # where a cycle's forward reference resolves (record 29)
         **fields,
     )
     # Attach the target class identifier as a plain class attribute. We
