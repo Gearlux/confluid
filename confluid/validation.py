@@ -249,6 +249,34 @@ def _accepted_scalar(original: Any, validated: Any) -> bool:
     return isinstance(original, str) and isinstance(validated, (bool, int, float))
 
 
+def _accepted_value(original: Any, validated: Any) -> Any:
+    """``original`` with every accepted string in it replaced by the number or bool it stands for — or ``original``
+    itself, the same object, when it holds none (a caller tests ``is not`` to learn whether anything changed).
+
+    The scalar rule is :func:`_accepted_scalar`; this walks a plain ``list``, ``tuple`` or ``dict`` beside the value
+    the schema validated it into, element by element and pair by pair (a mapping's keys too: ``{"1": "0.5"}`` for a
+    ``Dict[int, float]`` becomes ``{1: 0.5}``), and rebuilds the container AS GIVEN — a list given to a ``Tuple``
+    field stays a list — so no coercion but the string's is adopted. A container the walk cannot pair is left as
+    given: a subclass, a ``set`` (no order), or one the schema resized (a list validated into a set).
+    """
+    if _accepted_scalar(original, validated):
+        return validated
+    if type(original) in (list, tuple) and isinstance(validated, (list, tuple)) and len(original) == len(validated):
+        items = [_accepted_value(o, v) for o, v in zip(original, validated)]
+        if all(item is o for item, o in zip(items, original)):
+            return original
+        return type(original)(items)
+    if type(original) is dict and isinstance(validated, dict) and len(original) == len(validated):
+        pairs = [
+            (_accepted_value(ok, vk), _accepted_value(ov, vv))
+            for (ok, ov), (vk, vv) in zip(original.items(), validated.items())
+        ]
+        if all(k is ok and v is ov for (k, v), (ok, ov) in zip(pairs, original.items())):
+            return original
+        return dict(pairs)
+    return original
+
+
 def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: ValidationMode) -> Dict[str, Any]:
     """Validate constructor / call kwargs against ``to_pydantic(cls)`` under ``mode``.
 
@@ -266,12 +294,13 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     * ``"off"`` — return immediately without building the schema.
 
     Returns:
-        The kwargs whose accepted string stands for a number or a bool, mapped to that value (``{"lr": 0.001}`` for
-        ``lr="1e-3"`` on a ``float`` field, ``{"shuffle": False}`` for ``shuffle="false"`` on a ``bool`` one) — the
-        caller passes these instead of the strings (see :func:`_accepted_scalar`).
+        The kwargs holding an accepted string that stands for a number or a bool, mapped to the value with that
+        string replaced (``{"lr": 0.001}`` for ``lr="1e-3"`` on a ``float`` field, ``{"shuffle": False}`` for
+        ``shuffle="false"`` on a ``bool`` one, ``{"freqs": [2400e6, 2480e6]}`` for ``freqs=["2400e6", "2480e6"]`` on
+        a ``List[float]`` one) — the caller passes these instead (see :func:`_accepted_value`).
         Empty under ``"off"``, when nothing validated, or when a ``"warn"`` validation failed.
 
-    Fluid markers (``Class``, ``Instance``, ``Reference``, ``Partial``, …) in
+    Fluid markers (``Target``, ``PartialClass``, ``Reference``, …) in
     ``kwargs`` represent deferred construction — the live object hasn't been
     built yet, so the pydantic ``is_instance_of(<annotated_type>)`` check
     would always fail. The contract is "validate post-flow": when the Fluid
@@ -279,14 +308,14 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     ``__init__`` will fire and validate its own kwargs. Fields holding Fluid
     markers are therefore excluded from this call; concrete fields are still
     validated individually so a bad scalar (wrong type, out-of-range int)
-    next to a deferred sub-Class still raises here.
+    next to a deferred child marker still raises here.
 
     Fluid markers are detected recursively inside ``list`` / ``tuple`` /
-    ``dict`` containers — e.g. ``stores=[Class(_Store, …)]`` is a concrete
+    ``dict`` containers — e.g. ``stores=[Target(_Store, …)]`` is a concrete
     list value whose elements are deferred; pydantic would still reject the
-    inner ``Class`` marker as ``Input should be an instance of _Store``.
+    inner ``Target`` marker as ``Input should be an instance of _Store``.
     Any kwarg whose value contains a Fluid anywhere in its tree is treated
-    as deferred and skipped.
+    as deferred and skipped — and, unvalidated, is never converted.
     """
     if mode == "off" or not _have_pydantic():
         return {}
@@ -306,7 +335,7 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
     # Split kwargs into "concrete" (eager pydantic check) and "deferred"
     # (Fluid markers — skipped here, validated at flow time). Containers
     # holding Fluids count as deferred — a ``list[Store]`` populated with
-    # ``Class`` markers would otherwise trip ``is_instance_of(Store)`` on
+    # ``Target`` markers would otherwise trip ``is_instance_of(Store)`` on
     # the inner element. See the regression cluster in
     # ``tests/test_validation.py::test_fluid_kwarg_nested_in_list``.
     concrete = {k: v for k, v in kwargs.items() if not _contains_fluid(v, Fluid)}
@@ -327,8 +356,11 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
             validated = model.model_validate(kwargs)
             for name, value in kwargs.items():
                 field = field_name_for(model, name)
-                if field is not None and _accepted_scalar(value, getattr(validated, field, None)):
-                    converted[name] = getattr(validated, field)
+                if field is None:
+                    continue
+                accepted = _accepted_value(value, getattr(validated, field, None))
+                if accepted is not value:
+                    converted[name] = accepted
         else:
             # Mixed: validate concrete kwargs field-by-field so the
             # deferred-Fluid fields don't trigger "is_instance_of" failures
@@ -341,8 +373,9 @@ def validate_kwargs(cls: Callable[..., Any], kwargs: Dict[str, Any], mode: Valid
                 if field is None:
                     continue
                 model.__pydantic_validator__.validate_assignment(stub, field, value)
-                if _accepted_scalar(value, getattr(stub, field, None)):
-                    converted[name] = getattr(stub, field)
+                accepted = _accepted_value(value, getattr(stub, field, None))
+                if accepted is not value:
+                    converted[name] = accepted
     except ValidationError as exc:
         if mode == "strict":
             raise
@@ -390,8 +423,8 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
     plain instance attributes).
 
     Returns:
-        The value to set — the number or bool an accepted string stands for
-        (see :func:`_accepted_scalar`), otherwise ``value`` as given — and the stringified
+        The value to set — ``value`` with every accepted string replaced by the number or bool
+        it stands for (see :func:`_accepted_value`), otherwise ``value`` as given — and the stringified
         validation error on a WARN-mode failure (so the caller can record it
         in a ``ConfigurationReport``), ``None`` on pass / off / unknown field.
         Strict mode still raises.
@@ -419,8 +452,7 @@ def validate_setattr(cls: type, name: str, value: Any, mode: ValidationMode) -> 
             raise
         logger.warning(f"{cls.__name__}.{name}: invalid value\n{exc}")
         return value, str(exc)
-    validated = getattr(stub, field, None)
-    return (validated if _accepted_scalar(value, validated) else value), None
+    return _accepted_value(value, getattr(stub, field, None)), None
 
 
 def validate_model(model: BaseModel, mode: ValidationMode) -> None:
