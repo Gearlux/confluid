@@ -24,7 +24,7 @@ inventories.
   `confluid[cli]` extra, console script `hydraide = confluid.cli:main`): `emit CONFIG [--scope
   DIM=VALUE]… [-o FILE]`, `check CONFIG`, `completion bash|zsh|fish`. `confluid-bake` is
   `confluid/bake.py`.
-- **Released on PyPI, latest v0.4.0**, public repo `Gearlux/confluid`. Update this line in the
+- **Released on PyPI, latest v0.4.1**, public repo `Gearlux/confluid`. Update this line in the
   same change as a version bump. New work opens an `[Unreleased]` CHANGELOG section; a release
   proposes its version with rationale and waits for the user's confirmation before tagging.
 - **Performance baseline:** `examples/performance.py` + `docs/performance.md`
