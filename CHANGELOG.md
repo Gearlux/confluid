@@ -20,11 +20,14 @@ All notable changes to confluid are documented here. The format follows
   `int` or `float` parameter, and `"false"` for a `bool` one, but passed the text on, so the object held a string:
   `Optimizer(lr="1e-4").lr` was `'1e-4'`, a YAML `lr: 1e-4` (text to YAML 1.1, which needs `1.0e-4`) built the same,
   `dump()` wrote it back as text, a `@configurable` function computing `high - low` from `"5e3"` and `"1e3"` raised
-  `TypeError`, and `Loader(shuffle="false").shuffle` was the truthy text `'false'`. Now the constructor, the function
-  and `configure()` receive the value (`0.0001`, `False`), and the captured constructor arguments hold it. Only a
-  string that validated into an `int`, `float` or `bool` is replaced: a `str` parameter, a `Union[float, str]` or
-  `Union[bool, str]`, an `int` given to a `float`, a value refused under `"warn"` and every value under `"off"` are
-  passed exactly as given.
+  `TypeError`, and `Loader(shuffle="false").shuffle` was the truthy text `'false'`. The same text inside a container
+  did the same: a YAML `freqs: [2400e6, 2480e6]` for a `List[float]` built `['2400e6', '2480e6']`. Now the
+  constructor, the function and `configure()` receive the value (`0.0001`, `False`, `[2400000000.0, 2480000000.0]`),
+  at every depth of a plain `list`, `tuple` or `dict` (a mapping's keys too), and the captured constructor arguments
+  hold it. Only a string that validated into an `int`, `float` or `bool` is replaced, and a container keeps the type
+  it was given (a list written for a `Tuple` field stays a list): a `str` parameter, a `Union[float, str]` or
+  `Union[bool, str]`, an `int` given to a `float`, a `set` (no order to pair its elements by), a value refused under
+  `"warn"` and every value under `"off"` are passed exactly as given.
 
 ## [0.4.0] - 2026-09-30
 

@@ -1,16 +1,18 @@
-# mypy: disable-error-code="attr-defined,arg-type"
+# mypy: disable-error-code="attr-defined,arg-type,list-item,dict-item"
 """A string the schema accepts for a number or a true/false field becomes that number or that bool.
 
 YAML 1.1 reads ``5220e6`` and ``40.0e6`` as text — a float needs a dot AND a signed exponent, ``5220.0e+6`` — and the
 schema accepts such text for a ``float`` or ``int`` field; it accepts ``"false"`` for a ``bool`` field, which as text
 is truthy. The object then holds the value the text stands for: at construction (direct, positional, or from a
-document), on a ``@configurable`` function's call, and through ``configure()``. Only a string that validated into an
-``int``, ``float`` or ``bool`` is replaced: a ``str`` field, a ``Union[float, str]`` or ``Union[bool, str]``, a value of
-another type, a value the schema refuses under ``warn``, and every value under ``off`` stay exactly as given.
+document), on a ``@configurable`` function's call, and through ``configure()`` — and at every depth of a plain
+``list``, ``tuple`` or ``dict`` (a YAML ``freqs: [2400e6, 2480e6]`` for a ``List[float]``), the container kept as
+given. Only a string that validated into an ``int``, ``float`` or ``bool`` is replaced: a ``str`` field, a
+``Union[float, str]`` or ``Union[bool, str]``, a value of another type, a value the schema refuses under ``warn``, and
+every value under ``off`` stay exactly as given; a ``set`` has no order to pair its elements by and is left as given.
 """
 
 from dataclasses import dataclass
-from typing import Iterator, Optional, Union
+from typing import Dict, Iterator, List, Optional, Set, Tuple, Union
 
 import pytest
 from annotated_types import Interval
@@ -47,6 +49,26 @@ class _Tuner:
 @configurable
 def _span(low_hz: float = 0.0, high_hz: float = 1.0) -> float:
     return high_hz - low_hz
+
+
+@configurable
+class _Bank:
+    """Container fields: the accepted strings inside them."""
+
+    def __init__(
+        self,
+        freqs_hz: Optional[List[float]] = None,
+        span_hz: Tuple[float, float] = (0.0, 1.0),
+        gains_db: Optional[Dict[str, float]] = None,
+        by_channel: Optional[Dict[int, float]] = None,
+        grid: Optional[List[List[int]]] = None,
+        names: Optional[List[str]] = None,
+        either: Optional[List[Union[float, str]]] = None,
+        ids: Optional[Set[int]] = None,
+        radio: Optional[_Radio] = None,
+    ) -> None:
+        self.freqs_hz, self.span_hz, self.gains_db, self.by_channel = freqs_hz, span_hz, gains_db, by_channel
+        self.grid, self.names, self.either, self.ids, self.radio = grid, names, either, ids, radio
 
 
 @pytest.fixture(autouse=True)
@@ -121,12 +143,76 @@ def test_a_warned_string_becomes_the_number_too() -> None:
     assert type(_Radio(centre_hz="5220e6").centre_hz) is float
 
 
+# --- inside containers -----------------------------------------------------------------------------------------------
+
+
+def test_a_list_of_number_strings_becomes_a_list_of_numbers() -> None:
+    bank = _Bank(freqs_hz=["2400e6", "2480e6"])
+    assert bank.freqs_hz == [2400e6, 2480e6] and type(bank.freqs_hz) is list
+    assert all(type(f) is float for f in bank.freqs_hz)
+
+
+def test_a_container_keeps_the_type_it_was_given() -> None:
+    """A list given to a tuple field stays a list, a tuple stays a tuple: only the strings inside are replaced."""
+    assert _Bank(span_hz=["1e6", "5e6"]).span_hz == [1e6, 5e6] and type(_Bank(span_hz=["1e6", "5e6"]).span_hz) is list
+    assert _Bank(span_hz=("1e6", "5e6")).span_hz == (1e6, 5e6) and type(_Bank(span_hz=("1e6", "5e6")).span_hz) is tuple
+
+
+def test_a_mapping_of_number_strings_becomes_numbers_and_keeps_its_keys() -> None:
+    assert _Bank(gains_db={"a": "-3e0", "b": "0e0"}).gains_db == {"a": -3.0, "b": 0.0}
+
+
+def test_a_string_key_accepted_for_an_int_key_becomes_the_int() -> None:
+    assert _Bank(by_channel={"1": "0.5", "2": 0.25}).by_channel == {1: 0.5, 2: 0.25}
+
+
+def test_strings_nested_at_every_depth_become_numbers() -> None:
+    assert _Bank(grid=[["1", "2"], ["3"]]).grid == [[1, 2], [3]]
+
+
+def test_a_mixed_list_replaces_only_its_strings() -> None:
+    freqs = _Bank(freqs_hz=[1, "2e0"]).freqs_hz
+    assert freqs == [1, 2.0] and type(freqs[0]) is int and type(freqs[1]) is float
+
+
+def test_a_document_list_of_numbers_becomes_numbers_and_dumps_as_them() -> None:
+    bank = confluid.load("!class:test_accepted_strings._Bank {freqs_hz: [2400e6, 2480e6], span_hz: [1e6, 5e6]}")
+    assert bank.freqs_hz == [2400e6, 2480e6] and bank.span_hz[1] - bank.span_hz[0] == 4e6
+    again = confluid.load(confluid.dump(bank))
+    assert again.freqs_hz == [2400e6, 2480e6] and all(type(f) is float for f in again.freqs_hz)
+
+
+def test_a_list_beside_a_deferred_marker_becomes_numbers() -> None:
+    bank = _Bank(freqs_hz=["1e6"], radio=Target(_Radio, centre_hz=5240e6))
+    assert bank.freqs_hz == [1e6] and isinstance(bank.radio, Target)
+
+
+def test_configure_sets_a_list_of_numbers() -> None:
+    bank = _Bank()
+    configure(bank, config={"_Bank": {"freqs_hz": ["9e6"], "gains_db": {"a": "1e0"}}})
+    assert bank.freqs_hz == [9e6] and bank.gains_db == {"a": 1.0}
+
+
+def test_the_captured_arguments_hold_the_list_of_numbers() -> None:
+    assert _Bank(freqs_hz=["2400e6"]).__confluid_kwargs__ == {"freqs_hz": [2400e6]}
+
+
 # --- what stays as given ---------------------------------------------------------------------------------------------
 
 
 def test_a_string_field_keeps_its_text() -> None:
     radio = _Radio(label="5e6", either="5e6", flag_or_name="false")
     assert radio.label == "5e6" and radio.either == "5e6" and radio.flag_or_name == "false"
+
+
+def test_a_list_of_strings_keeps_its_text() -> None:
+    bank = _Bank(names=["5e6", "false"], either=["5e6"])
+    assert bank.names == ["5e6", "false"] and bank.either == ["5e6"]
+
+
+def test_a_set_of_number_strings_is_left_as_given() -> None:
+    """A set has no order to pair its elements with the validated ones by — the documented limit."""
+    assert _Bank(ids={"1", "2"}).ids == {"1", "2"}
 
 
 def test_a_number_of_another_type_is_left_alone() -> None:
@@ -142,6 +228,8 @@ def test_a_string_the_schema_refuses_still_raises() -> None:
         _Radio(gain_db="6e1")
     with pytest.raises(ValidationError, match="valid boolean"):
         _Radio(enabled="maybe")
+    with pytest.raises(ValidationError, match="unable to parse string as a number"):
+        _Bank(freqs_hz=["abc"])
 
 
 def test_a_refused_string_under_warn_is_kept_as_given() -> None:
@@ -156,3 +244,4 @@ def test_nothing_is_converted_when_validation_is_off() -> None:
     radio = _Radio()
     configure(radio, config={"_Radio": {"centre_hz": "5240e6"}})
     assert radio.centre_hz == "5240e6"
+    assert _Bank(freqs_hz=["1e6"]).freqs_hz == ["1e6"]

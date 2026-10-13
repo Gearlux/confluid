@@ -13,20 +13,24 @@ All three default to `"strict"` — pydantic `ValidationError` is raised. `"warn
 **A string accepted for a number or a bool becomes that value.** The schema accepts the text of a number for an `int`
 or `float` parameter, and `"true"` / `"false"` (also `"1"` / `"0"`, `"yes"` / `"no"`, `"on"` / `"off"`) for a `bool`
 one; the object then holds the value, never the text — at construction (direct, positional or from a document), on a
-`@configurable` function's call, and through `configure()`. It matters most for YAML, which reads `1e-4` and `40.0e6`
-as text (a YAML 1.1 float needs a dot AND a signed exponent: `1.0e-4`), and for a quoted `"false"`, which as text is
-truthy:
+`@configurable` function's call, and through `configure()`, and at every depth of a plain `list`, `tuple` or `dict`
+(a mapping's keys included). It matters most for YAML, which reads `1e-4` and `40.0e6` as text (a YAML 1.1 float
+needs a dot AND a signed exponent: `1.0e-4`), and for a quoted `"false"`, which as text is truthy:
 
 ```python
 Optimizer(lr="1e-4").lr                       # 0.0001, a float
 load("!class:Optimizer {lr: 1e-4}").lr        # 0.0001 — and dump() writes lr: 0.0001
 Loader(shuffle="false").shuffle               # False, not the truthy text "false"
+load("!class:Bank {freqs: [2400e6, 2480e6]}").freqs   # [2400000000.0, 2480000000.0] for a List[float]
+Bank(gains={"a": "-3e0"}).gains               # {'a': -3.0} for a Dict[str, float]
 ```
 
-Only a string that validated into an `int`, `float` or `bool` is replaced. Everything else reaches the constructor
-exactly as given: a `str` parameter keeps `"5e6"`, a `Union[float, str]` or `Union[bool, str]` keeps its text, an
-`int` passed to a `float` parameter stays an `int`, a value refused under `"warn"` is passed through unchanged, and
-under `"off"` nothing is touched.
+Only a string that validated into an `int`, `float` or `bool` is replaced, and a container keeps the type it was
+given — a list written for a `Tuple[float, float]` parameter stays a list, with its numbers. Everything else reaches
+the constructor exactly as given: a `str` parameter keeps `"5e6"`, a `Union[float, str]` or `Union[bool, str]` keeps
+its text, an `int` passed to a `float` parameter stays an `int`, a value refused under `"warn"` is passed through
+unchanged, and under `"off"` nothing is touched. A `set` has no order to pair its elements by and is left as given,
+as is a container holding a deferred marker (it is validated when the marker is built, not here).
 
 **A class whose schema mirror cannot be built is never blocked — and never silently unvalidated.** If `to_pydantic(cls)` fails (a C-extension constructor with no Python signature, an annotation that cannot be resolved at runtime), the constructor still runs and confluid logs **once per class**, at WARNING: `X: validation is OFF for this class — no schema mirror can be built (IntrospectionError: …)`. Fix the annotation, add the import, or opt the class out explicitly with `@configurable(validate=False)`.
 

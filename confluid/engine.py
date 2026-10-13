@@ -1724,7 +1724,7 @@ def _flow_bare_type(
             raise ConstructionError(
                 f"flow({obj.__name__}, <positional args>) is not supported for a registry-configurable "
                 "class: it materializes through a marker, which carries keyword arguments only. "
-                "Pass the arguments by keyword, or flow a Class/PartialClass marker instead."
+                "Pass the arguments by keyword, or flow a Target/PartialClass marker instead."
             )
         marker = Target(obj)
         marker.kwargs.update(runtime_kwargs)

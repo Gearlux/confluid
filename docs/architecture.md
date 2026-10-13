@@ -2043,7 +2043,7 @@ repair step that re-converts reserved keys after expansion. Pins: the duplicate-
 
 ## 28. A string accepted for a number or a bool reaches the object as that value
 
-*2026-10-03; bools 2026-10-04*
+*2026-10-03; bools 2026-10-04; inside containers 2026-10-13*
 
 **Context.** The constructor wrap validates a call's arguments against `to_pydantic(cls)` and then called the real
 `__init__` with the arguments as given. Pydantic's lax mode accepts the text of a number for an `int` / `float` field
@@ -2052,22 +2052,30 @@ and `"false"` / `"0"` / `"off"` for a `bool` one, so validation passed and the o
 the number case common — `1e-4`, `5220e6` and `40.0e6` are strings to it (a float needs a dot and a signed exponent) —
 so a document that looks numeric built objects holding strings, `dump()` wrote them back as strings, and arithmetic
 failed far from the document (`"5e3" - "1e3"` is a `TypeError`). A value set after construction through
-`configure()` behaved the same.
+`configure()` behaved the same. The first fix read the top-level value only, so the same text one level down —
+`freqs: [2400e6, 2480e6]` for a `List[float]`, the most common number parameter in a signal config — still built a
+list of strings, `span[1] - span[0]` still raised, and `dump()` still wrote the text back.
 
-**Decision.** Validation hands back the conversion it made — for strings that became numbers or bools only.
-`validate_kwargs` returns the kwargs whose `str` value validated into an `int`, `float` or `bool`
-(`validation._accepted_scalar` is the one predicate), the `__init__` and function wrappers rebind those arguments
-(positional ones included) before the call and in the captured `__confluid_kwargs__`, and `validate_setattr` returns
-the value `configure()` sets. Rejected: adopting every value pydantic validated (it would also turn an `int` into a
-`float`, a list into a tuple, a `str` into a `Path` — changes nobody asked for, across every class); reading `1e-4` as
-a float in the loader (YAML 1.2's rule — but then a `str` parameter given `1e3` would be refused, and only documents
-would be fixed, not Python callers); a per-class opt-in.
+**Decision.** Validation hands back the conversion it made — for strings that became numbers or bools only, at any
+depth of a plain `list`, `tuple` or `dict`. `validation._accepted_scalar` is the one leaf predicate (a `str` that
+validated into an `int`, `float` or `bool`); `validation._accepted_value` walks a container beside the value the
+schema validated it into, element by element and key-value pair by pair, replaces those leaves (a mapping's keys
+too) and rebuilds the container AS GIVEN — a list given to a `Tuple` field stays a list — returning the original
+object itself when nothing changed. `validate_kwargs` returns the kwargs whose value changed, the `__init__` and
+function wrappers rebind those arguments (positional ones included) before the call and in the captured
+`__confluid_kwargs__`, and `validate_setattr` returns the value `configure()` sets. Rejected: adopting every value
+pydantic validated (it would also turn an `int` into a `float`, a list into a tuple, a `str` into a `Path` — changes
+nobody asked for, across every class); reading `1e-4` as a float in the loader (YAML 1.2's rule — but then a `str`
+parameter given `1e3` would be refused, and only documents would be fixed, not Python callers); a per-class opt-in;
+pairing a `set`'s elements (it has no order, and `"1"` and `"01"` both validate into `1`).
 
 **Consequences.** A number-like or true/false string can no longer reach a number or bool parameter as text through
-any validated path. What validation did not check is untouched: under `"off"` nothing is converted, a value refused
-under `"warn"` passes as given, and a plain attribute assignment in Python is not confluid's to see. A `str`
-parameter, a `Union[float, str]` or `Union[bool, str]` (pydantic's smart union keeps the exact `str` match) and every
-non-string value keep their identity.
+any validated path, inside a list, tuple or mapping included. What validation did not check is untouched: under
+`"off"` nothing is converted, a value refused under `"warn"` passes as given, a container holding a deferred marker is
+skipped whole (validated at flow time, so never converted here), and a plain attribute assignment in Python is not
+confluid's to see. A `str` parameter, a `Union[float, str]` or `Union[bool, str]` (pydantic's smart union keeps the
+exact `str` match) and every non-string value keep their identity; so does a container the walk cannot pair — a
+`set`, a list or dict subclass, or one the schema resized.
 
 **Example.**
 
@@ -2081,11 +2089,21 @@ Optimizer(lr="1e-4").lr                          # 0.0001 (before: '1e-4')
 Optimizer(nesterov="false").nesterov             # False (before: 'false', truthy)
 load("!class:Optimizer {lr: 1e-4, name: 1e3}")   # lr=0.0001; name='1e3' stays text
 Optimizer(lr=1).lr                               # 1 — an int, as given
+
+@configurable
+class Bank:
+    def __init__(self, freqs: List[float] = None, span: Tuple[float, float] = (0.0, 1.0)) -> None: ...
+
+load("!class:Bank {freqs: [2400e6, 2480e6], span: [1e6, 5e6]}")
+#   freqs=[2400000000.0, 2480000000.0]  (before: ['2400e6', '2480e6'])
+#   span=[1000000.0, 5000000.0]         — the list it was given, not a tuple
+Bank(freqs=[1, "2e0"]).freqs                     # [1, 2.0] — the int stays an int
 ```
 
 **What you may change.** Which validated types count as the value a string stands for — widen `_accepted_scalar`
-only with a measured case. Not: adopting pydantic's coercions for non-strings, or converting where nothing was
-validated. Pin: `tests/test_accepted_strings.py`.
+only with a measured case — and which containers the walk pairs, with a pairing rule that cannot pick the wrong
+element. Not: adopting pydantic's coercions for non-strings, converting where nothing was validated, or changing a
+container's type. Pin: `tests/test_accepted_strings.py`.
 
 ## 29. A class met again while its model is built is a forward reference
 
