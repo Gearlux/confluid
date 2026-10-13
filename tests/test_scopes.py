@@ -5,7 +5,7 @@ Scope wrappers live at an arbitrary key whose VALUE carries a ``!scope:`` /
 hold bare tags); the resolver walks values, finds ``ScopeBlock`` sentinels,
 and splices their contents in place at the wrapper's slot when active.
 
-Covers both YAML tag forms (``!scope:KEY=VAL`` and ``!scope:KEY(VAL)``),
+Covers the YAML tag form (``!scope:KEY=VAL``; the ``KEY(VAL)`` call form is refused),
 boolean and keyed activation, negation with the unset-⇒-active convention,
 aliases, hierarchies, nested scopes, recursive includes, and the standard
 load → dump → load round-trip.

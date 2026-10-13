@@ -10,7 +10,7 @@ These tests assert the convention's interactions WITH confluid's machinery (not 
     cached property (private ``_backing``) materializes once;
   * fully-defaulted constructor params are all optional in the generated pydantic schema.
 
-See confluid ``AGENTS.md`` → "Partial Initialization & Zero-Arg Construction". The reference
+See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction". The reference
 implementation in the workspace is ``recordstream.sources.huggingface.HuggingFaceSource``.
 """
 

@@ -34,6 +34,7 @@ import yaml
 from loggair import get_logger
 
 from confluid.exceptions import ConfigurationError
+from confluid.keys import NOTSCOPE_KEY, PARTIAL_KEY, REF_KEY, SCOPE_KEY, TARGET_KEY
 
 logger = get_logger("confluid.resolver")
 
@@ -100,14 +101,12 @@ def _plain_yaml_for(value: str) -> str:
     Best effort by design: the point is to hand the author the line to write, not
     to be a second parser. An unparseable suffix falls back to naming the keys.
     """
-    from confluid.loader import PARTIAL_KEY, REF_KEY, SCOPE_KEY, TARGET_KEY
-
     prefix = next((m for m in _STRING_MARKERS_ALL if value.startswith(m)), "")
     body = value[len(prefix) :].strip()
     if prefix == "!ref:":
         return f"{{{REF_KEY}: {body}}}" if body else f"{{{REF_KEY}: <path>}}"
     if prefix in ("!scope:", "!notscope:"):
-        key = SCOPE_KEY if prefix == "!scope:" else "_notscope_"
+        key = SCOPE_KEY if prefix == "!scope:" else NOTSCOPE_KEY
         dim, _, val = body.partition("=")
         return f"{{{key}: {{{dim or '<dimension>'}: {val}}}}}"
     call = _TARGET_CALL_RE.match(body)

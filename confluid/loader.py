@@ -22,12 +22,13 @@ import io
 import os
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Literal, Mapping, Optional, Set, Tuple, Union, cast, get_args, overload
+from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple, Union, cast, get_args, overload
 
 import yaml
 from loggair import get_logger
 
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError, ScopeError
+from confluid.keys import _REMOVED_CLONE_KEY, NOTSCOPE_KEY, PARTIAL_KEY, REF_KEY, RESERVED_KEYS, SCOPE_KEY, TARGET_KEY
 from confluid.merger import deep_merge, document_copy, expand_dotted_keys
 from confluid.resolver import (
     _TARGET_CALL_RE,
@@ -193,33 +194,10 @@ class ConfluidLoader(yaml.SafeLoader):
 
 
 # --------------------------------------------------------------------------- #
-# The reserved-key format — plain YAML, no tags
-#
-# ``_target_`` / ``_partial_`` mirror Hydra's vocabulary; ``_ref_`` /
-# ``_scope_`` / ``_notscope_`` are confluid's additions for the constructs Hydra
-# has no equivalent for. A document written this way is ORDINARY
-# YAML — ``yaml.safe_load`` and external tooling (yq, editor schemas) read it,
-# which no tagged document can be. Both spellings produce the SAME Fluid markers,
-# so every downstream pass (includes, scopes, interpolation, broadcasting, flow)
-# is untouched by which one an author used.
+# The reserved-key format — plain YAML, no tags. The key names themselves live in
+# ``confluid.keys`` (a leaf module: the resolver and the dumper take them from
+# there too, record 30); this module is where they are PARSED.
 # --------------------------------------------------------------------------- #
-
-TARGET_KEY = "_target_"
-PARTIAL_KEY = "_partial_"
-REF_KEY = "_ref_"
-#: REMOVED 2026-08-15 (zero users; architecture record 18). Kept in
-#: RESERVED_KEYS on purpose: a mapping carrying it must still reach the marker gate
-#: so it can be REFUSED with a location, instead of loading silently as plain data
-#: with a literal ``_clone_`` key — the degradation this format exists to end.
-_REMOVED_CLONE_KEY = "_clone_"
-SCOPE_KEY = "_scope_"
-NOTSCOPE_KEY = "_notscope_"
-
-#: Every key that turns a plain mapping into a marker. A mapping carrying NONE of
-#: these is an ordinary dict and takes PyYAML's untouched construction path.
-RESERVED_KEYS: FrozenSet[str] = frozenset(
-    {TARGET_KEY, PARTIAL_KEY, REF_KEY, _REMOVED_CLONE_KEY, SCOPE_KEY, NOTSCOPE_KEY}
-)
 
 #: The keys that DECIDE which marker is built. ``_partial_`` is a modifier — it
 #: qualifies a discriminator rather than standing on its own.
@@ -635,8 +613,8 @@ def _register_constructors() -> None:
         dropped whole, and a spaced inline (`!class:Foo(a=1, b=2)` — YAML cuts the tag
         at the space) surfaced much later as `Cannot resolve class: Foo(a=1,`. A
         malformed marker raises a located ConfigurationError at load — that failure
-        mode is precisely what the plain format exists to end, and the AGENTS
-        two-spellings rule names the spaced inline as the motivating failure.
+        mode is precisely what the plain format exists to end, and `docs/architecture.md`
+        record 11 (Context) names the spaced inline as the motivating failure.
         """
         where = _node_where(node, loader)
         if "(" in tag_suffix and instant is None:

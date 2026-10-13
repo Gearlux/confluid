@@ -28,10 +28,11 @@ import yaml
 from loggair import get_logger
 
 from confluid.hydraide import emit
+from confluid.keys import NOTSCOPE_KEY, PARTIAL_KEY, REF_KEY, SCOPE_KEY, TARGET_KEY
 
 logger = get_logger("confluid.spelling")
 
-_RESERVED = ("_target_", "_partial_", "_ref_", "_scope_", "_notscope_")
+_RESERVED = (TARGET_KEY, PARTIAL_KEY, REF_KEY, SCOPE_KEY, NOTSCOPE_KEY)
 #: A value the inline ``(k=v)`` grammar carries verbatim: no space, comma, paren,
 #: quote, brace or colon. Anything else rides a flow-mapping body after the tag.
 _INLINE_SCALAR = re.compile(r"^[A-Za-z0-9_.\-/+]+$")
@@ -177,17 +178,19 @@ def _convert_flow_value(
         )
         return None
 
-    if "_ref_" in keys:
-        others = [(k, v) for k, v in pairs if k != "_ref_"]
+    if REF_KEY in keys:
+        others = [(k, v) for k, v in pairs if k != REF_KEY]
         if others:
-            findings.append(Finding(path, lineno, text.strip(), "_ref_ with kwargs — the tag form takes a bare path"))
+            findings.append(
+                Finding(path, lineno, text.strip(), f"{REF_KEY} with kwargs — the tag form takes a bare path")
+            )
             return None
         if nested:
             return None  # `{a: !ref:x}` does not scan; the mapping form is legal and stays
-        return f"!ref:{dict(pairs)['_ref_'].strip(chr(34) + chr(39))}"  # a quoted flow value unquotes (PA22)
+        return f"!ref:{dict(pairs)[REF_KEY].strip(chr(34) + chr(39))}"  # a quoted flow value unquotes (PA22)
 
-    if "_scope_" in keys or "_notscope_" in keys:
-        skey = "_scope_" if "_scope_" in keys else "_notscope_"
+    if SCOPE_KEY in keys or NOTSCOPE_KEY in keys:
+        skey = SCOPE_KEY if SCOPE_KEY in keys else NOTSCOPE_KEY
         suffix = _scope_suffix(dict(pairs)[skey])
         if suffix is None:
             findings.append(
@@ -201,21 +204,23 @@ def _convert_flow_value(
             )
             return None
         scoped = [(k, v) for k, v in pairs if k != skey]
-        tag = ("!scope:" if skey == "_scope_" else "!notscope:") + suffix
+        tag = ("!scope:" if skey == SCOPE_KEY else "!notscope:") + suffix
         if not scoped:
             return f"{tag} {{}}" if nested else tag
         return f"{tag} {{{', '.join(f'{k}: {v}' for k, v in scoped)}}}"
 
-    if "_target_" not in keys:
-        findings.append(Finding(path, lineno, text.strip(), "_partial_ without _target_ — refused by the loader too"))
+    if TARGET_KEY not in keys:
+        findings.append(
+            Finding(path, lineno, text.strip(), f"{PARTIAL_KEY} without {TARGET_KEY} — refused by the loader too")
+        )
         return None
     as_dict = dict(pairs)
-    target = as_dict["_target_"].strip("\"'")
-    partial = _yaml_true(as_dict.get("_partial_", "false"))
+    target = as_dict[TARGET_KEY].strip("\"'")
+    partial = _yaml_true(as_dict.get(PARTIAL_KEY, "false"))
     tag = ("!partial:" if partial else "!class:") + target
     rest: List[Tuple[str, str]] = []
     for k, v in pairs:
-        if k in ("_target_", "_partial_"):
+        if k in (TARGET_KEY, PARTIAL_KEY):
             continue
         inner = _convert_flow_value(v, findings, path, lineno, text, nested=True)
         rest.append((k, inner if inner is not None else v))
@@ -340,7 +345,7 @@ def to_tags(text: str, *, path: str = "<config>") -> Tuple[str, List[Finding]]:
                     )
                 )
                 continue
-            tag = ("!scope:" if lm.group("key") == "_scope_" else "!notscope:") + suffix
+            tag = ("!scope:" if lm.group("key") == SCOPE_KEY else "!notscope:") + suffix
             replace[i] = f"{lm.group('head')}- {tag}{comment_with_gap}"
             continue
 
@@ -402,17 +407,17 @@ def to_tags(text: str, *, path: str = "<config>") -> Tuple[str, List[Finding]]:
 
         by_key = {k: (j, v) for j, k, v in entries}
         consumed: List[int] = []
-        if "_ref_" in by_key:
+        if REF_KEY in by_key:
             if len(entries) > 1:
                 findings.append(
-                    Finding(path, i + 1, line.strip(), "_ref_ with kwargs — the tag form takes a bare path")
+                    Finding(path, i + 1, line.strip(), f"{REF_KEY} with kwargs — the tag form takes a bare path")
                 )
                 continue
-            j, v = by_key["_ref_"]
+            j, v = by_key[REF_KEY]
             tag = f"!ref:{v.strip().strip(chr(34)).strip(chr(39))}"
             consumed.append(j)
-        elif "_scope_" in by_key or "_notscope_" in by_key:
-            skey = "_scope_" if "_scope_" in by_key else "_notscope_"
+        elif SCOPE_KEY in by_key or NOTSCOPE_KEY in by_key:
+            skey = SCOPE_KEY if SCOPE_KEY in by_key else NOTSCOPE_KEY
             j, v = by_key[skey]
             spec_text = v
             if not v:  # the dimension mapping is written as a block under the _scope_ line
@@ -431,21 +436,21 @@ def to_tags(text: str, *, path: str = "<config>") -> Tuple[str, List[Finding]]:
                     )
                 )
                 continue
-            tag = ("!scope:" if skey == "_scope_" else "!notscope:") + suffix
+            tag = ("!scope:" if skey == SCOPE_KEY else "!notscope:") + suffix
             consumed.append(j)
-        elif "_target_" in by_key:
-            j, v = by_key["_target_"]
+        elif TARGET_KEY in by_key:
+            j, v = by_key[TARGET_KEY]
             target = v.strip().strip("\"'")
             partial = False
             consumed.append(j)
-            if "_partial_" in by_key:
-                pj, pv = by_key["_partial_"]
+            if PARTIAL_KEY in by_key:
+                pj, pv = by_key[PARTIAL_KEY]
                 partial = _yaml_true(pv)
                 consumed.append(pj)
             tag = ("!partial:" if partial else "!class:") + target
         else:
             findings.append(
-                Finding(path, i + 1, line.strip(), "_partial_ without _target_ — refused by the loader too")
+                Finding(path, i + 1, line.strip(), f"{PARTIAL_KEY} without {TARGET_KEY} — refused by the loader too")
             )
             continue
 

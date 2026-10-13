@@ -464,7 +464,7 @@ build.
 Three rules follow, and they are load-bearing together:
 
 1. **Nothing auto-builds a `PartialClass`.** Not the recursive descent of a materialization pass, not the
-   post-init attribute step, not an external deep-flow walker. A bare `Class` stub in the same
+   post-init attribute step, not an external deep-flow walker. A bare `Target` (`!class:`) in the same
    position *is* built eagerly — that difference is the whole distinction between the two markers,
    and it is why a slot needing a runtime argument must be `!lazy:` and not `!class:`.
 2. **An explicit `flow()` builds it, deliberately.** `flow()` means "build this now", so the
@@ -503,7 +503,7 @@ class Trainer:
         self.optimizer = PartialClass(Optimizer, lr=1e-4)   # a default, not a decision
 
 trainer = load("lr: 0.5\nt: !class:Trainer()\n")["t"]
-type(trainer.optimizer)            # Partial — the pass did NOT build it
+type(trainer.optimizer)            # PartialClass — the pass did NOT build it
 trainer.optimizer.kwargs           # {"lr": 0.5} — but it DID configure it
 flow(trainer.optimizer)            # ValueError: Optimizer needs params
 flow(trainer.optimizer, params=p)  # built, at lr=0.5, when the owner has the model
@@ -684,15 +684,34 @@ reproduces the original run.
 
 *Addendum 2026-08-20 — `$$` is the literal-`$` escape (CD10).* Burn-in made a dumped `$NAME`
 re-interpolate on reload, breaking the round-trip rule. `dump()` now emits every `$` as `$$` and
-the loader collapses `$$` to `$` (values via interpolation, mapping keys via the same pass —
-uniform, because a representer cannot tell keys from values). One spelling, borrowed from the
-compose convention, no new resolution semantics.
+loading collapses `$$` back to `$` — values and mapping keys alike, uniform because a
+representer cannot tell keys from values; where the collapse happens is the 2026-08-22 addendum
+below. One spelling, borrowed from the compose convention, no new resolution semantics.
 
 **What you may change.** Not to a full `load(until="settled")` of kwargs (it changes when deferred values
 bind), and not to flow-time substitution (it re-opens the two-answers problem as a
 *when*-you-flow dependence). A memoized-copy variant — one copy per marker per pass, preserving
 aliasing — is an acceptable refinement if in-place mutation of hand-built templates ever bites
 in practice.
+
+*Addendum 2026-08-22 — the escape collapses once, where the document becomes objects.* The
+first placement collapsed `$$` during interpolation, which made the document stage
+non-idempotent: `load(load(x, until="document"))` re-expanded a `$NAME` the first call had just
+un-escaped. And the key half lived in the plain-dict branch only, so a dict inside a marker's
+kwargs kept its `$$`. Pass 6 now leaves `$$` exactly as written (each side of a `$$` split
+interpolates on its own and the parts are re-joined with `$$`), and the collapse happens ONCE,
+at the boundary where the document becomes objects: `engine.collapse_escapes` in `instantiate`
+(keys and values, any depth, marker kwargs included) and in `configure()` after its settle.
+`hydraide.emit` collapses the settled tree before `dump()`, which escapes every `$` again, so
+the emitted file carries `$$`. The resolver never collapses, and `dump()` takes no parameter
+for it.
+
+```python
+doc = 'cmd: "echo $$HOME"\n'
+load(doc, until="document")                       # {'cmd': 'echo $$HOME'}  — and again on its own output
+load(doc)                                         # {'cmd': 'echo $HOME'}
+dump(load('j: !class:Job {cmd: "echo $$HOME"}\n')["j"])   # cmd: echo $$HOME
+```
 
 ---
 
@@ -792,7 +811,7 @@ compatibility commitment either way.
 | Tier | Members | Why kept |
 |---|---|---|
 | **Escape hatches** — value is existence, not usage | `!notscope:`, `NoBroadcast[T]`, `broadcast=False`, `capture=False` | the design's default posture (cascade-on, capture-on, positive scopes) is safe only while the opt-out exists; `!notscope:` additionally defines the declared-value check's third exemption (record 1) |
-| **Awaiting their consumer** | `@axis=value` / `$key` selectors, `eager=`, `constant=` | built for recurring situations (a real registry collision in a config; the next plain-constructor class; the next pure value producer); the first real user activates them, and the consuming machinery for `constant=` already ships in a visual editor |
+| **Awaiting their consumer** | `@axis=value` / `$key` selectors, `eager=` | built for recurring situations (a real registry collision in a config; the next plain-constructor class); the first real user activates them |
 | **Review at 1.0** | `${dotted.key}` config-path interpolation, `strict_typing=` | no escape-hatch or consumer-in-waiting argument on file; if still unused when 1.0 approaches, these are the prune candidates |
 
 **Consequences.** An audit that greps a census member and finds zero users STOPS HERE — a new
@@ -803,9 +822,9 @@ own entry with a tier and a reason, added when it ships.
 **Example.** The shape of a census hit in an audit report:
 `!notscope:` — zero configs → census tier "escape hatch" (record 10) → no finding.
 
-**What you may change.** The tier of a member, with evidence (a `constant=` producer shipping
-moves it out entirely). The 1.0 trigger date, never the existence of a trigger — an undated
-"someday" is how the census would rot back into per-audit re-litigation.
+**What you may change.** The tier of a member, with evidence (a shipping user moves a member out
+entirely). The 1.0 trigger date, never the existence of a trigger — an undated "someday" is how
+the census would rot back into per-audit re-litigation.
 
 ---
 
@@ -1867,3 +1886,308 @@ load(graph / "flow.yaml", until="document")            # ConfigFileNotFoundError
 must read through `_held_text` too, or it silently reads the disk behind the caller's back. What
 must not come back: writing a held text to disk so a load can see it, a second identity for a file
 (keys are resolved paths, full stop), or held texts outliving the call that received them.
+
+---
+
+## 26. An annotation reaches a reader as a type or `Any` — never as text
+
+*2026-08-13; nested forward references 2026-08-20*
+
+**Context.** Every slot reader asks a question OF an annotation: is this slot deferred
+(`Partial[T]`)? mandatory? does it take a list or a mapping? Two spellings put a *string* where
+a type belongs, and both reached the readers as text:
+
+- a **quoted** annotation (`thing: "Thing"`, or a body slot `self.x: "Optional[str]"`) — its
+  AST node is a string constant, so evaluating it returned the text, and the forward-reference
+  check let a plain `str` through;
+- **PEP 563** (`from __future__ import annotations`) turns every annotation in a module into a
+  string, and `typing.get_type_hints` is all-or-nothing: one name imported only under
+  `TYPE_CHECKING` made it raise, and every parameter of the class fell back to its raw string.
+
+A string answers *no* to every question a reader asks, and nothing raises. So one unrelated
+unresolvable name cost a whole class its deferral marks and its container routing: a deferred
+optimizer slot was built eagerly, an addressed list was refused. The same failure had two more
+homes: `marked_param_names` ran its own `get_type_hints`, and a forward reference nested in a
+subscript (`Partial["Optim"]`) is never a plain string, so the quoted-annotation path never
+fired for it.
+
+**Decision.** `introspect.resolve_string_annotation` is the one resolver for both spellings,
+with the scope and the degradation `resolve_ast_annotation` already had: each annotation
+resolves in the defining function's globals or degrades to `Any`; it never comes back as a
+`str`. `marked_param_names` projects from `slots()` (filtered to `source == "signature"`)
+instead of reading hints itself — record 12's one enumeration, applied to the last private
+read. A forward reference nested in a subscript is evaluated in the same scope before degrading
+(`_evaluate_forwardrefs`, through `get_type_hints` on a probe function, extras kept). And
+`resolve_ast_annotation` unwraps (`inspect.unwrap`) before reading `__globals__`: the validation
+wrapper's globals are confluid's own, and reading them typed every body slot `Any`.
+
+**Consequences.**
+
+- An unresolvable name costs only its own slot: that slot becomes `Any` (no deferral mark, no
+  container routing), and every other slot of the class keeps its type.
+- `slots()` is best-effort by design; `to_pydantic` keeps its documented contract and raises
+  `IntrospectionError` (its probe still calls `get_type_hints`). For the example below:
+  `IntrospectionError: Cannot introspect Trainer.__init__: name 'Thing' is not defined`, so the
+  class constructs with validation OFF and says so once at WARNING (see [Validation](validation.md)).
+- A body slot spelled identically to a constructor parameter gets the same answer, deferral
+  included.
+
+**Example.**
+
+```python
+from __future__ import annotations                 # every annotation below is a string
+
+from typing import TYPE_CHECKING, List, Optional
+from confluid import Partial, configurable
+
+if TYPE_CHECKING:
+    from heavy_dependency import Thing             # importable only for the type checker
+
+class Optim: ...
+
+@configurable
+class Trainer:
+    def __init__(self, optimizer: Partial[Optim] = None, thing: Optional[Thing] = None,
+                 layers: List[int] = None) -> None: ...
+
+partial_param_names(Trainer)                       # {'optimizer'}
+{s.name: s.annotation for s in slots(Trainer)}
+# optimizer -> Annotated[Union[Optim, Fluid], '__confluid_partial__']
+# thing     -> Any            (unresolvable: degraded, alone)
+# layers    -> List[int]
+```
+
+**What you may change.** The scope an annotation resolves in (adding a namespace, say), as long
+as both spellings keep going through the one resolver. What must not come back: a reader that
+calls `get_type_hints` privately, or any path on which an annotation reaches a reader as a `str`.
+Pins: the string-annotation group in `tests/test_introspect.py` (fixtures in
+`tests/pep563_helpers.py`), incl. `::test_one_unresolvable_hint_does_not_punish_the_whole_signature`
+and `::test_a_quoted_forward_ref_INSIDE_a_subscript_keeps_the_deferral`;
+`tests/test_pydantic_export.py::test_an_unresolvable_annotation_still_raises_introspection_error`.
+
+---
+
+## 27. A key shape that would load as silent data is refused at parse time, at one site
+
+*2026-08-15; extended 2026-08-20*
+
+**Context.** The reserved-key format exists to end silent degradation (record 11): a malformed
+marker raises instead of loading as something plausible. Several key SHAPES still slipped
+through, each loading as data with no error:
+
+- **A duplicate key.** PyYAML keeps the last value. Two `include:` lines lost a whole file, and
+  the surviving key sat at the FIRST occurrence's position, which inverted the later-line-wins
+  rule.
+- **A reserved key inside a dotted key** (`model._target_: Box`). The conversion to markers runs
+  while the YAML is parsed and dotted keys are expanded afterwards, so `_target_` ended up as a
+  literal key of a plain dict.
+- **`_partial_` beside `_ref_` / `_scope_` / `_notscope_`.** Each of those discriminators returns
+  before the `_target_` branch reads the modifier, so it was dropped and the node flowed EAGERLY.
+- **A `<<:` merge from a tag-spelled anchor.** A YAML merge copies keys, never a tag, so the
+  merged node loaded as an inert dict, while the same merge from a reserved-key anchor became a
+  marker.
+- **An empty dotted segment** (`a..b`) minted a `''` key nothing can address.
+
+**Decision.** Refuse each shape with a located `ConfigurationError`, at ONE site:
+`loader._refuse_malformed_keys`. Both mapping constructors call it — `map_constructor` for
+untagged mappings (before the fast path to PyYAML), and `_str_keyed_mapping`, the one helper the
+four tag constructors share — so the two spellings cannot drift apart. The `_partial_` check sits
+in `_reserved_to_marker` right after the discriminator is chosen, before the per-discriminator
+branches. Two identity rules keep the duplicate check honest: a key is `(tag, value)`, so `1:`
+and `"1":` are different keys; and merge keys are skipped, because a merged key the node also
+writes literally is an override, not a duplicate.
+
+Repair was rejected. Re-converting a reserved key after dotted expansion would be a second
+conversion site (record 11 allows exactly one), and a marker built there has no YAML node, so
+every later error about it would lose its `file:line:col`.
+
+**Consequences.**
+
+- A document is valid or invalid independently of the run's `--scope`: the refusals are
+  parse-time, so an inactive scope block is checked too.
+- The false-positive guards are pinned beside each refusal: only the six reserved names are
+  special (`model._custom_: 3` and `model.size: 3` load), a dotted kwarg merging into a marker
+  written as a nested block still builds, and a scope block without `_partial_` is untouched.
+- A dotted write INTO a list (`a.0: 99`) is not a key shape the parser can see; it is refused at
+  expansion, in `merger.expand_dotted_mapping`.
+
+**Example.**
+
+```yaml
+include: a.yaml
+lr: 0.1
+include: b.yaml     # duplicate key 'include' at main.yaml:3:1 (first written at line 1) …
+                    #   write ONE key with a list: include: [a.yaml, b.yaml]
+```
+
+```yaml
+model._target_: Box   # 'model._target_' at main.yaml:1:1 puts the reserved key '_target_'
+                      #   inside a DOTTED key … write it as a nested block instead
+```
+
+```yaml
+opt:
+  _ref_: proto
+  _partial_: true     # _partial_ only modifies _target_, but this mapping carries _ref_ —
+                      #   put it on the node _ref_ points at (at main.yaml:2:3)
+```
+
+**What you may change.** The wording of each message, and the set of refused shapes — a new
+key-shape rule is added inside `_refuse_malformed_keys`. What must not come back: a refusal added
+to one caller only, a mapping-building constructor that bypasses `_str_keyed_mapping`, or a
+repair step that re-converts reserved keys after expansion. Pins: the duplicate-key group in
+`tests/test_loader.py`; the P16, P10 and merge-key groups in `tests/test_plain_format.py`;
+`tests/test_loader.py::test_an_empty_dotted_segment_is_refused`;
+`tests/test_plain_format.py::test_a_merge_from_a_TAG_spelled_anchor_is_refused`;
+`tests/test_merger.py::test_a_dotted_write_into_a_list_is_refused`.
+
+## 28. A string accepted for a number or a bool reaches the object as that value
+
+*2026-10-03; bools 2026-10-04; inside containers 2026-10-13*
+
+**Context.** The constructor wrap validates a call's arguments against `to_pydantic(cls)` and then called the real
+`__init__` with the arguments as given. Pydantic's lax mode accepts the text of a number for an `int` / `float` field
+and `"false"` / `"0"` / `"off"` for a `bool` one, so validation passed and the object held the text:
+`Optimizer(lr="1e-4").lr == "1e-4"`, `Loader(shuffle="false").shuffle == "false"` — which is truthy. YAML 1.1 makes
+the number case common — `1e-4`, `5220e6` and `40.0e6` are strings to it (a float needs a dot and a signed exponent) —
+so a document that looks numeric built objects holding strings, `dump()` wrote them back as strings, and arithmetic
+failed far from the document (`"5e3" - "1e3"` is a `TypeError`). A value set after construction through
+`configure()` behaved the same. The first fix read the top-level value only, so the same text one level down —
+`freqs: [2400e6, 2480e6]` for a `List[float]`, the most common number parameter in a signal config — still built a
+list of strings, `span[1] - span[0]` still raised, and `dump()` still wrote the text back.
+
+**Decision.** Validation hands back the conversion it made — for strings that became numbers or bools only, at any
+depth of a plain `list`, `tuple` or `dict`. `validation._accepted_scalar` is the one leaf predicate (a `str` that
+validated into an `int`, `float` or `bool`); `validation._accepted_value` walks a container beside the value the
+schema validated it into, element by element and key-value pair by pair, replaces those leaves (a mapping's keys
+too) and rebuilds the container AS GIVEN — a list given to a `Tuple` field stays a list — returning the original
+object itself when nothing changed. `validate_kwargs` returns the kwargs whose value changed, the `__init__` and
+function wrappers rebind those arguments (positional ones included) before the call and in the captured
+`__confluid_kwargs__`, and `validate_setattr` returns the value `configure()` sets. Rejected: adopting every value
+pydantic validated (it would also turn an `int` into a `float`, a list into a tuple, a `str` into a `Path` — changes
+nobody asked for, across every class); reading `1e-4` as a float in the loader (YAML 1.2's rule — but then a `str`
+parameter given `1e3` would be refused, and only documents would be fixed, not Python callers); a per-class opt-in;
+pairing a `set`'s elements (it has no order, and `"1"` and `"01"` both validate into `1`).
+
+**Consequences.** A number-like or true/false string can no longer reach a number or bool parameter as text through
+any validated path, inside a list, tuple or mapping included. What validation did not check is untouched: under
+`"off"` nothing is converted, a value refused under `"warn"` passes as given, a container holding a deferred marker is
+skipped whole (validated at flow time, so never converted here), and a plain attribute assignment in Python is not
+confluid's to see. A `str` parameter, a `Union[float, str]` or `Union[bool, str]` (pydantic's smart union keeps the
+exact `str` match) and every non-string value keep their identity; so does a container the walk cannot pair — a
+`set`, a list or dict subclass, or one the schema resized.
+
+**Example.**
+
+```python
+@configurable
+class Optimizer:
+    def __init__(self, lr: float = 1e-3, name: str = "sgd", nesterov: bool = False) -> None:
+        self.lr, self.name, self.nesterov = lr, name, nesterov
+
+Optimizer(lr="1e-4").lr                          # 0.0001 (before: '1e-4')
+Optimizer(nesterov="false").nesterov             # False (before: 'false', truthy)
+load("!class:Optimizer {lr: 1e-4, name: 1e3}")   # lr=0.0001; name='1e3' stays text
+Optimizer(lr=1).lr                               # 1 — an int, as given
+
+@configurable
+class Bank:
+    def __init__(self, freqs: List[float] = None, span: Tuple[float, float] = (0.0, 1.0)) -> None: ...
+
+load("!class:Bank {freqs: [2400e6, 2480e6], span: [1e6, 5e6]}")
+#   freqs=[2400000000.0, 2480000000.0]  (before: ['2400e6', '2480e6'])
+#   span=[1000000.0, 5000000.0]         — the list it was given, not a tuple
+Bank(freqs=[1, "2e0"]).freqs                     # [1, 2.0] — the int stays an int
+```
+
+**What you may change.** Which validated types count as the value a string stands for — widen `_accepted_scalar`
+only with a measured case — and which containers the walk pairs, with a pairing rule that cannot pick the wrong
+element. Not: adopting pydantic's coercions for non-strings, converting where nothing was validated, or changing a
+container's type. Pin: `tests/test_accepted_strings.py`.
+
+## 29. A class met again while its model is built is a forward reference
+
+*2026-10-04; resolved in the models' own module 2026-10-13*
+
+**Context.** `to_pydantic` builds a class's model by converting each parameter's annotation, and a parameter typed
+with another `@configurable` class becomes `Union[TheClass, to_pydantic(TheClass)]`. A model reached the cache only
+when its build finished, so a field naming its own class — a tree node's `children: Optional[List["Node"]]` — started
+the same build again, and again, until Python's stack ran out (`RecursionError`). Two classes holding each other did
+the same. The failure was wide: `model_json_schema()` of the class and of every class holding it raised, and the
+constructor-validation hook, which catches a mirror that cannot be built, silently stopped validating them.
+
+**Decision.** The classes whose model is being built are tracked (`_IN_FLIGHT`); meeting one of them again names its
+model by a `ForwardRef` unique to the class, instead of building it. Every generated model is created in the module
+`confluid._models` (its `__module__`), and a finished build registers its model there under that reference — the
+namespace pydantic's own `model_rebuild()` resolves a forward reference in, so no private pydantic argument carries
+it. The model waits (`_WAITING`) until `model_rebuild()` resolves every reference it holds; only then is it published
+to the lock-free cache. Rejected: returning the in-flight model class itself (it does not exist until `create_model`
+returns); handing the references to `model_rebuild` through its private `_types_namespace` parameter (the first fix
+did — pydantic may drop the parameter in any 2.x release, and the day it does every recursive class fails, measured
+2026-10-13 as `TypeError` from `to_pydantic` and `PydanticUserError: NodeConfig is not fully defined` from the
+constructor); names in `pydantic_export`'s own namespace (a real module's globals should not grow generated names,
+which is why `_models` holds nothing else); a depth limit (a schema cut at depth N is a different schema).
+
+**Consequences.** A recursive class has a finite schema (`$defs` holding its model once, a `$ref` to itself) and
+validates a nested document at every depth; its constructor is validated again. Another thread never receives a model
+that cannot validate yet: a waiting model is visible only to the build holding the lock (the reentrant re-entry of a
+nested field). A failure after the build — pydantic refusing to resolve the references — is treated like a failed
+build: the waiting models and their names are dropped, the next call builds afresh, and meanwhile the constructor
+degrades to validation off with one WARNING (never a half-built model handed out as finished, which the first fix
+did). A generated model reports `__module__ == "confluid._models"`.
+
+**Example.**
+
+```python
+@configurable
+class Node:
+    def __init__(self, value: int = 0, children: Optional[List["Node"]] = None) -> None:
+        self.value, self.children = value, children
+
+Model = to_pydantic(Node)                                    # before: RecursionError
+Model(children=[{"value": 2, "children": [{"value": 3}]}])   # validates every level
+Node(children=[Node(), "not a node"])                        # ValidationError — the constructor is checked again
+```
+
+**What you may change.** How the reference is spelled, and the module that holds it. Not: publishing a model before
+its references resolve, a second build of a class while its first is in flight, or a private pydantic parameter.
+Pins: `tests/test_pydantic_export.py` (the four cycle tests,
+`::test_a_reference_resolves_through_pydantic_public_api_only`,
+`::test_the_models_live_in_confluid_models_and_name_their_references`,
+`::test_a_failed_publish_leaves_nothing_waiting_and_the_constructor_degrades`).
+
+## 30. The reserved key names live in a leaf module
+
+*2026-10-13*
+
+**Context.** The loader parses the reserved keys (`_target_`, `_partial_`, `_ref_`, `_scope_`, `_notscope_`, and
+the removed `_clone_` it still refuses), and it imports the resolver at the top of the file. The resolver (a quoted
+marker's refusal names the plain spelling to write) and the dumper (a dump emits the plain spelling) need the same
+names, and the only way to take them from `loader` without a circular import was a function-local import — three of
+them, in two modules, existing for four strings. A function-local import is the workspace's escape hatch for a real
+cycle; here the cycle was manufactured by where the strings lived.
+
+**Decision.** `confluid.keys` holds the names and `RESERVED_KEYS`, and imports nothing from confluid. The loader,
+the resolver and the dumper import from it at the top of the file; the loader keeps what is about PARSING the keys
+(`_DISCRIMINATORS`, the marker gate, the refusals). Rejected: leaving the lazy imports (each one is a line a reader
+must explain, and the explanation was "to dodge the loader"); moving the names into `fluid` (the markers do not own
+their YAML spelling — `spelling` and `hydraide` convert between two spellings of the same marker).
+
+**Consequences.** `resolver` and `dumper` no longer import `loader` at all. The names have one home, so a literal
+`"_notscope_"` in the resolver's refusal became `NOTSCOPE_KEY`. The names stay reachable as `confluid.loader.TARGET_KEY`
+because the loader imports them, not because it defines them. No module but `keys` writes a reserved key as a string
+literal any more — `spelling` (its `_RESERVED` tuple and every comparison), `pydantic_export` (the plain-marker form)
+and `fluid` (a scope block's `repr`) spell them by the constant, pinned by a token scan of the package.
+
+**Example.**
+
+```python
+from confluid.keys import RESERVED_KEYS, TARGET_KEY
+
+RESERVED_KEYS                 # frozenset({'_target_', '_partial_', '_ref_', '_clone_', '_scope_', '_notscope_'})
+{TARGET_KEY: "pkg.Model"}     # the plain spelling the dumper writes and the resolver names in a refusal
+```
+
+**What you may change.** The set of names, together with the loader's gate that reads it. What must not come
+back: an import of anything confluid into `keys`, a function-local import of `loader` in a module below it, or a
+reserved key written as a string literal outside `keys`. Pin: `tests/test_layering.py`.
