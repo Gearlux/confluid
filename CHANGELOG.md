@@ -4,6 +4,34 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
+## [0.4.1] - 2026-10-13
+
+### Fixed
+
+- **A class that contains itself has a model.** `to_pydantic` built a field naming its own class (a tree node's
+  `children: Optional[List["Node"]]`) or two classes holding each other by building the same model again, until
+  Python's stack ran out: `to_pydantic(Node)` raised `RecursionError`, so `model_json_schema()` failed for the class
+  and every class holding it, and constructor validation was silently off for them. Now the second visit names the
+  model by a forward reference, resolved once the model is built: the schema is finite (`$defs` with a `$ref` to
+  itself), a nested document validates at every depth, and the constructor is validated again. A model is handed out
+  only once every reference it holds resolves, so the lock-free cache never returns one that cannot validate yet —
+  and a failure while resolving drops the waiting models, so a later call builds afresh instead of receiving a
+  half-built model. The references resolve through pydantic's public `model_rebuild()`, in the module every generated
+  model now lives in: a model's `__module__` reads `confluid._models` (it read `confluid.pydantic_export`).
+
+- **A string accepted for a number or a bool becomes that value.** Validation accepted the text of a number for an
+  `int` or `float` parameter, and `"false"` for a `bool` one, but passed the text on, so the object held a string:
+  `Optimizer(lr="1e-4").lr` was `'1e-4'`, a YAML `lr: 1e-4` (text to YAML 1.1, which needs `1.0e-4`) built the same,
+  `dump()` wrote it back as text, a `@configurable` function computing `high - low` from `"5e3"` and `"1e3"` raised
+  `TypeError`, and `Loader(shuffle="false").shuffle` was the truthy text `'false'`. The same text inside a container
+  did the same: a YAML `freqs: [2400e6, 2480e6]` for a `List[float]` built `['2400e6', '2480e6']`. Now the
+  constructor, the function and `configure()` receive the value (`0.0001`, `False`, `[2400000000.0, 2480000000.0]`),
+  at every depth of a plain `list`, `tuple` or `dict` (a mapping's keys too), and the captured constructor arguments
+  hold it. Only a string that validated into an `int`, `float` or `bool` is replaced, and a container keeps the type
+  it was given (a list written for a `Tuple` field stays a list): a `str` parameter, a `Union[float, str]` or
+  `Union[bool, str]`, an `int` given to a `float`, a `set` (no order to pair its elements by), a value refused under
+  `"warn"` and every value under `"off"` are passed exactly as given.
+
 ## [0.4.0] - 2026-09-30
 
 ### Added

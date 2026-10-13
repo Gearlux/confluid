@@ -14,7 +14,7 @@ the lazy-init/zero-arg convention. These tests pin the three pillars:
     staleness warning — a post-construction setattr of a ctor param cannot
     re-run the ``__init__`` work.
 
-See confluid ``AGENTS.md`` → "Partial Initialization & Zero-Arg Construction"
+See confluid ``AGENTS.md`` → "Lazy Initialization & Zero-Arg Construction"
 (the convention remains the workspace mandate; eager classes are the
 supported alternative for plain-Python consumers) and ``docs/eager-classes.md``.
 """

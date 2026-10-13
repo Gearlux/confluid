@@ -1,6 +1,6 @@
 """Last spec wins — the ONE precedence rule, across every spelling.
 
-Confluid's stated rule (AGENTS.md → "Flat-View Ordered Matching"): values are
+Confluid's stated rule (AGENTS.md → "Precedence & broadcasting", architecture record 3): values are
 applied in document order and the last write wins. There is no
 "explicit kwargs > broadcast" priority and no specificity tiers — a key aimed at
 a node and a key broadcasting past it are ordered by POSITION alone.

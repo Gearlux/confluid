@@ -456,7 +456,7 @@ def _set(obj: Any, attr: str, value: Any, label: str, eager_params: Set[str], re
             f"__init__ work will NOT re-run; derived state may be stale"
         )
     try:
-        detail = validate_setattr(obj.__class__, attr, value, get_policy().init)
+        value, detail = validate_setattr(obj.__class__, attr, value, get_policy().init)
     except Exception as exc:  # strict mode — record, then let it propagate
         report.record_failed(attr, label, "validation", str(exc))
         raise

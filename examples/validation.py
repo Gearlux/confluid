@@ -1,8 +1,9 @@
 """Validation policies — companion to ``docs/validation.md``.
 
 Strict constructor validation (the default), relaxing one point to ``"warn"``,
-tightening a range with ``Annotated[..., Field(...)]``, and the per-class
-``validate=False`` opt-out. Requires the ``confluid[pydantic]`` extra.
+tightening a range with ``Annotated[..., Field(...)]``, the per-class
+``validate=False`` opt-out, and an accepted string for a number or a bool
+becoming that value. Requires the ``confluid[pydantic]`` extra.
 """
 
 from typing import Annotated, Any
@@ -35,6 +36,17 @@ class Classifier:
             num_classes: Number of classes — must be >= 1.
         """
         self.num_classes = num_classes
+
+
+@configurable
+class Loader:
+    def __init__(self, shuffle: bool = True) -> None:
+        """A typed data-loader config.
+
+        Args:
+            shuffle: Whether to shuffle the records each epoch.
+        """
+        self.shuffle = shuffle
 
 
 @configurable(validate=False)
@@ -72,6 +84,15 @@ def main() -> None:
     # 4. validate=False: intentionally untyped constructors skip validation entirely.
     thing = ExperimentalThing(anything="goes", even=object())
     print(f"validate=False accepted arbitrary kwargs: {sorted(thing.kwargs)}")
+
+    # 5. A string accepted for a number or a bool becomes that value — YAML reads 1e-4 as text, and the text
+    #    "false" is truthy.
+    accepted = Optimizer(lr="1e-4")  # type: ignore[arg-type]
+    assert accepted.lr == 1e-4 and type(accepted.lr) is float
+    print(f"the accepted string '1e-4' became lr={accepted.lr!r}")
+    loader = Loader(shuffle="false")  # type: ignore[arg-type]
+    assert loader.shuffle is False
+    print(f"the accepted string 'false' became shuffle={loader.shuffle!r}")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@ from typing import Any, Callable, Dict, FrozenSet, Generic, Optional, Tuple, Uni
 
 from typing_extensions import TypeVar
 
+from confluid.keys import NOTSCOPE_KEY, SCOPE_KEY
+
 YamlLoc = Tuple[Optional[str], int, int]
 """``(filename or None, line, column)`` — 1-based YAML source location."""
 
@@ -223,7 +225,7 @@ class ScopeBlock:
         self._yaml_loc: Optional[YamlLoc] = None
 
     def __repr__(self) -> str:
-        marker = "_notscope_" if self.negate else "_scope_"
+        marker = NOTSCOPE_KEY if self.negate else SCOPE_KEY
         spec = ", ".join(k if v is None else f"{k}: {v}" for k, v in self.dims.items())
         return f"{marker}: {{{spec}}} {self.contents!r}"
 

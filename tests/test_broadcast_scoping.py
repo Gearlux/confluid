@@ -583,7 +583,7 @@ group:
       name: inner
 """
     result = load(doc)
-    # _deep_flow only builds top-level markers; the group-nested marker keeps
+    # liquifai.di.deep_flow only builds top-level markers; the group-nested marker keeps
     # its broadcast-merged kwargs and builds on an explicit flow().
     node = flow(result["group"]["node"])
     assert node.lr == 0.4

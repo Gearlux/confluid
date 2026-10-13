@@ -1129,3 +1129,160 @@ def test_a_marker_default_with_non_json_kwargs_is_excluded_silently() -> None:
         schema = to_pydantic(HostN15).model_json_schema()
     assert "default" not in schema["properties"]["sink"]
     assert not [w for w in caught if "not JSON serializable" in str(w.message)]
+
+
+# ---- a class that contains itself ----------------------------------------------------------------------------------
+
+
+@configurable
+class TreeNodeR1:
+    """A tree node: its value and its children, nodes of its own class.
+
+    Args:
+        value: The node's value.
+        children: Its children; ``None`` = none.
+    """
+
+    def __init__(self, value: int = 0, children: Optional[List["TreeNodeR1"]] = None) -> None:
+        self.value = value
+        self.children = children
+
+
+@configurable
+class PingR1:
+    """Holds a ``PongR1``, which holds a ``PingR1``: two classes that refer to each other."""
+
+    def __init__(self, pong: Optional["PongR1"] = None, spare: Optional["PongR1"] = None) -> None:
+        self.pong = pong
+        self.spare = spare
+
+
+@configurable
+class PongR1:
+    """The other half of the cycle."""
+
+    def __init__(self, ping: Optional[PingR1] = None, depth: int = 0) -> None:
+        self.ping = ping
+        self.depth = depth
+
+
+def test_a_class_that_contains_itself_has_a_finite_model() -> None:
+    """A field naming its own class (a tree's children) is a reference to the model being built, resolved once it is
+    built — not a second build of the same class, which recursed until Python's stack ran out (RecursionError)."""
+    model = to_pydantic(TreeNodeR1)
+    schema = model.model_json_schema()
+    assert "$defs" in schema or "$ref" in str(schema["properties"]["children"])
+    tree = model(value=1, children=[{"value": 2, "children": [{"value": 3}]}])
+    assert tree.children[0].children[0].value == 3
+    assert model(children=[TreeNodeR1(value=4)]).children[0].value == 4  # the live class is accepted as before
+    with pytest.raises(ValidationError):
+        model(children=[{"value": "not a number"}])
+    # the constructor is validated against the mirror again, at every depth
+    with pytest.raises(ValidationError):
+        TreeNodeR1(children=[TreeNodeR1(), "not a node"])  # type: ignore[list-item]
+
+
+def test_two_classes_that_refer_to_each_other_share_their_models() -> None:
+    """``PingR1`` holds a ``PongR1`` holding a ``PingR1``: each model is the one ``to_pydantic`` hands out for its
+    class, and both validate a nested document."""
+    ping, pong = to_pydantic(PingR1), to_pydantic(PongR1)
+    nested = ping(pong={"ping": {"pong": {"depth": 2}}, "depth": 1})
+    assert nested.pong.depth == 1 and nested.pong.ping.pong.depth == 2
+    assert isinstance(nested.pong, pong) and isinstance(nested.pong.ping, ping)
+    assert to_pydantic(PongR1) is pong
+    # the second field naming PongR1 met it waiting for PingR1, and took the same model
+    assert isinstance(ping(spare={"depth": 3}).spare, pong)
+    assert set(ping.model_json_schema()["$defs"]) >= {"PongR1Config"}
+
+
+def test_only_finished_models_are_handed_out() -> None:
+    """A model waiting for a class still being built is never published: the lock-free cache holds finished models
+    only, so another thread can never receive one that cannot validate yet."""
+    from confluid.pydantic_export import _MODEL_CACHE
+
+    to_pydantic(PingR1)
+    assert all(model.__pydantic_complete__ for model in _MODEL_CACHE.values())
+
+
+@configurable
+class BrokenLeafR1:
+    """A class whose annotation names nothing: its mirror cannot be built."""
+
+    def __init__(self, x: "NoSuchTypeR1" = None) -> None:  # type: ignore[name-defined]  # noqa: F821
+        self.x = x
+
+
+@configurable
+class HoldsBrokenR1:
+    """Holds a tree and a class whose mirror cannot be built."""
+
+    def __init__(self, tree: Optional[TreeNodeR1] = None, broken: Optional[BrokenLeafR1] = None) -> None:
+        self.tree = tree
+        self.broken = broken
+
+
+def test_a_failed_build_leaves_nothing_waiting() -> None:
+    """A build that fails inside a nested class raises naming it, and leaves no half-built model behind: the next
+    call builds afresh."""
+    from confluid import IntrospectionError
+    from confluid.pydantic_export import _IN_FLIGHT, _WAITING
+
+    to_pydantic.cache_clear()
+    with pytest.raises(IntrospectionError, match="BrokenLeafR1"):
+        to_pydantic(HoldsBrokenR1)
+    assert not _IN_FLIGHT and not _WAITING
+    assert to_pydantic(TreeNodeR1)(children=[{"value": 1}]).children[0].value == 1
+
+
+def test_a_reference_resolves_through_pydantic_public_api_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The forward reference a cycle names a model by resolves in the model's own module, so ``model_rebuild()`` is
+    called with its public parameters only — a pydantic offering nothing but those still builds the cycle."""
+    original = BaseModel.model_rebuild.__func__  # type: ignore[attr-defined]
+
+    def public_only(cls: type, *, force: bool = False, raise_errors: bool = True) -> Optional[bool]:
+        return original(cls, force=force, raise_errors=raise_errors)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(BaseModel, "model_rebuild", classmethod(public_only))
+    to_pydantic.cache_clear()
+    ping = to_pydantic(PingR1)
+    assert ping.__pydantic_complete__ and to_pydantic(PongR1).__pydantic_complete__
+    assert ping(pong={"ping": {"pong": {"depth": 2}}}).pong.ping.pong.depth == 2
+
+
+def test_the_models_live_in_confluid_models_and_name_their_references() -> None:
+    """Every generated model's ``__module__`` is ``confluid._models``, and the name a cycle refers to a model by is an
+    attribute of that module while the model is cached; ``cache_clear`` removes the names with the models."""
+    from confluid import _models
+    from confluid.pydantic_export import _reference
+
+    to_pydantic.cache_clear()
+    model = to_pydantic(TreeNodeR1)
+    assert model.__module__ == _models.__name__
+    assert getattr(_models, _reference(TreeNodeR1)) is model
+    to_pydantic.cache_clear()
+    assert not hasattr(_models, _reference(TreeNodeR1))
+    assert not [name for name in vars(_models) if name.startswith("_ConfluidModel_")]
+
+
+def test_a_failed_publish_leaves_nothing_waiting_and_the_constructor_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure AFTER the build — pydantic refusing to resolve the references — leaves no waiting model behind for
+    a later caller to receive as finished: the next ``to_pydantic`` fails afresh, the constructor runs with validation
+    off (the one-WARNING degradation), and once pydantic cooperates again the model builds."""
+    from confluid import _models
+    from confluid.pydantic_export import _IN_FLIGHT, _WAITING, _reference
+
+    def refusing(cls: type, **kwargs: Any) -> Optional[bool]:
+        raise RuntimeError("pydantic changed")
+
+    monkeypatch.setattr(BaseModel, "model_rebuild", classmethod(refusing))
+    to_pydantic.cache_clear()
+    with pytest.raises(RuntimeError, match="pydantic changed"):
+        to_pydantic(TreeNodeR1)
+    assert not _IN_FLIGHT and not _WAITING and not hasattr(_models, _reference(TreeNodeR1))
+    with pytest.raises(RuntimeError, match="pydantic changed"):  # afresh, not a half-built model from the cache
+        to_pydantic(TreeNodeR1)
+    assert TreeNodeR1(value="not a number").value == "not a number"  # type: ignore[arg-type]  # constructs, unvalidated
+    monkeypatch.undo()
+    to_pydantic.cache_clear()
+    with pytest.raises(ValidationError):
+        TreeNodeR1(value="not a number")  # type: ignore[arg-type]
