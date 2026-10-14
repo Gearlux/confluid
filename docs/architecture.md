@@ -2191,3 +2191,42 @@ RESERVED_KEYS                 # frozenset({'_target_', '_partial_', '_ref_', '_c
 **What you may change.** The set of names, together with the loader's gate that reads it. What must not come
 back: an import of anything confluid into `keys`, a function-local import of `loader` in a module below it, or a
 reserved key written as a string literal outside `keys`. Pin: `tests/test_layering.py`.
+
+## 31. A placeholder's fallback is author text, and may hold placeholders
+
+*2026-10-14*
+
+**Context.** A placeholder was matched by one regex, `\$\{([\w.\[\]-]+)(?::([^}]+))?\}`: its arg ended at the first
+`}`. A fallback reading another variable — the spelling a run directory with a default needs,
+`${env:RUN_DIR,${env:PROJECT_ROOT}/runs}` — came out as silent garbage: `${env:PROJECT_ROOT/runs}` with `RUN_DIR`
+unset, `<RUN_DIR>/runs}` with it set, and no error either way. A bare `$VAR` in a fallback stayed as text, though a
+fallback is written by the author like any other string.
+
+**Decision.** The user asked confluid to support the nested spelling (2026-10-14) — OmegaConf's, not a new grammar.
+A placeholder is found by `_scan_placeholder`: a `${` inside its arg opens a nested placeholder whose `}` does not
+close the outer one; any other brace stays text, so an arg holding no `${` ends at its first `}` exactly as the regex
+read it. A fallback is read by `_resolve_fallback`, only on a miss, as author text: nested placeholders and bare
+`$VAR` resolve; a fallback that is one placeholder keeps that value's type, any other is substituted text parsed like
+a plain fallback. When a nested placeholder misses, the outer one misses too and stays as written — never a value half
+substituted. Rejected: refusing nested fallbacks with a located error (the spelling is common, and unambiguous); a
+conditional "append when set" form (`${RUN_DIR:+...}`: a new spelling, which the ruling "a configuration utility, not
+a compiler" rules out).
+
+**Consequences.** One scanner serves the whole-string match, the embedded substitution and the `${ref:}` hoist. A
+bare `$VAR` in a fallback now expands (`${X:$HOME/x}` read `$HOME/x` before). Interpolation stays single-pass: the
+fallback is author text, and a VALUE substituted into it is never scanned again. A `${ref:...}` inside a fallback is
+refused.
+
+**Example.**
+
+```python
+from confluid import load
+
+load("runs: ${env:RUN_DIR,${env:HOME}/runs}/waivefront")["runs"]   # RUN_DIR unset -> '/Users/me/runs/waivefront'
+load("p: ${env:A,${env:B}}/x")["p"]                                # both unset   -> '${env:A,${env:B}}/x'
+```
+
+**What you may change.** Which resolver names take a fallback. What must not come back: a regex that ends an arg at
+its first `}`, a fallback read before the placeholder misses, a partly substituted fallback, or a second scanner.
+Pin: `tests/test_placeholder_fallbacks.py`.
+

@@ -4,6 +4,18 @@ All notable changes to confluid are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [semver](https://semver.org/) — pre-1.0, minor bumps may break.
 
+## [Unreleased]
+
+### Fixed
+
+- **A placeholder's fallback may read other placeholders.** `${env:RUN_DIR,${env:HOME}/runs}` resolves to
+  `/Users/me/runs` with `RUN_DIR` unset and to `RUN_DIR` when it is set; it used to come out as `${env:HOME/runs}`
+  or `<RUN_DIR>/runs}`, with no error. A fallback is read only when the placeholder misses, as author text: its
+  placeholders (nested as deep as written, environment variables and config keys alike) and bare `$VAR` resolve; a
+  fallback that is one placeholder keeps that value's type; a fallback that does not resolve leaves the whole
+  placeholder as written. A `${ref:...}` in a fallback is refused. A fallback holding no `${` reads as before, except
+  that a bare `$VAR` in it now expands (`${X:$HOME/x}` read `$HOME/x`).
+
 ## [0.4.1] - 2026-10-13
 
 ### Fixed

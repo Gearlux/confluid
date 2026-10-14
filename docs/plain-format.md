@@ -132,12 +132,13 @@ stringifying it.
 ```yaml
 data_dir: ${env:DATA_ROOT}/datasets
 port: ${env:PORT,8080}            # comma default
+runs: ${env:RUN_DIR,${env:HOME}/runs}   # a default may read other placeholders
 ```
 
 `${oc.env:NAME}` is accepted as an alias. An unset variable with no default
 leaves the literal `${env:NAME}` in place, like every other unresolved
-placeholder. Config-key interpolation (`${train.dataset}`) is unchanged — see
-[Interpolation](interpolation.md).
+placeholder; so does one whose default does not resolve either. Config-key interpolation (`${train.dataset}`) is
+unchanged — see [Interpolation](interpolation.md), "A fallback may read other placeholders".
 
 ## Scopes
 
