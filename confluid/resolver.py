@@ -28,7 +28,7 @@ it never reaches a constructor as literal text.
 
 import os
 import re
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, Union
 
 import yaml
 from loggair import get_logger
@@ -47,13 +47,77 @@ _PathSegment = Tuple[str, Union[str, int]]
 _PATH_TOKEN_RE = re.compile(r"\.?(\w[\w-]*)|\[([^\[\]]+)\]")
 _INT_LITERAL_RE = re.compile(r"-?\d+")
 
-# ``${...}`` interpolation. The name group is deliberately wider than an env
+# ``${...}`` interpolation. The name is deliberately wider than an env
 # identifier so a placeholder can ALSO carry a dotted / bracketed CONFIG-KEY
 # path (``${train.dataset}`` / ``${items[0]}``); the presence of a ``.`` or
 # ``[`` is what routes a placeholder to config-key lookup instead of
 # ``os.getenv``. A plain identifier stays an environment variable, so every
-# pre-existing ``${VAR}`` / ``${VAR:default}`` keeps its meaning.
-_INTERP_RE = re.compile(r"\$\{([\w.\[\]-]+)(?::([^}]+))?\}")
+# pre-existing ``${VAR}`` / ``${VAR:default}`` keeps its meaning. The arg after
+# the ``:`` is read by :func:`_scan_placeholder`, not a regex: it may hold nested
+# placeholders (``${env:RUN_DIR,${env:HOME}/runs}``), which a regex cannot balance.
+_PLACEHOLDER_NAME_RE = re.compile(r"[\w.\[\]-]+")
+
+
+class _Placeholder(NamedTuple):
+    """One ``${name}`` / ``${name:arg}`` found in a string: ``value[start:end]`` is its text."""
+
+    start: int
+    end: int
+    name: str
+    arg: Optional[str]
+
+
+def _scan_placeholder(value: str, start: int) -> Optional[_Placeholder]:
+    """The placeholder whose ``${`` is at ``value[start]``, or ``None`` when that ``${`` is text.
+
+    The arg runs to the ``}`` that closes the placeholder: a ``${`` inside it opens a nested placeholder whose own
+    ``}`` does not end it (a fallback reading another variable, ``${env:RUN_DIR,${env:HOME}/runs}``). Any other brace
+    is text, so an arg holding no ``${`` ends at its first ``}``, as it always has. A ``${`` that names nothing, has an
+    empty arg or never closes is text. Before nesting was read, the first ``}`` ended every placeholder:
+    ``${env:A,${env:B}}/x`` came out as ``${env:B}/x`` (A unset) or ``<A>/x}`` (A set), silently.
+    """
+    name = _PLACEHOLDER_NAME_RE.match(value, start + 2)
+    if name is None or name.end() >= len(value):
+        return None
+    after = name.end()
+    if value[after] == "}":
+        return _Placeholder(start, after + 1, name.group(0), None)
+    if value[after] != ":":
+        return None
+    depth, at = 0, after + 1
+    while at < len(value):
+        if value.startswith("${", at):
+            depth, at = depth + 1, at + 2
+            continue
+        if value[at] == "}":
+            if depth == 0:
+                return _Placeholder(start, at + 1, name.group(0), value[after + 1 : at]) if at > after + 1 else None
+            depth -= 1
+        at += 1
+    return None
+
+
+def _placeholders(value: str) -> List[_Placeholder]:
+    """Every placeholder in ``value``, left to right; a nested one is part of its outer placeholder's arg."""
+    found: List[_Placeholder] = []
+    at = value.find("${")
+    while at != -1:
+        placeholder = _scan_placeholder(value, at)
+        if placeholder is None:
+            at = value.find("${", at + 2)
+        else:
+            found.append(placeholder)
+            at = value.find("${", placeholder.end)
+    return found
+
+
+def _whole_placeholder(value: str) -> Optional[_Placeholder]:
+    """The placeholder that IS ``value`` — the whole string, nothing around it — else ``None``."""
+    if not value.startswith("${"):
+        return None
+    placeholder = _scan_placeholder(value, 0)
+    return placeholder if placeholder is not None and placeholder.end == len(value) else None
+
 
 # Bare ``$IDENTIFIER`` — an ENVIRONMENT-variable read, expanded AFTER the
 # ``${...}`` pass. The ``{`` sits outside the character class, so this regex
@@ -425,9 +489,9 @@ def hoist_marker_placeholders(value: Any) -> Any:
     from confluid.fluid import Fluid
 
     if isinstance(value, str):
-        whole = _INTERP_RE.fullmatch(value)
-        if whole and whole.group(1) in _MARKER_RESOLVERS and whole.group(1) != "clone":
-            marker = Resolver()._marker_resolver(whole.group(1), whole.group(2))
+        whole = _whole_placeholder(value)
+        if whole and whole.name in _MARKER_RESOLVERS and whole.name != "clone":
+            marker = Resolver()._marker_resolver(whole.name, whole.arg)
             if marker is not None:
                 return marker
         return value
@@ -753,12 +817,12 @@ class Resolver:
             return self._expand_bare_env(value)
 
         # Whole-string match — return the resolved value with its real type.
-        whole = _INTERP_RE.fullmatch(value)
+        whole = _whole_placeholder(value)
         if whole:
-            marker = self._marker_resolver(whole.group(1), whole.group(2))
+            marker = self._marker_resolver(whole.name, whole.arg)
             if marker is not None:
                 return marker
-            resolved, found = self._resolve_placeholder(whole.group(1), whole.group(2), local_context)
+            resolved, found = self._resolve_placeholder(whole.name, whole.arg, local_context)
             return resolved if found else value
 
         return self._interpolate_embedded(value, local_context)
@@ -767,29 +831,59 @@ class Resolver:
         """The embedded pipeline: substitute each ``${...}`` as text, then expand
         bare ``$VAR`` in the AUTHOR-written segments only (never in substituted
         results — P8). Also the per-part step of the ``$$`` escape."""
+        return self._substitute(value, local_context)[0]
 
-        def replacer(match: "re.Match[str]") -> str:
-            if match.group(1) in _MARKER_RESOLVERS:
+    def _substitute(self, value: str, local_context: Optional[Dict[str, Any]]) -> Tuple[str, bool]:
+        """``(value with each placeholder substituted as text, whether every one resolved)`` — a miss or a
+        non-scalar leaves its literal ``${...}``. Bare ``$VAR`` expands in the author-written segments only."""
+        parts: List[str] = []
+        last, complete = 0, True
+        for placeholder in _placeholders(value):
+            text = value[placeholder.start : placeholder.end]
+            if placeholder.name in _MARKER_RESOLVERS:
                 # A reference resolves to an OBJECT; there is no meaningful way to
                 # splice one into the middle of a string, and silently stringifying
                 # it would hide the mistake behind a plausible-looking value.
                 raise ConfigurationError(
-                    f"{match.group(0)} cannot be embedded in a string — "
-                    f"a reference must be the whole value (got {value!r})"
+                    f"{text} cannot be embedded in a string — a reference must be the whole value (got {value!r})"
                 )
-            resolved, found = self._resolve_placeholder(match.group(1), match.group(2), local_context)
+            parts.append(self._expand_bare_env(value[last : placeholder.start]))
+            resolved, found = self._resolve_placeholder(placeholder.name, placeholder.arg, local_context)
             if found and _is_scalar(resolved):
-                return str(resolved)
-            return match.group(0)  # miss / non-scalar → leave the literal ${...}
-
-        parts: List[str] = []
-        last = 0
-        for match in _INTERP_RE.finditer(value):
-            parts.append(self._expand_bare_env(value[last : match.start()]))
-            parts.append(replacer(match))
-            last = match.end()
+                parts.append(str(resolved))
+            else:
+                parts.append(text)  # miss / non-scalar → leave the literal ${...}
+                complete = False
+            last = placeholder.end
         parts.append(self._expand_bare_env(value[last:]))
-        return "".join(parts)
+        return "".join(parts), complete
+
+    def _resolve_fallback(self, text: str, local_context: Optional[Dict[str, Any]]) -> Tuple[Any, bool]:
+        """A placeholder's fallback (its ``:default``, or ``${env:NAME,fallback}``), read only on a miss.
+
+        The fallback is author text, interpolated like any author string: its own ``${...}`` placeholders —
+        ``${env:RUN_DIR,${env:HOME}/runs}`` — and bare ``$VAR``. A fallback that is ONE placeholder keeps its value's
+        type; any other is the substituted text, parsed like a plain fallback (``8080`` → ``8080``). When a nested
+        placeholder misses, the fallback misses too, so the OUTER placeholder stays as written — never half
+        substituted. A reference is refused: a fallback is a value, not an object to share.
+        """
+        if "$" not in text:
+            return self._parse_primitive(text), True
+        for placeholder in _placeholders(text):
+            if placeholder.name in _MARKER_RESOLVERS:
+                raise ConfigurationError(
+                    f"{text[placeholder.start : placeholder.end]} cannot be a fallback — a reference must be "
+                    f"the whole value of a key (got the fallback {text!r})"
+                )
+        whole = _whole_placeholder(text)
+        if whole:
+            return self._resolve_placeholder(whole.name, whole.arg, local_context)
+        if "$$" in text:  # the literal-`$` escape: each side reads on its own, re-joined unchanged (as `_interpolate`)
+            pieces = [self._substitute(piece, local_context) for piece in text.split("$$")]
+            substituted, complete = "$$".join(piece for piece, _ in pieces), all(ok for _, ok in pieces)
+        else:
+            substituted, complete = self._substitute(text, local_context)
+        return (self._parse_primitive(substituted), True) if complete else (None, False)
 
     def _expand_bare_env(self, value: str) -> str:
         """Expand bare ``$IDENTIFIER`` occurrences as environment variables.
@@ -857,7 +951,7 @@ class Resolver:
             env_val = os.getenv(var.strip())
             if env_val is not None:
                 return self._parse_primitive(env_val), True
-            return (self._parse_primitive(fallback.strip()), True) if fallback else (None, False)
+            return self._resolve_fallback(fallback.strip(), local_context) if fallback else (None, False)
 
         if _is_config_path(name):
             for ctx in (local_context, self.context):
@@ -895,7 +989,7 @@ class Resolver:
             if env_val is not None:
                 return self._parse_primitive(env_val), True
         if default_val is not None:
-            return self._parse_primitive(default_val), True
+            return self._resolve_fallback(default_val, local_context)
         return None, False
 
     def _parse_primitive(self, value: str) -> Any:

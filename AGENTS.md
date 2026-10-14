@@ -508,6 +508,11 @@ inventories.
   happens once, at the document→objects boundary (`engine.collapse_escapes` in `instantiate`, and
   in `configure()` after the settle); `dump()` escapes `$` → `$$`. Never collapse in the resolver;
   never add a dump parameter.
+- **A placeholder's fallback is author text (user request 2026-10-14):** read by `resolver._resolve_fallback` only on
+  a miss — its nested `${...}` and bare `$VAR` resolve, a lone placeholder keeps its type, a nested miss leaves the
+  OUTER placeholder as written, a `${ref:}` in it is refused. A placeholder is found by `resolver._scan_placeholder`
+  (a `${` inside an arg nests; any other brace is text), the one scanner for whole, embedded and hoisted
+  placeholders — never a regex again. §31. (`tests/test_placeholder_fallbacks.py`)
 - **Interpolation is pass 6, after expansion, single-pass, and burns in.** Do not reorder the
   passes and do not add a second interpolation pass. A late-bound slot uses `!ref:`.
   (`tests/test_resolver.py`, `tests/test_load_stages.py`,

@@ -22,6 +22,23 @@ A whole-string match (`"${train.epochs}"`) returns the value with its real type 
 
 Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps meaning an environment variable — only names containing a `.` or `[` hit the config tree.
 
+### A fallback may read other placeholders
+
+A `:default` (and the `,fallback` of `${env:NAME,fallback}`) is author text, interpolated like any author string when — and only when — the placeholder misses: its own `${...}` placeholders, nested as deep as written, and bare `$VAR`.
+
+```yaml
+runs: ${env:RUN_DIR,${env:HOME}/runs}/waivefront   # RUN_DIR unset -> /Users/me/runs/waivefront
+port: ${env:PORT,${env:DEFAULT_PORT}}              # a fallback that is ONE placeholder keeps its type: 8080
+data: ${env:DATA,${paths.root}/data}               # a config key works the same way
+```
+
+```text
+RUN_DIR=/runs              -> /runs/waivefront            (the fallback is never read)
+RUN_DIR unset, HOME unset  -> ${env:RUN_DIR,${env:HOME}/runs}/waivefront   (left as written, never half substituted)
+```
+
+A fallback holding no `${` ends at its first `}`, as before; a `${ref:...}` in a fallback is refused (a fallback is a value, not an object to share). The single-pass rule holds: a value substituted into a fallback is not scanned again.
+
 > **When it runs:** interpolation is pass 6, AFTER dotted-key expansion — a
 > `${a.b}` reads the expanded tree, the same answer the returned document gives —
 > applied by `load()` at every stage from `until="document"` on. The raw parse
