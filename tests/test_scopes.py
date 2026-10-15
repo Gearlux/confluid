@@ -1219,3 +1219,23 @@ def test_a_bare_activation_of_a_KEYED_dimension_is_refused_naming_the_values() -
     assert load(doc, until="document") == {"runnable": "L"}, "no activation still takes the default (con)"
     boolean = load("d: !scope:debug\n  verbose: true\n", scopes=["debug"], until="document")
     assert boolean == {"verbose": True}, "a bare BOOLEAN activation is untouched (con)"
+
+
+def test_discover_boolean_scopes_names_every_bare_scope_the_document_declares() -> None:
+    """A CLI that runs a document lists what ``--scope NAME`` may ask of it: the bare scopes, nested ones too, never a
+    keyed dimension (``discover_dimension_values`` answers those) and never a negated one's name twice."""
+    from confluid import discover_boolean_scopes
+
+    raw = load(
+        "m: !class:collections.Counter\n"
+        "  v: 1\n"
+        "onnx: !scope:onnx\n  m: {v: 2}\n"
+        "original: !scope:original\n  m: {v: 3}\n"
+        "  inner: !scope:quickstart\n    m: {v: 4}\n"
+        "keyed: !scope:task=classification\n  m: {v: 5}\n"
+        "not_debug: !notscope:debug\n  m: {v: 6}\n",
+        until="raw",
+    )
+    assert discover_boolean_scopes(raw) == {"onnx", "original", "quickstart", "debug"}
+    assert discover_dimension_values(raw) == {"task": {"classification"}}, "keyed discovery is unchanged"
+    assert discover_boolean_scopes(load("m: 1\n", until="raw")) == set()

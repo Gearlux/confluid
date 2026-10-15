@@ -68,7 +68,8 @@ started raising (pinned by `tests/test_scopes.py::test_notscope_keyed_active_whe
   that does not select the block.
 - **The walker is single-sourced.** `_walk_dimensions` returns
   `(positive values per key, keys carrying a negation)`; `discover_dimensions`,
-  `discover_dimension_values` and the check all read it. This module has a history of walkers
+  `discover_dimension_values` and the check all read it, and `discover_boolean_scopes` reads the
+  bare names the same walk collects on its side channel. This module has a history of walkers
   drifting apart — `discover_dimensions` once traversed `Fluid.kwargs` while `_resolve_value`
   did not, so a CLI advertised a dimension flag whose block resolution then ignored it.
 - **Discovery reads the RAW document.** By the time `load()` returns, the blocks have been

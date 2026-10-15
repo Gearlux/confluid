@@ -6,6 +6,12 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`discover_boolean_scopes(raw)` lists a document's bare scopes** — `{"onnx", "quickstart"}` for a document with
+  `!scope:onnx` and a nested `!scope:quickstart`: what a bare `--scope NAME` may activate, for a tool that lists the
+  scopes it can pass on. `discover_dimension_values` still answers the keyed ones.
+
 ### Fixed
 
 - **A placeholder's fallback may read other placeholders.** `${env:RUN_DIR,${env:HOME}/runs}` resolves to
