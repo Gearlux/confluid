@@ -267,6 +267,20 @@ def discover_dimensions(config: Any) -> Set[str]:
     return set(_walk_dimensions(config)[0])
 
 
+def discover_boolean_scopes(config: Any) -> Set[str]:
+    """Return every *boolean* scope name in ``config`` — what a bare ``--scope NAME`` may activate.
+
+    ``{"onnx", "quickstart"}`` for a document carrying ``!scope:onnx`` and a ``!scope:quickstart`` nested anywhere
+    (inside another scope block too). A negated block's name counts (``!notscope:debug`` is still selected by naming
+    ``debug``); keyed dimensions do not — :func:`discover_dimension_values` answers those. A CLI that RUNS a document
+    on a user's behalf lists these as the scopes it can pass on.
+
+    Read off :func:`_walk_dimensions`' boolean side channel, never a second traversal.
+    """
+    _walk_dimensions(config)
+    return set(_BOOLEAN_DIMS)
+
+
 def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[str]]) -> None:
     """Raise when an active keyed scope asks for a variant the document does not have.
 

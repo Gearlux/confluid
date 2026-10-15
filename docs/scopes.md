@@ -197,6 +197,17 @@ result — by the time pass 4 has run, the blocks have already been spliced away
 declared only by negated blocks maps to an empty set: it is a real dimension a
 CLI must bind, but it offers nothing to *select*.
 
+The bare scopes (`!scope:onnx`, `_scope_: onnx`) are not dimensions; `discover_boolean_scopes`
+lists them — every name a bare `--scope NAME` may activate, nested blocks and negated ones
+included. A tool that runs a document on a user's behalf lists them as the scopes it can pass on:
+
+```python
+from confluid import discover_boolean_scopes, load
+
+discover_boolean_scopes(load("compile.yaml", until="raw"))
+# {"onnx"}
+```
+
 ## Default scopes — the value a dimension takes when the caller names none
 
 Without a default, "no `--framework`" means "the document's unscoped keys", so
