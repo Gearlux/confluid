@@ -13,7 +13,7 @@ class MockComponent:
 
 def test_recursive_include_with_nested_refs(tmp_path: Path) -> None:
     """
-    Reproduces the Waivefront/TorchSig failure:
+    Reproduces a TorchSig config's failure:
     A class argument 'config' includes a file with internal references.
     """
     from confluid import register

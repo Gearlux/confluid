@@ -100,7 +100,7 @@ def test_configure_dotted_keys() -> None:
             self.dropout = dropout
 
     model = Model()
-    # Helios style flat-dotted keys
+    # Flat-dotted keys
     data = {"Model.layers": 10, "Model.dropout": 0.5}
     configure(model, config=data)
     assert model.layers == 10

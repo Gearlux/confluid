@@ -27,14 +27,14 @@ Because the dispatch is on the name shape, every pre-existing `${VAR}` keeps mea
 A `:default` (and the `,fallback` of `${env:NAME,fallback}`) is author text, interpolated like any author string when — and only when — the placeholder misses: its own `${...}` placeholders, nested as deep as written, and bare `$VAR`.
 
 ```yaml
-runs: ${env:RUN_DIR,${env:HOME}/runs}/waivefront   # RUN_DIR unset -> /Users/me/runs/waivefront
+runs: ${env:RUN_DIR,${env:HOME}/runs}/raidar       # RUN_DIR unset -> /Users/me/runs/raidar
 port: ${env:PORT,${env:DEFAULT_PORT}}              # a fallback that is ONE placeholder keeps its type: 8080
 data: ${env:DATA,${paths.root}/data}               # a config key works the same way
 ```
 
 ```text
-RUN_DIR=/runs              -> /runs/waivefront            (the fallback is never read)
-RUN_DIR unset, HOME unset  -> ${env:RUN_DIR,${env:HOME}/runs}/waivefront   (left as written, never half substituted)
+RUN_DIR=/runs              -> /runs/raidar                (the fallback is never read)
+RUN_DIR unset, HOME unset  -> ${env:RUN_DIR,${env:HOME}/runs}/raidar   (left as written, never half substituted)
 ```
 
 A fallback holding no `${` ends at its first `}`, as before; a `${ref:...}` in a fallback is refused (a fallback is a value, not an object to share). The single-pass rule holds: a value substituted into a fallback is not scanned again.

@@ -3,8 +3,8 @@
 Origin of these tests
 =====================
 
-While profiling a YOLO26 training startup in
-``waivefront/config/train_yolo26_ultralytics.yaml`` we noticed that
+While profiling the startup of a YOLO26 Ultralytics training config
+we noticed that
 the ``ops`` kwarg set on the outer ``Stream`` was being broadcast not only
 to the outer Stream itself but ALSO to every inner Stream nested deep inside
 a sibling wrapper class (``JointStream``), even though those inner Streams'
