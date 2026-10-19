@@ -2223,7 +2223,7 @@ refused.
 ```python
 from confluid import load
 
-load("runs: ${env:RUN_DIR,${env:HOME}/runs}/waivefront")["runs"]   # RUN_DIR unset -> '/Users/me/runs/waivefront'
+load("runs: ${env:RUN_DIR,${env:HOME}/runs}/raidar")["runs"]       # RUN_DIR unset -> '/Users/me/runs/raidar'
 load("p: ${env:A,${env:B}}/x")["p"]                                # both unset   -> '${env:A,${env:B}}/x'
 ```
 

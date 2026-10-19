@@ -209,7 +209,7 @@ def test_to_pydantic_non_callable_raises_introspection_error() -> None:
 # Every error raised while processing a document names its file:line:col.
 #
 # These pin the rule against the defect that produced it: a renamed class left
-# `UnknownClassError: Cannot resolve class: waivefront.sources.HDF5WindwoSource` with no
+# `UnknownClassError: Cannot resolve class: <package>.sources.HDF5WindwoSource` with no
 # file and no line, while `ConstructionError` a few frames later had been printing
 # `.../evaluate_yolo26.yaml:20:5` the whole time. Asserting the LINE (not just "some
 # location") is the point — a message naming only the file still sends the reader grepping.

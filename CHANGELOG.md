@@ -191,7 +191,7 @@ All notable changes to confluid are documented here. The format follows
   What it cannot convert it REPORTS with `file:line` (a multi-dimension `_scope_`, a `<<:` merged
   into a marker) and leaves in place. `convert_file` writes only when `hydraide.emit(before) ==
   hydraide.emit(after)` under every scope activation the document declares. First corpus: 26
-  workspace configs (chainwind · sonair · traidwind — waivefront's 25 wait for a clean tree),
+  workspace configs (chainwind · sonair · traidwind — another project's 25 wait for a clean tree),
   confluid's own examples and guides. `tests/test_spelling.py`.
 - **`hydraide` — the preprocessor** (architecture record 19). `confluid.hydraide.emit(source,
   scopes=…)` resolves a config — either spelling — to ONE plain-YAML document: includes spliced,

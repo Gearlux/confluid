@@ -22,12 +22,12 @@ def _unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_an_unset_variable_falls_back_to_another_variable_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(B, "/store")
-    assert load(f"p: ${{env:{A},${{env:{B}}}/runs}}/waivefront")["p"] == "/store/runs/waivefront"
+    assert load(f"p: ${{env:{A},${{env:{B}}}/runs}}/raidar")["p"] == "/store/runs/raidar"
 
 
 def test_a_set_variable_never_reads_its_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(A, "/runs")  # B unset: the fallback would not resolve, and is never asked
-    assert load(f"p: ${{env:{A},${{env:{B}}}/runs}}/waivefront")["p"] == "/runs/waivefront"
+    assert load(f"p: ${{env:{A},${{env:{B}}}/runs}}/raidar")["p"] == "/runs/raidar"
 
 
 def test_a_whole_fallback_placeholder_keeps_its_type(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,11 +53,11 @@ def test_the_plain_name_and_the_config_key_forms_take_a_nested_fallback_too(monk
 
 def test_a_bare_variable_in_a_fallback_is_expanded_as_author_text(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(B, "/store")
-    assert load(f"p: ${{env:{A},${B}/runs}}/waivefront")["p"] == "/store/runs/waivefront"
+    assert load(f"p: ${{env:{A},${B}/runs}}/raidar")["p"] == "/store/runs/raidar"
 
 
 def test_a_fallback_that_does_not_resolve_leaves_the_whole_placeholder_as_written() -> None:
-    text = f"${{env:{A},${{env:{B}}}/runs}}/waivefront"
+    text = f"${{env:{A},${{env:{B}}}/runs}}/raidar"
     assert load(f"p: {text}")["p"] == text
 
 
