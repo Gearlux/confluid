@@ -8,6 +8,12 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`dump_python(obj)` writes an object graph as the Python script that builds it again** — `from shapes import
+  Mixture, Tone` then `mixture = Mixture(tones=[Tone(frequency_hz=2400000000.0, level_db=-30.0)], …)`: each class
+  imported by its module, each object a constructor call, an object held twice written once as a variable. The graph the
+  script builds dumps to the same document as the original. A value no script can build raises the new
+  `PythonDumpError` (a `ValueError`) naming where it sits (`mixture.reference: a builtins.object is not a configurable
+  object …`).
 - **`discover_boolean_scopes(raw)` lists a document's bare scopes** — `{"onnx", "quickstart"}` for a document with
   `!scope:onnx` and a nested `!scope:quickstart`: what a bare `--scope NAME` may activate, for a tool that lists the
   scopes it can pass on. `discover_dimension_values` still answers the keyed ones.

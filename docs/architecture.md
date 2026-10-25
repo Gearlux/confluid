@@ -2231,3 +2231,39 @@ load("p: ${env:A,${env:B}}/x")["p"]                                # both unset 
 its first `}`, a fallback read before the placeholder misses, a partly substituted fallback, or a second scanner.
 Pin: `tests/test_placeholder_fallbacks.py`.
 
+
+## 32. A graph as a Python script is written from `dumpable_kwargs`
+
+*2026-10-24*
+
+**Context.** A consuming project exports the generator settings it measured from a recording in three forms: a run
+config, the settings document, and a Python script a reader can edit and run without confluid's loader. The first two
+are `dump()`; nothing wrote the third.
+
+**Decision.** `dump_python(obj)` writes constructor calls whose keyword arguments are `dumpable_kwargs` of each object
+— the reconstruction `dump()` uses — and consults the registered dump spellings the same way (a `Target` becomes a
+call, a plain value is written as that value). A class is imported by `module.qualname` only when that path imports
+back to the class itself; two classes of one name are imported under an alias. An object met twice is a variable, so
+the script's graph shares it. Everything else a script cannot build — an object with no reconstruction, a set, a
+deferred marker, a cycle, a class with no importable path — is a `PythonDumpError` naming the path from the variable.
+Rejected: emitting `confluid.load("""<dump>""")` (a script with the settings inside a string is not code a reader
+edits); a placeholder for an opaque value as `dump()` writes (a script that runs and builds something else is worse
+than a refusal).
+
+**Consequences.** The contract is measurable: `dump(<what the script builds>) == dump(<the original>)`. A deferred
+marker held as an attribute is not written: a script builds objects, and a marker means "build later".
+
+**Example.**
+
+```python
+from confluid import dump_python
+
+print(dump_python(Mixture(tones=[Tone(frequency_hz=2.4e9)]), name="mixture"))
+# from shapes import Mixture, Tone
+#
+# mixture = Mixture(tones=[Tone(frequency_hz=2400000000.0, level_db=0.0)], duration_s=0.01)
+```
+
+**What you may change.** The line width (100) and the variable names of shared objects. What must not change: the
+arguments come from `dumpable_kwargs`, never a walk of their own, and a value a script cannot build is refused. Pin:
+`tests/test_python_dump.py`.

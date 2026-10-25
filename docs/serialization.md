@@ -164,6 +164,43 @@ constructor argument is too heavy to hold; that deliberately relaxes the
 round-trip for that class — the trade-off is documented in
 [Eager Classes](eager-classes.md).
 
+## A graph as a Python script
+
+`dump_python(obj)` writes the same graph as Python: each class imported by its module, each object a constructor call
+with keyword arguments. The arguments are exactly what `dump()` writes, so the graph the script builds dumps to the same
+document as the original.
+
+```python
+from confluid import dump_python
+
+text = dump_python(mixture, name="mixture", header="Made by my exporter.")
+```
+
+```python
+# Made by my exporter.
+
+from shapes import Mixture, Tone
+
+tone_1 = Tone(frequency_hz=2400000000.0, level_db=-30.0)
+
+mixture = Mixture(
+    tones=[tone_1, Tone(frequency_hz=2410000000.0, level_db=0.0)],
+    duration_s=0.004,
+    reference=tone_1,
+)
+```
+
+- An object held in two places is written once, as a variable (`tone_1`), so the rebuilt graph shares it.
+- A call that fits in 100 characters stays on one line; a longer one takes one argument per line.
+- A registered [dump spelling](#registering-a-document-spelling) is used: a `Target` it returns becomes a call, a
+  plain value is written as that value. A numpy scalar is written as the Python number.
+- A value no script can build raises `PythonDumpError` (a `ValueError`) naming where it sits — `mixture.reference: a
+  builtins.object is not a configurable object …`: an object that is not `@configurable` and has no dump spelling, a
+  class defined inside a function or in the script being run (`__main__`), a set, a deferred marker held as an
+  attribute, an object that contains itself.
+
+Runnable: [`examples/python_script/`](../examples/python_script/README.md).
+
 ## Runnable example
 
 [`examples/reproducible_experiment.py`](../examples/reproducible_experiment.py)

@@ -42,6 +42,7 @@ inventories.
 | `introspect` | stdlib-only signature/AST scanning: `slots`, `init_callable`, `scan_init_body`, `marked_param_names` |
 | `configurator` | `configure` / `configure_from_file` (objects → document → pass 7 → apply) |
 | `dumper` | `dump()`, `dumpable_kwargs` (the one object→document reconstruction), `to_markers` |
+| `python_dump` | `dump_python()` — the graph as constructor calls, built from `dumpable_kwargs` |
 
 ## Standing user rulings — do not re-litigate
 
@@ -586,6 +587,10 @@ inventories.
   set during `load()` reaches the dump (via `__confluid_extra__`). A body slot rebinding the object's
   own method is not dumped. A `**kwargs` class's captured extras are emitted. A `None` is omitted
   only when the default is also `None`. (the body-slot and N1 groups in `tests/test_dumper.py`)
+- **`dump_python()` reads the graph through `dumpable_kwargs` and the dump spellings, never a walk of its own.** The
+  script's graph must `dump()` to the original's document; a value a script cannot build is a `PythonDumpError` naming
+  its path from the variable name — never a placeholder. A class is imported by `module.qualname` only when that path
+  imports back to the class itself. (`tests/test_python_dump.py`; `examples/python_script/`)
 
 ## Registry, discovery, marks (§4, §10, `docs/discovery.md`)
 
