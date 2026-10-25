@@ -32,6 +32,7 @@ from confluid.exceptions import (
     ConfluidError,
     ConstructionError,
     IntrospectionError,
+    PythonDumpError,
     ReferenceResolutionError,
     ScopeError,
     UnknownClassError,
@@ -51,6 +52,7 @@ from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
 # alias, expected 0, given 1` (measured in three real slots). An import alias
 # stays the same generic alias.
 from confluid.partial import Partial, partial_param_names
+from confluid.python_dump import dump_python
 from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
@@ -90,6 +92,7 @@ __all__ = [
     "ConstructionError",
     "WorkspaceEnvError",
     "IntrospectionError",
+    "PythonDumpError",
     "configurable",
     "register",
     "output",
@@ -106,6 +109,7 @@ __all__ = [
     "expand_dotted_keys",
     "parse_value",
     "dump",
+    "dump_python",
     "register_dump_spelling",
     "configure",
     "configure_from_file",

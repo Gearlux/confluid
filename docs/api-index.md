@@ -95,6 +95,7 @@ plugs into the passes, and from the eight names most configs need:
 | Name | One line |
 |---|---|
 | `dump` | A live object graph → reloadable YAML |
+| `dump_python` | A live object graph → the Python script that builds it again |
 | `register_dump_spelling` | The document spelling of a third-party value type — a marker or plain value, or decline to the placeholder |
 
 ## Scopes — [Scopes](scopes.md)
@@ -153,6 +154,7 @@ plugs into the passes, and from the eight names most configs need:
 | `ValidationModeError` | An invalid validation-mode value |
 | `ScopeError` | See Scopes above |
 | `IntrospectionError` | A signature/docstring scan failure (also a `TypeError`) |
+| `PythonDumpError` | `dump_python` met a value no script can build (also a `ValueError`) |
 | `WorkspaceEnvError` | A workspace-env loading failure (also a `RuntimeError`) |
 | `format_yaml_loc` | The `file:line` suffix helper error messages use |
 
