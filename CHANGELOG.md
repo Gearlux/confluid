@@ -8,6 +8,8 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **The wheel ships the example configs** (`examples/*.yaml`) under `share/confluid/examples/`, where
+  `pkg://confluid/examples/<file>.yaml` names them from any install.
 - **`pkg://<distribution>/<path>` names a config by the installed distribution that ships it** — `include:
   pkg://shared-configs/config/base.yaml`, or `load("pkg://shared-configs/config/base.yaml")`. An editable install reads
   the file from its checkout; a wheel install reads the copy it installed under `share/<distribution>/`. A distribution
