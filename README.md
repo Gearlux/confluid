@@ -127,6 +127,16 @@ state_yaml = dump(trainer)        # the live object graph as a reloadable docume
 new_trainer = load(state_yaml)    # the identical hierarchy — e.g. in another process
 ```
 
+## Environment variables
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CONFLUID_VALIDATE_INIT` | `strict` | `strict` / `warn` / `off`: validation of direct `Cls(...)` calls |
+| `CONFLUID_VALIDATE_YAML` | `strict` | `strict` / `warn` / `off`: validation when a YAML config materializes its objects |
+| `CONFLUID_VALIDATE_TOOL` | `strict` | `strict` / `warn` / `off`: validation at a tool entry |
+
+A config reads any other variable as `${env:NAME}` (for example `${env:DATA_ROOT}`). `env.complete` lists them all.
+
 ## Key Features
 - **Modern layout, Hydra-like output:** write configs with custom YAML tags — `model: !class:MLP(hidden=32)`, `optimizer: !partial:Adam`, `!ref:model` (the [tag form](https://github.com/Gearlux/confluid/blob/main/docs/targets.md)) — and convert them with [`hydraide emit`](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) to a Hydra-like plain-YAML format — `model: {_target_: MLP, hidden: 32}` (the [reserved-key form](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md)) — that `yaml.safe_load`, `yq`, editor schemas and linters read: includes spliced, scopes applied, broadcasting settled, one file. Both forms load, and may be mixed.
 - **Works with plain Python classes:** Required constructor params and real work in `__init__` are fully supported for load/flow/dump — the lazy/zero-arg class-design convention is optional.
