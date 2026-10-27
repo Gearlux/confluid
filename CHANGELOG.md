@@ -8,6 +8,12 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`pkg://<distribution>/<path>` names a config by the installed distribution that ships it** — `include:
+  pkg://shared-configs/config/base.yaml`, or `load("pkg://shared-configs/config/base.yaml")`. An editable install reads
+  the file from its checkout; a wheel install reads the copy it installed under `share/<distribution>/`. A distribution
+  that is not installed, or does not ship the file, raises `ConfigFileNotFoundError` naming what is missing
+  (`… includes pkg://shared-configs/config/b.yaml: shared-configs 1.2 ships no config/b.yaml`). `hydraide` takes one
+  as its CONFIG.
 - **`dump_python(obj)` writes an object graph as the Python script that builds it again** — `from shapes import
   Mixture, Tone` then `mixture = Mixture(tones=[Tone(frequency_hz=2400000000.0, level_db=-30.0)], …)`: each class
   imported by its module, each object a constructor call, an object held twice written once as a variable. The graph the

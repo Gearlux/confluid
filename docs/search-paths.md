@@ -85,8 +85,49 @@ lr: 0.001
 `load(path, return_paths=True)` records the **resolved** locations, so run-artifact
 logging always names the actual files that contributed.
 
+## Configs shipped by an installed distribution
+
+`pkg://<distribution>/<path>` names a config by the distribution that ships it — the name `pip install` takes — and
+its path inside that project's folder. It works as an `include:` entry and as the config handed to `load()` (and to a
+CLI built on it):
+
+```yaml
+# my-app/config/experiment.yaml
+include: pkg://shared-configs/config/datasets/base.yaml
+epochs: 5
+```
+
+No tier is searched. Where the file is read depends on how the distribution is installed:
+
+| `shared-configs` installed | `pkg://shared-configs/config/datasets/base.yaml` reads |
+|---|---|
+| editable (`pip install -e ./shared-configs`) | `<the checkout>/config/datasets/base.yaml` — the file you edit |
+| from its wheel | `<prefix>/share/shared-configs/config/datasets/base.yaml` — the file the wheel installed |
+| not at all | `ConfigFileNotFoundError: … includes pkg://shared-configs/config/datasets/base.yaml: the distribution 'shared-configs' is not installed` |
+| from a wheel without that file | `ConfigFileNotFoundError: … includes pkg://shared-configs/…/base.yaml: shared-configs 1.2 ships no config/datasets/base.yaml` |
+
+Only the named distribution's files are read: `pkg://shared/…` never finds a file `shared-5g` ships. The name is
+matched as installers normalize it (`shared_configs` and `Shared.Configs` are `shared-configs`). A relative include
+inside a shipped file resolves next to it, so a distribution's own includes stay relative. A reference with no
+distribution, no path or a `..` is refused with a `ConfigurationError`. An unopened scope block's `pkg://` include is
+never looked up.
+
+**Shipping configs in a wheel.** List each config as wheel data under `share/<distribution>/`, keeping its path in the
+project — with setuptools, in `setup.py`:
+
+```python
+from pathlib import Path
+
+from setuptools import setup
+
+DIST = "shared-configs"  # the normalized name: lowercase, `-` for every run of `-`, `_` and `.`
+here = Path(__file__).parent
+files = sorted(p.relative_to(here) for top in ("config", "examples") for p in (here / top).rglob("*.yaml"))
+setup(data_files=[(f"share/{DIST}/{d}", [str(f) for f in files if f.parent == d]) for d in sorted({f.parent for f in files})])
+```
+
 ## Runnable example
 
 [`examples/search_paths.py`](../examples/search_paths.py) builds a sandboxed
 `XDG_CONFIG_HOME` in a temp directory and demonstrates the tier order, the
-app-name namespacing, and `resolve_config_path`.
+app-name namespacing, `resolve_config_path`, and a `pkg://` include of a config a (stand-in) wheel installed.
