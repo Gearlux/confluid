@@ -470,6 +470,12 @@ inventories.
   in the normal pass; a scope block's include is deferred until the block activates and is never
   opened otherwise; it is anchored to its block's file (`loader._anchor_deferred_include` — probes,
   never opens). (the P15 and PA1 groups in `tests/test_includes.py`) §17.
+- **A `pkg://<distribution>/<path>` config is the file that distribution ships (user request 2026-10-26):**
+  `resolve_config_path` hands it to `packages.resolve_package_reference` before any tier — an editable install's
+  checkout (`direct_url.json`), else the `RECORD` entry ending in `share/<normalized name>/<path>`. Only the named
+  distribution's files are searched (never a prefix-sharing neighbour); a miss is a `ConfigFileNotFoundError` naming the
+  distribution and version, `..` a `ConfigurationError`; an include's miss is prefixed with the including file. Never
+  add a second lookup order or a search across distributions. §33. (`tests/test_package_includes.py`)
 - `import:` is honoured in every mapping position; a failed import warns for any `Exception`
   (`KeyboardInterrupt`/`SystemExit` propagate). (the PA26 pair in `tests/test_loader.py`)
 

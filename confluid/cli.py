@@ -53,7 +53,10 @@ _COMPLETE_VAR = "_HYDRAIDE_COMPLETE"  # Click derives it from the program name; 
 
 def _resolve_config(ctx: click.Context, param: click.Parameter, value: str) -> Path:
     """The CONFIG argument through the search tiers; a total miss is a USAGE error (exit 2)."""
-    resolved = resolve_config_path(value)
+    try:
+        resolved = resolve_config_path(value)
+    except ConfluidError as exc:  # a pkg:// reference that names no installed file
+        raise click.BadParameter(str(exc), ctx=ctx, param=param) from None
     if not resolved.exists():
         raise click.BadParameter(f"config file not found: {value}", ctx=ctx, param=param)
     return resolved
@@ -73,7 +76,10 @@ def _config_on_the_command_line(ctx: click.Context) -> Optional[Path]:
         return Path(config)
     for word in shlex.split(os.environ.get("COMP_WORDS", "")):
         if word.endswith((".yaml", ".yml")):
-            candidate = resolve_config_path(word)
+            try:
+                candidate = resolve_config_path(word)
+            except ConfluidError:
+                continue  # a pkg:// word naming nothing installed: completion never crashes the shell
             if candidate.exists():
                 return candidate
     return None

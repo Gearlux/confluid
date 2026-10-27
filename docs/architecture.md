@@ -2267,3 +2267,44 @@ print(dump_python(Mixture(tones=[Tone(frequency_hz=2.4e9)]), name="mixture"))
 **What you may change.** The line width (100) and the variable names of shared objects. What must not change: the
 arguments come from `dumpable_kwargs`, never a walk of their own, and a value a script cannot build is refused. Pin:
 `tests/test_python_dump.py`.
+
+## 33. A config shipped by an installed distribution is named `pkg://<distribution>/<path>`
+
+*2026-10-26*
+
+**Context.** A consuming project's configs included another project's configs by relative paths
+(`../../../other-project/config/a.yaml`). That holds only where both checkouts sit side by side: on a machine that
+installs the projects from wheels there is no `other-project/` folder, and the include is `Not found`. The configs had
+to travel in the wheels, and an include had to name a file by what is installed rather than where a checkout lies —
+user request, which authorized the new spelling under the "configuration utility, not a compiler" ruling.
+
+**Decision.** `pkg://<distribution>/<path>`: the distribution's name as `pip install` takes it and the file's path in
+that project's folder. `resolve_config_path` — the one path probe — hands it to `packages.resolve_package_reference`,
+which reads the distribution's own install metadata: an editable install's `direct_url.json` (PEP 610) gives the
+checkout, read in place; any other install is a wheel, and the file is the `RECORD` entry ending in
+`share/<normalized name>/<path>` (wheels ship configs as `data` files there). Only that distribution's files are
+searched, so two distributions whose names share a prefix (`shared`, `shared-5g`) never read each other's. A miss
+raises naming the distribution, its version and the file; `..` is refused. Rejected: a path relative to an import
+package (`importlib.resources`) — several distributions share one import namespace, and a project's `config/` and
+`examples/` lie outside its package folder; searching every installed distribution for the path (a file of one
+project would be found under another's name); `sys.prefix/share/...` without `RECORD` (a user or `--target` install
+puts data elsewhere).
+
+**Consequences.** The same document reads the checkout's file in a workspace of editable installs and the shipped copy
+elsewhere. A distribution's relative includes keep working inside its shipped copy, since the copy keeps the project's
+layout. A file the wheel does not list is not found, even if it lies in the folder. A held text (`texts=`) is never a
+`pkg://` file.
+
+**Example.**
+
+```python
+from confluid import load, resolve_config_path
+
+resolve_config_path("pkg://shared-configs/config/base.yaml")
+# editable:  /home/me/shared-configs/config/base.yaml
+# wheel:     /home/me/.venv/share/shared-configs/config/base.yaml
+load("pkg://shared-configs/config/base.yaml")
+```
+
+**What you may change.** The messages. Not a second lookup order, not a search beyond the named distribution, not a
+`..` escape. Pin: `tests/test_package_includes.py`.

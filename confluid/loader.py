@@ -30,6 +30,7 @@ from loggair import get_logger
 from confluid.exceptions import CircularIncludeError, ConfigFileNotFoundError, ConfigurationError, ScopeError
 from confluid.keys import _REMOVED_CLONE_KEY, NOTSCOPE_KEY, PARTIAL_KEY, REF_KEY, RESERVED_KEYS, SCOPE_KEY, TARGET_KEY
 from confluid.merger import deep_merge, document_copy, expand_dotted_keys
+from confluid.packages import is_package_reference, resolve_package_reference
 from confluid.resolver import (
     _TARGET_CALL_RE,
     Resolver,
@@ -155,7 +156,13 @@ def resolve_config_path(path: Union[str, Path], *, base_dir: Optional[Path] = No
     as given, so the caller's normal not-found handling fires. Inside a
     ``load(..., texts=…)`` call a file held there exists at its tier like a
     file on disk.
+
+    A ``pkg://<distribution>/<path>`` string searches no tier: it is the file that
+    installed distribution ships (:func:`confluid.packages.resolve_package_reference`),
+    and a miss raises ``ConfigFileNotFoundError`` saying what is missing.
     """
+    if is_package_reference(path):
+        return resolve_package_reference(cast(str, path))
     rel = Path(path).expanduser()  # `~/configs/x.yaml` is a home path, not `<cwd>/~/...` (PA27)
     if rel.is_absolute():
         return rel
@@ -1089,8 +1096,8 @@ def _anchor_deferred_include(contents: Dict[str, Any], current_path: Path) -> No
 
 def _anchor_include_entry(entry: Any, current_path: Path) -> Any:
     """One entry of :func:`_anchor_deferred_include` — malformed entries pass through for the settle to refuse."""
-    if not isinstance(entry, str) or not entry.strip():
-        return entry
+    if not isinstance(entry, str) or not entry.strip() or is_package_reference(entry):
+        return entry  # a pkg:// entry names its file wherever the block is read — and is not looked up until then
     found = resolve_config_path(entry, base_dir=current_path.parent)
     return str(found) if _exists(found) else entry  # a file the call holds is found like one on disk
 
@@ -1186,7 +1193,12 @@ def _splice_includes(
                 f"include: takes a non-empty path (in {current_path}) — an empty one resolved to the "
                 f"working DIRECTORY and crashed the open (BUGS-2026-08-19 PA13)"
             )
-        target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
+        try:
+            target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
+        except (ConfigFileNotFoundError, ConfigurationError) as exc:
+            if not is_package_reference(inc_path):
+                raise
+            raise type(exc)(f"{current_path} includes {exc}") from None
         included.append(_load_config_file(target_path, _included=dict(_included), including=current_path))
         if spliced is not None:
             spliced.append(target_path)
@@ -1362,6 +1374,8 @@ def _names_a_file(data: Union[str, Path]) -> bool:
         return True
     if not data.strip():
         return False  # empty text parses to {} — it used to resolve to '.' and open a DIRECTORY (PA13)
+    if is_package_reference(data):
+        return True  # `pkg://…` holds a `:`, yet names a file
     if "\n" in data or ":" in data:
         return False
     if data.endswith(_CONFIG_SUFFIXES):
