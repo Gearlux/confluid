@@ -5,7 +5,7 @@ config-aware ``--help``. Fixtures stay small — each class isolates one
 rule from the docstring so failures point at the exact rule.
 """
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -73,6 +73,14 @@ class WithList:
         self.items = items
 
 
+@configurable
+class WithDict:
+    """Holds a dict of @configurable children, keyed by name."""
+
+    def __init__(self, kwargs: Dict[str, SimpleLeaf]) -> None:
+        self.kwargs = kwargs
+
+
 def _flags_for(hierarchy: dict) -> dict:
     """Helper: map each hierarchy path to its short leaf name (last segment) for assertions."""
     return {path.split(".")[-1]: path for path in hierarchy}
@@ -130,14 +138,58 @@ def test_post_construction_setattr_surfaces() -> None:
     assert doc == ""  # no class-level docstring for setattr keys
 
 
-def test_list_of_configurables_uses_index_suffix() -> None:
+def test_a_list_item_is_a_numbered_SEGMENT_of_the_path() -> None:
+    """``items.0``, not ``items[0]``: one segment per step, in the path grammar's own spelling.
+
+    ``resolver._parse_path_segments`` reads an all-digit bareword as an index exactly as it reads
+    the bracket form, so the dotted spelling resolves identically — and it is the one every
+    consumer of these paths can use as a name (a tracker's parameter, a CLI option).
+    """
     obj = WithList(items=[SimpleLeaf(x=1), SimpleLeaf(x=2)])
     h = get_hierarchy_from_instance(obj)
-    assert "WithList.items[0].SimpleLeaf.x" in h
-    assert "WithList.items[1].SimpleLeaf.x" in h
-    _, v0, _ = h["WithList.items[0].SimpleLeaf.x"]
-    _, v1, _ = h["WithList.items[1].SimpleLeaf.x"]
+    assert "WithList.items.0.SimpleLeaf.x" in h
+    assert "WithList.items.1.SimpleLeaf.x" in h
+    _, v0, _ = h["WithList.items.0.SimpleLeaf.x"]
+    _, v1, _ = h["WithList.items.1.SimpleLeaf.x"]
     assert (v0, v1) == (1, 2)
+
+
+def test_a_dict_key_is_a_SEGMENT_of_the_path_wherever_the_dict_is_held() -> None:
+    """A dict in a slot spells its key the same way a dict at the top level always has.
+
+    The bracket form this branch used to write was not merely inconsistent with the top-level
+    branch — under the path grammar ``kwargs[source]`` is an index *reference*, i.e. "look up a
+    variable named source", which is not what the walk means. ``kwargs.source`` is a key lookup,
+    which is.
+    """
+    obj = WithDict(kwargs={"source": SimpleLeaf(x=7)})
+    h = get_hierarchy_from_instance(obj)
+    assert "WithDict.kwargs.source.SimpleLeaf.x" in h
+    _, value, _ = h["WithDict.kwargs.source.SimpleLeaf.x"]
+    assert value == 7
+
+
+def test_a_dict_assigned_after_construction_spells_its_keys_the_same_way() -> None:
+    """The post-construction branch of the walk, which had no test of its spelling at all."""
+    obj = PostConstructionToggle(op=None)
+    obj.parts = {"head": SimpleLeaf(x=3)}  # type: ignore[attr-defined]
+    h = get_hierarchy_from_instance(obj)
+    assert "PostConstructionToggle.parts.head.SimpleLeaf.x" in h
+
+
+def test_every_path_the_walk_produces_resolves_under_the_path_grammar() -> None:
+    """The property that makes the dotted spelling correct rather than merely convenient.
+
+    Each segment the walk writes must tokenize, so a path it reports can be read back by the one
+    grammar (`resolver._parse_path_segments`) instead of being a display string only.
+    """
+    from confluid.resolver import _parse_path_segments
+
+    obj = WithList(items=[SimpleLeaf(x=1)])
+    for path in get_hierarchy_from_instance(obj):
+        assert _parse_path_segments(path) is not None, path
+    for path in get_hierarchy_from_instance(WithDict(kwargs={"source": SimpleLeaf(x=7)})):
+        assert _parse_path_segments(path) is not None, path
 
 
 def test_cycle_safe() -> None:

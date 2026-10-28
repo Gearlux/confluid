@@ -2308,3 +2308,68 @@ load("pkg://shared-configs/config/base.yaml")
 
 **What you may change.** The messages. Not a second lookup order, not a search beyond the named distribution, not a
 `..` escape. Pin: `tests/test_package_includes.py`.
+
+## 34. The instance walk spells every step as a dotted segment, in the path grammar's own form (2026-10-28)
+
+**Context.** `get_hierarchy_from_instance` walks a live object graph and reports `{path: (type, value, doc)}`.
+Its four container branches did not agree on how a step is spelled. A dict walked at the TOP level wrote
+`processor.Parent.tag` — a plain dotted segment per key, pinned by
+`test_dict_input_maps_to_key_prefixed_paths`. A list, and a dict held in a configurable's SLOT or assigned
+after construction, wrote a bracket instead: `items[0]`, `kwargs[source]`. The slot-dict branch had no test
+of its spelling at all.
+
+The bracket form was not merely inconsistent. This project has ONE path grammar
+(`resolver._parse_path_segments`), and under it the two spellings do not mean the same thing:
+
+* `items.0` and `items[0]` are **equivalent** — an all-digit bareword is tokenized as an index, the same
+  disambiguation the bracket form gets.
+* `kwargs[source]`, with a non-numeric name in brackets, is an **index reference**: "resolve a variable named
+  `source` in the walking context and step by its value". The walk means the literal dict key `source`,
+  which is what `kwargs.source` tokenizes to.
+
+So the walk emitted, for every dict it found in a slot, a path that the project's own resolver would read as
+something else. And these paths are not display-only: a consuming CLI prints them as option names, and a
+consuming experiment tracker logs them as parameter names.
+
+**Decision.** All four branches spell a step the same way, as a dotted segment: `items.0`,
+`kwargs.source`. The brackets are gone from the walk (they remain, untouched, in the reference grammar that
+reads them — `${items[0]}` and `!ref:packs[idx].name` are unchanged).
+
+This is the "one path grammar, one policy" rule applied to the walk's OUTPUT rather than only to its reader:
+a path the walk reports is now a path the grammar reads back, and
+`test_every_path_the_walk_produces_resolves_under_the_path_grammar` is what holds it there. It adds no
+spelling and removes one, so it is the opposite of growing the utility into a language (the 2026-08-20
+ruling): the walk stops using a form whose meaning it did not intend.
+
+**Consequences.** A consumer that matched `[` in these paths sees a dotted segment now. Measured across this
+workspace at the change: the liquifai config report (which renders each path as a `--option`) and its
+completion suite pass unchanged — 856 tests, no test had pinned the bracket form — and one confluid test
+pinned it and was updated. The downstream experiment tracker that derives a run's hyperparameters from this
+walk now produces names an MLflow-backed server accepts as written, where a configuration holding one dict
+used to cost the run its whole parameter set.
+
+A dict key that itself contains a dot is now ambiguous in the reported path (`kwargs.a.b` for the key
+`"a.b"`), exactly as a top-level dict key with a dot already was. The walk reports a path for reading and
+addressing, not a round-trip encoding; a key needing exactness is addressed by the reference grammar, where
+the bracket form still carries it.
+
+**Example.**
+
+```python
+@configurable
+class WithDict:
+    def __init__(self, kwargs: Dict[str, SimpleLeaf]) -> None:
+        self.kwargs = kwargs
+
+h = get_hierarchy_from_instance(WithDict(kwargs={"source": SimpleLeaf(x=7)}))
+# "WithDict.kwargs.source.SimpleLeaf.x"      — was "WithDict.kwargs[source].SimpleLeaf.x"
+
+h = get_hierarchy_from_instance(WithList(items=[SimpleLeaf(x=1)]))
+# "WithList.items.0.SimpleLeaf.x"            — was "WithList.items[0].SimpleLeaf.x"
+```
+
+**What you may change.** Nothing about this is a precedence or resolution rule, so the spelling is open — but
+change all four branches together, and keep the property test: whatever the walk writes must tokenize under
+`_parse_path_segments`. What you may not do: reintroduce a bracket for a dict key (the grammar reads it as an
+index reference), spell one branch differently from the others, or teach the resolver a second form to make a
+new walk spelling resolvable.
