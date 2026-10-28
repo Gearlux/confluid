@@ -215,7 +215,7 @@ def _walk_instance(
 
     if isinstance(obj, (list, tuple)):
         for i, item in enumerate(obj):
-            sub = f"{prefix}[{i}]"
+            sub = f"{prefix}.{i}"
             _walk_instance(item, sub, hierarchy, visited)
         return
 
@@ -290,12 +290,12 @@ def _walk_instance(
         if isinstance(live_value, (list, tuple)) and any(_is_any_instance(x) for x in live_value):
             for i, item in enumerate(live_value):
                 child_shallow = not _is_configurable_instance(item)
-                _walk_instance(item, f"{path}[{i}]", hierarchy, new_visited, shallow=child_shallow)
+                _walk_instance(item, f"{path}.{i}", hierarchy, new_visited, shallow=child_shallow)
             continue
         if isinstance(live_value, dict) and any(_is_any_instance(x) for x in live_value.values()):
             for k, v in live_value.items():
                 child_shallow = not _is_configurable_instance(v)
-                _walk_instance(v, f"{path}[{k}]", hierarchy, new_visited, shallow=child_shallow)
+                _walk_instance(v, f"{path}.{k}", hierarchy, new_visited, shallow=child_shallow)
             continue
 
         hierarchy[path] = (type_str, live_value, doc)
@@ -328,11 +328,11 @@ def _walk_instance(
             continue
         if isinstance(attr_value, (list, tuple)) and any(_is_configurable_instance(x) for x in attr_value):
             for i, item in enumerate(attr_value):
-                _walk_instance(item, f"{path}[{i}]", hierarchy, new_visited)
+                _walk_instance(item, f"{path}.{i}", hierarchy, new_visited)
             continue
         if isinstance(attr_value, dict) and any(_is_configurable_instance(x) for x in attr_value.values()):
             for k, v in attr_value.items():
-                _walk_instance(v, f"{path}[{k}]", hierarchy, new_visited)
+                _walk_instance(v, f"{path}.{k}", hierarchy, new_visited)
             continue
         hierarchy[path] = (type_str, attr_value, "")
 

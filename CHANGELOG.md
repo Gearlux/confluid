@@ -6,6 +6,17 @@ All notable changes to confluid are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`get_hierarchy_from_instance` spells a container step as its own dotted segment** — a list item is
+  `items.0` where it was `items[0]`, and a dict value held in a slot is `kwargs.source` where it was
+  `kwargs[source]`. A dict walked at the top level already spelled its keys this way, so the four branches of
+  the walk now agree. The dotted form is the path grammar's own: `_parse_path_segments` reads an all-digit
+  bareword as an index exactly as it reads `[0]`, so such a path still resolves — while `kwargs[source]` was
+  read as an index *reference* to a variable named `source`, which is not what the walk meant. A consumer that
+  matched the bracket spelling in these paths (a config report's option names, a tracker's parameter names)
+  sees the dotted one now.
+
 ### Added
 
 - **The wheel ships the example configs** (`examples/*.yaml`) under `share/confluid/examples/`, where

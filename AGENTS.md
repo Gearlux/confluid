@@ -453,6 +453,14 @@ inventories.
   a fourth grammar or a second policy. A miss is `PATH_MISS`, never `None` (a found `null` is a
   hit); `_lookup_path` keeps the `None` contract for pass-6 aliasing and `$key`. An int segment
   steps into a dict (int key first, then the digit string).
+- **The instance walk WRITES that grammar:** every container step `schema._walk_instance` reports is a
+  dotted segment — `items.0`, `kwargs.source` — in all four branches (list, slot dict, post-construction
+  dict, top-level dict), never a bracket. A bracket would not round-trip: `[0]` is equivalent to `.0`,
+  but `[source]` is an index REFERENCE to a variable named `source`, which the walk never means. Change
+  the branches together and keep the property pin. §34.
+  (`tests/test_schema_from_instance.py::test_every_path_the_walk_produces_resolves_under_the_path_grammar`,
+  `::test_a_list_item_is_a_numbered_SEGMENT_of_the_path`,
+  `::test_a_dict_key_is_a_SEGMENT_of_the_path_wherever_the_dict_is_held`)
 - **Attribute references are removed (user ruling 1b, 2026-08-17).** The FIRST segment decides: a
   document key walks structure only; anything else is an import path (`!ref:posixpath.join`). A
   walk that leaves structure is refused by `resolver.refuse_attribute_reference` (in
