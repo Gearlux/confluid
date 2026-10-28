@@ -81,6 +81,11 @@ confluid-bake = "confluid.bake:main"
 # the `cli` extra: click). `eval "$(hydraide completion zsh)"` enables shell completion.
 hydraide = "confluid.cli:main"
 
+# A workspace manager installing shell completion reads which scripts are click commands here (it cannot tell
+# without importing them): `hydraide` answers click's `_HYDRAIDE_COMPLETE` protocol.
+[tool.aisland]
+click-commands = ["hydraide"]
+
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"
 Repository = "https://github.com/Gearlux/confluid.git"
