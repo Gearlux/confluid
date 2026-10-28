@@ -39,6 +39,10 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **`examples/quickstart.py` runs again.** It asserted that its temporary directory held exactly its two
+  YAML files, which stopped being true once logging was initialised inside that directory — the first
+  `load()` creates a `logs/` folder in the working directory. The example now names the files it owns
+  (`glob("*.yaml")`), which is what it meant to show: the held `variant.yaml` was never written to disk.
 - **A placeholder's fallback may read other placeholders.** `${env:RUN_DIR,${env:HOME}/runs}` resolves to
   `/Users/me/runs` with `RUN_DIR` unset and to `RUN_DIR` when it is set; it used to come out as `${env:HOME/runs}`
   or `<RUN_DIR>/runs}`, with no error. A fallback is read only when the placeholder misses, as author text: its
