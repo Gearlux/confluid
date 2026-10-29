@@ -30,7 +30,7 @@ pipeline {
                 sh "${VENV_BIN}/pip install --upgrade pip uv"
                 echo 'Installing Dependencies...'
                 
-                sh "${VENV_BIN}/uv pip install -e .[dev]"
+                sh "${VENV_BIN}/uv pip install -e .[dev,cli,env,pydantic]"
                 // Notebook-only extras (matplotlib, jupyter kernels, etc.) live
                 // in the optional `[notebook]` extra when the project ships
                 // notebooks; absence is not an error.
