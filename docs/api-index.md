@@ -119,6 +119,7 @@ plugs into the passes, and from the eight names most configs need:
 | `get_hierarchy_from_instance` | The same view over a LIVE object graph |
 | `get_configurable_attrs` | The configurable attribute names of one class |
 | `shortest_unique_paths` | Shortest unambiguous dotted spellings for a hierarchy's rows |
+| `type_label` | A parameter's type as a help table shows it (`text \| json`, `int \| None`, `list[str]`) |
 
 ## Config-file paths & environment — [Config-File Search Paths](search-paths.md)
 
