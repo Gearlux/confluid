@@ -2412,3 +2412,41 @@ it is a literal (`ast.literal_eval`), a yes/no parameter known by its `bool` ann
 
 **What you may change.** Which comment lines belong to a key (a section-rule line skipped, a comment block shared by
 the keys below it) is presentation and open; keep it a reading of the text, never a value that reaches the document.
+
+## 36. A dump can show a deferred slot's defaults — `dump(defaults=True)` (2026-10-30)
+
+**Context.** A built object dumps every slot, so a run's resolved configuration lists each of its settings. A
+deferred slot (`_partial_: true` — an optimizer the run builds with `params=model.parameters()`) stays a marker, and
+a marker dumps only what it was given: the AdamW slot of a training config showed `lr`, `weight_decay`, `betas`,
+`eps` and none of AdamW's other six parameters, which the run nevertheless uses.
+
+**Decision.** An opt-in `defaults=True` (user choice 2026-10-30, of: an option of confluid's dump, used by the app
+framework / the app framework reading confluid's internals itself). The `Target` representer — and the
+non-`@configurable` built-object branch, which dumps its captured arguments — appends each `keyword` slot of the
+target (`slots()`, the one enumeration; a string target through `registry.resolve_class`, non-strict) that the body
+does not state and that has a default a document can spell (`_spellable_default`), in signature order, a tuple as a
+list. It happens at emission: the marker is never mutated, so a dump of a document a run still holds cannot change
+that run.
+
+Rejected: filling the markers before the dump (a shared marker would carry the defaults into the run, where an
+explicit key no longer lets a later broadcast reach it); spelling every default (a sentinel object or a function
+would dump as a placeholder or a reference, which is not the signature's default — reloaded, it is a different
+value); defaults on by default (a dump records what was configured; `hydraide`'s emitted document stays the
+author's).
+
+**Consequences.**
+
+- A reloaded dump states the defaults as keys; they are the values the signature holds, so the build is the same.
+- A target that resolves to nothing adds nothing, silently: the marker is dumped as given.
+- A default the document cannot spell is left out, so the dump is complete only up to those.
+
+**Example.**
+
+```python
+dump({"optimizer": PartialClass(DemoOptimizer, lr=0.01)}, defaults=True)
+# optimizer: {_target_: DemoOptimizer, _partial_: true, lr: 0.01, momentum: 0.9}
+```
+
+**What you may change.** Widen `_spellable_default` to a type the dumper spells faithfully (a `Path`, an `Enum`) with a
+round-trip test. Do not mutate the marker, do not add a default without one in the signature, and do not turn the
+option on for `hydraide`.

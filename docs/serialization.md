@@ -153,6 +153,35 @@ The rules, each pinned:
   artifact wants. A class whose path imports to nothing (a `<locals>` factory
   class, `__main__`) keeps the registry key. Trade-offs in
   [Architecture Decisions](architecture.md) §4.
+- **A deferred slot shows what it was given — unless you ask for its defaults.**
+  A built object dumps every slot, but a `_partial_: true` marker (built later
+  by the run, with arguments only the run has) dumps only the keys it was given.
+  `dump(obj, defaults=True)` lists, after those, each signature parameter that
+  has a default a document can spell — `None`, a bool, a number, a string, or a
+  list or mapping of those (a tuple as a list):
+
+  ```python
+  @configurable(name="DemoOptimizer")
+  class DemoOptimizer:
+      def __init__(self, params: Any, lr: float = 0.001, momentum: float = 0.9) -> None: ...
+
+  dump({"optimizer": PartialClass(DemoOptimizer, lr=0.01)}, defaults=True)
+  ```
+
+  ```yaml
+  # output
+  optimizer:
+    _target_: DemoOptimizer
+    _partial_: true
+    lr: 0.01
+    momentum: 0.9
+  ```
+
+  A parameter without a default (`params`, the run's to pass), `*args` /
+  `**kwargs`, and a default no document can write (a sentinel object, a
+  function) are left out; the marker itself is not changed. The same applies to
+  an object built from a non-`@configurable` target, which otherwise dumps the
+  arguments it was built with.
 - **Interpolation is burned in.** A `${DATA_ROOT}`-style placeholder is
   substituted at load time, and `dump()` emits the substituted value — so
   reloading the dump in a different environment reproduces *this* run rather

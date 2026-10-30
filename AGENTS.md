@@ -596,6 +596,11 @@ inventories.
   first, dotted path fallback, a string verbatim). `dump(qualified=True)` uses the importable path
   except for `<locals>`/`__main__` classes; `hydraide` never passes it. (the F3 and qualified groups
   in `tests/test_dumper.py`)
+- **`dump(defaults=True)` (user choice 2026-10-30)** adds, to a marker or a non-`@configurable` built object, each
+  `keyword` slot it does not state that has a default a document can spell (`dumper._spellable_default`; a tuple as a
+  list), after the stated ones, read through `slots()` of the target `registry.resolve_class` finds (non-strict;
+  nothing resolved, nothing added). Emission-time only — the marker is never mutated — and off by default; `hydraide`
+  never passes it. §36. (`tests/test_dump_defaults.py`)
 - Opaque values dump by value where faithful (`_represent_opaque`: PathLike, Enum, numpy scalar);
   anything else is a placeholder plus one warning per type. `register_dump_spelling` is the
   type's document spelling: built-ins win over it, it wins over the generic reconstruction; it is
