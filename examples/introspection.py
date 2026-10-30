@@ -5,9 +5,11 @@ Contrasts ``load(until="settled")`` (pure Fluid markers, nothing constructed) wi
 with ``cast``, and closes with a ``dump`` -> ``load`` round-trip.
 """
 
+import tempfile
+from pathlib import Path
 from typing import Optional
 
-from confluid import Target, cast, configurable, dump, load
+from confluid import Target, cast, configurable, document_notes, dump, load
 
 
 @configurable
@@ -29,6 +31,18 @@ class Backbone:
 DOC = """
 backbone: !class:Backbone
   depth: 101
+"""
+
+#: A config whose settings carry comments: the help a command shows for them.
+NOTED = """\
+# How deep the backbone goes.
+depth: 50
+# a smaller backbone
+small: !scope:small
+  depth: 18
+
+backbone: !class:Backbone
+  depth: !ref:depth
 """
 
 
@@ -57,6 +71,19 @@ def main() -> None:
     reconstructed = load(dump(backbone))
     assert isinstance(reconstructed, Backbone) and reconstructed.depth == 101
     print("dump() -> load() reconstructed an identical Backbone")
+
+    # document_notes(): a config's own settings with their comments, the parameters each feeds, its scopes.
+    with tempfile.TemporaryDirectory() as folder:
+        config = Path(folder) / "run.yaml"
+        config.write_text(NOTED)
+        notes = document_notes(config)
+    assert [(key.name, key.comment) for key in notes.keys] == [
+        ("depth", "How deep the backbone goes."),
+        ("backbone", ""),
+    ]
+    assert notes.keys[0].feeds == (("Backbone", "depth"),)
+    assert [(scope.activation, scope.comment) for scope in notes.scopes] == [("small", "a smaller backbone")]
+    print(f"document_notes(): {[key.name for key in notes.keys]} and the scope {notes.scopes[0].activation!r}")
 
 
 def load_config_text(text: str) -> dict:

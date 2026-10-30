@@ -19,6 +19,12 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`document_notes(path)` reads what a config file says about its own settings** — each top-level key with the
+  comment lines directly above it (else the comment ending its line) and the class parameters it feeds through
+  `!ref:`, and every scope block with its comment — without building, importing or resolving anything. **`source_param_docs(target)`**
+  reads a class's `Args:` help from its source, its module never imported, and **`source_params(target)`** its
+  constructor parameters (name, annotation, literal default, yes/no). A command's help and tab completion show
+  them.
 - **The wheel ships the example configs** (`examples/*.yaml`) under `share/confluid/examples/`, where
   `pkg://confluid/examples/<file>.yaml` names them from any install.
 - **`pkg://<distribution>/<path>` names a config by the installed distribution that ships it** — `include:

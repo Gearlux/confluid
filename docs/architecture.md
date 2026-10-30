@@ -2373,3 +2373,42 @@ change all four branches together, and keep the property test: whatever the walk
 `_parse_path_segments`. What you may not do: reintroduce a bracket for a dict key (the grammar reads it as an
 index reference), spell one branch differently from the others, or teach the resolver a second form to make a
 new walk spelling resolvable.
+
+## 35. A config's notes are read from its text, and a class's help from its source (2026-10-30)
+
+**Context.** A command that runs a config (`recordstream run catalog.yaml`) shows its options in a tab-completion
+listing and in `--help`. The settings the config's author put at the top of the file (`setup_datasets`,
+`catalog_csv`, a `quick` scope) came out without help: PyYAML drops comments, so the author's documentation of them
+never reached a reader, and the help of the class parameter each key feeds was only reachable by importing the class
+— 2.7 s for one class of a consuming project, far too slow for a TAB.
+
+**Decision.** `confluid.notes` reads both without building anything. `document_notes(path)` composes ONE file with
+PyYAML (nodes with their lines, nothing constructed) and reads, from the text, the run of comment lines directly above
+each top-level key (else the comment ending its line), the `(class, parameter)` each `!ref:<key>` feeds, and every
+scope block with its comment. `source_param_docs(target)` finds the module's file with `importlib.util.find_spec`
+(which imports the packages above it, never the module), parses it with `ast`, and reads the class's `Args:` block
+with the same parser `parse_param_docs` uses, following a package's `from .module import Class` re-export by file.
+
+It reads and reports; it adds no pass, no spelling and no resolution rule (the 2026-08-20 ruling): the loader never
+sees a comment, and a key's notes change nothing about its value.
+
+**Consequences.** Measured on the consuming project's catalog config: its four keys, its scope and the help of the
+three classes it names, in 0.13 s. Limits, documented: base classes are not followed (an undocumented subclass has no
+help), a registry name without its module (`!class:Builder`) has none, and a package whose `__init__` is heavy is
+imported when it sits ABOVE the class's module (the re-export hop reads files and imports nothing).
+
+**Example.**
+
+```python
+notes = document_notes("run.yaml")   # folders: [] under "# The folders read." … runnable: … source_dirs: !ref:folders
+notes.keys[0]   # KeyNote(name='folders', line=2, comment='The folders read.', feeds=(('shapes.Builder', 'source_dirs'),))
+source_param_docs("shapes.Builder")["source_dirs"]   # its Args: help; shapes not imported
+source_params("shapes.Builder")[1]   # SourceParam(name='count', annotation='int', default='0', switch=False)
+```
+
+`source_params` (added the same day, at the user's request: `--overwrite` was missing from a listing because no
+config wrote it) reads the constructor's parameters the same way — `ast` over `__init__`, a default shown only when
+it is a literal (`ast.literal_eval`), a yes/no parameter known by its `bool` annotation or default.
+
+**What you may change.** Which comment lines belong to a key (a section-rule line skipped, a comment block shared by
+the keys below it) is presentation and open; keep it a reading of the text, never a value that reaches the document.
