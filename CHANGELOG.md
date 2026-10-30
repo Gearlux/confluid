@@ -58,6 +58,11 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A bare scope no block declares is refused** — `load(cfg, scopes=["vla"])` (meant `val`) loaded the document as
+  if no scope were given; it now raises `ScopeError: No scope block declares 'vla' (the scopes of /path/to/cfg.yaml:
+  quickstart, val)`. The name is judged after every active block's include is opened, so a scope declared there, a
+  `scope_aliases:` name and a dotted name whose ancestor is declared still activate. A keyed activation of a
+  dimension the document never declares (`framework=torch`) still changes nothing.
 - **`examples/quickstart.py` runs again.** It asserted that its temporary directory held exactly its two
   YAML files, which stopped being true once logging was initialised inside that directory — the first
   `load()` creates a `logs/` folder in the working directory. The example now names the files it owns

@@ -507,7 +507,11 @@ inventories.
   `ScopeBlock.contents`, `Fluid.kwargs`). Add a kind to all three.
 - An active keyed scope must name a declared value; a bare activation of a keyed-only dimension is
   refused; a dimension that also has a boolean block accepts the bare name. The three exemptions
-  of §1 stay. `discover_dimension_values` reports positive values only (a negation-only dimension →
+  of §1 stay. A bare activation no block, alias or ancestor declares is refused after the settle
+  loop (`scopes.refuse_undeclared_bare_scopes`, each pass gathered by `DeclaredScopes` BEFORE it
+  resolves — never judged on the raw document, which misses a scope block's include); an
+  undeclared KEYED dimension stays inert (§1 amendment 2026-10-30, user ruling).
+  (`tests/test_undeclared_bare_scope.py`). `discover_dimension_values` reports positive values only (a negation-only dimension →
   empty set — do not "fix" it) and takes the RAW document. (`tests/test_scopes.py`)
 - **`default_scopes:` is static and keyed-only.** `scopes.default_scopes(raw)` is the one reader;
   `normalize_active` fills it after the caller's list; it passes the declared-value check (no
