@@ -74,6 +74,7 @@ from confluid.schema import (
     output_specs,
     parse_param_docs,
     shortest_unique_paths,
+    type_label,
 )
 from confluid.scopes import default_scopes, discover_boolean_scopes, discover_dimension_values, discover_dimensions
 from confluid.state import active_context, collect_report
@@ -145,6 +146,7 @@ __all__ = [
     "OutputSpec",
     "parse_param_docs",
     "shortest_unique_paths",
+    "type_label",
     "document_notes",
     "source_param_docs",
     "source_params",

@@ -17,12 +17,20 @@ All notable changes to confluid are documented here. The format follows
   matched the bracket spelling in these paths (a config report's option names, a tracker's parameter names)
   sees the dotted one now.
 
+- **The hierarchies name each type as a person reads it** — `get_hierarchy` and `get_hierarchy_from_instance`
+  report `text | json` for `Literal["text", "json"]`, `int | resume` for `Union[int, Literal["resume"]]`,
+  `str | None` for `Optional[str]` and `list[str]` for `List[str]`, where they reported `Literal`, `Union` and
+  `Optional`. A consumer that matched those bare names in a row's type sees the full spelling now.
+
 ### Added
 
 - **`dump(obj, defaults=True)` shows a deferred slot's defaults** — a `_partial_: true` marker (and any marker, or an
   object built from a non-`@configurable` target) is emitted with each parameter it was not given that has a default a
   document can spell, after the ones it was given. A parameter without a default — an optimizer's `params` — stays
   out, and the marker is not changed. Off by default.
+
+- **`type_label(annotation)`** — the type spelling the hierarchies use, for a front end that names a
+  parameter's type from its annotation.
 
 - **`document_notes(path)` reads what a config file says about its own settings** — each top-level key with the
   comment lines directly above it (else the comment ending its line) and the class parameters it feeds through

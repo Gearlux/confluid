@@ -23,6 +23,7 @@ from typing import (
     Any,
     Dict,
     List,
+    Literal,
     Optional,
     Set,
     Tuple,
@@ -34,6 +35,32 @@ from typing import (
 )
 
 from confluid.introspect import NO_DEFAULT, init_callable, slots
+
+
+def type_label(annotation: Any) -> str:
+    """``annotation`` as a person reads it in a help table: ``text | json``, ``int | resume``, ``list[str]``.
+
+    A choice lists its values, a union its members (``None`` included), a generic its arguments; ``Annotated``
+    shows its type alone. The bare names (``Literal``, ``Union``, ``Optional``) said nothing about what to type.
+    """
+    if isinstance(annotation, str):
+        return annotation
+    if annotation is type(None):
+        return "None"
+    if annotation is Ellipsis:
+        return "..."
+    if isinstance(annotation, list):  # a ``Callable``'s parameter list
+        return "[" + ", ".join(type_label(arg) for arg in annotation) + "]"
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is Annotated:
+        return type_label(args[0])
+    if origin is Literal:
+        return " | ".join(arg if isinstance(arg, str) else repr(arg) for arg in args)
+    if origin is Union or origin is types.UnionType:
+        return " | ".join(type_label(arg) for arg in args)
+    if origin is not None and args:
+        return f"{getattr(origin, '__name__', str(origin))}[{', '.join(type_label(arg) for arg in args)}]"
+    return getattr(annotation, "__name__", str(annotation).replace("typing.", ""))
 
 
 def get_hierarchy(target: Any) -> Dict[str, Any]:
@@ -75,7 +102,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
 
             path = f"{prefix}.{slot.name}" if prefix else slot.name
             param_type = slot.annotation
-            type_str = getattr(param_type, "__name__", str(param_type))
+            type_str = type_label(param_type)
             default = None if slot.default is NO_DEFAULT else slot.default
             doc = param_docs.get(slot.name, "")
 
@@ -144,7 +171,7 @@ def _build_hierarchy_recursive(obj: Any, prefix: str, hierarchy: Dict[str, Any],
 
         path = f"{current_prefix}.{slot.name}"
         param_type = slot.annotation
-        type_str = getattr(param_type, "__name__", str(param_type))
+        type_str = type_label(param_type)
         default = None if slot.default is NO_DEFAULT else slot.default
         doc = param_docs.get(slot.name, "")
 
@@ -269,7 +296,7 @@ def _walk_instance(
 
         path = f"{node_prefix}.{slot.name}"
         param_type = slot.annotation
-        type_str = getattr(param_type, "__name__", str(param_type))
+        type_str = type_label(param_type)
         live_value = getattr(obj, slot.name, None if slot.default is NO_DEFAULT else slot.default)
         doc = param_docs.get(slot.name, "")
 
