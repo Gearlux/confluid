@@ -45,6 +45,15 @@ from confluid.loader import get_app_name, load, resolve_config_path, set_app_nam
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
+from confluid.notes import (
+    DocumentNotes,
+    KeyNote,
+    ScopeNote,
+    SourceParam,
+    document_notes,
+    source_param_docs,
+    source_params,
+)
 
 # ``Partial`` is re-exported as an IMPORT, never ``Partial = partial.Partial``: a
 # plain assignment loses the alias's genericity for a type checker, so every
@@ -136,6 +145,13 @@ __all__ = [
     "OutputSpec",
     "parse_param_docs",
     "shortest_unique_paths",
+    "document_notes",
+    "source_param_docs",
+    "source_params",
+    "SourceParam",
+    "DocumentNotes",
+    "KeyNote",
+    "ScopeNote",
     "get_configurable_attrs",
     "to_pydantic",
     "confluid_class_of",

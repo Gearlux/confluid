@@ -68,6 +68,9 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|
 | `to_pydantic` | Constructor signature → validating pydantic model |
 | `parse_param_docs` | Google-style `Args:` docstring → `{param: description}` |
+| `source_param_docs` | The same help read from the class's SOURCE, its module never imported ([Introspection](introspection.md#what-a-config-says-about-its-own-settings)) |
+| `source_params` / `SourceParam` | A class's constructor parameters (name, annotation, literal default, yes/no) read from its SOURCE ([Introspection](introspection.md#what-a-config-says-about-its-own-settings)) |
+| `document_notes` / `DocumentNotes` / `KeyNote` / `ScopeNote` | A config file's top-level keys and scope blocks with their comments, and the class parameters each key feeds through `!ref:` ([Introspection](introspection.md#what-a-config-says-about-its-own-settings)) |
 | `confluid_class_of` | The origin class stored on a generated model |
 | `sanitize_schema` | JSON Schema → the subset strict LLM function-calling APIs accept |
 | `validate_model` | Re-validate a built model under a policy mode |
