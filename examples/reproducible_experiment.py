@@ -123,6 +123,28 @@ def dump_spellings() -> None:
     print("[SUCCESS] registered dump spelling: the opaque value round-trips as its VALUES.")
 
 
+def deferred_defaults() -> None:
+    """`dump(defaults=True)` — a deferred slot listed with the defaults it was not given.
+
+    A built object dumps every slot; a `_partial_: true` marker, built later by the run, dumps only what it was
+    given. Asked for `defaults=True`, it also shows each parameter that has a default — not the ones the run passes
+    in, which have none — so the document says every setting the run will use.
+    """
+    from confluid import PartialClass
+
+    @configurable(name="DemoOptimizer")
+    class DemoOptimizer:
+        def __init__(self, params: Any, lr: float = 0.001, momentum: float = 0.9) -> None:
+            self.params, self.lr, self.momentum = params, lr, momentum
+
+    marker = PartialClass(DemoOptimizer, lr=0.01)
+    plain, full = dump({"optimizer": marker}), dump({"optimizer": marker}, defaults=True)
+    assert "momentum" not in plain and "momentum: 0.9" in full and "params" not in full, full
+    print("[SUCCESS] dump(defaults=True) lists a deferred slot's defaults:")
+    print(full)
+
+
 if __name__ == "__main__":
     main()
     dump_spellings()
+    deferred_defaults()
