@@ -39,7 +39,14 @@ from confluid.resolver import (
     hoist_marker_placeholders,
     parse_value,
 )
-from confluid.scopes import normalize_active, parse_default_scopes, parse_scope_arg, resolve_scopes
+from confluid.scopes import (
+    DeclaredScopes,
+    normalize_active,
+    parse_default_scopes,
+    parse_scope_arg,
+    refuse_undeclared_bare_scopes,
+    resolve_scopes,
+)
 
 logger = get_logger("confluid.loader")
 
@@ -1110,7 +1117,14 @@ def _anchor_include_entry(entry: Any, current_path: Path) -> Any:
 _MAX_SETTLE_PASSES = 10
 
 
-def _settle_scopes_and_includes(data: Any, base_path: Path, active: Dict[str, Optional[str]]) -> Any:
+def _settle_scopes_and_includes(
+    data: Any,
+    base_path: Path,
+    active: Dict[str, Optional[str]],
+    requested: Optional[List[str]] = None,
+    aliases: Optional[Dict[str, Any]] = None,
+    source: Optional[str] = None,
+) -> Any:
     """Alternate scope resolution and include splicing until neither changes anything.
 
     Includes are processed BEFORE scopes (see :func:`load`), which is what keeps a
@@ -1125,12 +1139,22 @@ def _settle_scopes_and_includes(data: Any, base_path: Path, active: Dict[str, Op
     Resolving again after splicing is what closes the loop, and it has to REPEAT:
     an activated block can splice a file that itself carries a scope block whose
     activation exposes a further include.
+
+    A bare name among ``requested`` that no pass's blocks declare (nor an alias) is refused once the loop settles
+    (:func:`confluid.scopes.refuse_undeclared_bare_scopes`, architecture §1 amendment 2026-10-30): a name an active
+    block's include declares exists only in a later pass, so each pass is read before it resolves. Without a bare
+    activation nothing is gathered.
     """
+    bare = [raw for raw in requested or [] if parse_scope_arg(raw)[1] is None]
+    declared = DeclaredScopes()
     for _ in range(_MAX_SETTLE_PASSES):
+        if bare:
+            declared.add(data)
         data = resolve_scopes(data, active)
         spliced: List[Path] = []
         data = _process_includes_recursive(data, base_path, {}, spliced)
         if not spliced:
+            refuse_undeclared_bare_scopes(bare, declared, aliases, source)
             return data
     raise ConfigurationError(
         f"include: directives inside scope blocks did not settle after {_MAX_SETTLE_PASSES} passes "
@@ -1396,9 +1420,11 @@ def _load(
     # ---- passes 1–3: parse, import, include --------------------------------------
     # The base path for a RELATIVE include, and for the post-scope settle below.
     base_path = Path.cwd() / "string.yaml"
+    source: Optional[str] = None  # the file the document was read from — what a scope refusal names
     if isinstance(data, (str, Path)):
         if _names_a_file(data):
             base_path = resolve_config_path(data)
+            source = str(base_path)
             data = _load_config_file(data)  # a missing file raises ConfigFileNotFoundError
         else:
             data = yaml.load(str(data), Loader=ConfluidLoader) or {}
@@ -1434,11 +1460,12 @@ def _load(
         aliases = data.get("scope_aliases") if isinstance(data.get("scope_aliases"), dict) else None
         where = f"{base_path}: " if base_path is not None else ""
         defaults = parse_default_scopes(data.get("default_scopes") if isinstance(data, dict) else None, where=where)
-        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes or [], aliases, defaults))
+        active = normalize_active(scopes or [], aliases, defaults)
+        data = _settle_scopes_and_includes(data, base_path, active, scopes, aliases, source)
     elif scopes:
         # Non-dict roots (e.g. a document whose root is a marker) carry no
         # metadata, but a ScopeBlock could still sit at the top level.
-        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes, None))
+        data = _settle_scopes_and_includes(data, base_path, normalize_active(scopes, None), scopes, None, source)
 
     # ---- passes 5–6: expand, interpolate -----------------------------------------
     # Run ONCE, here, for ``data`` AND for an explicit ``context`` (a fragment's

@@ -172,15 +172,30 @@ The rule is narrow, and three neighbouring cases stay silent on purpose:
 
 | Situation | Outcome |
 |-----------|---------|
-| the dimension is **not declared** at all | inert no-op — a CLI may pass a dimension a config has not grown into yet |
+| a KEYED activation (`framework=torch`) of a dimension **not declared** at all | inert no-op — a CLI may pass a dimension a config has not grown into yet |
+| a **bare** activation (`--scope vla`) no block declares | a `ScopeError` naming the document's file and its scopes — see below |
 | the dimension is **not activated** | its `default_scopes:` value if the document declares one, else the unscoped keys |
 | the dimension carries **any** `_notscope_` block | every value is accepted — see below |
 | a **bare** activation of a KEYED dimension (`--scope framework` with only `framework=…` blocks) | a `ScopeError` naming the declared values — a bare name can select nothing, and it would silently suppress the `default_scopes:` value on top |
 | a **bare** activation of a dimension that carries a boolean block AND keyed blocks (`!scope:debug` beside `!scope:debug=verbose`) | the boolean block is selected; the keyed blocks stay off |
 
-That last row follows from what a negation means: `_notscope_: {task: segmentation}`
+The `_notscope_` row follows from what a negation means: `_notscope_: {task: segmentation}`
 is activated by *every* value except `segmentation`, and deactivated by that one.
 Both outcomes are meaningful, so no value can be rejected.
+
+A bare name that would switch nothing on is refused too — a typo of a split's name otherwise runs
+the default split:
+
+```python
+load("experiment.yaml", scopes=["vla"])                   # meant `val`
+# ScopeError: No scope block declares 'vla' (the scopes of /path/to/experiment.yaml:
+# quickstart, task=classification, val)
+```
+
+The name is judged once every active block's own `include:` is opened, so a scope declared in such
+a file counts. A name the document's `scope_aliases:` defines counts, and so does a dotted name
+whose ancestor is declared (`prod.gpu` activates `prod`). Parsed input (a raw document loaded
+first, the scopes second) names the files its blocks are written in.
 
 To ask a document which values it offers, use `discover_dimension_values` — the
 same walk the check runs, useful for building a picker or validating a form:

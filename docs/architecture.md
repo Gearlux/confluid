@@ -120,6 +120,29 @@ prevents a real regression, and narrowing any of them turns a working pattern in
 load time for every consumer at once. A new discovery view belongs on `_walk_dimensions`, never
 in a fourth traversal.
 
+**Amendment 2026-10-30 — a bare name that switches nothing on is refused (user ruling).** The
+"dimension not declared at all" row covers KEYED activations only: `--scope framework=keras`
+against a config with no `framework` blocks stays inert, so `--framework <name>` still works on a
+single-backend config. A BARE activation (`--scope val`) is refused when, after every include is
+opened and every scope pass has run, no block declares the name, no `scope_aliases:` entry names
+it and no ancestor of a dotted name (`prod` for `prod.gpu`) is declared. Context: `recordstream run
+iq/nr.yaml --scope vla` built the train split (800 records) and exited 0. A bare name has no
+"config grows into it" use: no caller passes a bare scope to a config that lacks it. The check
+runs at the end of `loader._settle_scopes_and_includes`, which gathers each pass's declarations
+before resolving them (`scopes.DeclaredScopes`): a name an active block's own include declares
+exists only in a later pass, which is why it cannot be judged on the raw document — a front end's
+raw-document check refused that name and every alias.
+
+```
+$ recordstream run config/signal_detection/iq/nr.yaml --scope bogus
+Error: No scope block declares 'bogus' (the scopes of /…/config/signal_detection/iq/nr.yaml: quickstart, quickstart_val, val)
+```
+
+The refusal names the file the document was read from; for parsed input, the files its blocks
+are written in. Known limit: a misspelt dimension NAME (`--scope tsk=val`) stays inert, as the
+keyed row says. **What you may change:** the message. Not the keyed exemption. (Pin:
+`tests/test_undeclared_bare_scope.py`.)
+
 ---
 
 ## 2. `flow()` finishes the object, whichever way it arrived
