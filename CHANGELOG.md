@@ -19,6 +19,11 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`dump(obj, defaults=True)` shows a deferred slot's defaults** — a `_partial_: true` marker (and any marker, or an
+  object built from a non-`@configurable` target) is emitted with each parameter it was not given that has a default a
+  document can spell, after the ones it was given. A parameter without a default — an optimizer's `params` — stays
+  out, and the marker is not changed. Off by default.
+
 - **`document_notes(path)` reads what a config file says about its own settings** — each top-level key with the
   comment lines directly above it (else the comment ending its line) and the class parameters it feeds through
   `!ref:`, and every scope block with its comment — without building, importing or resolving anything. **`source_param_docs(target)`**
