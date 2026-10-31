@@ -80,9 +80,10 @@ def document_notes(path: Union[str, Path]) -> DocumentNotes:
     without one, the comment at the end of its own line, carried on through the comment-only lines directly below
     whose ``#`` stands in its column (those lines are never the next key's comment above it). A key whose value is a
     scope block (``quick: !scope:quick``) is a scope, not a setting, and the loader's directives (``include:``,
-    ``import:``, ``default_scopes:`` …) are neither. Only this file is read — its includes have notes of their own. A relative ``path`` resolves through the
-    config search tiers like :func:`confluid.load`'s; a file the active ``load(..., texts=…)`` holds is read from that
-    text. A file whose top is not a plain mapping (a root ``!class:`` document) has no settings.
+    ``import:``, ``default_scopes:`` …) are neither. Only this file is read — its includes have notes of their own. A
+    relative ``path`` resolves through the config search tiers like :func:`confluid.load`'s; a file the active
+    ``load(..., texts=…)`` holds is read from that text. A file whose top is not a plain mapping (a root ``!class:``
+    document) has no settings.
 
     Args:
         path: The config file.
