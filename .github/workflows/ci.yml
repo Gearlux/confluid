@@ -68,6 +68,33 @@ jobs:
         path: test-report.xml
       if: always()
 
+  node-tests:
+    name: Node Tests
+    needs: [quality-gates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+    - name: Install dependencies
+      run: |
+        
+        uv pip install --system -e ".[dev,cli,env,pydantic]"
+    - name: Set up Node.js 24
+      uses: actions/setup-node@v7
+      with:
+        node-version: "24"
+    - name: Node Tests (editors/vscode)
+      working-directory: editors/vscode
+      run: |
+        if [ -f package-lock.json ]; then npm ci; else npm install; fi
+        npm test
+
   verify-examples:
     name: Verify Examples
     needs: [unit-tests]

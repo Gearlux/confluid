@@ -124,5 +124,7 @@ npm run test:vscode    # inside the installed VS Code — a window opens for a f
 npm run package        # confluid-yaml.vsix
 ```
 
-`CONFLUID_PYTHON` names the Python both test runs use (default: the nearest `.venv`). The Python side,
-`confluid/locate.py`, is tested by confluid's own suite (`tests/test_locate.py`).
+`CONFLUID_PYTHON` names the Python both test runs use (default: the nearest `.venv`). CI runs `npm test` in its Node
+Tests stage (`npm ci` first on Jenkins and GitHub; the local nightly tests the checkout's own `node_modules`, so run
+`npm install` here once). `test:vscode` needs a display and an installed VS Code, and stays a run of your own. The
+Python side, `confluid/locate.py`, is tested by confluid's own suite (`tests/test_locate.py`).

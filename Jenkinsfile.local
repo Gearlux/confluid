@@ -259,6 +259,22 @@ with open('isort-checkstyle.xml', 'w') as f:
             }
         }
 
+        stage('Node Tests') {
+            steps {
+                limited('Node Tests', 10) {
+                    // Each folder whose package.json has a `test` script runs `npm test` on the packages the checkout
+                    // has: this pipeline installs nothing, as it tests the venv. The venv comes first on the PATH, so a
+                    // test that starts the project's Python finds it.
+                    withEnv(["PATH+VENV=${VENV_BIN}"]) {
+                        dir('editors/vscode') {
+                            sh 'if [ ! -d node_modules ]; then echo "confluid/editors/vscode has no node_modules - run npm install there"; exit 1; fi'
+                            sh 'npm test'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Verify Examples') {
             steps {
                 limited('Verify Examples', 15) {
