@@ -71,6 +71,37 @@ def test_a_comment_above_wins_over_the_one_ending_the_line(tmp_path: Path) -> No
     assert _keys(notes) == {"key": "above"}
 
 
+def test_a_section_rule_ends_the_comment_run_like_a_blank_line(tmp_path: Path) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            # -- Knobs ----------------------------------------
+            fft_size: 30kHz    # the spectrogram's bins
+            # == Output ==========
+            # The folder written.
+            folder: out
+            # A heading the rule below keeps apart.
+            # ~~~~
+            plain: 1
+            # Not a rule: a -- dash, a --- triple, a___b.
+            prose: 2
+            # ----------
+            # A quick run.
+            quick: !scope:quick
+              plain: 2
+            """,
+        )
+    )
+    assert _keys(notes) == {
+        "fft_size": "the spectrogram's bins",  # the rule is no comment of its: the line's own one is taken
+        "folder": "The folder written.",
+        "plain": "",
+        "prose": "Not a rule: a -- dash, a --- triple, a___b.",
+    }
+    assert notes.scopes == (ScopeNote("quick", False, 13, "A quick run."),)
+
+
 def test_directives_and_scope_blocks_are_not_settings(tmp_path: Path) -> None:
     _config(tmp_path, "other: 1\n", name="other.yaml")
     notes = document_notes(

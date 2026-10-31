@@ -83,8 +83,9 @@ source_params("shapes.Builder")
 #  SourceParam(name='count', annotation='int', default='0', switch=False), …) — every constructor parameter
 ```
 
-- A key's comment is the run of comment lines **directly above** it (a blank line ends the run), else the comment
-  at the end of its own line.
+- A key's comment is the run of comment lines **directly above** it (a blank line or a section rule — `# -- Knobs
+  -----`, `# =====`: four or more of `-`, `=`, `*`, `~` or `_` in a row — ends the run), else the comment at the end
+  of its own line. A rule heads the keys below it; it is no key's help.
 - Only the file named is read — each included file has notes of its own (`load(path, until="raw",
   return_paths=True)` lists them). `include:`, `import:` and `default_scopes:` are not settings, and a key holding
   a scope block is a scope.

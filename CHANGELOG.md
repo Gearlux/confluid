@@ -58,6 +58,9 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
+- **A section rule is no key's comment** — in `document_notes`, a comment line such as `# -- Knobs ------` or
+  `# ======` ends the run of comment lines above a key as a blank line does, so the key under it takes the comment
+  ending its own line. It was the key's help (a command's help showed `--fft_size  -- Knobs -----…`).
 - **A bare scope no block declares is refused** — `load(cfg, scopes=["vla"])` (meant `val`) loaded the document as
   if no scope were given; it now raises `ScopeError: No scope block declares 'vla' (the scopes of /path/to/cfg.yaml:
   quickstart, val)`. The name is judged after every active block's include is opened, so a scope declared there, a

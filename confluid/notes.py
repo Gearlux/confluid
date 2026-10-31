@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple, Union
@@ -72,7 +73,8 @@ class DocumentNotes:
 def document_notes(path: Union[str, Path]) -> DocumentNotes:
     """The top-level settings of the config file at ``path`` and the scope blocks it writes, each with its comment.
 
-    A key's comment is the run of comment lines directly above it (a blank line ends the run), joined with spaces;
+    A key's comment is the run of comment lines directly above it (a blank line or a section rule — ``# -- Knobs ---``,
+    ``# =====``: four or more of ``-=*~_`` in a row — ends the run), joined with spaces;
     without one, the comment at the end of its own line. A key whose value is a scope block (``quick: !scope:quick``)
     is a scope, not a setting, and the loader's directives (``include:``, ``import:``, ``default_scopes:`` …) are
     neither. Only this file is read — its includes have notes of their own. A relative ``path`` resolves through the
@@ -269,13 +271,23 @@ def _defined(body: List[ast.stmt], name: str) -> Optional[Union[ast.ClassDef, as
     return None
 
 
+#: A section rule in a comment (``# -- Knobs -----``, ``# ======``): four or more of one rule character in a row.
+_RULE = re.compile(r"([-=*~_])\1{3,}")
+
+
 def _comment_of(lines: List[str], key: yaml.Node) -> str:
-    """The comment lines directly above ``key``'s line, joined; else the comment at the end of that line."""
+    """The comment lines directly above ``key``'s line, joined; else the comment at the end of that line.
+
+    A section rule ends the run as a blank line does: it heads the keys below it, it is no key's help.
+    """
     index = key.start_mark.line
     above: List[str] = []
     row = index - 1
     while row >= 0 and lines[row].lstrip().startswith("#"):
-        above.append(lines[row].lstrip().lstrip("#").strip())
+        text = lines[row].lstrip().lstrip("#").strip()
+        if _RULE.search(text):
+            break
+        above.append(text)
         row -= 1
     joined = " ".join(text for text in reversed(above) if text)
     if joined:
