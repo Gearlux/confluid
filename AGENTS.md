@@ -582,10 +582,10 @@ inventories.
 - `parse_param_docs` reads Google and NumPy docstrings, MRO-wide.
   (`tests/test_parse_param_docs.py`)
 - **A config's notes are a reading of its text, never of its value:** `notes.document_notes` composes one file
-  (PyYAML nodes, nothing constructed) — a key's comment is the comment lines directly above it, else the one ending
-  its line; `source_param_docs` / `source_params` read a class's `Args:` and constructor parameters from its source by
-  `find_spec` + `ast`, never importing the
-  module, following a package's re-export by file. Never let a comment reach the document, and never import a class
+  (PyYAML nodes, nothing constructed) — a key's comment is the comment lines directly above it (a blank line or a
+  section rule, `notes._RULE`, ends the run), else the one ending its line; `source_param_docs` / `source_params` read
+  a class's `Args:` and constructor parameters from its source by `find_spec` + `ast`, never importing the module,
+  following a package's re-export by file. Never let a comment reach the document, and never import a class
   to answer its help there. §35. (`tests/test_notes.py`)
 - `sanitize_schema` (`llm_schema.py`) is pure, stdlib-only, recurses subschema positions only, and
   rewrites the advertised schema, never server-side validation. (`tests/test_llm_schema.py`)

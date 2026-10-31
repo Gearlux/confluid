@@ -2433,8 +2433,18 @@ source_params("shapes.Builder")[1]   # SourceParam(name='count', annotation='int
 config wrote it) reads the constructor's parameters the same way — `ast` over `__init__`, a default shown only when
 it is a literal (`ast.literal_eval`), a yes/no parameter known by its `bool` annotation or default.
 
-**What you may change.** Which comment lines belong to a key (a section-rule line skipped, a comment block shared by
-the keys below it) is presentation and open; keep it a reading of the text, never a value that reaches the document.
+**What you may change.** Which comment lines belong to a key (a comment block shared by the keys below it) is
+presentation and open; keep it a reading of the text, never a value that reaches the document.
+
+**Amendment (2026-10-30): a section rule ends the run.** A config grouped under `# -- Knobs -----…` gave its first
+key that rule as its help, and the comment ending the key's own line was lost. A comment line holding four or more of
+one rule character (`-`, `=`, `*`, `~`, `_`) in a row now ends the run as a blank line does (`notes._RULE`): it heads
+the keys below it. Prose dashes (`a -- b`, `---`) are fewer than four and stay text.
+
+```yaml
+# -- Knobs ------------------------------------------
+fft_size: 30kHz    # the spectrogram's bins          → comment: "the spectrogram's bins"
+```
 
 ## 36. A dump can show a deferred slot's defaults — `dump(defaults=True)` (2026-10-30)
 
