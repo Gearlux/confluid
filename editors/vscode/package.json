@@ -1,0 +1,61 @@
+{
+  "name": "confluid-yaml",
+  "displayName": "Confluid YAML",
+  "description": "Go to the class a confluid marker builds, the file an include: reads and the module an import: loads.",
+  "version": "0.1.0",
+  "publisher": "gearlux",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gearlux/confluid.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "confluid",
+    "yaml",
+    "configuration",
+    "go to definition"
+  ],
+  "activationEvents": [
+    "onLanguage:yaml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Confluid YAML",
+      "properties": {
+        "confluid.pythonPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The Python that has confluid installed. Empty: the nearest `.venv` above the config file, else `python3` on the `PATH`."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "confluid.restartHelper",
+        "title": "Confluid: Restart the Helper"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "tsc -p . && node --test out/test/",
+    "package": "tsc -p . && vsce package --out confluid-yaml.vsix",
+    "vscode:prepublish": "tsc -p .",
+    "test:vscode": "tsc -p . && node out/vscode-test/run.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "3.9.2",
+    "typescript": "5.9.3"
+  }
+}

@@ -486,6 +486,15 @@ inventories.
   add a second lookup order or a search across distributions. §33. (`tests/test_package_includes.py`)
 - `import:` is honoured in every mapping position; a failed import warns for any `Exception`
   (`KeyboardInterrupt`/`SystemExit` propagate). (the PA26 pair in `tests/test_loader.py`)
+- **Go to definition (`confluid.locate`) imports nothing on its `locate` path (user request 2026-10-31):** a dotted
+  target is found by walking `sys.meta_path`'s finders plus every `<sys.path entry>/<top>` folder and reading files
+  with `ast`, never `find_spec` of a submodule (that imports its parents); an include goes through
+  `resolve_config_path` (the one search resolver) with the including file's folder and its project as the working
+  folder. Only `resolve_target` imports — the entry points once per process, then `resolve_class(strict=True)`.
+  `--serve` writes its answers on a duplicate of fd 1 and points fd 1 at stderr. The VS Code client is
+  `editors/vscode/` (`npm test`; `npm run test:vscode` inside the installed VS Code). §37.
+  (`tests/test_locate.py::test_a_dotted_class_is_found_in_its_source_without_importing_it`,
+  `::test_the_served_process_keeps_stdout_for_the_protocol`)
 
 ## Scopes (§1, §17, `docs/scopes.md`)
 
@@ -583,7 +592,8 @@ inventories.
   (`tests/test_parse_param_docs.py`)
 - **A config's notes are a reading of its text, never of its value:** `notes.document_notes` composes one file
   (PyYAML nodes, nothing constructed) — a key's comment is the comment lines directly above it (a blank line or a
-  section rule, `notes._RULE`, ends the run), else the one ending its line; `source_param_docs` / `source_params` read
+  section rule, `notes._RULE`, ends the run), else the one ending its line, carried on through the comment-only lines
+  below whose `#` stands in its column (never the next key's comment above it); `source_param_docs` / `source_params` read
   a class's `Args:` and constructor parameters from its source by `find_spec` + `ast`, never importing the module,
   following a package's re-export by file. Never let a comment reach the document, and never import a class
   to answer its help there. §35. (`tests/test_notes.py`)

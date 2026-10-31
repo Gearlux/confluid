@@ -2,7 +2,8 @@
 
 A config is read by people as much as by the loader, and the comments above its settings are its documentation.
 :func:`document_notes` reads them back for a front end (a command's help, its tab completion): every top-level key of
-ONE file — never its includes — with the comment lines directly above it (else the comment at the end of its line),
+ONE file — never its includes — with the comment lines directly above it (else the comment at the end of its line,
+carried on through the comment lines aligned under it),
 the class parameters it feeds through ``!ref:``, and every scope block the file writes, with its comment. Nothing is
 built, imported or resolved: the file is composed by PyYAML (nodes and their lines), never constructed.
 
@@ -41,7 +42,8 @@ class KeyNote:
     name: str
     #: Its 1-based line in the file.
     line: int
-    #: The comment lines directly above it, joined; else the comment at the end of its line; else empty.
+    #: The comment lines directly above it, joined; else the comment at the end of its line (with the comment lines
+    #: aligned under it); else empty.
     comment: str
     #: ``(class, parameter)`` for every marker parameter written ``!ref:<name>`` in the file, in file order — the class
     #: as spelled after its tag (``pkg.mod.Class``).
@@ -75,9 +77,10 @@ def document_notes(path: Union[str, Path]) -> DocumentNotes:
 
     A key's comment is the run of comment lines directly above it (a blank line or a section rule — ``# -- Knobs ---``,
     ``# =====``: four or more of ``-=*~_`` in a row — ends the run), joined with spaces;
-    without one, the comment at the end of its own line. A key whose value is a scope block (``quick: !scope:quick``)
-    is a scope, not a setting, and the loader's directives (``include:``, ``import:``, ``default_scopes:`` …) are
-    neither. Only this file is read — its includes have notes of their own. A relative ``path`` resolves through the
+    without one, the comment at the end of its own line, carried on through the comment-only lines directly below
+    whose ``#`` stands in its column (those lines are never the next key's comment above it). A key whose value is a
+    scope block (``quick: !scope:quick``) is a scope, not a setting, and the loader's directives (``include:``,
+    ``import:``, ``default_scopes:`` …) are neither. Only this file is read — its includes have notes of their own. A relative ``path`` resolves through the
     config search tiers like :func:`confluid.load`'s; a file the active ``load(..., texts=…)`` holds is read from that
     text. A file whose top is not a plain mapping (a root ``!class:`` document) has no settings.
 
@@ -278,25 +281,67 @@ _RULE = re.compile(r"([-=*~_])\1{3,}")
 def _comment_of(lines: List[str], key: yaml.Node) -> str:
     """The comment lines directly above ``key``'s line, joined; else the comment at the end of that line.
 
-    A section rule ends the run as a blank line does: it heads the keys below it, it is no key's help.
+    A section rule ends the run as a blank line does: it heads the keys below it, it is no key's help. The comment
+    ending a line carries on through the comment-only lines directly below it whose ``#`` stands in its column
+    (:func:`_carried_on`); those lines are that line's, never the comment above the key that follows them.
     """
     index = key.start_mark.line
-    above: List[str] = []
+    above: List[Tuple[int, str]] = []
     row = index - 1
-    while row >= 0 and lines[row].lstrip().startswith("#"):
-        text = lines[row].lstrip().lstrip("#").strip()
+    while row >= 0 and _comment_column(lines[row]) is not None:
+        text = _comment_text(lines[row])
         if _RULE.search(text):
             break
-        above.append(text)
+        above.append((row, text))
         row -= 1
-    joined = " ".join(text for text in reversed(above) if text)
+    if above and row >= 0 and _comment_column(lines[row]) is None:  # the run reached code: it may carry that line on
+        carried = len(_carried_on(lines, row, _trailing_column(lines[row], 0)))
+        above = above[: len(above) - carried]
+    joined = " ".join(text for _, text in reversed(above) if text)
     if joined:
         return joined
-    return _trailing_comment(lines[index] if index < len(lines) else "", key.end_mark.column)
+    line = lines[index] if index < len(lines) else ""
+    column = _trailing_column(line, key.end_mark.column)
+    if column is None:
+        return ""
+    return " ".join(text for text in [line[column + 1 :].strip(), *_carried_on(lines, index, column)] if text)
 
 
-def _trailing_comment(line: str, start: int) -> str:
-    """The comment ending ``line`` after column ``start``: a ``#`` after whitespace, outside a quoted scalar."""
+def _carried_on(lines: List[str], index: int, column: Optional[int]) -> List[str]:
+    """The texts of the comment-only lines directly below line ``index`` whose ``#`` stands at ``column``.
+
+    They carry on the comment ending that line (a ``#`` at ``column``), a section rule stopping them; ``column`` None
+    (the line ends in no comment) carries nothing on.
+    """
+    carried: List[str] = []
+    if column is None:
+        return carried
+    for row in range(index + 1, len(lines)):
+        if _comment_column(lines[row]) != column:
+            break
+        text = _comment_text(lines[row])
+        if _RULE.search(text):
+            break
+        carried.append(text)
+    return carried
+
+
+def _comment_column(line: str) -> Optional[int]:
+    """The column of the ``#`` of a comment-only line; None for any other line."""
+    stripped = line.lstrip()
+    return len(line) - len(stripped) if stripped.startswith("#") else None
+
+
+def _comment_text(line: str) -> str:
+    """The text of a comment-only line, its ``#`` and the space around it dropped."""
+    return line.lstrip().lstrip("#").strip()
+
+
+def _trailing_column(line: str, start: int) -> Optional[int]:
+    """The column of the ``#`` opening the comment that ends ``line`` after column ``start``, or None.
+
+    A ``#`` opens a comment after whitespace, outside a quoted scalar.
+    """
     quote: Optional[str] = None
     previous = " "
     for column in range(start, len(line)):
@@ -307,9 +352,9 @@ def _trailing_comment(line: str, start: int) -> str:
         elif char in "'\"" and previous in " \t[{,:":
             quote = char
         elif char == "#" and previous in " \t":
-            return line[column + 1 :].strip()
+            return column
         previous = char
-    return ""
+    return None
 
 
 def _scope_of(node: yaml.Node) -> Optional[Tuple[str, bool]]:

@@ -2407,7 +2407,8 @@ never reached a reader, and the help of the class parameter each key feeds was o
 
 **Decision.** `confluid.notes` reads both without building anything. `document_notes(path)` composes ONE file with
 PyYAML (nodes with their lines, nothing constructed) and reads, from the text, the run of comment lines directly above
-each top-level key (else the comment ending its line), the `(class, parameter)` each `!ref:<key>` feeds, and every
+each top-level key (else the comment ending its line, carried on through the comment-only lines below it whose `#`
+stands in the same column — those lines are never the next key's comment above it), the `(class, parameter)` each `!ref:<key>` feeds, and every
 scope block with its comment. `source_param_docs(target)` finds the module's file with `importlib.util.find_spec`
 (which imports the packages above it, never the module), parses it with `ast`, and reads the class's `Args:` block
 with the same parser `parse_param_docs` uses, following a package's `from .module import Class` re-export by file.
@@ -2483,3 +2484,47 @@ dump({"optimizer": PartialClass(DemoOptimizer, lr=0.01)}, defaults=True)
 **What you may change.** Widen `_spellable_default` to a type the dumper spells faithfully (a `Path`, an `Enum`) with a
 round-trip test. Do not mutate the marker, do not add a default without one in the signature, and do not turn the
 option on for `hydraide`.
+
+## 37. Go to definition reads the config's text and the classes' source; the registry only on request (2026-10-31)
+
+**Context.** A config names its classes (`!class:pkg.mod.Net`, `_target_: …`), the files it includes and the modules
+it imports, and a reader wants to jump to each one from the editor. The answer must come at the speed of a click,
+for an unsaved buffer, and match what `load()` would read. Importing the classes is too slow: in a large
+environment, importing every `confluid.configurables` entry point took 73 s and pulls in torch, and asking
+`importlib.util.find_spec` for one module imports the packages above it (1.7 s and 2 300 modules for one module of a
+consuming project).
+
+**Decision.** `confluid.locate` reads the text and the source files. PyYAML composes the buffer (nodes with their
+marks, nothing constructed); a text it cannot compose still gives the marker tags scanned before the error. A dotted
+target is looked up in source without importing anything: the top-level package is asked of every finder on
+`sys.meta_path` (so editable installs are found) and pooled with every `<sys.path entry>/<name>` folder (what
+`pkgutil.extend_path` adds), each further part is a `.py` file or a folder there, and `ast` finds the `class` / `def`
+(else the assignment) — following `from .x import Name`, `from .x import *` and a lazy-export table (a dict literal
+naming the module, beside a `__getattr__`) up to four hops. An include goes through `resolve_config_path` with the
+including file's folder as `base_dir` and its project (the nearest `pyproject.toml`) as the working folder — the one
+search resolver, never a copy. A registry name is `deferred`: `resolve_target` imports the entry points once per
+process, then asks `resolve_class(strict=True)`. Columns are UTF-16 code units, the editor's.
+
+The editor talks to a long-lived `python -m confluid.locate --serve` (one JSON request per line): the registry's
+import is paid once per window, and the Python side reuses confluid's own include rules. The protocol writes on a
+duplicate of file descriptor 1, and fd 1 itself is pointed at stderr, so a package that prints while it is imported
+cannot corrupt an answer.
+
+**Consequences.** Measured over every YAML file of the workspace this was built in: 1 698 of 1 917 class mentions
+found from source (14 s for all of them, 0.2 s for one file); the other 219 are registry names and classes made at
+run time (`matrainer.TensorBoardTracker`, through entry-point discovery), found on click. A source-reading answer can
+differ from the import's where a module rebinds a name at run time; the reading prefers a `class` or `def` over a
+later assignment that rewraps it (`Model = register(Model)`).
+
+**Example.**
+
+```python
+locate("m: !class:confluid.loader.load\nt: !partial:Trainer\n", "config/run.yaml")
+# [Mention(kind='class', text='confluid.loader.load', line=0, start=10, stop=30,
+#          target=Location(path='.../confluid/loader.py', line=1268), deferred=False),
+#  Mention(kind='class', text='Trainer', line=1, start=12, stop=19, target=None, deferred=True)]
+```
+
+**What you may change.** More import shapes for the source reading (a `TYPE_CHECKING` block, an `import pkg.mod as
+Name`), each with a test that it imports nothing. Do not import a module on the `locate` path, and do not give the
+include lookup an order of its own.
