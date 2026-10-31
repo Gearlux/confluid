@@ -24,6 +24,14 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **Go to definition in a config: `confluid.locate` and the Confluid YAML extension for VS Code** —
+  `locate(text, path)` lists each `!class:` / `!partial:` / `!lazy:` tag and `_target_:` value, each `include:` entry
+  and each `import:` module of a config text, at its range, with the file and line it points to: a dotted class is
+  found in its source without importing anything, an include where `load()` reads it (`pkg://` included). A
+  registry name comes back deferred, and `resolve_target(name)` finds it by importing the packages that register
+  classes. `python -m confluid.locate --serve` answers both over stdin/stdout; `editors/vscode/` is the extension
+  that puts them on Cmd+click and F12 (`npm run package`, then `code --install-extension confluid-yaml.vsix`).
+
 - **`dump(obj, defaults=True)` shows a deferred slot's defaults** — a `_partial_: true` marker (and any marker, or an
   object built from a non-`@configurable` target) is emitted with each parameter it was not given that has a default a
   document can spell, after the ones it was given. A parameter without a default — an optimizer's `params` — stays
@@ -33,7 +41,7 @@ All notable changes to confluid are documented here. The format follows
   parameter's type from its annotation.
 
 - **`document_notes(path)` reads what a config file says about its own settings** — each top-level key with the
-  comment lines directly above it (else the comment ending its line) and the class parameters it feeds through
+  comment lines directly above it (else the comment ending its line, with the comment lines aligned under it) and the class parameters it feeds through
   `!ref:`, and every scope block with its comment — without building, importing or resolving anything. **`source_param_docs(target)`**
   reads a class's `Args:` help from its source, its module never imported, and **`source_params(target)`** its
   constructor parameters (name, annotation, literal default, yes/no). A command's help and tab completion show

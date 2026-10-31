@@ -66,6 +66,83 @@ def test_without_a_comment_above_the_comment_ending_its_line_is_taken(tmp_path: 
     }
 
 
+def test_the_comment_ending_a_line_carries_on_through_the_comment_lines_aligned_below_it(tmp_path: Path) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            boxes: [annotations]       # the box lists drawn: annotations (lime), regions
+                                       # (yellow), visible (cyan),
+                                       # all
+            workers: 1                 # recordings drawn at once
+            plain: 2
+            """,
+        )
+    )
+    assert _keys(notes) == {
+        "boxes": "the box lists drawn: annotations (lime), regions (yellow), visible (cyan), all",
+        "workers": "recordings drawn at once",  # the lines carrying boxes' comment on are no comment above it
+        "plain": "",
+    }
+
+
+def test_a_comment_line_in_another_column_is_the_next_keys_not_a_carry_on(tmp_path: Path) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            foo: 1   # foo's help
+            # bar's help
+            bar: 2
+            baz: 3   # baz's help
+              # not aligned: the next key's
+            qux: 4
+            """,
+        )
+    )
+    assert _keys(notes) == {
+        "foo": "foo's help",
+        "bar": "bar's help",
+        "baz": "baz's help",
+        "qux": "not aligned: the next key's",
+    }
+
+
+def test_an_aligned_carry_on_stops_at_a_section_rule_and_leaves_the_comment_below_it_to_the_next_key(
+    tmp_path: Path,
+) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            fft_size: 30kHz    # the spectrogram's bins:
+                               # a count or a bin width
+                               # ----------
+            # The step between frames.
+            hop_size: 1.0
+            """,
+        )
+    )
+    assert _keys(notes) == {
+        "fft_size": "the spectrogram's bins: a count or a bin width",
+        "hop_size": "The step between frames.",
+    }
+
+
+def test_a_scope_blocks_comment_carries_on_like_a_keys(tmp_path: Path) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            quick: !scope:quick   # a quick look:
+                                  # 5 folders
+              max_folders: 5
+            """,
+        )
+    )
+    assert notes.scopes == (ScopeNote("quick", False, 1, "a quick look: 5 folders"),)
+
+
 def test_a_comment_above_wins_over_the_one_ending_the_line(tmp_path: Path) -> None:
     notes = document_notes(_config(tmp_path, "# above\nkey: 1  # inline\n"))
     assert _keys(notes) == {"key": "above"}
