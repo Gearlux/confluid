@@ -86,6 +86,12 @@ hydraide = "confluid.cli:main"
 [tool.aisland]
 click-commands = ["hydraide"]
 
+# The editor extension (editors/vscode) is built and tested with Node: `aisland setup` installs it (brew's `node`
+# bundles npm on macOS; on Linux aisland's own Node LTS in aisland/bin), and CI's Node Tests stage runs its `npm test`.
+[tool.aisland.sys-dependencies]
+brew      = ["node"]
+userspace = ["node"]
+
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"
 Repository = "https://github.com/Gearlux/confluid.git"

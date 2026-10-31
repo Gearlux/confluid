@@ -492,7 +492,8 @@ inventories.
   `resolve_config_path` (the one search resolver) with the including file's folder and its project as the working
   folder. Only `resolve_target` imports — the entry points once per process, then `resolve_class(strict=True)`.
   `--serve` writes its answers on a duplicate of fd 1 and points fd 1 at stderr. The VS Code client is
-  `editors/vscode/` (`npm test`; `npm run test:vscode` inside the installed VS Code). §37.
+  `editors/vscode/` (`npm test`, which CI's Node Tests stage runs — confluid declares `node` in
+  `[tool.aisland.sys-dependencies]` for it; `npm run test:vscode` inside the installed VS Code, a run of your own). §37.
   (`tests/test_locate.py::test_a_dotted_class_is_found_in_its_source_without_importing_it`,
   `::test_the_served_process_keeps_stdout_for_the_protocol`)
 

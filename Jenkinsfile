@@ -228,6 +228,19 @@ with open('isort-checkstyle.xml', 'w') as f:
             }
         }
 
+        stage('Node Tests') {
+            steps {
+                // Each folder whose package.json has a `test` script: its packages from the lock file, then `npm test`.
+                // The venv comes first on the PATH, so a test that starts the project's Python finds the project.
+                withEnv(["PATH+VENV=${VENV_BIN}"]) {
+                    dir('editors/vscode') {
+                        sh 'if [ -f package-lock.json ]; then npm ci; else npm install; fi'
+                        sh 'npm test'
+                    }
+                }
+            }
+        }
+
         stage('Verify Examples') {
             steps {
                 echo 'Running project examples...'
