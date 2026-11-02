@@ -25,9 +25,10 @@ All notable changes to confluid are documented here. The format follows
 ### Added
 
 - **Go to definition in a config: `confluid.locate` and the Confluid YAML extension for VS Code** —
-  `locate(text, path)` lists each `!class:` / `!partial:` / `!lazy:` tag and `_target_:` value, each `include:` entry
-  and each `import:` module of a config text, at its range, with the file and line it points to: a dotted class is
-  found in its source without importing anything, an include where `load()` reads it (`pkg://` included). A
+  `locate(text, path)` lists each `!class:` / `!partial:` / `!lazy:` tag and `_target_:` value, each `include:` entry,
+  each `pkg://` value under any key, each `config:` path (the config another run reads, looked up from the project
+  folder) and each `import:` module of a config text, at its range, with the file and line it points to: a dotted
+  class is found in its source without importing anything, an include where `load()` reads it (`pkg://` included). A
   registry name comes back deferred, and `resolve_target(name)` finds it by importing the packages that register
   classes. `python -m confluid.locate --serve` answers both over stdin/stdout; `editors/vscode/` is the extension
   that puts them on Cmd+click and F12 (`npm run package`, then `code --install-extension confluid-yaml.vsix`).

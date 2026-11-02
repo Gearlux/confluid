@@ -491,11 +491,18 @@ inventories.
   with `ast`, never `find_spec` of a submodule (that imports its parents); an include goes through
   `resolve_config_path` (the one search resolver) with the including file's folder and its project as the working
   folder. Only `resolve_target` imports — the entry points once per process, then `resolve_class(strict=True)`.
-  `--serve` writes its answers on a duplicate of fd 1 and points fd 1 at stderr. The VS Code client is
+  A string value that STARTS with `pkg://` is a config link under any key, and a `config:` string ending
+  `.yaml`/`.yml` is the config another run reads: the same resolver with no `base_dir`, since that run starts from the
+  project folder and never sees the file naming it; both are reported as kind `include`, so the extension is
+  unchanged. `--serve` writes its answers on a duplicate of fd 1 and points fd 1 at stderr. The VS Code client is
   `editors/vscode/` (`npm test`, which CI's Node Tests stage runs — confluid declares `node` in
   `[tool.aisland.sys-dependencies]` for it; `npm run test:vscode` inside the installed VS Code, a run of your own). §37.
   (`tests/test_locate.py::test_a_dotted_class_is_found_in_its_source_without_importing_it`,
-  `::test_the_served_process_keeps_stdout_for_the_protocol`)
+  `::test_the_served_process_keeps_stdout_for_the_protocol`,
+  `::test_a_package_reference_is_a_link_whatever_key_holds_it`,
+  `::test_a_package_reference_that_is_not_the_whole_value_is_no_link`,
+  `::test_a_config_path_is_found_where_the_run_it_starts_reads_it`,
+  `::test_a_config_value_that_names_no_file_is_no_mention`)
 
 ## Scopes (§1, §17, `docs/scopes.md`)
 

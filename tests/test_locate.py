@@ -49,6 +49,17 @@ def _only(mentions: List[Mention], kind: str) -> List[Mention]:
     return [m for m in mentions if m.kind == kind]
 
 
+def _ship(site: Path, tmp_path: Path, files: Dict[str, str]) -> Path:
+    """Install the distribution ``lp-dist`` as an editable checkout holding ``files``; returns the checkout."""
+    checkout = tmp_path / "lp-dist-checkout"
+    _write(checkout, files)
+    info = site / "lp_dist-1.0.dist-info"
+    _write(info, {"METADATA": "Metadata-Version: 2.1\nName: lp-dist\nVersion: 1.0\n"})
+    (info / "direct_url.json").write_text(json.dumps({"url": checkout.as_uri(), "dir_info": {"editable": True}}))
+    importlib.invalidate_caches()
+    return checkout
+
+
 # -- what the text names, and where --------------------------------------------------------------------------------
 
 
@@ -339,13 +350,7 @@ def test_an_interpolated_an_empty_or_a_multi_line_include_points_nowhere(tmp_pat
 
 
 def test_a_package_include_is_the_file_its_distribution_ships(site: Path, tmp_path: Path) -> None:
-    checkout = tmp_path / "lp-dist-checkout"
-    _write(checkout, {"config/render.yaml": "a: 1\n"})
-    info = site / "lp_dist-1.0.dist-info"
-    _write(info, {"METADATA": "Metadata-Version: 2.1\nName: lp-dist\nVersion: 1.0\n"})
-    url = {"url": checkout.as_uri(), "dir_info": {"editable": True}}
-    (info / "direct_url.json").write_text(json.dumps(url))
-    importlib.invalidate_caches()
+    checkout = _ship(site, tmp_path, {"config/render.yaml": "a: 1\n"})
     text = "include:\n  - pkg://lp-dist/config/render.yaml\n  - pkg://lp-dist/config/gone.yaml\n  - pkg://\n"
     found = [(m.text, m.target) for m in locate(text, tmp_path / "a.yaml")]
     assert found == [
@@ -353,6 +358,86 @@ def test_a_package_include_is_the_file_its_distribution_ships(site: Path, tmp_pa
         ("pkg://lp-dist/config/gone.yaml", None),
         ("pkg://", None),
     ]
+
+
+def test_a_package_reference_is_a_link_whatever_key_holds_it(site: Path, tmp_path: Path) -> None:
+    checkout = _ship(site, tmp_path, {"config/render.yaml": "a: 1\n"})
+    text = (
+        "steps:\n"
+        "  - config: pkg://lp-dist/config/render.yaml\n"
+        '  - source: "pkg://lp-dist/config/render.yaml"\n'
+        "  - pkg://lp-dist/config/gone.yaml\n"
+        "  - path: pkg://lp-dist/config/${env:NAME}.yaml\n"
+        "include: pkg://lp-dist/config/render.yaml\n"
+    )
+    mentions = locate(text, tmp_path / "a.yaml")
+    render = Location(str((checkout / "config/render.yaml").resolve()), 0)
+    assert [(m.kind, m.text, m.target) for m in mentions] == [
+        ("include", "pkg://lp-dist/config/render.yaml", render),
+        ("include", "pkg://lp-dist/config/render.yaml", render),
+        ("include", "pkg://lp-dist/config/gone.yaml", None),
+        ("include", "pkg://lp-dist/config/${env:NAME}.yaml", None),
+        ("include", "pkg://lp-dist/config/render.yaml", render),
+    ]
+    rows = text.splitlines()
+    assert [rows[m.line][m.start : m.stop] for m in mentions] == [m.text for m in mentions]
+    assert not any(m.deferred for m in mentions)
+
+
+def test_a_package_reference_that_is_not_the_whole_value_is_no_link(tmp_path: Path) -> None:
+    text = (
+        "hint: recordstream run pkg://lp-dist/config/render.yaml\n"
+        "# include: pkg://lp-dist/config/render.yaml\n"
+        '"pkg://lp-dist/config/render.yaml": 1\n'
+        "tagged: !custom pkg://lp-dist/config/render.yaml\n"
+        'split: "pkg://lp-dist/\n  config/render.yaml"\n'
+        "after: ' pkg://lp-dist/config/render.yaml'\n"
+    )
+    assert locate(text, tmp_path / "a.yaml") == []
+
+
+def test_a_config_path_is_found_where_the_run_it_starts_reads_it(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    files = {"pyproject.toml": "", "config/runs/a.yaml": "", "config/deep/beside.yaml": "", "own/b.YML": ""}
+    _write(project, files)
+    text = (
+        "steps:\n"
+        "  - config: config/runs/a.yaml\n"
+        "  - config: runs/a.yaml\n"
+        '  - config: "own/b.YML"\n'
+        "  - config: config/runs/gone.yaml\n"
+        "  - config: beside.yaml\n"
+        "  - config: ${env:RUNS}/a.yaml\n"
+        "include: beside.yaml\n"
+    )
+    mentions = locate(text, project / "config/deep/top.yaml")
+    run_a = Location(str((project / "config/runs/a.yaml").resolve()), 0)
+    beside = Location(str((project / "config/deep/beside.yaml").resolve()), 0)
+    assert [(m.kind, m.text, m.target) for m in mentions] == [
+        ("include", "config/runs/a.yaml", run_a),
+        ("include", "runs/a.yaml", run_a),  # the project's config/ tier
+        ("include", "own/b.YML", Location(str((project / "own/b.YML").resolve()), 0)),
+        ("include", "config/runs/gone.yaml", None),
+        ("include", "beside.yaml", None),  # a run reads its config from the project folder, never beside this file
+        ("include", "${env:RUNS}/a.yaml", None),  # interpolated
+        ("include", "beside.yaml", beside),  # an include: is looked up beside the file first
+    ]
+    rows = text.splitlines()
+    assert [rows[m.line][m.start : m.stop] for m in mentions][2] == "own/b.YML"
+
+
+def test_a_config_value_that_names_no_file_is_no_mention(tmp_path: Path) -> None:
+    text = (
+        "a: {config: debug}\n"
+        "b: {config: [x.yaml]}\n"
+        "c: {config: {path: x.yaml}}\n"
+        "d:\n  config:\n"
+        "e: {config: ''}\n"
+        "f: {config: 3}\n"
+        "g: {config: !custom x.yaml}\n"
+        "h: {config: x.txt}\n"
+    )
+    assert locate(text, tmp_path / "a.yaml") == []
 
 
 def test_an_import_names_its_module_file(site: Path, tmp_path: Path) -> None:

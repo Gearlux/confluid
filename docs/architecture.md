@@ -2525,6 +2525,33 @@ locate("m: !class:confluid.loader.load\nt: !partial:Trainer\n", "config/run.yaml
 #  Mention(kind='class', text='Trainer', line=1, start=12, stop=19, target=None, deferred=True)]
 ```
 
+**Amendment (2026-11-02) — a `pkg://` value links under any key; a `config:` path is the run's own include.** The first
+reading linked only the entries of `include:`, so a workflow whose steps name the configs they run
+(`config: pkg://my-project/config/train.yaml`) had nothing to click. Two rules were added, both on the text reading,
+neither with a lookup of its own:
+
+- A plain or quoted string scalar that STARTS with `pkg://` is a config file whatever key or list holds it. The
+  whole value must be the reference: `hint: run pkg://…` is text, a comment and a mapping key are not read, a
+  tagged value (`!custom pkg://…`) is not a string. The prefix is the `pkg://` grammar of §33, so no key name is
+  listed. Resolution is `resolve_package_reference`, the include's.
+- A string value of the key `config` ending `.yaml` or `.yml` (confluid's own mark of a file name, §20) is the
+  config another run reads. That run starts from the project folder and sees only the working folder, its
+  `config/` and the XDG folders — the same `resolve_config_path` with no `base_dir`, so a file beside the one
+  naming it is NOT found. It is reported as an `include` (`_RUN_KEYS` are internal kind `run`), so the editor
+  protocol and the extension are unchanged.
+
+Measured over the workspace this was built in: 80 `pkg://` values outside `include:` linked, none unresolved, no
+file unreadable; no `config:` path outside a `pkg://` reference exists there yet. Rejected: linking every string that
+exists as a file (probes the disk for every scalar of every document), and a list of keys wider than `config` (a key
+name says nothing about its value; add one to `_RUN_KEYS` with its test).
+
+```python
+locate("steps:\n  - config: pkg://my-dist/config/a.yaml\n  - config: config/b.yaml\n", "p/config/run.yaml")
+# [Mention(kind='include', text='pkg://my-dist/config/a.yaml', line=1, start=12, stop=39, target=..., deferred=False),
+#  Mention(kind='include', text='config/b.yaml', line=2, start=12, stop=25, target=..., deferred=False)]
+# each target is the file when it exists, else None
+```
+
 **What you may change.** More import shapes for the source reading (a `TYPE_CHECKING` block, an `import pkg.mod as
-Name`), each with a test that it imports nothing. Do not import a module on the `locate` path, and do not give the
-include lookup an order of its own.
+Name`), each with a test that it imports nothing; another key whose value names the config another run reads
+(`_RUN_KEYS`). Do not import a module on the `locate` path, and do not give the include lookup an order of its own.
