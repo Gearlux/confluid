@@ -9,6 +9,9 @@ import: [my_project.ops]                          # opens my_project/ops.py
 model: !class:my_project.models.Net(width=4)      # goes to `class Net` in my_project/models.py
 loss: {_target_: my_project.losses.Focal}         # the plain spelling works the same
 trainer: !partial:Trainer                         # a registry name: found when you click it
+steps:
+  - config: config/train.yaml                     # opens the config another run reads
+  - config: pkg://my-project/config/eval.yaml     # a pkg:// value opens under any key
 ```
 
 ## What points where
@@ -18,6 +21,8 @@ trainer: !partial:Trainer                         # a registry name: found when 
 | a dotted class in `!class:`, `!partial:`, `!lazy:` or `_target_:` | the `class` or `def` line | at once — read from the source, nothing imported |
 | a registry name (`!class:Trainer`), or a class a package makes at run time | the `class` or `def` line | the first such click imports every package that registers confluid classes (up to a minute in a large environment); later clicks are instant |
 | an `include:` entry | the file | at once |
+| a `pkg://<distribution>/<path>` value, under any key | the file that distribution ships | at once |
+| a `config:` value ending `.yaml` or `.yml` | the config file another run reads | at once |
 | an `import:` module | the module's source file | at once |
 
 - **Classes.** A call suffix (`Net(width=4)`) is not part of the name; a selector (`Focal@task=detection`) is, and
@@ -28,9 +33,14 @@ trainer: !partial:Trainer                         # a registry name: found when 
   project — the nearest folder above it with a `pyproject.toml` — and the project's `config/`, then the XDG config
   folders. `pkg://<distribution>/<path>` opens the file the installed distribution ships (the checkout's own file
   for an editable install).
+- **Other `pkg://` values and `config:` paths.** A `pkg://` value is a link under any key, in a list too, when it is
+  the whole value (`config: pkg://my-project/config/eval.yaml`; `hint: run pkg://…` stays text). A `config:` path
+  names the config another run reads, so it is looked up from the project folder — the project, its `config/`, the
+  XDG config folders — and never beside the file that names it.
 - **Unsaved edits count.** The extension reads the editor's text, not the file on disk.
-- **What gets no link:** an include that is missing or holds an interpolation (`${env:CONFIGS}/a.yaml`), a module
-  that is not installed. F12 there says "No definition found".
+- **What gets no link:** an include or `config:` path that is missing or holds an interpolation
+  (`${env:CONFIGS}/a.yaml`), a `pkg://` file the distribution does not ship, a module that is not installed. F12
+  there says "No definition found".
 
 Hold Cmd and hover to see which names are links; the tooltip says what a click does ("Go to …", "Open …", "Find …
 (imports the packages that register it)").

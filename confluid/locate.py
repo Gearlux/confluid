@@ -2,11 +2,12 @@
 ``import:`` loads — for an editor's go-to-definition.
 
 :func:`locate` reads ONE config text (the editor's buffer, saved or not) and returns its :class:`Mention` s: each
-``!class:`` / ``!partial:`` / ``!lazy:`` tag and ``_target_:`` value, each ``include:`` entry and each ``import:``
-module, at the range the editor underlines, with the place it points to. It is a reading of the text: PyYAML composes
-nodes, nothing is constructed — and nothing is IMPORTED either. A dotted class (``pkg.mod.Class``) is found in its
-source by walking the import system's finders (the editable installs' included) and reading files with :mod:`ast`; an
-include goes through :func:`confluid.resolve_config_path`, as :func:`confluid.load` reads it.
+``!class:`` / ``!partial:`` / ``!lazy:`` tag and ``_target_:`` value, each ``include:`` entry, each ``pkg://`` value
+and each ``config:`` path, and each ``import:`` module, at the range the editor underlines, with the place it points
+to. It is a reading of the text: PyYAML composes nodes, nothing is constructed — and nothing is IMPORTED either. A
+dotted class (``pkg.mod.Class``) is found in its source by walking the import system's finders (the editable
+installs' included) and reading files with :mod:`ast`; a config file goes through
+:func:`confluid.resolve_config_path`, as :func:`confluid.load` reads it.
 
 A registry name (``!class:Trainer``) is known only once the module registering it has run, so its mention comes back
 ``deferred``: :func:`resolve_target` answers it on request — the first call imports every ``confluid.configurables``
@@ -42,17 +43,27 @@ from confluid.registry import load_configurables, resolve_class
 
 __all__ = ["Location", "Mention", "MentionKind", "Resolution", "locate", "main", "resolve_target", "serve"]
 
-#: What a mention names: a class (a marker's target), a config file (an ``include:`` entry), a module (``import:``).
+#: What a mention names: a class (a marker's target), a config file (an ``include:`` entry, a ``pkg://`` value or a
+#: ``config:`` path), a module (``import:``).
 MentionKind = Literal["class", "include", "import"]
+#: What the text reading finds: a :data:`MentionKind`, or ``"run"`` — the config file another run reads (a ``config:``
+#: value), reported as an ``include`` but looked up from the project folder only, as that run finds it.
+_FoundKind = Literal["class", "include", "import", "run"]
 
 #: The tag prefixes of a marker that builds (or defers) a class.
 _CLASS_TAGS = ("!class:", "!partial:", "!lazy:")
+#: The keys whose string value names the config file another run reads (a workflow step's ``config: <file>.yaml``).
+_RUN_KEYS = ("config",)
+#: How a config file name ends: what ``load()`` takes for a file name, not for YAML text.
+_CONFIG_SUFFIXES = (".yaml", ".yml")
+#: The tag PyYAML gives a plain or quoted string scalar — a tagged scalar (``!ref:…``) is something else.
+_STR_TAG = "tag:yaml.org,2002:str"
 #: A target as a tag or ``_target_`` writes it: the dotted name, then an optional ``@axis=value`` selector.
 _TARGET = re.compile(r"[A-Za-z_][\w.]*(?:@[^\s(){}\[\],]*)?")
 #: The line of a definition, below its decorators.
 _DEFINITION = re.compile(r"\s*(?:async\s+def|def|class)\s")
 #: One mention as the text reading finds it: ``(kind, name, line, start, stop)``, columns in characters.
-_Found = Tuple[MentionKind, str, int, int, int]
+_Found = Tuple[_FoundKind, str, int, int, int]
 #: How many ``from … import Name`` re-exports are followed to the module defining a class.
 _REEXPORT_HOPS = 4
 
@@ -92,12 +103,14 @@ class Resolution:
 
 
 def locate(text: str, path: Union[str, Path]) -> List[Mention]:
-    """Every class, include and import ``text`` names, in text order, each with where it points.
+    """Every class, config file and import ``text`` names, in text order, each with where it points.
 
     ``path`` is the file the text belongs to: a relative ``include:`` is looked up beside it first, then in its
     project — the nearest folder above it holding a ``pyproject.toml`` — and that project's ``config/``, then the
-    XDG folders, the tiers :func:`confluid.load` searches with the project as the working folder. A text PyYAML
-    cannot read (half typed) still gives the marker tags written before the error.
+    XDG folders, the tiers :func:`confluid.load` searches with the project as the working folder. A ``config:``
+    value ending ``.yaml`` or ``.yml`` is the config another run reads (``recordstream run <config>`` from the project
+    folder): the same tiers, but never beside ``path``. A ``pkg://<distribution>/<path>`` value is a config file
+    under any key. A text PyYAML cannot read (half typed) still gives the marker tags written before the error.
 
     Args:
         text: The config text — the editor's buffer.
@@ -113,14 +126,14 @@ def locate(text: str, path: Union[str, Path]) -> List[Mention]:
         target: Optional[Location]
         if kind == "class":
             target = _class_location(name)
-        elif kind == "include":
-            target = _include_location(name, source)
+        elif kind in ("include", "run"):
+            target = _include_location(name, source, beside=kind == "include")
         else:
             target = _module_location(name)
         row = lines[line] if line < len(lines) else ""
         mentions.append(
             Mention(
-                kind=kind,
+                kind="include" if kind == "run" else kind,
                 text=name,
                 line=line,
                 start=_utf16(row, start),
@@ -294,17 +307,32 @@ def _node_mentions(node: Optional[yaml.Node], text: str, seen: Set[int]) -> Iter
                     if match:
                         yield ("class", match.group(0), target[1], target[2], target[2] + match.end())
             elif name in ("include", "import"):
-                kind: MentionKind = "include" if name == "include" else "import"
+                kind: _FoundKind = "include" if name == "include" else "import"
                 items = value.value if isinstance(value, yaml.SequenceNode) else [value]
                 for item in items:
                     if isinstance(item, yaml.ScalarNode):
                         span = _scalar_span(item, text)
                         if span is not None and span[0].strip():
+                            seen.add(id(item))  # read here: the pkg:// rule below must not report it again
                             yield (kind, *span)
+            elif name in _RUN_KEYS and isinstance(value, yaml.ScalarNode) and _is_string(value):
+                span = _scalar_span(value, text)
+                if span is not None and span[0].lower().endswith(_CONFIG_SUFFIXES):
+                    seen.add(id(value))
+                    yield ("run", *span)
             yield from _node_mentions(value, text, seen)
     elif isinstance(node, yaml.SequenceNode):
         for item in node.value:
             yield from _node_mentions(item, text, seen)
+    elif isinstance(node, yaml.ScalarNode) and _is_string(node) and is_package_reference(node.value):
+        span = _scalar_span(node, text)  # a pkg:// reference names a file whatever key holds it
+        if span is not None:
+            yield ("include", *span)
+
+
+def _is_string(node: yaml.ScalarNode) -> bool:
+    """Is this a plain or quoted string — not a number, a null or a tagged value (``!ref:…``, ``!custom``)?"""
+    return node.tag == _STR_TAG
 
 
 def _tag_mentions(text: str) -> Iterator[_Found]:
@@ -361,8 +389,12 @@ def _utf16(line: str, column: int) -> int:
 # -- where an include points --------------------------------------------------------------------------------------
 
 
-def _include_location(entry: str, source: Path) -> Optional[Location]:
-    """The file an ``include:`` entry of ``source`` reads, as :func:`confluid.load` finds it, or None."""
+def _include_location(entry: str, source: Path, *, beside: bool = True) -> Optional[Location]:
+    """The file an ``include:`` entry of ``source`` reads, as :func:`confluid.load` finds it, or None.
+
+    ``beside`` is whether the folder of ``source`` is searched first: true for an include, false for the config
+    another run reads, which starts from the project folder and never sees the file that names it.
+    """
     if "${" in entry:
         return None  # interpolated: known only once the document is resolved
     try:
@@ -370,7 +402,7 @@ def _include_location(entry: str, source: Path) -> Optional[Location]:
             found = resolve_package_reference(entry)
         else:
             with contextlib.chdir(_project_folder(source)):
-                found = resolve_config_path(entry, base_dir=source.parent)
+                found = resolve_config_path(entry, base_dir=source.parent if beside else None)
                 found = found if found.is_absolute() else Path.cwd() / found
     except ConfluidError:
         return None
