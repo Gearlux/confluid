@@ -2304,7 +2304,8 @@ user request, which authorized the new spelling under the "configuration utility
 **Decision.** `pkg://<distribution>/<path>`: the distribution's name as `pip install` takes it and the file's path in
 that project's folder. `resolve_config_path` — the one path probe — hands it to `packages.resolve_package_reference`,
 which reads the distribution's own install metadata: an editable install's `direct_url.json` (PEP 610) gives the
-checkout, read in place; any other install is a wheel, and the file is the `RECORD` entry ending in
+checkout, read in place (a build-left `<project>.egg-info` beside a `pyproject.toml`, which a process started in that
+folder finds first and which shadows the install's metadata, counts as that checkout too); any other install is a wheel, and the file is the `RECORD` entry ending in
 `share/<normalized name>/<path>` (wheels ship configs as `data` files there). Only that distribution's files are
 searched, so two distributions whose names share a prefix (`shared`, `shared-5g`) never read each other's. A miss
 raises naming the distribution, its version and the file; `..` is refused. Rejected: a path relative to an import

@@ -19,6 +19,7 @@ from click.testing import CliRunner
 
 from confluid import ConfigFileNotFoundError, ConfigurationError, load, resolve_config_path
 from confluid.cli import hydraide
+from confluid.packages import resolve_package_reference
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +99,46 @@ def test_an_editable_distribution_is_read_from_its_checkout(tmp_path: Path, _iso
     assert resolve_config_path("pkg://demo/config/a.yaml") == checkout.resolve() / "config" / "a.yaml"
     main = _write(tmp_path / "main.yaml", "include: pkg://demo/config/a.yaml\n")
     assert load(main, until="raw")["who"] == "checkout"
+
+
+def _build_egg_info(checkout: Path, name: str, with_pyproject: bool = True) -> Path:
+    """What a build leaves in a checkout: ``<name>.egg-info`` beside the sources (no ``direct_url.json``)."""
+    checkout.mkdir(parents=True, exist_ok=True)
+    if with_pyproject:
+        (checkout / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
+    info = checkout / f"{name.replace('-', '_')}.egg-info"
+    info.mkdir()
+    (info / "PKG-INFO").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+    return info
+
+
+def test_a_build_left_egg_info_in_the_working_folder_is_the_checkout(
+    tmp_path: Path, _isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process started inside the checkout finds its ``*.egg-info`` first; that folder is the checkout itself."""
+    checkout = tmp_path / "demo"
+    (checkout / "config").mkdir(parents=True)
+    (checkout / "config" / "a.yaml").write_text("x: 1\n")
+    _build_egg_info(checkout, "demo")
+    _install_editable(_isolated, "demo", checkout, {})
+    monkeypatch.chdir(checkout)
+    monkeypatch.syspath_prepend("")
+    importlib.invalidate_caches()
+    assert resolve_package_reference("pkg://demo/config/a.yaml") == (checkout / "config" / "a.yaml").resolve()
+
+
+def test_an_egg_info_with_no_project_file_beside_it_is_not_a_checkout(
+    tmp_path: Path, _isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installed legacy ``*.egg-info`` (site-packages, no ``pyproject.toml`` beside it) still means a wheel."""
+    folder = tmp_path / "legacy"
+    (folder / "config").mkdir(parents=True)
+    (folder / "config" / "a.yaml").write_text("x: 1\n")
+    _build_egg_info(folder, "demo", with_pyproject=False)
+    monkeypatch.syspath_prepend(str(folder))
+    importlib.invalidate_caches()
+    with pytest.raises(ConfigFileNotFoundError, match="ships no config/a.yaml"):
+        resolve_package_reference("pkg://demo/config/a.yaml")
 
 
 def test_a_wheel_installed_distribution_is_read_from_the_file_it_shipped(tmp_path: Path, _isolated: Path) -> None:

@@ -63,10 +63,15 @@ def _split(reference: str) -> Tuple[str, PurePosixPath]:
 
 
 def _editable_checkout(dist: metadata.Distribution) -> Optional[Path]:
-    """The checkout an editable install points at (PEP 610 ``direct_url.json``), or None for any other install."""
+    """The checkout an editable install points at (PEP 610 ``direct_url.json``), or None for any other install.
+
+    A ``<project>.egg-info`` a build left in a checkout, beside its ``pyproject.toml``, is found first by a process
+    started in that folder (``sys.path[0]``) and shadows the editable install's metadata; it has no
+    ``direct_url.json``, and it IS the checkout, so that folder is returned.
+    """
     text = dist.read_text("direct_url.json")
     if not text:
-        return None
+        return _source_tree(dist)
     try:
         info = json.loads(text)
     except ValueError:
@@ -78,6 +83,15 @@ def _editable_checkout(dist: metadata.Distribution) -> Optional[Path]:
     if url.scheme != "file":
         return None
     return Path(url2pathname(url.path)).resolve()
+
+
+def _source_tree(dist: metadata.Distribution) -> Optional[Path]:
+    """The folder of a ``*.egg-info`` metadata directory that sits beside a ``pyproject.toml``, else None."""
+    folder = getattr(dist, "_path", None)
+    if not isinstance(folder, Path) or folder.suffix != ".egg-info":
+        return None
+    checkout = folder.resolve().parent
+    return checkout if (checkout / "pyproject.toml").is_file() else None
 
 
 def resolve_package_reference(reference: str) -> Path:

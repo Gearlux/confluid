@@ -102,6 +102,7 @@ No tier is searched. Where the file is read depends on how the distribution is i
 | `shared-configs` installed | `pkg://shared-configs/config/datasets/base.yaml` reads |
 |---|---|
 | editable (`pip install -e ./shared-configs`) | `<the checkout>/config/datasets/base.yaml` — the file you edit |
+| started inside the checkout, whose build left a git-ignored `shared_configs.egg-info` | `<the checkout>/config/datasets/base.yaml` — the same file (that folder, beside a `pyproject.toml`, is the checkout) |
 | from its wheel | `<prefix>/share/shared-configs/config/datasets/base.yaml` — the file the wheel installed |
 | not at all | `ConfigFileNotFoundError: … includes pkg://shared-configs/config/datasets/base.yaml: the distribution 'shared-configs' is not installed` |
 | from a wheel without that file | `ConfigFileNotFoundError: … includes pkg://shared-configs/…/base.yaml: shared-configs 1.2 ships no config/datasets/base.yaml` |
