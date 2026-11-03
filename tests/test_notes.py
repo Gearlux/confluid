@@ -253,6 +253,56 @@ def test_a_key_notes_the_class_parameters_it_feeds_through_ref(tmp_path: Path) -
     assert feeds["runnable"] == ()
 
 
+def test_a_plain_mapping_notes_its_keys_with_their_comments_and_the_parameters_they_feed(tmp_path: Path) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            # The knobs of the workflow.
+            knobs:
+              # How many at once.
+              workers: auto
+              folder: out    # Where they go.
+              deeper:
+                # The inner one.
+                level: 3
+            runnable: !class:pkg.mod.Builder
+              workers: !ref:knobs.workers
+              fixed: {a: 1}
+            """,
+        )
+    )
+    knobs = {key.name: key for key in notes.keys}["knobs"]
+    assert [(child.name, child.comment) for child in knobs.children] == [
+        ("workers", "How many at once."),
+        ("folder", "Where they go."),
+        ("deeper", ""),
+    ]
+    assert knobs.children[0].feeds == (("pkg.mod.Builder", "workers"),)
+    assert [(child.name, child.comment) for child in knobs.children[2].children] == [("level", "The inner one.")]
+    # a key that holds a marker, and the keys inside one, are no mapping of settings
+    assert {key.name: key for key in notes.keys}["runnable"].children == ()
+
+
+def test_a_scope_block_and_a_marker_among_a_mappings_keys_are_no_settings(tmp_path: Path) -> None:
+    notes = document_notes(
+        _config(
+            tmp_path,
+            """\
+            knobs:
+              size: 1
+              quick: !scope:quick
+                size: 2
+              made: !class:pkg.mod.Builder
+                size: 3
+            """,
+        )
+    )
+    knobs = {key.name: key for key in notes.keys}["knobs"]
+    assert [child.name for child in knobs.children] == ["size", "made"]
+    assert knobs.children[1].children == ()
+
+
 def test_a_file_whose_top_is_a_marker_has_no_settings(tmp_path: Path) -> None:
     assert document_notes(_config(tmp_path, "!class:pkg.mod.Builder\nsize: 1\n")) == DocumentNotes()
 

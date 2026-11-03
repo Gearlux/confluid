@@ -2448,6 +2448,14 @@ the keys below it. Prose dashes (`a -- b`, `---`) are fewer than four and stay t
 fft_size: 30kHz    # the spectrogram's bins          → comment: "the spectrogram's bins"
 ```
 
+**Amendment (2026-11-03): the keys under a plain mapping carry notes too.** A workflow keeps its settings in one block
+(`standardize: {only: [], workers: auto}`, read by `only: !ref:standardize.only`), and the front end showed that block as
+one row, helped by the docstring of whichever parameter read it first. `KeyNote.children` holds, for a top-level key whose
+value is a plain mapping (no class, not a scope), the notes of the keys under it — comment, line, the parameters each
+feeds (`!ref:standardize.only` is listed under `standardize` and under `standardize.only`) — recursively. It reads
+the same text as before, constructs nothing and decides nothing: whether such a block is a group of knobs (a parameter
+reads it) is the front end's (`liquifai.completion.config_help`). Pin: `tests/test_notes.py` (the plain-mapping group).
+
 ## 36. A dump can show a deferred slot's defaults — `dump(defaults=True)` (2026-10-30)
 
 **Context.** A built object dumps every slot, so a run's resolved configuration lists each of its settings. A

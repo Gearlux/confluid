@@ -24,6 +24,10 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`KeyNote.children`: the notes of the keys under a plain mapping** — `document_notes` gives a top-level key whose
+  value is a plain mapping (no class, not a scope) the notes of the keys under it (comment, line, the parameters each
+  feeds), recursively; a `!ref:a.b` is listed under `a` and `a.b`. A front end can show a workflow's block of settings
+  key by key with each key's own comment.
 - **Go to definition in a config: `confluid.locate` and the Confluid YAML extension for VS Code** —
   `locate(text, path)` lists each `!class:` / `!partial:` / `!lazy:` tag and `_target_:` value, each `include:` entry,
   each `pkg://` value under any key, each `config:` path (the config another run reads, looked up from the project

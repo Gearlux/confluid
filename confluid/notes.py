@@ -4,7 +4,8 @@ A config is read by people as much as by the loader, and the comments above its 
 :func:`document_notes` reads them back for a front end (a command's help, its tab completion): every top-level key of
 ONE file — never its includes — with the comment lines directly above it (else the comment at the end of its line,
 carried on through the comment lines aligned under it),
-the class parameters it feeds through ``!ref:``, and every scope block the file writes, with its comment. Nothing is
+the class parameters it feeds through ``!ref:``, the keys of a plain mapping it holds with the same notes, and every
+scope block the file writes, with its comment. Nothing is
 built, imported or resolved: the file is composed by PyYAML (nodes and their lines), never constructed.
 
 :func:`source_param_docs` answers a class parameter's help from the class's SOURCE — the ``Args:`` block
@@ -48,6 +49,10 @@ class KeyNote:
     #: ``(class, parameter)`` for every marker parameter written ``!ref:<name>`` in the file, in file order — the class
     #: as spelled after its tag (``pkg.mod.Class``).
     feeds: Tuple[Tuple[str, str], ...] = ()
+    #: The notes of the keys under it, in file order, when its value is a plain mapping (no class, not a scope): the
+    #: settings a workflow keeps in one block (``standardize: {workers: auto}``). A child's ``feeds`` are the
+    #: parameters written ``!ref:<this key>.<child>``. Empty for any other value.
+    children: Tuple["KeyNote", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,9 +118,35 @@ def document_notes(path: Union[str, Path]) -> DocumentNotes:
                 line=key.start_mark.line + 1,
                 comment=_comment_of(lines, key),
                 feeds=tuple(feeds.get(key.value, ())),
+                children=_mapping_notes(value, lines, feeds, key.value),
             )
         )
     return DocumentNotes(keys=tuple(keys), scopes=scopes)
+
+
+def _mapping_notes(
+    node: yaml.Node, lines: List[str], feeds: Dict[str, List[Tuple[str, str]]], prefix: str
+) -> Tuple[KeyNote, ...]:
+    """The notes of the keys of a plain mapping ``node`` (a marker, a scope block and any other value have none)."""
+    if not isinstance(node, yaml.MappingNode) or _class_of(node) is not None or _scope_of(node) is not None:
+        return ()
+    notes: List[KeyNote] = []
+    for key, value in node.value:
+        if not isinstance(key, yaml.ScalarNode) or key.tag == "tag:yaml.org,2002:merge":
+            continue
+        if _scope_of(value) is not None:
+            continue
+        path = f"{prefix}.{key.value}"
+        notes.append(
+            KeyNote(
+                name=key.value,
+                line=key.start_mark.line + 1,
+                comment=_comment_of(lines, key),
+                feeds=tuple(feeds.get(path, ())),
+                children=_mapping_notes(value, lines, feeds, path),
+            )
+        )
+    return tuple(notes)
 
 
 def source_param_docs(target: str) -> Dict[str, str]:
@@ -407,7 +438,10 @@ def _children(
 
 
 def _ref_feeds(root: yaml.Node) -> Dict[str, List[Tuple[str, str]]]:
-    """``{name: [(class, parameter), …]}``: each marker parameter whose value is ``!ref:<name>``, in either spelling."""
+    """``{name: [(class, parameter), …]}``: each marker parameter whose value is ``!ref:<name>``, in either spelling.
+
+    A reference ``a.b`` is listed under its head ``a`` (the top-level key it reaches into) and under ``a.b`` (the key
+    inside that a mapping's note asks for)."""
     feeds: Dict[str, List[Tuple[str, str]]] = {}
     for _, node in _children(root, None):
         target = _class_of(node)
@@ -416,7 +450,8 @@ def _ref_feeds(root: yaml.Node) -> Dict[str, List[Tuple[str, str]]]:
         for key, value in node.value:
             name = _ref_name(value)
             if name is not None and isinstance(key, yaml.ScalarNode) and key.value not in (TARGET_KEY, PARTIAL_KEY):
-                feeds.setdefault(name.split(".", 1)[0], []).append((target, key.value))
+                for fed in dict.fromkeys((name.split(".", 1)[0], name)):
+                    feeds.setdefault(fed, []).append((target, key.value))
     return feeds
 
 
