@@ -70,6 +70,24 @@ def test_a_class_tag_names_its_target_at_the_range_the_editor_underlines(tmp_pat
     assert text[mention.start : mention.stop] == "demo_pkg.models.Net"
 
 
+def test_only_the_kinds_asked_for_are_looked_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader that wants the includes (a front end naming each as the file writes it) is not made to find the
+    source of every class: finding one reads its file, and a config holds dozens."""
+    (tmp_path / "base.yaml").write_text("size: 1\n")
+    text = "include: base.yaml\nmodel: !class:demo_pkg.models.Net\nrun: {config: base.yaml}\n"
+
+    def refuse(name: str) -> None:
+        raise AssertionError(f"looked up the class {name}")
+
+    monkeypatch.setattr(locate_module, "_class_location", refuse)
+    found = locate(text, tmp_path / "a.yaml", kinds=("include",))
+    assert [(mention.kind, mention.text) for mention in found] == [("include", "base.yaml"), ("include", "base.yaml")]
+    assert all(mention.target is not None for mention in found)  # a `config:` path is an include, as without `kinds`
+    monkeypatch.undo()
+    assert [mention.kind for mention in locate(text, tmp_path / "a.yaml")] == ["include", "class", "include"]
+    assert [mention.kind for mention in locate(text, tmp_path / "a.yaml", kinds=("class",))] == ["class"]
+
+
 def test_every_marker_tag_and_both_spellings_name_a_class(tmp_path: Path) -> None:
     text = (
         "a: !class:pkg.A {x: 1}\n"

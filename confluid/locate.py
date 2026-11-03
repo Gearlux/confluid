@@ -31,7 +31,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import IO, Any, Dict, Iterator, List, Literal, Optional, Sequence, Set, Tuple, Union
+from typing import IO, Any, Container, Dict, Iterator, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import yaml
 
@@ -102,7 +102,7 @@ class Resolution:
     reason: Optional[str] = None
 
 
-def locate(text: str, path: Union[str, Path]) -> List[Mention]:
+def locate(text: str, path: Union[str, Path], kinds: Optional[Container[str]] = None) -> List[Mention]:
     """Every class, config file and import ``text`` names, in text order, each with where it points.
 
     ``path`` is the file the text belongs to: a relative ``include:`` is looked up beside it first, then in its
@@ -115,6 +115,9 @@ def locate(text: str, path: Union[str, Path]) -> List[Mention]:
     Args:
         text: The config text — the editor's buffer.
         path: The file it is (or will be) saved as.
+        kinds: The kinds of mention wanted (``"class"``, ``"include"``, ``"import"``); None: every one. A kind left
+            out is not looked up — finding a class's definition reads its source, which a reader that wants only the
+            includes (a front end naming each include as the file writes it) need not pay for.
 
     Returns:
         The mentions, in text order.
@@ -123,6 +126,8 @@ def locate(text: str, path: Union[str, Path]) -> List[Mention]:
     lines = text.splitlines()
     mentions: List[Mention] = []
     for kind, name, line, start, stop in _mentions(text):
+        if kinds is not None and ("include" if kind == "run" else kind) not in kinds:
+            continue
         target: Optional[Location]
         if kind == "class":
             target = _class_location(name)
