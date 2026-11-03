@@ -46,12 +46,6 @@ inventories.
 
 ## Standing user rulings — do not re-litigate
 
-- **A configuration utility, not a compiler (user ruling 2026-08-20).** ONE precedence rule —
-  document order, last spec wins — and few spellings. An ambiguous spelling gets a located
-  refusal or a documented limit, never an invented meaning. Unless the user asks in that change,
-  never add a second precedence rule or exemption, per-key/provenance bookkeeping to make two
-  spellings agree, a new spelling for a corner case, or a walker that reaches through a marker,
-  an object or a string (full ruling: root `AGENTS.md`; the deferred BC10/BC11 in `TASKS.md`).
 - **SR16 — the `KEY(VAL)` scope call form is removed (user ruling 2026-08-20).** An activation is
   `dim` or `dim=value` in every spelling (tag suffix, `_scope_` value, `--scope`,
   `default_scopes:`); anything else is a located `ScopeError`. `scopes.parse_scope_arg` is the one
