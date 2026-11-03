@@ -2564,3 +2564,10 @@ locate("steps:\n  - config: pkg://my-dist/config/a.yaml\n  - config: config/b.ya
 **What you may change.** More import shapes for the source reading (a `TYPE_CHECKING` block, an `import pkg.mod as
 Name`), each with a test that it imports nothing; another key whose value names the config another run reads
 (`_RUN_KEYS`). Do not import a module on the `locate` path, and do not give the include lookup an order of its own.
+
+**Amendment (2026-11-03): ask for the kinds you read.** A front end that names each include as the file writes it
+(liquifai's `options of <include>` groups) called `locate` for a whole file and kept the includes: every `!class:` of
+the file had its definition found — a module located, its source parsed — only to be dropped. `locate(text, path,
+kinds=("include",))` looks up the kinds asked for and skips the rest (a `config:` path counts as an include, as in the
+result); None is every kind. Measured on a four-run workflow's listing: 0.1 s of 0.2 s. Pin: `tests/test_locate.py`
+(`test_only_the_kinds_asked_for_are_looked_up`).

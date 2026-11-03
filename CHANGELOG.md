@@ -24,6 +24,9 @@ All notable changes to confluid are documented here. The format follows
 
 ### Added
 
+- **`locate(text, path, kinds=...)`** — the kinds of mention wanted (`"class"`, `"include"`, `"import"`); a kind left out
+  is not looked up. Finding a class's definition reads its source, which a front end that names each include as the
+  file writes it need not pay for. None (the default) is every kind, as before.
 - **`KeyNote.children`: the notes of the keys under a plain mapping** — `document_notes` gives a top-level key whose
   value is a plain mapping (no class, not a scope) the notes of the keys under it (comment, line, the parameters each
   feeds), recursively; a `!ref:a.b` is listed under `a` and `a.b`. A front end can show a workflow's block of settings
