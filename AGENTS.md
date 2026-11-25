@@ -736,6 +736,8 @@ settability predicates). Feature-complete; open work is in `TASKS.md`.
 - An example that demonstrates a rule asserts it.
 - Guides and examples show TAG input and, where the machine form matters, PLAIN output labelled as
   output (user ruling 2026-08-15).
+- The sdist carries `CHANGELOG.md` and every `docs/` page the README links: `MANIFEST.in` names them, since nothing
+  else pulls them in. (`tests/test_packaging.py`)
 - Release: bump `version` in `pyproject.toml`, push tag `v<version>`; `release.yml` builds,
   verifies (twine strict, a clean-venv wheel smoke test from a neutral cwd) and publishes by
   Trusted Publishing. Order: loggair → confluid → liquifai.

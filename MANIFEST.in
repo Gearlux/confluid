@@ -1,0 +1,12 @@
+# What the sdist ships BEYOND what setuptools already infers.
+#
+# `readme = "README.md"` in pyproject pulls the README in, and `packages.find` + `[tool.setuptools.package-data]`
+# pull the package. A CHANGELOG is referenced by nothing, so without this line it is absent from the sdist.
+#
+# Pinned by tests/test_packaging.py::test_the_changelog_is_shipped_in_the_sdist
+include CHANGELOG.md
+
+# The pages the README links: a reader who has only the sdist has them too.
+#
+# Pinned by tests/test_packaging.py::test_every_docs_page_the_readme_links_is_shipped_in_the_sdist
+recursive-include docs *.md
