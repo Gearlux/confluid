@@ -8,6 +8,7 @@ All notable changes to confluid are documented here. The format follows
 
 ### Changed
 
+- **The licence is now the PolyForm Noncommercial License 1.0.0** (`LICENSE`, `pyproject.toml`): free for personal, academic and other noncommercial use; commercial use needs a separate licence from the author. It was MIT; the versions released under MIT keep that licence.
 - **`get_hierarchy_from_instance` spells a container step as its own dotted segment** — a list item is
   `items.0` where it was `items[0]`, and a dict value held in a slot is `kwargs.source` where it was
   `kwargs[source]`. A dict walked at the top level already spelled its keys this way, so the four branches of
