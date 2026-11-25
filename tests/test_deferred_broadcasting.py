@@ -292,7 +292,7 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# ENG-17 / ENG-11 (BUGS-2026-08-19) — the post-init path honours BOTH deferral
+# ENG-17 / ENG-11 (review 2026-08-19) — the post-init path honours BOTH deferral
 # signals, and the promotion keeps the marker's location.
 # ---------------------------------------------------------------------------
 

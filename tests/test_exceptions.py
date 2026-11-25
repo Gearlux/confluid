@@ -264,7 +264,7 @@ def test_ambiguous_class_names_the_yaml_file_and_line(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The located-error sweep (BUGS-2026-08-19 SR14 / SR15 / ENG-4 / ENG-10 / PA25):
+# The located-error sweep (review 2026-08-19 SR14 / SR15 / ENG-4 / ENG-10 / PA25):
 # every raise below had the marker or the file in hand and dropped it.
 # ---------------------------------------------------------------------------
 

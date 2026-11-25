@@ -134,7 +134,7 @@ def test_the_default_group_is_confluid_configurables() -> None:
 def test_an_interrupt_during_an_entry_point_import_propagates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc_stmt: str
 ) -> None:
-    """R10 (BUGS-2026-08-19) — `except BaseException` logged Ctrl-C as
+    """R10 (review 2026-08-19) — `except BaseException` logged Ctrl-C as
     "failed to import: " and kept going: a slow bootstrap of many entry points
     could not be interrupted. Ordinary import failures keep the per-entry
     tolerance (the tests above); the two process-control exceptions propagate."""

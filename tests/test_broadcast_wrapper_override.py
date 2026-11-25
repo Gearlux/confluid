@@ -222,7 +222,7 @@ def test_override_at_wrapper_shields_inner_classes() -> None:
 
 
 def test_a_shield_only_beats_the_sweeps_it_out_positions() -> None:
-    """BC12 (BUGS-2026-08-19; user ruling 2026-08-20 — document order, last spec
+    """BC12 (review 2026-08-19; user ruling 2026-08-20 — document order, last spec
     wins, no shield exemption): a wrapper kwarg the wrapper does not accept
     shields its subtree from sweeps written ABOVE it; a bare key or rider
     written BELOW it wins, in both spellings alike."""

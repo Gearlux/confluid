@@ -287,7 +287,7 @@ def test_a_nested_non_configurable_class_value_dumps_its_qualname() -> None:
 
 
 # ---------------------------------------------------------------------------
-# BODY SLOTS are dumped too (BUGS-2026-08-13 F2)
+# BODY SLOTS are dumped too (review 2026-08-13 F2)
 #
 # `dump()` reconstructed a node from its CONSTRUCTOR params only, so an
 # `__init__`-body attribute — a first-class configurable slot that `configure()`
@@ -456,7 +456,7 @@ def test_a_setterless_property_is_still_not_dumped() -> None:
 
 # ---------------------------------------------------------------------------
 # A MARKER's target is named by the REGISTRY, like a live instance's
-# (BUGS-2026-08-13 F3)
+# (review 2026-08-13 F3)
 #
 # The live-instance branch asks `registry.key_for()` so the emitted name
 # re-resolves to THIS class rather than to whichever namesake wins a bare
@@ -566,7 +566,7 @@ def test_a_STRING_marker_target_passes_through_verbatim() -> None:
 
 
 # --- a property-shadowed ctor param dumps the CAPTURED value, getter never runs
-# (BUGS-2026-08-19 CD2) ----------------------------------------------------------
+# (review 2026-08-19 CD2) ----------------------------------------------------------
 
 
 def test_a_property_shadowed_ctor_param_dumps_the_captured_value_without_running_the_getter() -> None:
@@ -613,7 +613,7 @@ def test_configure_of_a_property_shadowed_param_class_touches_nothing_derived() 
 
 
 # --- value-faithful opaque spellings, **kwargs extras, and the F3 rule's second
-# branch (BUGS-2026-08-19 CD9 / CD11 / CD12) --------------------------------------
+# branch (review 2026-08-19 CD9 / CD11 / CD12) --------------------------------------
 
 
 def test_a_path_valued_attribute_round_trips_as_its_string() -> None:
@@ -725,7 +725,7 @@ def test_a_stamped_function_target_dumps_its_registry_key_not_an_address() -> No
 
 
 def test_a_literal_dollar_survives_the_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CD10 (BUGS-2026-08-19) — dump() wrote `$RUN_USER` unescaped and the reload
+    """CD10 (review 2026-08-19) — dump() wrote `$RUN_USER` unescaped and the reload
     interpolated it; the dumper now emits `$$` and the loader collapses it."""
     monkeypatch.setenv("RUN_USER", "gert")
 
@@ -756,7 +756,7 @@ def test_a_dollar_in_a_mapping_key_round_trips() -> None:
 
 
 def test_a_slots_class_round_trips_its_body_slot() -> None:
-    """N8 (BUGS-2026-08-19) — the member descriptor read as a class_attr, so
+    """N8 (review 2026-08-19) — the member descriptor read as a class_attr, so
     dump() dropped the configured value and the reload restored the default."""
 
     @configurable
@@ -772,7 +772,7 @@ def test_a_slots_class_round_trips_its_body_slot() -> None:
 
 
 def test_dollar_keys_nested_in_a_markers_kwargs_round_trip() -> None:
-    """CD5 (BUGS-2026-08-22) — the key collapse lived in the plain-dict branch only, so a
+    """CD5 (review 2026-08-22) — the key collapse lived in the plain-dict branch only, so a
     dict INSIDE a marker's kwargs reloaded with `$$k`."""
 
     @configurable
@@ -863,7 +863,7 @@ def test_a_class_valued_kwarg_is_qualified_too() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# BUGS-2026-08-22 N1 — dump() emitted every __init__-body attribute of a base class
+# review 2026-08-22 N1 — dump() emitted every __init__-body attribute of a base class
 # that is NOT @configurable (a keras.Model subclass dumped `compiled`, `built`,
 # `supports_jit`, … and a placeholder that reloaded as an EMPTY list; a Lightning
 # module dumped `prepare_data_per_node`). The dump now carries the slots the schema

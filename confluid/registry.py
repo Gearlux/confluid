@@ -299,7 +299,7 @@ class ConfluidRegistry:
         cls_name = name or own_name or getattr(cls, "__name__", None)
         if not cls_name:
             # A functools.partial / callable instance has no __name__, so this line used
-            # to crash with a raw AttributeError (BUGS-2026-08-19 R1). A provided name=
+            # to crash with a raw AttributeError (review 2026-08-19 R1). A provided name=
             # always suffices — a NAMED nameless target registers and flows.
             raise ConfigurableDefinitionError(
                 f"cannot derive a registration name for {cls!r}: the target has no __name__. "
@@ -319,7 +319,7 @@ class ConfluidRegistry:
             # when BOTH halves were passed in that one call, so ``register_class(task=…,
             # role=…)`` derived nothing and a subclass restating ``role=`` kept its
             # parent's category — a metric indexed under every loss picker
-            # (BUGS-2026-08-19 R5/R6). An explicit ``category=`` argument still wins,
+            # (review 2026-08-19 R5/R6). An explicit ``category=`` argument still wins,
             # and a call restating NEITHER half keeps the existing mark untouched.
             category = f"{task}_{role}"
         category = category if category is not None else getattr(cls, "__confluid_category__", None)
@@ -509,7 +509,7 @@ class ConfluidRegistry:
             if isinstance(name, type):
                 # A CLASS object falls back to its OWN name mark, never an inherited
                 # one — a plain getattr answered with the PARENT class for an
-                # unregistered subclass (BUGS-2026-08-19 R4; the write side has
+                # unregistered subclass (review 2026-08-19 R4; the write side has
                 # enforced own-mark-only since the duplicate-names work).
                 name = name.__dict__.get("__confluid_name__") or name.__name__
             else:
@@ -641,7 +641,7 @@ class ConfluidRegistry:
             result = keys if result is None else (result & keys)
         # Snapshots, not live views: a concurrent registration (an MCP server
         # enumerating while a lazy import registers) raised "dictionary changed size
-        # during iteration" from this comprehension (BUGS-2026-08-19 R9). ``list(d)``
+        # during iteration" from this comprehension (review 2026-08-19 R9). ``list(d)``
         # copies in one C-level step under the GIL.
         entries = (
             list(self._by_key.values())
@@ -721,7 +721,7 @@ def load_configurables(group: str = "confluid.configurables") -> Dict[str, Any]:
         # Broad by design — optional deps, version skew, anything at import — but never
         # KeyboardInterrupt/SystemExit: Ctrl-C during a slow bootstrap of many entry
         # points must stop the process, not be logged as a failed import
-        # (BUGS-2026-08-19 R10).
+        # (review 2026-08-19 R10).
         except Exception as exc:
             logger.warning(f"load_configurables: entry point '{ep.name}' ({ep.value}) failed to import: {exc}")
             loaded[ep.name] = exc

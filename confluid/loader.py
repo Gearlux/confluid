@@ -63,7 +63,7 @@ logger = get_logger("confluid.loader")
 # the engine's _ENGINE_STATE): populated only inside ``load(..., return_paths=True)``.
 _INCLUDE_ACCUMULATOR: ContextVar[Optional[List[Path]]] = ContextVar("confluid_include_accumulator", default=None)
 #: Sibling accumulator for `import:` directives — pass 2 consumes the key, so an emitted
-#: document lost its imports and could not reload in a fresh process (BUGS-2026-08-19 CD13).
+#: document lost its imports and could not reload in a fresh process (review 2026-08-19 CD13).
 #: `hydraide.emit()` activates it to re-emit the directive; None = off (zero cost).
 _IMPORT_ACCUMULATOR: ContextVar[Optional[List[str]]] = ContextVar("confluid_import_accumulator", default=None)
 #: The files the caller of ``load(..., texts=…)`` holds in memory, by RESOLVED path — set for that
@@ -285,7 +285,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
     # ``_partial_`` is a MODIFIER and only the ``_target_`` branch below reads it.
     # Every other discriminator returns before that read, so the key used to be
     # stripped into oblivion: `{_ref_: proto, _partial_: true}` flowed EAGERLY with
-    # no error (BUGS-2026-08-13 P10). Refusing here — one site, before the branches
+    # no error (review 2026-08-13 P10). Refusing here — one site, before the branches
     # — is what the "malformed marker raises, never degrades" rule requires, and it
     # is why the lone-modifier message above no longer advertises the other four.
     if PARTIAL_KEY in mapping and key != TARGET_KEY:
@@ -329,7 +329,7 @@ def _reserved_to_marker(mapping: Dict[str, Any]) -> Any:
                     f"for a boolean DIMENSION with no value"
                 )
             if value is not None and not isinstance(value, str):
-                # Same trap one type over (BUGS-2026-08-19 PA20): YAML coerces `0.10`
+                # Same trap one type over (review 2026-08-19 PA20): YAML coerces `0.10`
                 # to the float 0.1 and `010` to the int 8, so the str() mint produced
                 # '0.1' / '8' — values the tag spelling (which keeps its text) and the
                 # CLI activation string never match. Quote it, like the boolean.
@@ -377,7 +377,7 @@ def _node_key_names(node: yaml.nodes.MappingNode, seen: Optional[Dict[int, Any]]
     plain data — while ``construct_mapping(deep=True)`` one branch later resolves
     the merge perfectly well. That is why ONE unrelated literal reserved key on
     the node was enough to make the anchor's ``_target_`` work: the conversion
-    was never the problem, only this gate (BUGS-2026-08-13 P2).
+    was never the problem, only this gate (review 2026-08-13 P2).
 
     ``seen`` is id-keyed and its VALUE is the node — recording IS pinning, per the
     id-keyed-store mandate. The guard is not theoretical: a node whose merge key
@@ -430,7 +430,7 @@ def _refuse_empty_dotted_segments(node: yaml.nodes.MappingNode) -> None:
     """Refuse a dotted key with an EMPTY segment (``a..b``, ``.c``, ``d.``).
 
     Expansion would mint a literal ``\'\'`` key nothing can ever address
-    (PA30, BUGS-2026-08-19: ``{'a': {'': {'b': 1}}}``, silently).
+    (PA30, review 2026-08-19: ``{'a': {'': {'b': 1}}}``, silently).
     """
     for key_node, _ in node.value:
         if getattr(key_node, "tag", "") == "tag:yaml.org,2002:merge":
@@ -450,7 +450,7 @@ def _refuse_tagged_merge_sources(node: yaml.nodes.MappingNode) -> None:
     A YAML merge copies KEY/VALUE pairs; a tag is a node property it cannot
     copy, so the merged mapping silently loaded as an inert plain dict while
     the reserved-key spelling of the same anchor merged into a marker (PA21,
-    BUGS-2026-08-19). Anchor the reserved-key spelling instead.
+    review 2026-08-19). Anchor the reserved-key spelling instead.
     """
     for key_node, value_node in node.value:
         if getattr(key_node, "tag", "") != "tag:yaml.org,2002:merge":
@@ -478,7 +478,7 @@ def _refuse_dotted_reserved_keys(node: yaml.nodes.MappingNode, loader: yaml.Safe
     afterwards, so by the time ``_target_`` is a key of its own mapping there is
     nobody left to convert it. The document kept a literal ``_target_`` as ordinary
     data, and ``flow()`` did not rescue it either — it reached the consumer as
-    ``{'_target_': 'Widget'}`` (BUGS-2026-08-13 P16).
+    ``{'_target_': 'Widget'}`` (review 2026-08-13 P16).
 
     Every other key works dotted, INCLUDING a kwarg merging into an already-nested
     marker (``model: {_target_: Widget}`` plus ``model.size: 3`` builds a
@@ -519,7 +519,7 @@ def _refuse_duplicate_keys(node: yaml.nodes.MappingNode, loader: yaml.SafeLoader
     duplicate keeps first-insertion order), inverting the documented "a later
     line overrides an earlier one" rule. An ordinary key loses its first value
     the same way — ``lr: 0.1`` … ``lr: 0.5`` is a differently-trained run
-    (BUGS-2026-08-13 P11).
+    (review 2026-08-13 P11).
 
     Identity is ``(tag, value)``, not text: ``1:`` and ``"1":`` are an int key
     and a str key, and PyYAML keeps both (measured: ``{1: 'one', '1': 'two'}``).
@@ -612,7 +612,7 @@ def _register_constructors() -> None:
     def ref_constructor(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.nodes.Node) -> Any:
         # A mapping body carries kwargs that TUNE the referent (`resolver.fold_reference_kwargs`)
         # — the same thing the reserved-key spelling `{_ref_: x, k: v}` stores; discarding it
-        # here was the tag half of BUGS-2026-08-19 PA10.
+        # here was the tag half of review 2026-08-19 PA10.
         ref = Reference(tag_suffix)
         if isinstance(node, yaml.nodes.MappingNode):
             ref.kwargs.update(_str_keyed_mapping(loader, node))
@@ -621,7 +621,7 @@ def _register_constructors() -> None:
     def _refuse_degrading_tag_shapes(
         factory_label: str, tag_suffix: str, instant: Any, node: yaml.nodes.Node, loader: yaml.SafeLoader
     ) -> None:
-        """The malformed-marker rule for the tag spelling (BUGS-2026-08-19 PA11).
+        """The malformed-marker rule for the tag spelling (review 2026-08-19 PA11).
 
         Every shape here used to DEGRADE silently — a scalar or sequence body was
         dropped whole, and a spaced inline (`!class:Foo(a=1, b=2)` — YAML cuts the tag
@@ -656,7 +656,7 @@ def _register_constructors() -> None:
         factory_label: str, tag_suffix: str, mapping: dict, node: yaml.nodes.Node, loader: yaml.SafeLoader
     ) -> None:
         # A reserved key inside a TAGGED body silently became a constructor kwarg
-        # literally named `_target_` (BUGS-2026-08-19 PA28) — the mixed node is one
+        # literally named `_target_` (review 2026-08-19 PA28) — the mixed node is one
         # spelling too many. Class-family tags only: a scope block's body keys are
         # ordinary config keys and may legitimately splice a `_target_:` mapping.
         conflicting = sorted(k for k in mapping if isinstance(k, str) and k in RESERVED_KEYS)
@@ -735,7 +735,7 @@ def _register_constructors() -> None:
         if not key or not key.strip():
             # A positive block on the dimension named '' can never fire, so the body
             # vanished without a word — while the reserved-key spelling refused
-            # (BUGS-2026-08-19 PA19; two spellings, one behaviour).
+            # (review 2026-08-19 PA19; two spellings, one behaviour).
             raise ConfigurationError(
                 f"!scope:/!notscope: at {_node_where(node, loader)} names no dimension — write "
                 f"`!scope:debug` or `!scope:framework=torch`"
@@ -870,7 +870,7 @@ def _register_constructors() -> None:
             return
         # The first item is the CONDITION only. A key written beside `_scope_:` became
         # the marker mapping's body, which the list body then replaced — dropped with
-        # no error (BUGS-2026-08-13 P4a). Checked on the constructed body, so a key a
+        # no error (review 2026-08-13 P4a). Checked on the constructed body, so a key a
         # `<<:` merge brought in is caught too.
         if isinstance(block.contents, dict) and block.contents:
             raise ConfigurationError(
@@ -881,7 +881,7 @@ def _register_constructors() -> None:
             )
         # A NEW block per sequence: an anchored first item (`- - *cond`) is ONE object
         # PyYAML hands to every alias, so assigning its `contents` gave every list the
-        # LAST list's body (BUGS-2026-08-13 P4b).
+        # LAST list's body (review 2026-08-13 P4b).
         fresh = ScopeBlock(dims=dict(block.dims), negate=block.negate, contents=items[1:])
         yield _stamp_loc(fresh, loader, node)
 
@@ -931,7 +931,7 @@ def _load_config_file(
         _included = {}
     if path in _included:
         # The insertion-ordered dict IS the include chain — render it, not just the
-        # revisited file (BUGS-2026-08-19 PA25: `Circular include: c1.yaml` left the
+        # revisited file (review 2026-08-19 PA25: `Circular include: c1.yaml` left the
         # reader to rediscover the cycle by hand).
         chain = " -> ".join(str(p) for p in (*_included, path))
         raise CircularIncludeError(f"Circular include: {chain}")
@@ -948,7 +948,7 @@ def _load_config_file(
 
     if path.is_dir():
         # `open()` on a directory raised a raw IsADirectoryError from deep inside the
-        # loader (BUGS-2026-08-19 PA13) — say what it is where the config can be seen.
+        # loader (review 2026-08-19 PA13) — say what it is where the config can be seen.
         via = f"{including} includes {requested}: " if including is not None else ""
         raise ConfigFileNotFoundError(f"{via}{path} is a directory, not a config file")
     if not path.exists():
@@ -1002,7 +1002,7 @@ def _process_imports(data: Any) -> Any:
             if not isinstance(imports, list) or not all(isinstance(m, str) for m in imports):
                 # `import: 42` crashed with a raw TypeError, `import: [os, 42]` with an
                 # AttributeError, and `import: {os: x}` silently imported the dict's KEYS
-                # (BUGS-2026-08-19 PA14) — the same shape refusal `include:` got for P15.
+                # (review 2026-08-19 PA14) — the same shape refusal `include:` got for P15.
                 raise ConfigurationError(f"import: takes a module name or a list of names, got {imports!r}")
             accum = _IMPORT_ACCUMULATOR.get()
             for m in imports:
@@ -1088,8 +1088,8 @@ def _anchor_deferred_include(contents: Dict[str, Any], current_path: Path) -> No
     file the block came from: activation splices it wherever the settle runs, which for
     the two-step door every CLI uses (``load(x, until="raw")`` → ``load(raw, scopes=…)``)
     is the CALLER's working directory — not found, or a same-named file there read
-    silently (BUGS-2026-08-22 PA1; an included file's block hit the same root,
-    BUGS-2026-08-19 PA1). This runs while ``current_path`` IS the block's file, so an
+    silently (review 2026-08-22 PA1; an included file's block hit the same root,
+    review 2026-08-19 PA1). This runs while ``current_path`` IS the block's file, so an
     entry found in the search tiers is rewritten to the path found. The file is only
     probed (``exists``), never opened or recorded. A total miss keeps the entry as
     written, so the settle-time lookup and its not-found message stay as they were.
@@ -1215,7 +1215,7 @@ def _splice_includes(
         if not inc_path.strip():
             raise ConfigurationError(
                 f"include: takes a non-empty path (in {current_path}) — an empty one resolved to the "
-                f"working DIRECTORY and crashed the open (BUGS-2026-08-19 PA13)"
+                f"working DIRECTORY and crashed the open (review 2026-08-19 PA13)"
             )
         try:
             target_path = resolve_config_path(inc_path, base_dir=current_path.parent)
@@ -1433,7 +1433,7 @@ def _load(
         # Already-parsed data ALIASES the caller's objects, and the passes below write
         # in place — scope resolution rewrote a marker's kwargs, so a RAW document
         # loaded twice answered with the FIRST call's activation and
-        # `discover_dimension_values(raw)` went empty after one load (BUGS-2026-08-19
+        # `discover_dimension_values(raw)` went empty after one load (review 2026-08-19
         # SR3); `import:` was popped from the caller's own dict (PA26's caller half).
         # Copy structurally: markers through a memo (a shared marker stays ONE marker),
         # every non-document leaf by identity. An explicit `context` rides the SAME

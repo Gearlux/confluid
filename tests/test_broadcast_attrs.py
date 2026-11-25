@@ -219,7 +219,7 @@ if __name__ == "__main__":
 
 
 def test_a_dataclass_generated_init_logs_debug_not_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    """N14 (BUGS-2026-08-19) — a dataclass's __init__ is SYNTHESIZED field-wise:
+    """N14 (review 2026-08-19) — a dataclass's __init__ is SYNTHESIZED field-wise:
     no body source exists to lose and confluid-bake cannot help, so the
     unscannable diagnostic is debug, not an actionable warning. The sourceless
     pin above stays the con: exec'd/frozen code CAN carry body slots."""

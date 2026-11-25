@@ -920,7 +920,7 @@ def test_a_validated_sequence_is_re_iterable_while_an_iterable_is_not() -> None:
 
 # ---------------------------------------------------------------------------
 # A class must never become unconstructable because of its schema mirror, and
-# the mirror must JSON-schema whatever pydantic can validate (BUGS-2026-08-19
+# the mirror must JSON-schema whatever pydantic can validate (review 2026-08-19
 # N1 / N2 / N3 / N9 / N10 / N11). Module-scope fixtures: get_type_hints needs
 # module globals.
 # ---------------------------------------------------------------------------
@@ -1081,7 +1081,7 @@ def test_a_bare_collections_abc_callable_param_json_schemas() -> None:
 
 
 def test_a_marker_default_reaches_the_schema_in_plain_format_without_a_warning() -> None:
-    """N15 (BUGS-2026-08-19) — the canonical deferred-slot spelling warned on
+    """N15 (review 2026-08-19) — the canonical deferred-slot spelling warned on
     every model_json_schema() and the default vanished; it is published as the
     plain-format form now, silently."""
     import warnings as _warnings

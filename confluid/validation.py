@@ -151,7 +151,7 @@ def _policy_from_env() -> ValidationPolicy:
 #: it — a ``ContextVar``, never a write to the process policy. The swap it replaced
 #: mutated ``_policy``: a direct construction on ANOTHER thread validated under the
 #: YAML mode while a ``load()`` ran, and two overlapping loads restoring out of order
-#: left the YAML mode behind for the rest of the process (BUGS-2026-08-13 X2). A raw
+#: left the YAML mode behind for the rest of the process (review 2026-08-13 X2). A raw
 #: ``Thread`` starts with an empty context, so it never sees another thread's override.
 _init_override: ContextVar[Optional[ValidationMode]] = ContextVar("confluid_init_override", default=None)
 
@@ -188,7 +188,7 @@ def set_policy(
     updates: Dict[str, ValidationMode] = {}
     # Validate against the closed Literal like the env-var reader does — a typo
     # (``set_policy(init="stict")``) used to be stored and then read as warn-mode
-    # by every ``!= "strict"`` test downstream (BUGS-2026-08-19 N13).
+    # by every ``!= "strict"`` test downstream (review 2026-08-19 N13).
     if init is not None:
         updates["init"] = _normalize_mode(init, env_var="set_policy(init=...)")
     if yaml is not None:
@@ -231,7 +231,7 @@ def override_init_mode(mode: ValidationMode) -> Iterator[None]:
 #: The YAML location of the marker currently being constructed — set by the
 #: engine around ``target(**ctor)`` so the WARN-mode diagnostic below names the
 #: same ``file:line:col`` the strict path's ``ConstructionError`` names (N16,
-#: BUGS-2026-08-19). Empty outside a document-driven construction.
+#: review 2026-08-19). Empty outside a document-driven construction.
 _construction_where: ContextVar[str] = ContextVar("confluid_construction_where", default="")
 
 
@@ -394,7 +394,7 @@ def _model_or_none(cls: Callable[..., Any]) -> Optional[Type[BaseModel]]:
     extension without a Python signature; an annotation ``get_type_hints`` cannot resolve —
     ``to_pydantic`` raises ``IntrospectionError`` by contract), so the skip stays. It used to
     be SILENT — ``except TypeError: return`` — which meant a class ran with validation OFF
-    under the default strict policy and nobody knew (BUGS-2026-08-19 N3/N4); and it caught
+    under the default strict policy and nobody knew (review 2026-08-19 N3/N4); and it caught
     ``TypeError`` alone, so pydantic's own ``SchemaError`` escaped the constructor (N1). Any
     failure skips now, and says so once per class at WARNING — the condition is actionable
     (fix the annotation, add the import, or ``@configurable(validate=False)``).

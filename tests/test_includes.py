@@ -234,7 +234,7 @@ def test_two_includes_paste_in_the_order_they_are_listed(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# `include:` works in EVERY position (BUGS-2026-08-13 P15)
+# `include:` works in EVERY position (review 2026-08-13 P15)
 #
 # The directive was honoured only where the recursive walk reached the dict
 # branch. A marker's kwargs and a scope block's contents were walked VALUE-wise,
@@ -305,7 +305,7 @@ def test_an_included_file_may_itself_carry_a_scoped_include(tmp_path: Path) -> N
 
 
 def test_the_same_wrapper_key_in_an_included_and_the_including_file_merges(tmp_path: Path) -> None:
-    """BUGS-2026-08-19 PA4, end to end: both blocks condition on the same
+    """review 2026-08-19 PA4, end to end: both blocks condition on the same
     dimension, so the activated result carries both files' keys."""
     (tmp_path / "base.yaml").write_text("torch: !scope:framework=torch\n  lr: 0.1\n")
     main = tmp_path / "main.yaml"
@@ -412,7 +412,7 @@ def test_an_include_overlay_marker_of_the_same_class_tunes_the_base_marker(tmp_p
 
 
 # --------------------------------------------------------------------------- #
-# BUGS-2026-08-22 PA1 — a scope block's own `include:` is deliberately NOT opened
+# review 2026-08-22 PA1 — a scope block's own `include:` is deliberately NOT opened
 # before activation, and by then the document no longer knew which file the block
 # was written in: the two-step door every CLI uses (`load(x, until="raw")`, then
 # `load(raw, scopes=…)`) looked next to the CALLER — not found, or a same-named file
@@ -448,7 +448,7 @@ def test_a_same_named_file_where_the_command_runs_is_not_read(_scoped_include_tr
 
 
 def test_a_scoped_include_in_an_INCLUDED_file_resolves_next_to_that_file(_scoped_include_tree: Path) -> None:
-    """The same root one level down (BUGS-2026-08-19 PA1): the block lives in an
+    """The same root one level down (review 2026-08-19 PA1): the block lives in an
     included file in ANOTHER directory, and its include is relative to that file."""
     sub = _scoped_include_tree / "configs" / "sub"
     sub.mkdir()

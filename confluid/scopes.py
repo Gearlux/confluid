@@ -53,7 +53,7 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
     if not re.fullmatch(r"[\w_.]*\s*(=.*)?", stripped):  # empty → the caller refuses it, located (PA19)
         # The activation grammar is `dim` or `dim=value` — nothing else parses, and a
         # shape that does not is refused rather than read as a boolean dimension
-        # named by the whole string (PA20, BUGS-2026-08-22).
+        # named by the whole string (PA20, review 2026-08-22).
         raise ScopeError(f"scope activation {stripped!r} is not `dim` or `dim=value`")
     if "=" in stripped:
         key, value = stripped.split("=", 1)
@@ -380,7 +380,7 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
             # A BARE activation of a KEYED dimension (`--scope framework` against
             # `framework=keras|lightning` blocks) can never select a variant — and it
             # SUPPRESSED the document's `default_scopes` value on top, so the run
-            # silently used neither (BUGS-2026-08-19 SR13). Name the values.
+            # silently used neither (review 2026-08-19 SR13). Name the values.
             known = ", ".join(sorted(positive[key]))
             locs = ", ".join(_DECLARATION_LOCS.get(key, []))
             declared_at = f" (declared at {locs})" if locs else ""
@@ -489,7 +489,7 @@ def _splice_key(out: Dict[str, Any], key: str, value: Any) -> None:
     a mapping over a marker TUNES it (a copy; anchors keep the original), a nested
     block deep-merges, anything else replaces, and a restated key is RE-ANCHORED at
     the later position. Plain assignment (``out[key] = value``) did none of that
-    (BUGS-2026-08-19 SR1/SR2/PA2/PA3): an active block DELETED the marker it
+    (review 2026-08-19 SR1/SR2/PA2/PA3): an active block DELETED the marker it
     re-stated with a mapping, a nested block lost its other keys, and a key the
     block re-stated kept the EARLIER writer's position — so whether a later bare
     key won flipped with the activation. The plain-key arm of ``_resolve_dict`` goes

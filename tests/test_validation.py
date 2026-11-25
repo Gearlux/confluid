@@ -645,7 +645,7 @@ def test_flow_wraps_validation_error_in_runtime_error() -> None:
 
 # ---------------------------------------------------------------------------
 # The validation hook never turns itself off SILENTLY, and the policy setter
-# refuses a typo (BUGS-2026-08-19 N4 / N13).
+# refuses a typo (review 2026-08-19 N4 / N13).
 # ---------------------------------------------------------------------------
 
 
@@ -695,7 +695,7 @@ def test_a_class_whose_mirror_cannot_be_built_still_constructs_and_says_so_once(
 
 
 def test_warn_mode_names_the_yaml_location(monkeypatch: pytest.MonkeyPatch) -> None:
-    """N16 (BUGS-2026-08-19) — the warn-mode diagnostic names the same
+    """N16 (review 2026-08-19) — the warn-mode diagnostic names the same
     file:line:col the strict path's ConstructionError names."""
     from types import SimpleNamespace
 

@@ -290,7 +290,7 @@ root: !class:_Root()
 
 # ---------------------------------------------------------------------------
 # Kwargs on a reference TUNE the shared referent (user ruling 2026-08-19, option A —
-# BUGS-2026-08-19 PA10 / BC8 / SR9). They are folded into the referent marker's own
+# review 2026-08-19 PA10 / BC8 / SR9). They are folded into the referent marker's own
 # kwargs before pass 7 (the same thing `proto.k: 5` does), so they compete at the
 # referent's position like any own kwarg; every spelling lands — the mapping form,
 # the tag with a body, a reference nested in a marker's kwargs, and a dotted path
@@ -404,7 +404,7 @@ def test_reference_kwargs_survive_the_document_stage_idempotently() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ENG-3 (BUGS-2026-08-19) — a referenced node that FAILS to construct fails the
+# ENG-3 (review 2026-08-19) — a referenced node that FAILS to construct fails the
 # load; only a genuinely unresolvable reference stays deferred.
 # ---------------------------------------------------------------------------
 

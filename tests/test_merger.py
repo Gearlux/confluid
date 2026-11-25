@@ -37,7 +37,7 @@ def test_expand_dotted_keys_collision() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A mapping merged OVER a marker tunes it (BUGS-2026-08-13 P1)
+# A mapping merged OVER a marker tunes it (review 2026-08-13 P1)
 #
 # `deep_merge` recursed only when BOTH sides were dicts, and a Fluid is not a
 # dict — so an overlay mapping replaced the whole marker. That is the third site
@@ -113,7 +113,7 @@ def test_two_plain_dicts_still_deep_merge() -> None:
 
 
 def test_two_scope_blocks_with_the_SAME_dims_merge_their_contents() -> None:
-    """BUGS-2026-08-19 PA4 — the same wrapper key in an included file and the
+    """review 2026-08-19 PA4 — the same wrapper key in an included file and the
     including file, same dimension: the base file's block was silently
     REPLACED (a ScopeBlock is neither a dict nor a Target). Written flat in one
     file the duplicate key is refused; through an include it must merge."""
@@ -145,7 +145,7 @@ def test_two_scope_blocks_with_DIFFERENT_dims_still_replace() -> None:
 
 # ---------------------------------------------------------------------------
 # A dotted key competes on POSITION, like every other spelling
-# (BUGS-2026-08-13 P7)
+# (review 2026-08-13 P7)
 #
 # The expansion ran in TWO passes — plain keys first, then every dotted key,
 # sorted by depth and then alphabetically — so a dotted leaf always landed last
@@ -202,7 +202,7 @@ def test_an_unrelated_dotted_key_keeps_its_written_position() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Live leaves keep their IDENTITY through a merge (BUGS-2026-08-19 PA5 / PA12 /
+# Live leaves keep their IDENTITY through a merge (review 2026-08-19 PA5 / PA12 /
 # CD3 / CD4). `_preserve_identity_copy` deep-copied every non-marker value, so a
 # dataset or a model handed into a document came out as a COPY, an uncopyable one
 # (a lock, an open file) crashed with a raw TypeError, and a ScopeBlock's inner
@@ -319,7 +319,7 @@ def test_a_partial_over_a_class_marker_still_replaces() -> None:
 
 
 def test_a_dotted_write_into_a_list_is_refused() -> None:
-    """PA9 (BUGS-2026-08-19) — `a.0: 99` replaced the whole list with `{'0': 99}`
+    """PA9 (review 2026-08-19) — `a.0: 99` replaced the whole list with `{'0': 99}`
     silently while the READ grammar indexes it; now a located refusal."""
     import pytest
 

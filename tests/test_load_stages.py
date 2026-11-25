@@ -319,7 +319,7 @@ def test_the_engine_entries_run_neither_pass_5_nor_pass_6() -> None:
 
 
 def test_a_live_value_in_a_data_document_keeps_its_identity() -> None:
-    """BUGS-2026-08-19 PA12 — `load(<dict>)` is how a pre-built object enters a
+    """review 2026-08-19 PA12 — `load(<dict>)` is how a pre-built object enters a
     document; pass 6 deep-copied it (and crashed on an uncopyable one)."""
     import threading
 
@@ -336,7 +336,7 @@ def test_a_live_value_in_a_data_document_keeps_its_identity() -> None:
 
 
 def test_a_raw_document_survives_loads_under_different_activations() -> None:
-    """SR3 (BUGS-2026-08-19) — pass 4 rewrote the caller's marker kwargs in place,
+    """SR3 (review 2026-08-19) — pass 4 rewrote the caller's marker kwargs in place,
     so the SECOND load answered with the FIRST call's activation, and discovery
     went empty. The raw→discover→load-with-scopes sequence is the documented CLI
     pattern; the raw tree must survive it."""
@@ -375,7 +375,7 @@ def test_the_copy_spans_data_AND_context_through_one_memo() -> None:
 
 
 def test_interpolation_reads_the_expanded_tree() -> None:
-    """PA8 (BUGS-2026-08-19) — `${train.lr}` answered with a literal dotted key the
+    """PA8 (review 2026-08-19) — `${train.lr}` answered with a literal dotted key the
     final document does not even contain; expansion runs first now, so interpolation
     and the returned tree give the same answer."""
     doc = load("train.lr: 0.2\ntrain:\n  lr: 0.1\nx: ${train.lr}\n", until="document")
@@ -421,7 +421,7 @@ def test_a_dotted_write_through_a_plain_placeholder_is_refused() -> None:
 
 
 def test_the_dollar_escape_survives_the_document_stage_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PA14 (BUGS-2026-08-22) — collapsing `$$` at pass 6 made `load(load(x, until="document"))`
+    """PA14 (review 2026-08-22) — collapsing `$$` at pass 6 made `load(load(x, until="document"))`
     re-expand the now-bare `$NAME`; the escape is opaque through the document stage now."""
     monkeypatch.setenv("RUN_USER", "gert")
     text = "command: echo $$RUN_USER\n"

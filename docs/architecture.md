@@ -1199,7 +1199,7 @@ silent destruction shipped.
 a body slot (`self.optimizer = PartialClass(...)`) but not for the same marker written as a
 constructor default (`optimizer: Partial[Adam] = PartialClass(Adam, …)`), because pass 7 never
 sees a default (it is not in the document) and the constructor filter handed the mapping to the
-constructor as data — the optimizer became `{'lr': 0.1}` (BUGS-2026-08-22 ENG-1). Both code
+constructor as data — the optimizer became `{'lr': 0.1}` (review 2026-08-22 ENG-1). Both code
 spellings now go through ONE engine site, `engine._tune_slot_marker` (tune a copy, then apply the
 bare keys the document ordered after the slot), called post-init for a body slot and before the
 constructor call for a default (`engine._ctor_default_markers`).
@@ -1340,8 +1340,8 @@ out.pop(key); out[key] = merged                           # re-anchor at the lat
 `include:` past activation also deferred WHERE it is looked up: by then the document no longer
 knew the block's file, so the settle resolved it against the entry file — and, through the
 two-step door every CLI uses (`load(x, until="raw")` → `load(raw, scopes=…)`), against the
-caller's working directory, reading a same-named file there silently (BUGS-2026-08-22 PA1; an
-included file's block, BUGS-2026-08-19 PA1). The decision keeps the deferral and adds one step
+caller's working directory, reading a same-named file there silently (review 2026-08-22 PA1; an
+included file's block, review 2026-08-19 PA1). The decision keeps the deferral and adds one step
 while the block's file is being read: `loader._anchor_deferred_include` rewrites each entry the
 search tiers FIND to the path found. It probes, never opens — an inactive overlay still need not
 exist — and a total miss keeps the entry as written, so the not-found message is unchanged.
@@ -1538,7 +1538,7 @@ pass-7 mechanisms carried a position per SLOT and were one level deep. (1) The C
 the bare keys a class block out-positioned from the whole view of the slot it tuned: a grandchild
 the block reached (`Trainer: {sched: {opt: {lr: 0.5}}}`) got its value at its own earlier
 position and lost to an earlier bare `lr`, while the middle node the block never set lost that
-bare key altogether (BUGS-2026-08-22 BC1). A block tuning a marker now stamps every kwarg it
+bare key altogether (review 2026-08-22 BC1). A block tuning a marker now stamps every kwarg it
 writes, at every depth, with the top-level keys written before it
 (`broadcast._stamp_block_positions`) — the stamp a top-level dotted line already carries (BC4),
 read by the same `_dotted_protected` gate and re-emitted by `dump()` the same way; the per-slot
@@ -1619,7 +1619,7 @@ a second entry function for a stage, and do not make a stage reachable for one i
 **Context.** Interpolation (then pass 5) read the document BEFORE dotted keys nested (then pass
 6), so `${train.lr}` answered with whichever literal `train.lr:` key existed at that moment —
 while the returned tree answered with the expanded merge (document order, last wins). One
-document, two answers (BUGS-2026-08-19 PA8):
+document, two answers (review 2026-08-19 PA8):
 
 ```yaml
 train.lr: 0.2

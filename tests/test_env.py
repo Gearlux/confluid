@@ -149,7 +149,7 @@ except ImportError as exc:
 
 
 def test_a_require_paths_only_key_is_validated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """PA29 (BUGS-2026-08-19) — a key listed in require_paths but not in require was
+    """PA29 (review 2026-08-19) — a key listed in require_paths but not in require was
     never checked: neither for presence nor for existence."""
     from confluid.env import WorkspaceEnvError
 

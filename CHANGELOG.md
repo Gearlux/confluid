@@ -151,34 +151,34 @@ All notable changes to confluid are documented here. The format follows
 - **A class-name block reaching a grandchild wins by position, at every depth.** With `lr: 0.01`
   followed by `Trainer: {sched: {opt: {lr: 0.5}}}` (or `Trainer.sched.opt.lr: 0.5`), `opt.lr` is
   now 0.5 and `sched.lr` 0.01 — it was 0.01 and 0.0. The block keeps its position per key it
-  writes, like a dotted line. (BUGS-2026-08-22 BC1)
+  writes, like a dotted line. (review 2026-08-22 BC1)
 - **`configure()`: a key naming an object takes effect at the line it is written.**
   `configure(trainer=t, config="lr: 2.0\ntrainer: {lr: 1.0}")` sets 1.0 — it set 2.0, while
-  `load()` of the same document gave 1.0. (BUGS-2026-08-22 CD1)
+  `load()` of the same document gave 1.0. (review 2026-08-22 CD1)
 - **A mapping tunes a `Partial[T]` constructor default.**
   `optimizer: Partial[Adam] = PartialClass(Adam, lr=1e-3, weight_decay=0.01)` with
   `optimizer: {lr: 0.1}` gives `PartialClass(Adam, {'lr': 0.1, 'weight_decay': 0.01})`, as the
   `__init__`-body spelling always did; it gave the dict `{'lr': 0.1}` (warn/off) or a
-  `ConstructionError` (strict). (BUGS-2026-08-22 ENG-1)
+  `ConstructionError` (strict). (review 2026-08-22 ENG-1)
 - **A scope block's `include:` is found next to the file the block is written in** — also when
   the document is read first and activated later (`load(x, until="raw")` → `load(raw,
   scopes=…)`), and for a block inside an included file. It looked in the working directory:
-  not found, or a same-named file there read silently. (BUGS-2026-08-22 PA1, BUGS-2026-08-19 PA1)
+  not found, or a same-named file there read silently. (review 2026-08-22 PA1, review 2026-08-19 PA1)
 - **`dump()` writes only the settings the schema lists.** A `keras.Model` subclass dumped
   `compiled`, `built`, `supports_jit`, … and reloaded with `call_signature_parameters` emptied; a
   Lightning module dumped `prepare_data_per_node`. Attributes a non-`@configurable` base sets are
-  no longer written — unless a document set one during `load()`. (BUGS-2026-08-22 N1)
+  no longer written — unless a document set one during `load()`. (review 2026-08-22 N1)
 - **The YAML validation mode stays inside the `load()` that uses it.** With
   `set_policy(init="strict", yaml="off")`, a direct `Cls(bad=…)` on another thread during a load —
-  or anywhere after two loads overlapped — was accepted. (BUGS-2026-08-13 X2)
+  or anywhere after two loads overlapped — was accepted. (review 2026-08-13 X2)
 - **`self.start, self.stop = 0, 10` declares both settings**, like two assignments: a bare
-  `stop: 50` now lands and the schema lists `start`/`stop`. (BUGS-2026-08-13 I1)
+  `stop: 50` now lands and the schema lists `start`/`stop`. (review 2026-08-13 I1)
 - **A `@configurable` class with no `__init__` declares no settings**, like one with an empty
   `__init__`: every bare key in the document landed on it, and an addressed key crashed with
-  `takes no arguments`. (BUGS-2026-08-13 I3)
+  `takes no arguments`. (review 2026-08-13 I3)
 - **The list-form scope block keeps its data.** A key written beside `_scope_` in the first item
   is refused with its file and line (it vanished), and an anchored condition reused in two lists
-  keeps each list's own body (the first list received the second's). (BUGS-2026-08-13 P4)
+  keeps each list's own body (the first list received the second's). (review 2026-08-13 P4)
 
 ## [0.3.0] - 2026-08-24
 
@@ -379,7 +379,7 @@ All notable changes to confluid are documented here. The format follows
   (`{_target_: textwrap.TextWrapper, widht: 9}`) still warns, located, and is still recorded.
 
 - **`$$` is a literal `$` in the final objects — collapsed once, where the document becomes
-  objects** (BUGS-2026-08-22 PA14 / CD5, 2026-08-22). Measured before → after:
+  objects** (review 2026-08-22 PA14 / CD5, 2026-08-22). Measured before → after:
   `load("command: echo $$RUN_USER", until="document")` gave `echo $RUN_USER` and reloading that
   result gave `echo gert` (the document stage was not idempotent) → the document stage keeps
   `echo $$RUN_USER`, reloading it changes nothing, `load()` answers `echo $RUN_USER`; a dict
@@ -389,7 +389,7 @@ All notable changes to confluid are documented here. The format follows
   `emit(emit(x)) == emit(x)`. Pinned in `tests/test_resolver.py`, `tests/test_load_stages.py`,
   `tests/test_dumper.py`, `tests/test_hydraide.py`, `tests/test_configurator.py`.
 
-- **Regressions from the 2026-08-19 cycle, part one** (BUGS-2026-08-22 SR7 / PA20 / CD14 / PA30,
+- **Regressions from the 2026-08-19 cycle, part one** (review 2026-08-22 SR7 / PA20 / CD14 / PA30,
   2026-08-22). Measured before → after: a dimension declared by a boolean block AND keyed blocks
   refused its bare activation (`scopes=["debug"]` → `ScopeError … selects nothing`) → the boolean
   block fires (`{'log': 'DEBUG'}`; keyed-only dimensions stay refused); a malformed activation
@@ -401,7 +401,7 @@ All notable changes to confluid are documented here. The format follows
   node in an overlay "is a replacement" while a same-target marker tunes → the guide states the
   rule. Pinned in `tests/test_scopes.py`, `tests/test_cli.py`.
 
-- **A bare mapping at a slot that holds a marker is refused as ambiguous** (BUGS-2026-08-19
+- **A bare mapping at a slot that holds a marker is refused as ambiguous** (review 2026-08-19
   BC13, user ruling 2026-08-20). Measured before → after with `c: !class:C {optimizer:
   !class:T {name: o, lr: 1.0}}`, `lr: 9.0`, then a last line `optimizer: {x: 1}`: the line
   delivered nothing (reported `unused`) yet `c.optimizer.lr` became `1.0` — the marker's own
@@ -414,7 +414,7 @@ All notable changes to confluid are documented here. The format follows
   Pinned in `tests/test_broadcast_scoping.py`.
 
 - **The parse-time tail: lists, long paths, tagged merges, `to_tags` equivalence, marker
-  placeholders, `import:` parity, `~`, env paths, empty segments** (BUGS-2026-08-19
+  placeholders, `import:` parity, `~`, env paths, empty segments** (review 2026-08-19
   PA9/PA17/PA21/PA22/PA23/PA26/PA27/PA29/PA30; PA24 ruled as-designed, 2026-08-20). Measured
   before → after: `a: [10, 20]` + `a.0: 99` gave `{'a': {'0': 99}}` (the list destroyed) → a
   located refusal; a 379-character `.yaml` path STRING parsed as YAML text and came back as the
@@ -443,7 +443,7 @@ All notable changes to confluid are documented here. The format follows
   of them; a malformed string is never read as a boolean dimension named by the whole text.
 
 - **A wrapper shield only beats the sweeps it out-positions** (user ruling 2026-08-20 — document
-  order, last spec wins, no shield exemption; BUGS-2026-08-19 BC12). Measured before → after with
+  order, last spec wins, no shield exemption; review 2026-08-19 BC12). Measured before → after with
   `w: !class:Wrapper {lr: 1.0, inner: !class:Opt {lr: 0.5}}` and a LAST line `lr: 9.0` (or
   `'**': {lr: 9.0}`): bare gave `inner.lr = 0.5` with `lr` reported unused while the rider gave
   `1.0` (the shield value) → both give `9.0`; written ABOVE the wrapper both still give `0.5`
@@ -454,7 +454,7 @@ All notable changes to confluid are documented here. The format follows
 ### Fixed
 
 - **Class-block deliveries stop lying: markers reach `**kwargs` classes, lists reach declared
-  slots, the same-target guard names itself** (BUGS-2026-08-19 BC15/BC16/BC17, 2026-08-20).
+  slots, the same-target guard names itself** (review 2026-08-19 BC15/BC16/BC17, 2026-08-20).
   Measured before → after: `KW: {n: 1, child: !class:T {lr: 1.0}}` on a `**kwargs` class dropped
   the marker with a false "has no attribute 'child'" warning + a failed record (the own-kwarg
   spelling delivered) → the ctor receives it, clean report; `Trainer: {items: [1, 2]}` at a
@@ -468,7 +468,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_broadcast_wrapper_override.py`, `tests/test_scopes.py`.
 
 - **The introspection tail: slots, forward refs, docstrings, schema defaults, located warns**
-  (BUGS-2026-08-19 N5/N6/N7/N8/N12/N14/N15/N16/N17, 2026-08-20). Measured before → after:
+  (review 2026-08-19 N5/N6/N7/N8/N12/N14/N15/N16/N17, 2026-08-20). Measured before → after:
   a body slot `self.optimizer: Partial["Optim"] = None` lost its deferral (the quoted name inside
   the subscript evals to a ForwardRef; the slot's marker was BUILT eagerly and crashed on the
   missing runtime arg) → nested ForwardRefs evaluate through public `get_type_hints`, both
@@ -492,7 +492,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_all_gaps.py`.
 
 - **Concurrent passes never fault each other; `to_pydantic` is one model per class across
-  threads** (BUGS-2026-08-13 X4/X5, 2026-08-20). Measured before → after: a `clear_pass_caches()`
+  threads** (review 2026-08-13 X4/X5, 2026-08-20). Measured before → after: a `clear_pass_caches()`
   landing between a cache's `in` check and its indexed read raised `KeyError` out of public
   `materialize()` (reproduced deterministically at all four sites — the accept-list, its
   negative-string branch, the param-kinds map, the parent-attr blacklist) → every consult is one
@@ -504,7 +504,7 @@ All notable changes to confluid are documented here. The format follows
   Pinned in `tests/test_concurrency.py`.
 
 - **The marker spelling of an override tunes; a default instance name matches on load; a literal
-  `$` survives the round trip** (BUGS-2026-08-19 CD5/CD19/CD10 + CD21 documented, 2026-08-20).
+  `$` survives the round trip** (review 2026-08-19 CD5/CD19/CD10 + CD21 documented, 2026-08-20).
   Measured before → after: `configure(trainer=t, config="trainer: !class:Trainer {lr: 0.1}\nlayers: 10")`
   left `model.layers=3` with `layers` unused (the marker replaced the object's document) →
   `model.layers=10`, nothing unused — the mapping and marker spellings agree, and an include
@@ -520,8 +520,8 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_configurator.py`, `tests/test_merger.py`, `tests/test_includes.py`,
   `tests/test_broadcast_scoping.py`, `tests/test_dumper.py`, `tests/test_resolver.py`.
 
-- **Interpolation is pass 6, after expansion, and genuinely single-pass** (BUGS-2026-08-19
-  PA6/PA7/PA8 + BUGS-2026-08-13 P8/P9, 2026-08-20). Measured before → after: `${train.lr}` beside
+- **Interpolation is pass 6, after expansion, and genuinely single-pass** (review 2026-08-19
+  PA6/PA7/PA8 + review 2026-08-13 P8/P9, 2026-08-20). Measured before → after: `${train.lr}` beside
   `train.lr: 0.2` and a later `train: {lr: 0.1}` gave `0.2` while the returned tree said `0.1` →
   both say `0.1` (expansion runs first; whole-string `${ref:...}` strings hoist to markers before
   it, so `use: ${ref:proto}` + `use.k: 5` still tunes the shared referent, and a dotted write
@@ -536,7 +536,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_resolver.py`, `tests/test_load_stages.py`, `tests/test_configurator.py`.
 
 - **`load()` never mutates parsed input; found-null is a hit; int-keyed tables are addressable;
-  a bare keyed activation is refused** (BUGS-2026-08-19 SR3/SR6/SR7/SR13, 2026-08-19). Measured
+  a bare keyed activation is refused** (review 2026-08-19 SR3/SR6/SR7/SR13, 2026-08-19). Measured
   before → after: a raw document loaded twice answered with the FIRST call's activation and
   `discover_dimension_values(raw)` went empty (pass 4 rewrote the caller's marker kwargs in
   place; `import:` was popped from the caller's dict — PA26's caller half, BC20's kwarg write) →
@@ -552,7 +552,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_resolver.py`, `tests/test_ref_identity.py`, `tests/test_scopes.py`.
 
 - **The tag spelling refuses what it silently degraded, and legal-but-odd inputs stop crashing
-  raw** (BUGS-2026-08-19 PA11/PA13/PA14/PA19/PA20/PA28, 2026-08-19). Measured before → after:
+  raw** (review 2026-08-19 PA11/PA13/PA14/PA19/PA20/PA28, 2026-08-19). Measured before → after:
   `!class:Foo bar` and a sequence body dropped their data whole → located refusals naming the
   shape; `!class:Foo(a=1, b=2)` (one space — the AGENTS-cited motivating failure) surfaced as
   `Cannot resolve class: Foo(a=1,` → refused at parse naming the space rule; `(a)` and `(a=[1,2])`
@@ -568,7 +568,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_plain_format.py`, `tests/test_scopes.py`, `tests/test_loader.py`.
 
 - **The dump round trip holds for opaque values, `**kwargs` extras and stamped function
-  targets — and `configure()` stops replanting the capture** (BUGS-2026-08-19
+  targets — and `configure()` stops replanting the capture** (review 2026-08-19
   CD8/CD9/CD11/CD12, 2026-08-19). Measured before → after: a `Path` attribute dumped as
   `{_target_: pathlib.PosixPath}` and reloaded as `PosixPath('.')` — a sink silently pointing at
   the launch directory → dumps as its string and reloads intact; a numpy scalar reloaded as
@@ -583,7 +583,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_configurator.py`.
 
 - **`configure()` reaches children beyond `__dict__`, never runs a property getter, gates the
-  named-overlay path, and takes `scopes=`** (BUGS-2026-08-19 CD1/CD2/CD6/CD18 + SR4's channel
+  named-overlay path, and takes `scopes=`** (review 2026-08-19 CD1/CD2/CD6/CD18 + SR4's channel
   half, 2026-08-19). Measured before → after: an `nn.Module` child (kept in `_modules`) was
   REPLACED by a fresh build — the original never configured (`net.backbone is bb → False`) → found
   via `getattr` and configured in place (`True`, recursion reaches it); a `__slots__` host's child
@@ -600,7 +600,7 @@ All notable changes to confluid are documented here. The format follows
   wrappers never reported unused. Pinned: `tests/test_configurator.py`, `tests/test_dumper.py`,
   `tests/test_configure_via_document.py`.
 
-- **The emitted artefact is self-contained, honest, and always parses back** (BUGS-2026-08-19
+- **The emitted artefact is self-contained, honest, and always parses back** (review 2026-08-19
   CD13/CD14/CD15/CD16, 2026-08-19). `hydraide emit` re-emits every `import:` the load consumed
   (the include accumulator's sibling), so a fresh process reloads the artefact — it used to fail
   with `UnknownClassError` because the classes were registered only as a side effect of the
@@ -615,7 +615,7 @@ All notable changes to confluid are documented here. The format follows
   idempotence with the import line), `tests/test_cli.py`.
 
 - **The located-error sweep — five raises that had the location in hand and dropped it**
-  (BUGS-2026-08-19 SR14/SR15/ENG-4/ENG-10/PA25, 2026-08-19). A `@axis=$key` selector whose key is
+  (review 2026-08-19 SR14/SR15/ENG-4/ENG-10/PA25, 2026-08-19). A `@axis=$key` selector whose key is
   missing now names the marker's line (`… or write the value literally. at <file>:1:7`); the
   undeclared-scope-value `ScopeError` lists where the values are declared (`declares fw with: x, y
   (declared at dims.yaml:1:4, dims.yaml:3:4)`); a malformed `default_scopes:` leads with its file;
@@ -626,7 +626,7 @@ All notable changes to confluid are documented here. The format follows
   — the including file and the tier actually probed first — and a circular include renders the
   whole chain (`c1.yaml -> c2.yaml -> c1.yaml`). Pinned by message in `tests/test_exceptions.py`.
 
-- **Four construction-time silences and one eager build** (BUGS-2026-08-19
+- **Four construction-time silences and one eager build** (review 2026-08-19
   ENG-3/ENG-7/ENG-11/ENG-16/ENG-17, 2026-08-19). Measured before → after:
   a typo'd key on an UNREGISTERED target (`_target_: torch.optim.Adam` shape) vanished with an
   empty report → still not applied (unregistered targets take no post-init attributes) but a
@@ -644,7 +644,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_instantiate.py`, `tests/test_deferred_broadcasting.py`, `tests/test_ref_identity.py`.
 
 - **The registry refuses what it cannot name or bind, derives `category` at its one authority,
-  enumerates safely, and stays interruptible** (BUGS-2026-08-19 R1/R2/R3/R4/R5/R6/R9/R10,
+  enumerates safely, and stays interruptible** (review 2026-08-19 R1/R2/R3/R4/R5/R6/R9/R10,
   2026-08-19). Measured before: `@configurable("Named")` and `register(functools.partial(...))`
   crashed with a raw `AttributeError` from an unrelated line; a nameless callable silently
   registered under the literal name `wrapper`, every second one clobbering the first;
@@ -665,7 +665,7 @@ All notable changes to confluid are documented here. The format follows
   `tests/test_load_configurables.py`.
 
 - **A dotted key landing directly on a marker's kwarg competes at the dotted line's position**
-  (BUGS-2026-08-19 BC4; user ruling 2026-08-19, per-key "option B"). Pass 6 folded `t.lr: 9.0`
+  (review 2026-08-19 BC4; user ruling 2026-08-19, per-key "option B"). Pass 6 folded `t.lr: 9.0`
   into the marker's kwargs, silently moving the value to the MARKER's line: written as the last
   line it lost to a bare `lr: 5.0` between (`explain` reported "own 9.0 — beaten, earlier"), and
   to a class block or `'**'` rider the same way, while the instance-block spelling of the same
@@ -677,7 +677,7 @@ All notable changes to confluid are documented here. The format follows
   override agree on every key. Pinned: the BC4 group in `tests/test_document_order.py`,
   `tests/test_hydraide.py`.
 
-- **A grouping dict is transparent for position, not only for nesting** (BUGS-2026-08-19
+- **A grouping dict is transparent for position, not only for nesting** (review 2026-08-19
   BC2/BC9, 2026-08-19). Pass 7's dict branch appended a group's entries after every inherited
   key, so a marker inside `group:` held an unbeatable position — its own kwargs beat a LATER
   bare key, class block and `'**'` rider alike (`group: {node: !class:T {lr: 1.0}}` + `lr: 9.0`
@@ -689,7 +689,7 @@ All notable changes to confluid are documented here. The format follows
   a marker boundary. Pinned: the grouping-dict group in `tests/test_document_order.py` (three
   later-spec spellings, the dict-valued-kwarg case, BC9's flip with both cons).
 
-- **A class block's C2 verdict protects the addressed node, not its subtree** (BUGS-2026-08-19
+- **A class block's C2 verdict protects the addressed node, not its subtree** (review 2026-08-19
   BC5, 2026-08-19 — a regression from the phase-4 C2 fix). `_view_for` popped the bare keys the
   block out-positioned from the view used for the WHOLE descent below the slot, so a grandchild
   the block never addressed lost the cascade: `lr: 9.0` + a later `Trainer: {optimizer: {lr: 5.0}}`
@@ -701,7 +701,7 @@ All notable changes to confluid are documented here. The format follows
   (all four orderings, cons included).
 
 - **The schema mirror is built for every legal signature, JSON-schemas, and never switches
-  validation off silently** (BUGS-2026-08-19 N1/N2/N3/N4/N9/N10/N11/N13, 2026-08-19). Measured
+  validation off silently** (review 2026-08-19 N1/N2/N3/N4/N9/N10/N11/N13, 2026-08-19). Measured
   before: a non-runtime `Protocol`-typed param made `Cls()` raise a raw `pydantic_core.SchemaError`;
   a `_seed` param made every `Cls()` raise `NameError: Fields must not use names with leading
   underscores`; a `model_config` param crashed `to_pydantic` (`'FieldInfo' object is not iterable`)
@@ -717,7 +717,7 @@ All notable changes to confluid are documented here. The format follows
   unbuildable mirror with ONE warning per class naming the cause; `set_policy` refuses a typo.
   Pinned: `tests/test_pydantic_export.py` (the N-group), `tests/test_validation.py`.
 
-- **Kwargs on a reference tune the shared referent instead of vanishing** (BUGS-2026-08-19
+- **Kwargs on a reference tune the shared referent instead of vanishing** (review 2026-08-19
   PA10/BC8/SR9; user ruling 2026-08-19). `{_ref_: proto, k: 5}`, `!ref:proto` with a body (the tag
   constructor discarded it at parse) and a dotted path walking through a reference
   (`a.optimizer.lr: 9.0` where `a.optimizer` is `!ref:shared`) all dropped their kwargs silently,
@@ -728,7 +728,7 @@ All notable changes to confluid are documented here. The format follows
   with kwargs is a located `ConfigurationError`. Pinned: the reference-kwargs group in
   `tests/test_ref_identity.py`, `tests/test_hydraide.py`.
 
-- **A live value in a document keeps its identity through every merge** (BUGS-2026-08-19
+- **A live value in a document keeps its identity through every merge** (review 2026-08-19
   PA5/PA12/CD3/CD4, 2026-08-19). `merger._preserve_identity_copy` kept markers by identity and
   `deepcopy`d every OTHER leaf, and it runs under `deep_merge` (include paste, CLI overlays,
   `configure()`'s named-key fold, the scope splice) and `expand_dotted_keys` (pass 6 of every
@@ -744,7 +744,7 @@ All notable changes to confluid are documented here. The format follows
   rebuilt con case), `tests/test_configurator.py` (CD3, CD4), `tests/test_load_stages.py`
   (PA12), `tests/test_scopes.py` (PA5 end to end).
 
-- **A scope block splices by the include-paste rule** (BUGS-2026-08-19 SR1/SR2/PA2/PA3/PA4,
+- **A scope block splices by the include-paste rule** (review 2026-08-19 SR1/SR2/PA2/PA3/PA4,
   2026-08-19). `scopes._resolve_dict` landed a block's keys — and a plain key written after a
   block — by plain assignment, while `docs/lifecycle.md` and `_splice_includes` said scopes follow
   the include paste. Measured: an active block re-stating a marker slot with a mapping DELETED the
@@ -760,7 +760,7 @@ All notable changes to confluid are documented here. The format follows
   condition still replaces. Pinned: the splice group in `tests/test_scopes.py`,
   `tests/test_merger.py`, `tests/test_includes.py`.
 
-- **The pass-7 `flow_memo` pins the marker it keys on** (BUGS-2026-08-19 BC1, 2026-08-19). The
+- **The pass-7 `flow_memo` pins the marker it keys on** (review 2026-08-19 BC1, 2026-08-19). The
   memo keyed on `id()` of the marker `_flow_recursive` was handed; since the pass-7 dict-at-slot
   tune (C1, 2026-08-14) that marker is often a `tune_marker` COPY that dies with the enclosing
   `merged_kwargs`, and a recycled address read as a memo HIT — measured: one class block
@@ -802,7 +802,7 @@ All notable changes to confluid are documented here. The format follows
 
 ### Fixed
 
-- **The block-vs-bare contest agrees across both paths, in every ordering** (BUGS-2026-08-13 C2).
+- **The block-vs-bare contest agrees across both paths, in every ordering** (review 2026-08-13 C2).
   One deferred slot with two competing specs — a bare sweep key and a class block addressing the
   slot — resolved differently on the two paths for the ordinary "node first, overrides below"
   layout: `load()` gave 99 where `configure()` gave 50. Both EDGE orderings agreed and were
@@ -815,7 +815,7 @@ All notable changes to confluid are documented here. The format follows
   computation, since those really do sit at the marker. Pinned by the C2 group in
   `tests/test_cross_path_pins.py` — all three orderings, per path and compared across paths.
 
-- **A dotted key competes on position, like every other spelling** (BUGS-2026-08-13 P7). The
+- **A dotted key competes on position, like every other spelling** (review 2026-08-13 P7). The
   dotted expansion ran in two passes — every plain key first, then every dotted key sorted by depth
   and then alphabetically — so a dotted leaf was always applied last and could not lose to anything
   written after it. `a.b: 1` followed by `a: {b: 0}` gave `{'b': 1}`, and so did the opposite
@@ -827,7 +827,7 @@ All notable changes to confluid are documented here. The format follows
   of all 1759 workspace configs before and after: zero changed. Pinned by the position group in
   `tests/test_merger.py`.
 
-- **An include-file override of one kwarg no longer deletes the whole marker** (BUGS-2026-08-13
+- **An include-file override of one kwarg no longer deletes the whole marker** (review 2026-08-13
   P1). The commonest composition in the system — a base file defining the model, an experiment file
   overriding one knob — produced a plain `dict` with no target and no error:
 
@@ -847,7 +847,7 @@ All notable changes to confluid are documented here. The format follows
   are shared by identity. Restricted to `Target`, mirroring the classifier's marker arm.
   Pinned by the marker-merge group in `tests/test_merger.py`.
 
-- **A marker's target is named by the registry, like a live instance's** (BUGS-2026-08-13 F3).
+- **A marker's target is named by the registry, like a live instance's** (review 2026-08-13 F3).
   The live-instance branch asks `registry.key_for()` so the emitted name re-resolves to THIS class
   rather than to a namesake; `_target_name` bypassed it and emitted a raw `module.qualname`. Two
   targets have no importable qualname and so could not reload at all: a class built by a FACTORY
@@ -856,7 +856,7 @@ All notable changes to confluid are documented here. The format follows
   made two dumps of the same object differ. An unregistered target keeps its dotted path and a
   string target passes through verbatim. Pinned by the F3 group in `tests/test_dumper.py`.
 
-- **`dump()` emits body slots, so a configured object round-trips** (BUGS-2026-08-13 F2). The
+- **`dump()` emits body slots, so a configured object round-trips** (review 2026-08-13 F2). The
   dumper reconstructed a node from its CONSTRUCTOR params only, so an `__init__`-body attribute was
   absent from the document: `self.epochs = 1` configured to 50 dumped as bare `_target_: BodyHost`
   and reloaded as 1, and a marker slot tuned by `configure()` came back untuned. Every other surface
@@ -867,7 +867,7 @@ All notable changes to confluid are documented here. The format follows
   when a default later changes in the source. Setterless properties stay out (derived state
   recomputes on reload). Pinned by the body-slot group in `tests/test_dumper.py`.
 
-- **A string annotation resolves instead of leaking as a `str`** (BUGS-2026-08-13 I4, I5). A
+- **A string annotation resolves instead of leaking as a `str`** (review 2026-08-13 I4, I5). A
   QUOTED body-slot annotation (`self.optimizer: "Partial[Optim]"`, the ordinary way to defer an
   import) lost its deferral entirely — the AST node is a string constant, so `eval` returned the
   TEXT and a plain `str` is not a ForwardRef, so it became `Slot.annotation`. The identical
@@ -881,7 +881,7 @@ All notable changes to confluid are documented here. The format follows
   projects from `slots()` rather than re-reading `get_type_hints`, which was a third copy of the
   same failure. Pinned by the string-annotation group in `tests/test_introspect.py`.
 
-- **`configure()` no longer writes to objects nobody keeps** (BUGS-2026-08-13 C3, C4). Two
+- **`configure()` no longer writes to objects nobody keeps** (review 2026-08-13 C3, C4). Two
   independent ways the walk configured a throwaway and reported success. **C3:** the recursion
   filter was `callable()`, so every child defining `__call__` — every op, every framework module —
   was skipped; the load path broadcast into the same class fine. It usually still worked by
@@ -898,7 +898,7 @@ All notable changes to confluid are documented here. The format follows
   (`Target(Stage, dep=widget)`) are still configured. Pinned by the C3/C4 groups in
   `tests/test_configurator.py`.
 
-- **A reserved key inside a dotted key is refused instead of producing inert data** (BUGS-2026-08-13
+- **A reserved key inside a dotted key is refused instead of producing inert data** (review 2026-08-13
   P16). `model._target_: Box` loaded as `{'model': {'_target_': 'Box'}}` — a plain dict carrying a
   literal `_target_`, which `flow()` did not rescue either, so it reached the consumer as data.
   Conversion is parse-time and `expand_dotted_keys` runs afterwards, so the dotted spelling breaks
@@ -911,7 +911,7 @@ All notable changes to confluid are documented here. The format follows
   through one `_refuse_malformed_keys`, called from the untagged and the tagged mapping paths.
   Zero workspace configs use the spelling. Pinned by the P16 group in `tests/test_plain_format.py`.
 
-- **`include:` is honoured in every position, and conditional includes work** (BUGS-2026-08-13
+- **`include:` is honoured in every position, and conditional includes work** (review 2026-08-13
   P15). The directive was spliced only where the recursive walk reached its dict branch; a
   marker's kwargs and a scope block's contents were walked value-wise, so their own `include:`
   key never got there. Inside a marker it became a constructor kwarg literally named `include`
@@ -935,7 +935,7 @@ All notable changes to confluid are documented here. The format follows
   skipped among its siblings. Cost is one extra document walk per load — measured 0.11 ms against
   a 9–23 ms load of a 27 KB config. Pinned by the P15 group in `tests/test_includes.py`.
 
-- **A duplicate mapping key is refused instead of silently discarding a value** (BUGS-2026-08-13
+- **A duplicate mapping key is refused instead of silently discarding a value** (review 2026-08-13
   P11). Two `include:` directives in one document lost a whole FILE before the loader ever ran —
   PyYAML collapses a duplicate key at parse, keeping the last value with no warning — and the
   survivor spliced at the FIRST occurrence's position, so a key written above it beat a value from
@@ -952,7 +952,7 @@ All notable changes to confluid are documented here. The format follows
   zero duplicate keys. Pinned by the duplicate-key group in `tests/test_loader.py`.
 
 - **`_partial_` beside a non-`_target_` discriminator is refused instead of swallowed**
-  (BUGS-2026-08-13 P10). `{_ref_: proto, _partial_: true}` stripped the modifier and flowed
+  (review 2026-08-13 P10). `{_ref_: proto, _partial_: true}` stripped the modifier and flowed
   EAGERLY — no error, no warning, and the key gone from the marker's kwargs so nothing downstream
   could notice. Same for a `_scope_` / `_notscope_` block. `_partial_` modifies
   CONSTRUCTION and `_target_` is the only key that constructs, so the pairing now raises a located
@@ -964,7 +964,7 @@ All notable changes to confluid are documented here. The format follows
   still raises, so a document cannot be valid or invalid depending on `--scope`) and the
   false-positive guard (an ordinary scope block is untouched).
 
-- **A marker delivered by a YAML merge key (`<<:`) is now converted** (BUGS-2026-08-13 P2).
+- **A marker delivered by a YAML merge key (`<<:`) is now converted** (review 2026-08-13 P2).
   `derived: {<<: *base}` where the anchor carries `_target_` loaded as an inert `dict` holding a
   literal `_target_` key — and `flow()` did not rescue it, so it reached the consumer as data.
   Merge keys are core YAML 1.1 and the standard many-variants-of-one-node idiom, which the
@@ -978,7 +978,7 @@ All notable changes to confluid are documented here. The format follows
   the merge-key group in `tests/test_plain_format.py`, including the two must-not-change cases
   (a quoted `"<<"` stays ordinary data; an ordinary merge key still matches stock `safe_load`).
 
-- **Every id()-keyed store now pins the object whose address keys it** (BUGS-2026-08-13
+- **Every id()-keyed store now pins the object whose address keys it** (review 2026-08-13
   X1/X3/E1/E2/I7 — one root cause, five faces, each measured): `configure()` silently skipped
   whole subtrees when gc recycled a walk temporary's address (450 of 512 objects unconfigured
   under DEFAULT thresholds — the visited store is now id→object, so recording IS pinning); a
@@ -992,7 +992,7 @@ All notable changes to confluid are documented here. The format follows
   pre-fix code.
 
 - **A mapping addressed at a slot means ONE thing, on both paths — decided by what the slot
-  holds** (BUGS-2026-08-13 C1/C1b; architecture record 15). Two silent destructions are gone:
+  holds** (review 2026-08-13 C1/C1b; architecture record 15). Two silent destructions are gone:
   a live `@configurable` child (`self.engine = Engine(-1)`) overridden by `engine: {power: 50}`
   was REPLACED BY THE DICT on the load path (configure() handled it correctly all along) — the
   load path now walks into the child and sets its fields; and a nested `_target_:` recipe at a

@@ -195,7 +195,7 @@ def test_the_second_walker_is_gone() -> None:
         assert not hasattr(configurator, name), name
 
 
-# --- configure() has a scopes= channel (BUGS-2026-08-19 CD18 / SR4's channel) ----
+# --- configure() has a scopes= channel (review 2026-08-19 CD18 / SR4's channel) ----
 
 
 def test_configure_resolves_scope_blocks_under_the_given_activation() -> None:
@@ -238,7 +238,7 @@ def test_configure_from_file_forwards_the_activation(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# BUGS-2026-08-22 CD1 — a named override was folded into the object's marker, which
+# review 2026-08-22 CD1 — a named override was folded into the object's marker, which
 # sits at the FRONT of the document (the objects come first), so every bare key
 # beat it whatever order the user wrote; load() of the same document gave the
 # override. The override now lands as dotted lines at the line it was written —

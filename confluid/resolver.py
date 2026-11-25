@@ -273,7 +273,7 @@ def _parse_path_segments(path: str) -> Optional[List[_PathSegment]]:
 
 #: The walker's MISS sentinel: ``None`` is a legal FOUND value (`cfg: {x: null}`), and
 #: conflating the two refused a dotted ref to a null as an "attribute reference" while
-#: `${a.b}` to the same null stayed a literal (BUGS-2026-08-19 SR6).
+#: `${a.b}` to the same null stayed a literal (review 2026-08-19 SR6).
 PATH_MISS: Any = object()
 
 
@@ -316,7 +316,7 @@ def _walk_path_segments(
                 # An int-keyed table (`class_names: {1: DJI}`) is addressable, exactly
                 # as the `idxref` branch below always allowed — the literal-int branch
                 # returned MISS for every dict, so `${class_names.1}` stayed a literal
-                # and `!ref:class_names[1]` was refused (BUGS-2026-08-19 SR7). The int
+                # and `!ref:class_names[1]` was refused (review 2026-08-19 SR7). The int
                 # key first, the digit-string key as the fallback.
                 if val in current:
                     current = current[val]
@@ -516,7 +516,7 @@ def fold_reference_kwargs(document: Dict[str, Any]) -> None:
     A reference shares ONE object, so kwargs written on it — ``{_ref_: proto, k: 5}``,
     ``!ref:proto`` with a body, or a dotted path that walks through a reference
     (``a.optimizer.lr: 9.0`` where ``a.optimizer`` is ``!ref:shared``) — tune that one
-    object (user ruling 2026-08-19; BUGS-2026-08-19 PA10 / BC8 / SR9 — every spelling
+    object (user ruling 2026-08-19; review 2026-08-19 PA10 / BC8 / SR9 — every spelling
     used to vanish with an empty report). They are folded HERE, before pass 7, into the
     referent's own kwargs — the same thing ``proto.k: 5`` does — so they compete at the
     referent's position like any own kwarg, and there is no second precedence rule:

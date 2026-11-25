@@ -42,7 +42,7 @@ def _dump_slots(cls: type) -> List[Slot]:
     ``self.compiled`` (a bare key may still set it); a DOCUMENT must not carry it — a
     ``keras.Model`` subclass dumped eight internals plus a placeholder that reloaded
     ``call_signature_parameters`` as an EMPTY list, and every Lightning module dumped
-    ``prepare_data_per_node`` (BUGS-2026-08-22 N1). Accepted cost (triage 2026-09-26):
+    ``prepare_data_per_node`` (review 2026-08-22 N1). Accepted cost (triage 2026-09-26):
     a value a config set on such a base attribute is not recorded, so a reload
     restores the base's own value. Shared by the representer and the discovery walk
     so emission and discovery cannot disagree.
@@ -146,7 +146,7 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
         # A Path's document spelling is its string — every constructor that took a
         # path string re-creates the Path on reload. The bare placeholder reloaded as
         # `PosixPath('.')`, silently pointing a sink at the launch directory
-        # (BUGS-2026-08-19 CD9).
+        # (review 2026-08-19 CD9).
         return dumper.represent_str(_os.fspath(data))
     if isinstance(data, _enum.Enum):
         # An Enum member's document spelling is its VALUE — a pydantic-validated
@@ -282,7 +282,7 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         # The ONE naming rule (F3): the registry's key first, the dotted path as the
         # fallback. This branch carried its own inline copy, and for a registered
         # FUNCTION target it fell through to str() — a memory address in the artifact
-        # (`_target_: <function build_widget at 0x…>`, BUGS-2026-08-19 CD12).
+        # (`_target_: <function build_widget at 0x…>`, review 2026-08-19 CD12).
         cls_name = _target_name(data.__confluid_class__, qualified=qualified)
         captured = {TARGET_KEY: cls_name, **getattr(data, "__confluid_kwargs__", {})}
         if getattr(dumper, "_confluid_defaults", False):
@@ -406,7 +406,7 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
             # A slot shadowed by a PROPERTY is derived state — reading it would EXECUTE
             # the getter and dump its derived value (a ctor param `device: "auto"` behind a
             # read-only `device` property dumped `_target_: torch.device`, which neither
-            # reloads nor re-applies — BUGS-2026-08-19 CD2). The captured ctor kwarg below
+            # reloads nor re-applies — review 2026-08-19 CD2). The captured ctor kwarg below
             # is the document's value, exactly as for an eager class's transformed param.
             if p in captured and not _skip_none(p, captured[p]):
                 kwargs[p] = captured[p]
@@ -437,7 +437,7 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
 
     # A **kwargs class: the captured extras ARE constructor arguments — the declared-slot
     # projection above cannot see them, so `Wrap(a=2, foo=3)` dumped as `{a: 2}` and the
-    # reload lost `foo` (BUGS-2026-08-19 CD11). `var_keyword` is not a _DUMP_KINDS member,
+    # reload lost `foo` (review 2026-08-19 CD11). `var_keyword` is not a _DUMP_KINDS member,
     # so the presence test reads the UNfiltered enumeration.
     if any(s.kind == "var_keyword" for s in all_slots):
         for name, val in captured.items():
@@ -569,7 +569,7 @@ def dump(
 
     # A literal `$` in a string is emitted as `$$` — the loader's escape — so a
     # value like `echo $RUN_USER` reloads verbatim instead of interpolating
-    # (CD10, BUGS-2026-08-19). Uniform over keys and values (a representer cannot
+    # (CD10, review 2026-08-19). Uniform over keys and values (a representer cannot
     # tell them apart); the loader collapses `$$` in keys during pass 6.
     _LocalDumper.add_representer(str, _represent_escaped_str)
 

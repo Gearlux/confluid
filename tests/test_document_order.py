@@ -360,7 +360,7 @@ def test_configure_orders_a_rider_against_a_block_like_the_load_path(document: s
 
 
 # --------------------------------------------------------------------------- #
-# A grouping dict is transparent for POSITION too (BUGS-2026-08-19 BC2 / BC9).
+# A grouping dict is transparent for POSITION too (review 2026-08-19 BC2 / BC9).
 #
 # The docs say a plain grouping dict "consumes no nesting level"; its entries
 # are therefore spliced into the parent view AT THE GROUP KEY'S SLOT — never
@@ -410,7 +410,7 @@ def test_a_key_restated_inside_a_group_lands_at_the_GROUPS_later_position() -> N
 
 # --------------------------------------------------------------------------- #
 # A dotted key landing DIRECTLY on a marker's kwarg competes at the DOTTED
-# LINE's position — per key (BUGS-2026-08-19 BC4, user ruling 2026-08-19,
+# LINE's position — per key (review 2026-08-19 BC4, user ruling 2026-08-19,
 # "option B").
 #
 # Pass 6 folds `t.lr: 9.0` into the marker's kwargs, which used to move the

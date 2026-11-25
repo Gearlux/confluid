@@ -221,7 +221,7 @@ def test_lookup_by_class_object_is_identity_not_name() -> None:
 
 
 def test_lookup_by_an_unregistered_subclass_object_is_NOT_the_parent() -> None:
-    """R4 (BUGS-2026-08-19) — the read-side twin of the own-mark rule the write
+    """R4 (review 2026-08-19) — the read-side twin of the own-mark rule the write
     side has had all along: a subclass inherits `__confluid_name__`, so the name
     fallback answered with the PARENT class for a class that was never registered."""
 
