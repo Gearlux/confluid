@@ -60,7 +60,7 @@ code --install-extension confluid-yaml.vsix
 does not see it; name that profile:
 
 ```bash
-code --install-extension confluid-yaml.vsix --profile Taidal
+code --install-extension confluid-yaml.vsix --profile Work
 ```
 
 `code --list-extensions --profile <name>` shows what a profile has. The extension starts by itself when you open a

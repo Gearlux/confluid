@@ -13,8 +13,7 @@ The hierarchical YAML configuration + dependency-injection engine: the `@configu
 builder `flow()`, scoped broadcasting under one precedence rule, post-construction `configure()`,
 the `dump()` round trip, and the introspection surface every AI- and GUI-facing consumer reads
 (`to_pydantic`, `parse_param_docs`, `sanitize_schema`, `input_specs`/`output_specs`, the
-settability predicates). Feature-complete; open work is in `TASKS.md` and the `BUGS-*.md`
-inventories.
+settability predicates). Feature-complete; open work is in `TASKS.md`.
 
 - **Two spellings, one IR.** Tags (`!class:` / `!partial:` (alias `!lazy:`) / `!ref:` /
   `!scope:` / `!notscope:`) are the authoring form; reserved keys (`_target_` / `_partial_` /
