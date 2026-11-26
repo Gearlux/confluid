@@ -144,7 +144,7 @@ def configure(
     #    object is one applied record at that object — the leaf sets it causes on children are
     #    not records, exactly as for a block delivery.
     #
-    #    POSITION (BUGS-2026-08-22 CD1): folding the overlay into the marker put its keys at the
+    #    POSITION (review 2026-08-22 CD1): folding the overlay into the marker put its keys at the
     #    object's position — the FRONT of the document — so a bare key written BEFORE the
     #    override still beat it, while load() of the same document gave the override. The
     #    override is therefore written as dotted lines AT THE LINE IT WAS WRITTEN
@@ -313,7 +313,7 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
             # submodule (``_modules``), a ``__slots__`` slot — read as MISSING through
             # ``__dict__``, so the recursion below never matched it and configure()
             # REPLACED the child with a fresh build instead of configuring it in place
-            # (BUGS-2026-08-19 CD1). Property getters are already excluded above.
+            # (review 2026-08-19 CD1). Property getters are already excluded above.
             current = getattr(obj, attr, _MISSING)
         if isinstance(settled, Target):
             if isinstance(current, Fluid):
@@ -345,7 +345,7 @@ def _apply(obj: Any, node: Target, visited: Dict[int, Any], report: Configuratio
                 # property-shadowed slot): the document's value, not a config change —
                 # re-setting it grew a NEW attribute the class never stores and fired
                 # the eager staleness warning on every configure() for keys the config
-                # never mentioned (BUGS-2026-08-19 CD8). A value the config DID change
+                # never mentioned (review 2026-08-19 CD8). A value the config DID change
                 # differs from the capture and falls through to _set.
                 continue
             if isinstance(value, dict) and dict_at_slot_kind(current) == "opaque":

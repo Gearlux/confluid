@@ -1,4 +1,4 @@
-"""The dict-at-slot dispatch — ONE rule on both paths (BUGS-2026-08-13, C1/C1b).
+"""The dict-at-slot dispatch — ONE rule on both paths (review 2026-08-13, C1/C1b).
 
 A YAML mapping addressed at a slot means, by what the slot currently HOLDS:
 
@@ -199,7 +199,7 @@ def register_all() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# BUGS-2026-08-22 ENG-1 — a mapping at a CONSTRUCTOR param whose DEFAULT is a
+# review 2026-08-22 ENG-1 — a mapping at a CONSTRUCTOR param whose DEFAULT is a
 # marker was handed to the constructor as a plain dict: the deferred optimizer
 # became `{'lr': 0.1}` (warn/off) or construction failed (strict), while the
 # body-slot spelling of the same setting tuned its marker. Both spellings now tune

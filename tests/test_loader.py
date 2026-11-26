@@ -541,7 +541,7 @@ def test_a_dotted_STRING_key_still_expands_beside_non_string_keys(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
-# Duplicate mapping keys are REFUSED (BUGS-2026-08-13 P11)
+# Duplicate mapping keys are REFUSED (review 2026-08-13 P11)
 #
 # The YAML spec restricts a mapping's keys to be unique and lists "mapping keys
 # may not be unique" among its loading failure points, but leaves the processor's
@@ -667,7 +667,7 @@ def test_the_refusal_binds_the_TAG_spelling_too() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Legal-but-odd inputs stop crashing raw (BUGS-2026-08-19 PA13 / PA14).
+# Legal-but-odd inputs stop crashing raw (review 2026-08-19 PA13 / PA14).
 # ---------------------------------------------------------------------------
 
 
@@ -715,7 +715,7 @@ def test_a_plain_import_still_imports(tmp_path: Path) -> None:
 
 
 def test_a_long_yaml_path_string_still_names_a_file(tmp_path: Path) -> None:
-    """PA17 (BUGS-2026-08-19) — a 255+ character `.yaml` str parsed as YAML TEXT and
+    """PA17 (review 2026-08-19) — a 255+ character `.yaml` str parsed as YAML TEXT and
     the path came back as the config; the suffix rule has no length clause."""
     long_dir = tmp_path / ("x" * 200) / ("y" * 60)
     long_dir.mkdir(parents=True)

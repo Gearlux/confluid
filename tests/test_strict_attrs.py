@@ -220,7 +220,7 @@ def _collate_for_strict(batch: Any) -> Any:
 
 
 def test_strict_accepts_a_none_valued_and_an_assigned_callable_class_attr() -> None:
-    """N6 (BUGS-2026-08-19) — the docs' accept-list ("public settable class
+    """N6 (review 2026-08-19) — the docs' accept-list ("public settable class
     attributes") includes `timeout = None` and an assigned function; strict mode
     refused both while accepting `batch_size = 32` only because its value
     happened to be a non-None non-callable."""

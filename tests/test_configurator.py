@@ -100,7 +100,7 @@ def test_configure_dotted_keys() -> None:
             self.dropout = dropout
 
     model = Model()
-    # Helios style flat-dotted keys
+    # Flat-dotted keys
     data = {"Model.layers": 10, "Model.dropout": 0.5}
     configure(model, config=data)
     assert model.layers == 10
@@ -399,7 +399,7 @@ def test_configure_warns_when_config_is_not_a_mapping(monkeypatch: pytest.Monkey
 
 
 # ---------------------------------------------------------------------------
-# configure() must not write to objects nobody keeps (BUGS-2026-08-13 C3, C4)
+# configure() must not write to objects nobody keeps (review 2026-08-13 C3, C4)
 # ---------------------------------------------------------------------------
 
 
@@ -587,7 +587,7 @@ def test_a_Reference_body_slot_still_raises() -> None:
 
 
 def test_a_marker_body_slot_IS_emitted_by_dump() -> None:
-    """The C4 tuning reaches a dumped document (BUGS-2026-08-13 F2).
+    """The C4 tuning reaches a dumped document (review 2026-08-13 F2).
 
     This test asserted the opposite when C4 landed: ``dump()`` modelled the
     constructor alone, so the value configure() merged into a marker lived on the
@@ -620,7 +620,7 @@ def test_a_marker_body_slot_IS_emitted_by_dump() -> None:
         assert _yaml.safe_load(dump(host))["opt"]["lr"] == 0.75, "and the document carries it too"
 
 
-# --- live objects are assigned, never copied (BUGS-2026-08-19 CD3 / CD4) -------
+# --- live objects are assigned, never copied (review 2026-08-19 CD3 / CD4) -------
 
 
 class _Dataset:
@@ -671,7 +671,7 @@ def test_a_live_object_handed_through_config_is_assigned_by_identity() -> None:
     assert t.model is m
 
 
-# --- children beyond __dict__, and B1 on the named-overlay path (BUGS-2026-08-19
+# --- children beyond __dict__, and B1 on the named-overlay path (review 2026-08-19
 # CD1 / CD2-apply / CD6) ---------------------------------------------------------
 
 
@@ -788,7 +788,7 @@ def test_a_named_overlay_typo_is_audible_and_strict_attrs_refuses() -> None:
 
 
 def test_configure_does_not_replant_captured_ctor_params_it_did_not_change() -> None:
-    """CD8 (BUGS-2026-08-19) — the capture fallback is the DOCUMENT's value, not a
+    """CD8 (review 2026-08-19) — the capture fallback is the DOCUMENT's value, not a
     config change: re-setting it grew a `width` attribute the class never stores and
     fired the eager staleness warning for keys the config never mentioned."""
     from types import SimpleNamespace
@@ -835,7 +835,7 @@ def test_an_empty_string_value_stays_the_empty_string() -> None:
 
 
 def test_the_marker_spelling_of_a_named_override_keeps_the_objects_children() -> None:
-    """CD5 (BUGS-2026-08-19) — `trainer: !class:Trainer {lr: 0.1}` REPLACED the
+    """CD5 (review 2026-08-19) — `trainer: !class:Trainer {lr: 0.1}` REPLACED the
     object's document, so the model child vanished and a bare `layers:` beside it
     went unused; the mapping spelling tuned. The two spellings agree now."""
 

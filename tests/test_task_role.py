@@ -479,7 +479,7 @@ def test_marks_is_the_one_public_read_surface_for_the_stamps() -> None:
 
 
 def test_a_subclass_restating_role_gets_a_rederived_category() -> None:
-    """R5 (BUGS-2026-08-19) — restating half the taxonomy re-derives `category`
+    """R5 (review 2026-08-19) — restating half the taxonomy re-derives `category`
     from the effective task+role; the stale parent category indexed a METRIC
     under every LOSS picker."""
     from confluid import marks
@@ -502,7 +502,7 @@ def test_a_subclass_restating_role_gets_a_rederived_category() -> None:
 
 
 def test_register_class_derives_category_like_the_decorator_does() -> None:
-    """R6 (BUGS-2026-08-19) — register_class is the ONE stamping authority, so the
+    """R6 (review 2026-08-19) — register_class is the ONE stamping authority, so the
     derivation lives there; it used to exist only inside configurable()."""
     from confluid import marks
 

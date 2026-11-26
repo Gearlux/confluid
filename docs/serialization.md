@@ -153,6 +153,35 @@ The rules, each pinned:
   artifact wants. A class whose path imports to nothing (a `<locals>` factory
   class, `__main__`) keeps the registry key. Trade-offs in
   [Architecture Decisions](architecture.md) §4.
+- **A deferred slot shows what it was given — unless you ask for its defaults.**
+  A built object dumps every slot, but a `_partial_: true` marker (built later
+  by the run, with arguments only the run has) dumps only the keys it was given.
+  `dump(obj, defaults=True)` lists, after those, each signature parameter that
+  has a default a document can spell — `None`, a bool, a number, a string, or a
+  list or mapping of those (a tuple as a list):
+
+  ```python
+  @configurable(name="DemoOptimizer")
+  class DemoOptimizer:
+      def __init__(self, params: Any, lr: float = 0.001, momentum: float = 0.9) -> None: ...
+
+  dump({"optimizer": PartialClass(DemoOptimizer, lr=0.01)}, defaults=True)
+  ```
+
+  ```yaml
+  # output
+  optimizer:
+    _target_: DemoOptimizer
+    _partial_: true
+    lr: 0.01
+    momentum: 0.9
+  ```
+
+  A parameter without a default (`params`, the run's to pass), `*args` /
+  `**kwargs`, and a default no document can write (a sentinel object, a
+  function) are left out; the marker itself is not changed. The same applies to
+  an object built from a non-`@configurable` target, which otherwise dumps the
+  arguments it was built with.
 - **Interpolation is burned in.** A `${DATA_ROOT}`-style placeholder is
   substituted at load time, and `dump()` emits the substituted value — so
   reloading the dump in a different environment reproduces *this* run rather
@@ -163,6 +192,43 @@ An eager class may opt out of kwargs capture (`capture=False`) when a
 constructor argument is too heavy to hold; that deliberately relaxes the
 round-trip for that class — the trade-off is documented in
 [Eager Classes](eager-classes.md).
+
+## A graph as a Python script
+
+`dump_python(obj)` writes the same graph as Python: each class imported by its module, each object a constructor call
+with keyword arguments. The arguments are exactly what `dump()` writes, so the graph the script builds dumps to the same
+document as the original.
+
+```python
+from confluid import dump_python
+
+text = dump_python(mixture, name="mixture", header="Made by my exporter.")
+```
+
+```python
+# Made by my exporter.
+
+from shapes import Mixture, Tone
+
+tone_1 = Tone(frequency_hz=2400000000.0, level_db=-30.0)
+
+mixture = Mixture(
+    tones=[tone_1, Tone(frequency_hz=2410000000.0, level_db=0.0)],
+    duration_s=0.004,
+    reference=tone_1,
+)
+```
+
+- An object held in two places is written once, as a variable (`tone_1`), so the rebuilt graph shares it.
+- A call that fits in 100 characters stays on one line; a longer one takes one argument per line.
+- A registered [dump spelling](#registering-a-document-spelling) is used: a `Target` it returns becomes a call, a
+  plain value is written as that value. A numpy scalar is written as the Python number.
+- A value no script can build raises `PythonDumpError` (a `ValueError`) naming where it sits — `mixture.reference: a
+  builtins.object is not a configurable object …`: an object that is not `@configurable` and has no dump spelling, a
+  class defined inside a function or in the script being run (`__main__`), a set, a deferred marker held as an
+  attribute, an object that contains itself.
+
+Runnable: [`examples/python_script/`](../examples/python_script/README.md).
 
 ## Runnable example
 

@@ -31,6 +31,7 @@ cannot be switched off by the caller, so as a default it would be always-on
 """
 
 import re
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loggair import get_logger
@@ -52,7 +53,7 @@ def parse_scope_arg(arg: str) -> Tuple[str, Optional[str]]:
     if not re.fullmatch(r"[\w_.]*\s*(=.*)?", stripped):  # empty → the caller refuses it, located (PA19)
         # The activation grammar is `dim` or `dim=value` — nothing else parses, and a
         # shape that does not is refused rather than read as a boolean dimension
-        # named by the whole string (PA20, BUGS-2026-08-22).
+        # named by the whole string (PA20, review 2026-08-22).
         raise ScopeError(f"scope activation {stripped!r} is not `dim` or `dim=value`")
     if "=" in stripped:
         key, value = stripped.split("=", 1)
@@ -184,6 +185,7 @@ def resolve_scopes(config: Any, active: Dict[str, Optional[str]]) -> Any:
 #: Reset per walk; single-threaded within one load like the rest of pass 4.
 _BOOLEAN_DIMS: Set[str] = set()  # dimensions a BOOLEAN block declares — a bare activation selects it (SR7)
 _DECLARATION_LOCS: Dict[str, List[str]] = {}
+_DECLARING_FILES: List[str] = []  # the files the walked blocks are written in, first seen first — for a refusal's text
 
 
 def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
@@ -201,9 +203,14 @@ def _walk_dimensions(config: Any) -> Tuple[Dict[str, Set[str]], Set[str]]:
     positive: Dict[str, Set[str]] = {}
     negated: Set[str] = set()
     _BOOLEAN_DIMS.clear()
+    _DECLARING_FILES.clear()
 
     def walk(node: Any) -> None:
         if isinstance(node, ScopeBlock):
+            loc = getattr(node, "_yaml_loc", None)
+            # PyYAML names a text stream `<unicode string>`: no file to name.
+            if loc is not None and loc[0] and not loc[0].startswith("<") and loc[0] not in _DECLARING_FILES:
+                _DECLARING_FILES.append(loc[0])
             for key, value in node.dims.items():
                 if value is None:
                     _BOOLEAN_DIMS.add(key)  # a bare activation DOES select this block (SR7)
@@ -267,6 +274,78 @@ def discover_dimensions(config: Any) -> Set[str]:
     return set(_walk_dimensions(config)[0])
 
 
+def discover_boolean_scopes(config: Any) -> Set[str]:
+    """Return every *boolean* scope name in ``config`` — what a bare ``--scope NAME`` may activate.
+
+    ``{"onnx", "quickstart"}`` for a document carrying ``!scope:onnx`` and a ``!scope:quickstart`` nested anywhere
+    (inside another scope block too). A negated block's name counts (``!notscope:debug`` is still selected by naming
+    ``debug``); keyed dimensions do not — :func:`discover_dimension_values` answers those. A CLI that RUNS a document
+    on a user's behalf lists these as the scopes it can pass on.
+
+    Read off :func:`_walk_dimensions`' boolean side channel, never a second traversal.
+    """
+    _walk_dimensions(config)
+    return set(_BOOLEAN_DIMS)
+
+
+@dataclass
+class DeclaredScopes:
+    """What a settling document's blocks declare, gathered over EVERY settle pass (architecture §1 amendment).
+
+    A block's own ``include:`` is opened only once the block is active, so a name the included file declares exists
+    only in a later pass; the passes resolve the blocks they walk away, so each is read before it resolves.
+    """
+
+    #: Every name a bare activation may switch on: boolean scopes (a negated one too) and keyed dimensions — a bare
+    #: activation of a keyed one keeps its own refusal (:func:`_check_active_values_are_declared`).
+    names: Set[str] = field(default_factory=set)
+    #: What a refusal lists: the boolean names and every positive ``key=value``.
+    listed: Set[str] = field(default_factory=set)
+    #: The files the blocks are written in, first seen first.
+    files: List[str] = field(default_factory=list)
+
+    def add(self, config: Any) -> None:
+        """Gather the blocks of ``config`` (read off :func:`_walk_dimensions`, never a second traversal)."""
+        positive, _negated = _walk_dimensions(config)
+        self.names |= _BOOLEAN_DIMS | set(positive)
+        self.listed |= set(_BOOLEAN_DIMS) | {f"{key}={value}" for key, values in positive.items() for value in values}
+        self.files += [path for path in _DECLARING_FILES if path not in self.files]
+
+
+def refuse_undeclared_bare_scopes(
+    requested: List[str], declared: DeclaredScopes, aliases: Optional[Dict[str, Any]], source: Optional[str]
+) -> None:
+    """Refuse a bare activation that switches nothing on (architecture §1 amendment 2026-10-30).
+
+    ``--scope vla`` meant ``val`` and ran the document as if no scope were given. A bare name is accepted when the
+    document's ``scope_aliases:`` names it, or when it or one of its ancestors (``prod`` for ``prod.gpu``, which
+    activates it) is declared by a block of the settled document. A KEYED activation is never judged here: an
+    undeclared dimension stays inert (§1), and a declared one's value is judged by
+    :func:`_check_active_values_are_declared`.
+
+    Args:
+        requested: The activations as the caller gave them, before alias and hierarchy expansion.
+        declared: What every settle pass's blocks declared.
+        aliases: The document's ``scope_aliases:``.
+        source: The file the document was read from; ``None`` names the files its blocks are written in.
+
+    Raises:
+        ScopeError: naming the activation, the document's file and the scopes it declares.
+    """
+    for raw in requested:
+        name, value = parse_scope_arg(raw)
+        if value is not None or name in (aliases or {}):
+            continue
+        if any(each in declared.names for each in _expand_hierarchy(name)):
+            continue
+        where = source or ", ".join(declared.files) or "the document"
+        if declared.listed:
+            raise ScopeError(
+                f"No scope block declares {name!r} (the scopes of {where}: {', '.join(sorted(declared.listed))})"
+            )
+        raise ScopeError(f"No scope block declares {name!r} ({where} declares no scope)")
+
+
 def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[str]]) -> None:
     """Raise when an active keyed scope asks for a variant the document does not have.
 
@@ -301,7 +380,7 @@ def _check_active_values_are_declared(config: Any, active: Dict[str, Optional[st
             # A BARE activation of a KEYED dimension (`--scope framework` against
             # `framework=keras|lightning` blocks) can never select a variant — and it
             # SUPPRESSED the document's `default_scopes` value on top, so the run
-            # silently used neither (BUGS-2026-08-19 SR13). Name the values.
+            # silently used neither (review 2026-08-19 SR13). Name the values.
             known = ", ".join(sorted(positive[key]))
             locs = ", ".join(_DECLARATION_LOCS.get(key, []))
             declared_at = f" (declared at {locs})" if locs else ""
@@ -410,7 +489,7 @@ def _splice_key(out: Dict[str, Any], key: str, value: Any) -> None:
     a mapping over a marker TUNES it (a copy; anchors keep the original), a nested
     block deep-merges, anything else replaces, and a restated key is RE-ANCHORED at
     the later position. Plain assignment (``out[key] = value``) did none of that
-    (BUGS-2026-08-19 SR1/SR2/PA2/PA3): an active block DELETED the marker it
+    (review 2026-08-19 SR1/SR2/PA2/PA3): an active block DELETED the marker it
     re-stated with a mapping, a nested block lost its other keys, and a key the
     block re-stated kept the EARLIER writer's position — so whether a later bare
     key won flipped with the activation. The plain-key arm of ``_resolve_dict`` goes

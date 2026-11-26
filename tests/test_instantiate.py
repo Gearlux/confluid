@@ -231,7 +231,7 @@ def test_construction_does_not_rerun_the_precedence_rule() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ENG-7 / ENG-16 (BUGS-2026-08-19) — construction-time behaviour of markers on
+# ENG-7 / ENG-16 (review 2026-08-19) — construction-time behaviour of markers on
 # unregistered targets and of ctor-DEFAULT markers.
 # ---------------------------------------------------------------------------
 

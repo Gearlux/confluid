@@ -761,7 +761,7 @@ def test_same_target_memo_is_per_pass_and_agrees_with_the_uncached_answer() -> N
 
 
 def test_an_instance_name_block_matches_the_ctor_default_name_on_load() -> None:
-    """CD19 (BUGS-2026-08-19) — `m: {layers: 5}` matched on configure() (live attr)
+    """CD19 (review 2026-08-19) — `m: {layers: 5}` matched on configure() (live attr)
     but not on load() when `name="m"` is only the ctor DEFAULT: the load path now
     reads the same default the built instance will carry."""
 
@@ -817,7 +817,7 @@ def test_a_sweep_restating_an_addressed_kwargs_key_moves_it_to_the_attribute_cha
 
 
 def test_a_class_block_delivers_a_marker_to_a_kwargs_class(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BC15 (BUGS-2026-08-19) — the block spelling dropped the marker with a
+    """BC15 (review 2026-08-19) — the block spelling dropped the marker with a
     false "has no attribute" warning and a failed record, on a class whose
     accept-list is accept-everything; the own-kwarg spelling always delivered."""
     from confluid import collect_report
@@ -910,7 +910,7 @@ _BC13 = "c: !class:_HostBC13\n  optimizer: !class:_OptBC13 {name: o, lr: 1.0}\nl
 
 
 def test_a_bare_mapping_at_a_marker_slot_is_refused_as_ambiguous() -> None:
-    """BC13 (BUGS-2026-08-19; user ruling 2026-08-20) — `optimizer: {x: 1}` at the
+    """BC13 (review 2026-08-19; user ruling 2026-08-20) — `optimizer: {x: 1}` at the
     root names a slot holding a marker and no node: it is ambiguous (set an
     attribute? replace the slot?) and is refused naming both working spellings.
     It used to be dropped as unused AND still move the marker's own `lr: 1.0`

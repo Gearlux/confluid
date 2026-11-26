@@ -239,7 +239,7 @@ def _convert_annotation_unwrapped(anno: Any) -> Any:
             return Any
         if anno is collections.abc.Callable:
             # The bare PEP 585 spelling has no ``get_origin`` and so missed the
-            # ``Callable[...]`` coercion below (BUGS-2026-08-19 N11).
+            # ``Callable[...]`` coercion below (review 2026-08-19 N11).
             return Any
         if getattr(anno, "_is_protocol", False) and not getattr(anno, "_is_runtime_protocol", False):
             # A Protocol that is not ``@runtime_checkable`` cannot be ``isinstance``-checked,
@@ -333,7 +333,7 @@ def _spread_range_marks_into_container(inner: Any, metadata: Tuple[Any, ...]) ->
     if get_origin(inner) in (Union, types.UnionType):
         # ``Optional[Tuple[float, float]]`` is the zero-arg spelling of the same container
         # (class-design rule 2); the mark used to stay on the Union and pydantic raised a
-        # raw ``TypeError: Unable to apply constraint`` on a LEGAL value (BUGS-2026-08-19 N9).
+        # raw ``TypeError: Unable to apply constraint`` on a LEGAL value (review 2026-08-19 N9).
         # Relocate into each container arm; the other arms (``None``) are left alone.
         arms = tuple(_spread_range_marks_into_container(a, metadata)[0] for a in get_args(inner))
         if arms != get_args(inner):
@@ -361,7 +361,7 @@ def _field_name(name: str) -> str:
 
     The parameter's own name, unless pydantic cannot take it: a leading underscore
     makes a private attribute (``NameError: Fields must not use names with leading
-    underscores`` — on EVERY constructor call of the class, BUGS-2026-08-19 N2), and a
+    underscores`` — on EVERY constructor call of the class, review 2026-08-19 N2), and a
     ``BaseModel`` attribute name (``model_config``, ``schema``, ``copy`` …) shadows the
     base (``TypeError`` from ``create_model`` — swallowed, so validation went silently
     OFF for the class, N3). Those two shapes get a mangled field name; the real name
@@ -549,7 +549,7 @@ def to_pydantic(cls: Callable[..., Any]) -> Type[BaseModel]:
     """Return a pydantic ``BaseModel`` subclass mirroring ``cls.__init__`` — ONE model per class.
 
     The docstring contract ("each call with the same ``cls`` returns the same
-    model") holds across THREADS too (X5, BUGS-2026-08-13): a bare ``lru_cache``
+    model") holds across THREADS too (X5, review 2026-08-13): a bare ``lru_cache``
     serialized nothing, so concurrent FIRST calls each built and returned their
     own model class and a later ``isinstance`` against ``to_pydantic(cls)``
     failed. Double-checked publish: a lock-free ``.get()`` fast path, then the

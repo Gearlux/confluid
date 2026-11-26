@@ -296,7 +296,7 @@ def test_d3_a_fluid_never_rides_the_kwargs_catchall_into_a_deferred_slot() -> No
 
 # ---------------------------------------------------------------------------
 # The block-vs-bare contest agrees across paths, in EVERY ordering
-# (BUGS-2026-08-13 C2)
+# (review 2026-08-13 C2)
 #
 # One deferred slot, two competing specs — a bare sweep key and a class block
 # addressing the slot — written in the three possible orders. The two EDGE
@@ -358,7 +358,7 @@ def test_the_block_vs_bare_contest_agrees_across_BOTH_paths(layout: str) -> None
 
 # ---------------------------------------------------------------------------
 # The C2 verdict binds the ADDRESSED node, never its subtree
-# (BUGS-2026-08-19 BC5 — a regression from the C2 fix itself)
+# (review 2026-08-19 BC5 — a regression from the C2 fix itself)
 #
 # `Trainer: {optimizer: {lr: 5.0}}` addresses the optimizer SLOT. The verdict
 # ("the block out-positioned the bare `lr`") must protect the optimizer's own
@@ -409,7 +409,7 @@ def test_a_block_verdict_protects_the_slot_but_not_its_descendants(
 
 
 # ---------------------------------------------------------------------------
-# BUGS-2026-08-22 BC1 — a class-name block reaching a GRANDCHILD, written after a
+# review 2026-08-22 BC1 — a class-name block reaching a GRANDCHILD, written after a
 # bare key, lost to it: the block's value landed in the grandchild's own kwargs at
 # the grandchild's EARLIER position, and the per-slot verdict (pop the beaten bare
 # keys from the addressed slot's view) cut the bare key off from the middle node

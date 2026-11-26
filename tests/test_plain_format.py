@@ -265,7 +265,7 @@ def test_a_one_item_list_body_is_the_scalar_case() -> None:
 
 @pytest.mark.parametrize("key", ["_scope_", "_notscope_"])
 def test_a_key_beside_the_scope_marker_in_a_list_block_is_refused(key: str) -> None:
-    """BUGS-2026-08-13 P4(a) — the list body replaced the marker mapping's body,
+    """review 2026-08-13 P4(a) — the list body replaced the marker mapping's body,
     so ``note:`` vanished with no error. The first item is the CONDITION only."""
     doc = f"ops:\n  - always\n  - - {key}: {{extra: }}\n      note: beside\n    - extra_op\n"
     with pytest.raises(ConfigurationError, match=r"'note' at <unicode string>:3:7"):
@@ -273,7 +273,7 @@ def test_a_key_beside_the_scope_marker_in_a_list_block_is_refused(key: str) -> N
 
 
 def test_an_anchored_scope_marker_reused_in_two_lists_keeps_each_body() -> None:
-    """BUGS-2026-08-13 P4(b) — PyYAML hands both aliases the SAME marker object,
+    """review 2026-08-13 P4(b) — PyYAML hands both aliases the SAME marker object,
     and the block constructor overwrote its body per list: ``train_ops`` lost
     ``augment`` and received ``normalize``. Each list builds its own block."""
     doc = (
@@ -303,7 +303,7 @@ def test_asking_for_an_undeclared_scope_value_still_raises() -> None:
     [
         ("x: {_target_: Box, _ref_: y}", "Conflicting reserved keys"),
         ("x: {_partial_: true, lr: 1}", "_partial_ needs _target_ in the same mapping"),
-        # BUGS-2026-08-13 P10 — the modifier is read by the _target_ branch alone,
+        # review 2026-08-13 P10 — the modifier is read by the _target_ branch alone,
         # so every other discriminator used to strip and discard it silently.
         ("p: {_target_: Box}\nx: {_ref_: p, _partial_: true}", "_partial_ only modifies _target_"),
         ("x:\n  _scope_: {mode: fast}\n  _partial_: true\n  a: 1", "_partial_ only modifies _target_"),
@@ -323,7 +323,7 @@ def test_malformed_markers_raise(doc: str, match: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# `_partial_` beside a non-`_target_` discriminator (BUGS-2026-08-13 P10)
+# `_partial_` beside a non-`_target_` discriminator (review 2026-08-13 P10)
 #
 # `_partial_` is a MODIFIER, read by the `_target_` branch alone. Every other
 # discriminator returns from `_reserved_to_marker` before that read, so the key
@@ -438,7 +438,7 @@ def test_a_key_named_target_without_underscores_is_ordinary() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# A reserved key delivered by a MERGE KEY (BUGS-2026-08-13 P2)
+# A reserved key delivered by a MERGE KEY (review 2026-08-13 P2)
 #
 # ``<<:`` is core YAML 1.1 and the standard "many variants of one node" idiom,
 # so the plain-format promise ("ordinary YAML that yaml.safe_load reads") has to
@@ -633,7 +633,7 @@ def test_neither_spelling_warns(doc: str, tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# A reserved key inside a DOTTED key is refused (BUGS-2026-08-13 P16)
+# A reserved key inside a DOTTED key is refused (review 2026-08-13 P16)
 #
 # Conversion is parse-time; `expand_dotted_keys` runs post-parse. So `_target_`
 # arriving by the dotted route is too late to make its node a marker, and the
@@ -701,7 +701,7 @@ def test_a_plain_reserved_key_is_untouched() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The tag spelling refuses what it silently degraded (BUGS-2026-08-19 PA11 /
+# The tag spelling refuses what it silently degraded (review 2026-08-19 PA11 /
 # PA28) — the malformed-marker rule, applied to the six shapes that dropped
 # data with no diagnostic.
 # ---------------------------------------------------------------------------
@@ -747,7 +747,7 @@ def test_the_well_formed_tag_shapes_still_load() -> None:
 
 
 def test_a_merge_from_a_TAG_spelled_anchor_is_refused() -> None:
-    """PA21 (BUGS-2026-08-19) — `<<: *b` copies keys, never a tag, so the merged
+    """PA21 (review 2026-08-19) — `<<: *b` copies keys, never a tag, so the merged
     node silently loaded as an inert dict while the reserved-key anchor merged
     into a marker. Refused naming the working spelling; a plain anchored dict
     still merges."""

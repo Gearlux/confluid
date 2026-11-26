@@ -209,7 +209,7 @@ def test_to_pydantic_non_callable_raises_introspection_error() -> None:
 # Every error raised while processing a document names its file:line:col.
 #
 # These pin the rule against the defect that produced it: a renamed class left
-# `UnknownClassError: Cannot resolve class: waivefront.sources.HDF5WindwoSource` with no
+# `UnknownClassError: Cannot resolve class: <package>.sources.HDF5WindwoSource` with no
 # file and no line, while `ConstructionError` a few frames later had been printing
 # `.../evaluate_yolo26.yaml:20:5` the whole time. Asserting the LINE (not just "some
 # location") is the point — a message naming only the file still sends the reader grepping.
@@ -264,7 +264,7 @@ def test_ambiguous_class_names_the_yaml_file_and_line(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The located-error sweep (BUGS-2026-08-19 SR14 / SR15 / ENG-4 / ENG-10 / PA25):
+# The located-error sweep (review 2026-08-19 SR14 / SR15 / ENG-4 / ENG-10 / PA25):
 # every raise below had the marker or the file in hand and dropped it.
 # ---------------------------------------------------------------------------
 

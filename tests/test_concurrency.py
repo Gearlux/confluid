@@ -1,4 +1,4 @@
-"""Concurrency pins — X4/X5 (BUGS-2026-08-13).
+"""Concurrency pins — X4/X5 (review 2026-08-13).
 
 X4: a concurrent pass's entry ``clear_pass_caches()`` may land between a cache's
 ``in`` check and its indexed read; every per-pass cache read must be ONE atomic

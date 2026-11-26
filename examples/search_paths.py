@@ -2,11 +2,14 @@
 
 Builds a sandboxed ``XDG_CONFIG_HOME`` in a temp directory and demonstrates
 the resolution tiers for a relative config path — CWD -> ./config/ -> the XDG
-base dirs — plus the app-name namespacing (``set_app_name``) and the public
-resolver ``resolve_config_path``. The real ``~/.config`` is never touched.
+base dirs — plus the app-name namespacing (``set_app_name``), the public
+resolver ``resolve_config_path``, and a ``pkg://`` include of a config an
+installed wheel ships. The real ``~/.config`` is never touched.
 """
 
+import importlib
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -50,6 +53,29 @@ def main() -> None:
         # ...and the input path verbatim on a total miss.
         assert resolve_config_path("missing.yaml") == Path("missing.yaml")
         print(f"resolve_config_path('common.yaml') -> {resolve_config_path('common.yaml')}")
+
+        # A config another distribution ships, named by that distribution. Stand in for
+        # `pip install shared-configs`: its metadata in a site folder, its config where a
+        # wheel installs data files (`<prefix>/share/<distribution>/<path>`), listed in RECORD.
+        site = root / "venv" / "lib" / "site-packages"
+        info = site / "shared_configs-1.2.dist-info"
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text("Metadata-Version: 2.1\nName: shared-configs\nVersion: 1.2\n")
+        (info / "RECORD").write_text("../../share/shared-configs/config/base.yaml,,\n")
+        shipped = root / "venv" / "share" / "shared-configs" / "config" / "base.yaml"
+        shipped.parent.mkdir(parents=True)
+        shipped.write_text("lr: 0.1\nwho: shared-configs\n")
+        sys.path.insert(0, str(site))
+        importlib.invalidate_caches()
+
+        (cwd / "packaged.yaml").write_text("include: pkg://shared-configs/config/base.yaml\nepochs: 5\n")
+        data = load("packaged.yaml", until="raw")
+        assert data == {"lr": 0.1, "who": "shared-configs", "epochs": 5}, data
+        assert resolve_config_path("pkg://shared-configs/config/base.yaml") == shipped.resolve()
+        print(
+            f"pkg://shared-configs/config/base.yaml -> {resolve_config_path('pkg://shared-configs/config/base.yaml')}"
+        )
+        sys.path.remove(str(site))
 
 
 if __name__ == "__main__":

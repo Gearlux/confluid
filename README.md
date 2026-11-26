@@ -16,7 +16,7 @@ The installed version (read from the package metadata):
 
 ```python
 import confluid
-print(confluid.__version__)  # e.g. 0.4.1
+print(confluid.__version__)  # e.g. 0.5.0
 ```
 
 ## Quick Start
@@ -127,6 +127,16 @@ state_yaml = dump(trainer)        # the live object graph as a reloadable docume
 new_trainer = load(state_yaml)    # the identical hierarchy — e.g. in another process
 ```
 
+## Environment variables
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CONFLUID_VALIDATE_INIT` | `strict` | `strict` / `warn` / `off`: validation of direct `Cls(...)` calls |
+| `CONFLUID_VALIDATE_YAML` | `strict` | `strict` / `warn` / `off`: validation when a YAML config materializes its objects |
+| `CONFLUID_VALIDATE_TOOL` | `strict` | `strict` / `warn` / `off`: validation at a tool entry |
+
+A config reads any other variable as `${env:NAME}` (for example `${env:DATA_ROOT}`). `env.complete` lists them all.
+
 ## Key Features
 - **Modern layout, Hydra-like output:** write configs with custom YAML tags — `model: !class:MLP(hidden=32)`, `optimizer: !partial:Adam`, `!ref:model` (the [tag form](https://github.com/Gearlux/confluid/blob/main/docs/targets.md)) — and convert them with [`hydraide emit`](https://github.com/Gearlux/confluid/blob/main/docs/hydraide.md) to a Hydra-like plain-YAML format — `model: {_target_: MLP, hidden: 32}` (the [reserved-key form](https://github.com/Gearlux/confluid/blob/main/docs/plain-format.md)) — that `yaml.safe_load`, `yq`, editor schemas and linters read: includes spliced, scopes applied, broadcasting settled, one file. Both forms load, and may be mixed.
 - **Works with plain Python classes:** Required constructor params and real work in `__init__` are fully supported for load/flow/dump — the lazy/zero-arg class-design convention is optional.
@@ -161,7 +171,7 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | [Closing the Config Surface](https://github.com/Gearlux/confluid/blob/main/docs/strict-attrs.md) | `strict_attrs=True` — refuse an addressed key the class declares nowhere (the permissive default warns and applies it); what stays untouched: bare keys, `**kwargs` targets, declared slots; `register(..., strict_attrs=True)` for classes you don't own | `strict_attrs.py` |
 | [Configuration Reports](https://github.com/Gearlux/confluid/blob/main/docs/report.md) | `ConfigurationReport` — applied/failed/unused override keys; `configure()`'s return value, the `collect_report()` context manager for `load()`/`load()`/`flow()` | `report.py` |
 | [Interpolation & Config Files](https://github.com/Gearlux/confluid/blob/main/docs/interpolation.md) | `${ENV}` + `${config.key}` interpolation, capturing the `include:` tree, files held in memory (`load(..., texts=…)`) | `interpolation_includes.py` |
-| [Config-File Search Paths](https://github.com/Gearlux/confluid/blob/main/docs/search-paths.md) | XDG-last resolution of relative paths and `include:` entries (CWD → `./config/` → XDG base dirs), `set_app_name` namespacing, `resolve_config_path` | `search_paths.py` |
+| [Config-File Search Paths](https://github.com/Gearlux/confluid/blob/main/docs/search-paths.md) | XDG-last resolution of relative paths and `include:` entries (CWD → `./config/` → XDG base dirs), `set_app_name` namespacing, `resolve_config_path`, `pkg://` configs shipped by an installed distribution | `search_paths.py` |
 | [Class Design](https://github.com/Gearlux/confluid/blob/main/docs/class-design.md) | Lazy init & zero-arg construction — the four-rule convention for reconfigurable classes | `ml_pipeline.py`, `basic_registration.py` |
 | [Eager Classes](https://github.com/Gearlux/confluid/blob/main/docs/eager-classes.md) | Plain constructors — required params, work in `__init__`, full dump round-trip via captured kwargs, the `capture=False` opt-out, the `eager=True` staleness warning | `eager_classes.py` |
 | [I/O Contract](https://github.com/Gearlux/confluid/blob/main/docs/io-contract.md) | `@output` properties, `Mandatory[T]` inputs, `output_specs` / `input_specs` | `io_contract.py` |
@@ -172,8 +182,9 @@ Each topic has its own guide, and every guide except the architecture notes has 
 | [Error Handling](https://github.com/Gearlux/confluid/blob/main/docs/errors.md) | The typed exception hierarchy (each also inherits the builtin it replaces) | `error_handling.py` |
 | [Scopes](https://github.com/Gearlux/confluid/blob/main/docs/scopes.md) | `_scope_` / `_notscope_` conditional overlays, their activation, `default_scopes:` (what a bare load picks), and `discover_dimension_values` — what a document offers, and the error when you ask for something else | `scopes.py` |
 | [Introspection](https://github.com/Gearlux/confluid/blob/main/docs/introspection.md) | `cast()` for type checkers, `load(until="settled")` markers, `solidify=False`, dump/reconstruct | `introspection.py` |
-| [Serialization](https://github.com/Gearlux/confluid/blob/main/docs/serialization.md) | `dump()` and the round trip: per-param reconstruction (live attr, captured kwargs), what a dump omits and why, registry-handle class names, burned-in interpolation | `reproducible_experiment.py` |
+| [Serialization](https://github.com/Gearlux/confluid/blob/main/docs/serialization.md) | `dump()` and the round trip: per-param reconstruction (live attr, captured kwargs), what a dump omits and why, registry-handle class names, a deferred slot's defaults (`defaults=True`), burned-in interpolation; `dump_python()`, the graph as a Python script | `reproducible_experiment.py`, `python_script/` |
 | [Threads & Async](https://github.com/Gearlux/confluid/blob/main/docs/concurrency.md) | ContextVar propagation, `active_context`, worker-thread recipes | `concurrency.py` |
+| [Editor Navigation](https://github.com/Gearlux/confluid/blob/main/docs/editor.md) | Go to the class a marker builds, the file an `include:` reads (or a `pkg://` value or `config:` path names) and the module an `import:` loads: `confluid.locate` (dotted classes read from source, nothing imported; registry names on request), `python -m confluid.locate --serve`, and the VS Code extension in `editors/vscode/` | `locate.py` |
 | [Architecture Decisions](https://github.com/Gearlux/confluid/blob/main/docs/architecture.md) | The *why* behind non-obvious behaviour — decision records, backfilled as the questions come up | — |
 | [Performance](https://github.com/Gearlux/confluid/blob/main/docs/performance.md) | The engine-timing baseline: per-phase benchmark over a ~2,500-marker tree, `CONFLUID_BENCH_PROFILE=1` profiling mode | `performance.py` |
 
@@ -217,4 +228,5 @@ Python, no ML dependencies — run them as-is):
 - **Type Coercion:** Integrate `parse_value` to ensure CLI strings (e.g. "100") are cast to correct types (int 100).
 
 ## License
-MIT
+
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) (the `LICENSE` file): free for personal, academic and other noncommercial use. Commercial use needs a separate licence from the author.

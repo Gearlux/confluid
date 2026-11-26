@@ -106,7 +106,7 @@ def test_parse_docstring_single_line_unchanged() -> None:
     assert _parse_docstring("Args:\n  x: d") == {"x": "d"}
 
 
-# --------------------------------------------------------------------------- the N12 rows (BUGS-2026-08-19)
+# --------------------------------------------------------------------------- the N12 rows (review 2026-08-19)
 
 
 def test_a_google_kwargs_entry_terminates_the_previous_one() -> None:

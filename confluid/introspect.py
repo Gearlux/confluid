@@ -208,7 +208,7 @@ def scan_init_body(init_func: Any) -> Tuple[BodySlot, ...]:
 
     def _assigned(target: Any, value: Any) -> Iterator[Tuple[str, Any]]:
         # ``self.start, self.stop = 0, 10`` declares the same two slots as two plain
-        # assignments (BUGS-2026-08-13 I1 — the tuple form was invisible, so a bare key
+        # assignments (review 2026-08-13 I1 — the tuple form was invisible, so a bare key
         # silently did not land). Each element is paired with its own right-hand
         # element when the right side is a same-length literal tuple/list, so the
         # literal default reaches ``Slot.default``; otherwise no value is captured.
@@ -442,7 +442,7 @@ class Slot(NamedTuple):
 #: module imports only the stdlib and must keep doing so.
 #: The VALUE is ``(target, slots)``: an id-keyed entry (an UNHASHABLE callable)
 #: must pin the object whose address keys it — a freed callable's recycled id
-#: served the previous callable's slots (BUGS-2026-08-13 I7; the memo mandate).
+#: served the previous callable's slots (review 2026-08-13 I7; the memo mandate).
 _slots_cache: Dict[Any, Tuple[Any, Tuple["Slot", ...]]] = {}
 
 
@@ -476,7 +476,7 @@ def slots(target: Any) -> Tuple["Slot", ...]:
     # A class with no ``__init__`` anywhere resolves to ``object.__init__`` —
     # ``(*args, **kwargs)``, which every reader took as "accepts EVERY key": each
     # bare key in the document landed on it, and an addressed key reached
-    # ``object.__init__`` and crashed (BUGS-2026-08-13 I3). It declares no
+    # ``object.__init__`` and crashed (review 2026-08-13 I3). It declares no
     # constructor parameters, exactly like ``def __init__(self): pass``.
     if init is not None and init is not object.__init__:
         try:
@@ -688,7 +688,7 @@ def _evaluate_forwardrefs(anno: Any, scope: Dict[str, Any]) -> Any:
     ``Partial["Optim"]`` evals to a subscript carrying a ``ForwardRef`` — never a
     plain string — so the I4 re-resolve does not fire, and degrading straight to
     ``Any`` cost the slot its deferral while the SAME spelling on a ctor param
-    resolved (N5, BUGS-2026-08-19: ``get_type_hints`` evaluates it there). This
+    resolved (N5, review 2026-08-19: ``get_type_hints`` evaluates it there). This
     is the same evaluation, through the public API: a probe function whose one
     annotation is ``anno``, resolved with extras kept (``Partial``/``Mandatory``
     are ``Annotated``). ``None`` when a name is genuinely absent — the caller

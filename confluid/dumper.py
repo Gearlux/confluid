@@ -9,7 +9,7 @@ from loggair import get_logger
 from confluid.exceptions import ConfigurableDefinitionError
 from confluid.introspect import NO_DEFAULT, Slot, slots
 from confluid.keys import PARTIAL_KEY, REF_KEY, TARGET_KEY
-from confluid.registry import get_registry
+from confluid.registry import get_registry, resolve_class
 
 #: The slot kinds the dumper walks — the signature, minus the variadics. A ``*args``
 #: name can never be passed by keyword and a ``**kwargs`` name is never a declared
@@ -42,7 +42,7 @@ def _dump_slots(cls: type) -> List[Slot]:
     ``self.compiled`` (a bare key may still set it); a DOCUMENT must not carry it — a
     ``keras.Model`` subclass dumped eight internals plus a placeholder that reloaded
     ``call_signature_parameters`` as an EMPTY list, and every Lightning module dumped
-    ``prepare_data_per_node`` (BUGS-2026-08-22 N1). Accepted cost (triage 2026-09-26):
+    ``prepare_data_per_node`` (review 2026-08-22 N1). Accepted cost (triage 2026-09-26):
     a value a config set on such a base attribute is not recorded, so a reload
     restores the base's own value. Shared by the representer and the discovery walk
     so emission and discovery cannot disagree.
@@ -146,7 +146,7 @@ def _represent_opaque(dumper: yaml.SafeDumper, data: Any) -> Any:
         # A Path's document spelling is its string — every constructor that took a
         # path string re-creates the Path on reload. The bare placeholder reloaded as
         # `PosixPath('.')`, silently pointing a sink at the launch directory
-        # (BUGS-2026-08-19 CD9).
+        # (review 2026-08-19 CD9).
         return dumper.represent_str(_os.fspath(data))
     if isinstance(data, _enum.Enum):
         # An Enum member's document spelling is its VALUE — a pydantic-validated
@@ -258,6 +258,8 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         if data.partial:
             body[PARTIAL_KEY] = True
         body.update(data.kwargs)
+        if getattr(dumper, "_confluid_defaults", False):
+            body.update(_unstated_defaults(data.target, body))
         return dumper.represent_mapping("tag:yaml.org,2002:map", body)
 
     # A registered dump spelling is THE document spelling of its type — it wins
@@ -280,11 +282,12 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
         # The ONE naming rule (F3): the registry's key first, the dotted path as the
         # fallback. This branch carried its own inline copy, and for a registered
         # FUNCTION target it fell through to str() — a memory address in the artifact
-        # (`_target_: <function build_widget at 0x…>`, BUGS-2026-08-19 CD12).
+        # (`_target_: <function build_widget at 0x…>`, review 2026-08-19 CD12).
         cls_name = _target_name(data.__confluid_class__, qualified=qualified)
-        return dumper.represent_mapping(
-            "tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **getattr(data, "__confluid_kwargs__", {})}
-        )
+        captured = {TARGET_KEY: cls_name, **getattr(data, "__confluid_kwargs__", {})}
+        if getattr(dumper, "_confluid_defaults", False):
+            captured.update(_unstated_defaults(data.__confluid_class__, captured))
+        return dumper.represent_mapping("tag:yaml.org,2002:map", captured)
 
     # Live @configurable instance → dump with () to indicate instant construction on reload.
     # The registry answers with the PUBLIC key — the bare name while it is unambiguous, the
@@ -299,6 +302,50 @@ def _represent_object(dumper: yaml.SafeDumper, data: Any) -> Any:
     )
     kwargs = {p: _class_value_spelling(v, qualified=qualified) for p, v in dumpable_kwargs(data).items()}
     return dumper.represent_mapping("tag:yaml.org,2002:map", {TARGET_KEY: cls_name, **kwargs})
+
+
+def _spellable_default(value: Any) -> bool:
+    """Can a document write ``value`` as itself? ``None``, a bool, a number, a string, or a list / tuple / str-keyed
+    mapping of those. Anything else — a sentinel object, a function, an enum — would dump as a placeholder or a
+    reference, which is not the default the signature holds, so :func:`_unstated_defaults` leaves it out."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_spellable_default(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _spellable_default(v) for k, v in value.items())
+    return False
+
+
+def _as_document_value(value: Any) -> Any:
+    """A spellable default as the document writes it: a tuple becomes a list (YAML has no tuple)."""
+    if isinstance(value, (list, tuple)):
+        return [_as_document_value(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _as_document_value(v) for k, v in value.items()}
+    return value
+
+
+def _unstated_defaults(target: Any, stated: Dict[str, Any]) -> Dict[str, Any]:
+    """``dump(defaults=True)``: the signature parameters of ``target`` that ``stated`` does not write, each with its
+    default, in signature order.
+
+    Only ``keyword`` slots (``*args``, ``**kwargs`` and body slots are not a marker's arguments), only those with a
+    default (one without — an optimizer's ``params`` — is the run's to pass), and only a default the document can
+    spell (:func:`_spellable_default`). A target that resolves to nothing (``registry.resolve_class``, non-strict)
+    adds nothing: the marker is dumped as given.
+    """
+    resolved = resolve_class(target) if isinstance(target, str) else target
+    if resolved is None:
+        return {}
+    return {
+        s.name: _as_document_value(s.default)
+        for s in slots(resolved)
+        if s.kind == "keyword"
+        and s.default is not NO_DEFAULT
+        and s.name not in stated
+        and _spellable_default(s.default)
+    }
 
 
 def _class_value_spelling(val: Any, qualified: bool = False) -> Any:
@@ -359,7 +406,7 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
             # A slot shadowed by a PROPERTY is derived state — reading it would EXECUTE
             # the getter and dump its derived value (a ctor param `device: "auto"` behind a
             # read-only `device` property dumped `_target_: torch.device`, which neither
-            # reloads nor re-applies — BUGS-2026-08-19 CD2). The captured ctor kwarg below
+            # reloads nor re-applies — review 2026-08-19 CD2). The captured ctor kwarg below
             # is the document's value, exactly as for an eager class's transformed param.
             if p in captured and not _skip_none(p, captured[p]):
                 kwargs[p] = captured[p]
@@ -390,7 +437,7 @@ def dumpable_kwargs(data: Any) -> Dict[str, Any]:
 
     # A **kwargs class: the captured extras ARE constructor arguments — the declared-slot
     # projection above cannot see them, so `Wrap(a=2, foo=3)` dumped as `{a: 2}` and the
-    # reload lost `foo` (BUGS-2026-08-19 CD11). `var_keyword` is not a _DUMP_KINDS member,
+    # reload lost `foo` (review 2026-08-19 CD11). `var_keyword` is not a _DUMP_KINDS member,
     # so the presence test reads the UNfiltered enumeration.
     if any(s.kind == "var_keyword" for s in all_slots):
         for name, val in captured.items():
@@ -465,7 +512,9 @@ def _represent_escaped_str(dumper: Any, data: str) -> Any:
     return dumper.represent_str(data.replace("$", "$$") if "$" in data else data)
 
 
-def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None, qualified: bool = False) -> str:
+def dump(
+    obj: Any, *, anchor_names: Optional[Dict[int, str]] = None, qualified: bool = False, defaults: bool = False
+) -> str:
     """Serialize a (potentially nested) object tree to YAML.
 
     ``anchor_names`` maps ``id(value)`` → the anchor NAME to emit when that value
@@ -480,10 +529,17 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None, qualified: 
     itself. A class whose path imports to nothing (a ``<locals>`` factory class,
     ``__main__``) keeps the registry key, today's best spelling. The default
     stays the registry key: it is shorter, and it is what a human config writes.
+
+    ``defaults=True`` emits every unbuilt marker — a deferred ``_partial_: true`` slot, or any marker dumped before
+    construction — and every object built from a non-``@configurable`` target with each signature parameter it was
+    not given that has a default a document can spell, after the ones it was given (a built ``@configurable``
+    object already lists every slot). A parameter without a default is left out, and the marker is not changed. Off
+    by default: a dump records what was configured; a reader who wants every setting a run uses asks for it.
     """
 
     class _LocalDumper(CompactDumper):
         _confluid_qualified = qualified
+        _confluid_defaults = defaults
 
         def generate_anchor(self, node: Any) -> Any:  # noqa: ANN401 - PyYAML's own signature
             # PyYAML's Serializer names anchors from a counter. The representer kept
@@ -513,7 +569,7 @@ def dump(obj: Any, *, anchor_names: Optional[Dict[int, str]] = None, qualified: 
 
     # A literal `$` in a string is emitted as `$$` — the loader's escape — so a
     # value like `echo $RUN_USER` reloads verbatim instead of interpolating
-    # (CD10, BUGS-2026-08-19). Uniform over keys and values (a representer cannot
+    # (CD10, review 2026-08-19). Uniform over keys and values (a representer cannot
     # tell them apart); the loader collapses `$$` in keys during pass 6.
     _LocalDumper.add_representer(str, _represent_escaped_str)
 

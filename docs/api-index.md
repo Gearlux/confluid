@@ -68,6 +68,9 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|
 | `to_pydantic` | Constructor signature → validating pydantic model |
 | `parse_param_docs` | Google-style `Args:` docstring → `{param: description}` |
+| `source_param_docs` | The same help read from the class's SOURCE, its module never imported ([Introspection](introspection.md#what-a-config-says-about-its-own-settings)) |
+| `source_params` / `SourceParam` | A class's constructor parameters (name, annotation, literal default, yes/no) read from its SOURCE ([Introspection](introspection.md#what-a-config-says-about-its-own-settings)) |
+| `document_notes` / `DocumentNotes` / `KeyNote` / `ScopeNote` | A config file's top-level keys and scope blocks with their comments, and the class parameters each key feeds through `!ref:` ([Introspection](introspection.md#what-a-config-says-about-its-own-settings)) |
 | `confluid_class_of` | The origin class stored on a generated model |
 | `sanitize_schema` | JSON Schema → the subset strict LLM function-calling APIs accept |
 | `validate_model` | Re-validate a built model under a policy mode |
@@ -95,6 +98,7 @@ plugs into the passes, and from the eight names most configs need:
 | Name | One line |
 |---|---|
 | `dump` | A live object graph → reloadable YAML |
+| `dump_python` | A live object graph → the Python script that builds it again |
 | `register_dump_spelling` | The document spelling of a third-party value type — a marker or plain value, or decline to the placeholder |
 
 ## Scopes — [Scopes](scopes.md)
@@ -103,6 +107,7 @@ plugs into the passes, and from the eight names most configs need:
 |---|---|
 | `discover_dimensions` | The scope dimensions a raw document declares |
 | `discover_dimension_values` | The values each dimension offers |
+| `discover_boolean_scopes` | The bare scope names a raw document declares — what `--scope NAME` may activate |
 | `default_scopes` | The `{dimension: value}` a raw document's `default_scopes:` declares — what a bare load picks |
 | `ScopeError` | Raised for an undeclared activation value or a circular alias |
 
@@ -114,6 +119,7 @@ plugs into the passes, and from the eight names most configs need:
 | `get_hierarchy_from_instance` | The same view over a LIVE object graph |
 | `get_configurable_attrs` | The configurable attribute names of one class |
 | `shortest_unique_paths` | Shortest unambiguous dotted spellings for a hierarchy's rows |
+| `type_label` | A parameter's type as a help table shows it (`text \| json`, `int \| None`, `list[str]`) |
 
 ## Config-file paths & environment — [Config-File Search Paths](search-paths.md)
 
@@ -152,6 +158,7 @@ plugs into the passes, and from the eight names most configs need:
 | `ValidationModeError` | An invalid validation-mode value |
 | `ScopeError` | See Scopes above |
 | `IntrospectionError` | A signature/docstring scan failure (also a `TypeError`) |
+| `PythonDumpError` | `dump_python` met a value no script can build (also a `ValueError`) |
 | `WorkspaceEnvError` | A workspace-env loading failure (also a `RuntimeError`) |
 | `format_yaml_loc` | The `file:line` suffix helper error messages use |
 

@@ -13,8 +13,7 @@ The hierarchical YAML configuration + dependency-injection engine: the `@configu
 builder `flow()`, scoped broadcasting under one precedence rule, post-construction `configure()`,
 the `dump()` round trip, and the introspection surface every AI- and GUI-facing consumer reads
 (`to_pydantic`, `parse_param_docs`, `sanitize_schema`, `input_specs`/`output_specs`, the
-settability predicates). Feature-complete; open work is in `TASKS.md` and the `BUGS-*.md`
-inventories.
+settability predicates). Feature-complete; open work is in `TASKS.md`.
 
 - **Two spellings, one IR.** Tags (`!class:` / `!partial:` (alias `!lazy:`) / `!ref:` /
   `!scope:` / `!notscope:`) are the authoring form; reserved keys (`_target_` / `_partial_` /
@@ -24,7 +23,7 @@ inventories.
   `confluid[cli]` extra, console script `hydraide = confluid.cli:main`): `emit CONFIG [--scope
   DIM=VALUE]… [-o FILE]`, `check CONFIG`, `completion bash|zsh|fish`. `confluid-bake` is
   `confluid/bake.py`.
-- **Released on PyPI, latest v0.4.1**, public repo `Gearlux/confluid`. Update this line in the
+- **Released on PyPI, latest v0.5.0**, public repo `Gearlux/confluid`. Update this line in the
   same change as a version bump. New work opens an `[Unreleased]` CHANGELOG section; a release
   proposes its version with rationale and waits for the user's confirmation before tagging.
 - **Performance baseline:** `examples/performance.py` + `docs/performance.md`
@@ -42,15 +41,10 @@ inventories.
 | `introspect` | stdlib-only signature/AST scanning: `slots`, `init_callable`, `scan_init_body`, `marked_param_names` |
 | `configurator` | `configure` / `configure_from_file` (objects → document → pass 7 → apply) |
 | `dumper` | `dump()`, `dumpable_kwargs` (the one object→document reconstruction), `to_markers` |
+| `python_dump` | `dump_python()` — the graph as constructor calls, built from `dumpable_kwargs` |
 
 ## Standing user rulings — do not re-litigate
 
-- **A configuration utility, not a compiler (user ruling 2026-08-20).** ONE precedence rule —
-  document order, last spec wins — and few spellings. An ambiguous spelling gets a located
-  refusal or a documented limit, never an invented meaning. Unless the user asks in that change,
-  never add a second precedence rule or exemption, per-key/provenance bookkeeping to make two
-  spellings agree, a new spelling for a corner case, or a walker that reaches through a marker,
-  an object or a string (full ruling: root `AGENTS.md`; the deferred BC10/BC11 in `TASKS.md`).
 - **SR16 — the `KEY(VAL)` scope call form is removed (user ruling 2026-08-20).** An activation is
   `dim` or `dim=value` in every spelling (tag suffix, `_scope_` value, `--scope`,
   `default_scopes:`); anything else is a located `ScopeError`. `scopes.parse_scope_arg` is the one
@@ -452,6 +446,14 @@ inventories.
   a fourth grammar or a second policy. A miss is `PATH_MISS`, never `None` (a found `null` is a
   hit); `_lookup_path` keeps the `None` contract for pass-6 aliasing and `$key`. An int segment
   steps into a dict (int key first, then the digit string).
+- **The instance walk WRITES that grammar:** every container step `schema._walk_instance` reports is a
+  dotted segment — `items.0`, `kwargs.source` — in all four branches (list, slot dict, post-construction
+  dict, top-level dict), never a bracket. A bracket would not round-trip: `[0]` is equivalent to `.0`,
+  but `[source]` is an index REFERENCE to a variable named `source`, which the walk never means. Change
+  the branches together and keep the property pin. §34.
+  (`tests/test_schema_from_instance.py::test_every_path_the_walk_produces_resolves_under_the_path_grammar`,
+  `::test_a_list_item_is_a_numbered_SEGMENT_of_the_path`,
+  `::test_a_dict_key_is_a_SEGMENT_of_the_path_wherever_the_dict_is_held`)
 - **Attribute references are removed (user ruling 1b, 2026-08-17).** The FIRST segment decides: a
   document key walks structure only; anything else is an import path (`!ref:posixpath.join`). A
   walk that leaves structure is refused by `resolver.refuse_attribute_reference` (in
@@ -469,8 +471,31 @@ inventories.
   in the normal pass; a scope block's include is deferred until the block activates and is never
   opened otherwise; it is anchored to its block's file (`loader._anchor_deferred_include` — probes,
   never opens). (the P15 and PA1 groups in `tests/test_includes.py`) §17.
+- **A `pkg://<distribution>/<path>` config is the file that distribution ships (user request 2026-10-26):**
+  `resolve_config_path` hands it to `packages.resolve_package_reference` before any tier — an editable install's
+  checkout (`direct_url.json`), else the `RECORD` entry ending in `share/<normalized name>/<path>`. Only the named
+  distribution's files are searched (never a prefix-sharing neighbour); a miss is a `ConfigFileNotFoundError` naming the
+  distribution and version, `..` a `ConfigurationError`; an include's miss is prefixed with the including file. Never
+  add a second lookup order or a search across distributions. §33. (`tests/test_package_includes.py`)
 - `import:` is honoured in every mapping position; a failed import warns for any `Exception`
   (`KeyboardInterrupt`/`SystemExit` propagate). (the PA26 pair in `tests/test_loader.py`)
+- **Go to definition (`confluid.locate`) imports nothing on its `locate` path (user request 2026-10-31):** a dotted
+  target is found by walking `sys.meta_path`'s finders plus every `<sys.path entry>/<top>` folder and reading files
+  with `ast`, never `find_spec` of a submodule (that imports its parents); an include goes through
+  `resolve_config_path` (the one search resolver) with the including file's folder and its project as the working
+  folder. Only `resolve_target` imports — the entry points once per process, then `resolve_class(strict=True)`.
+  A string value that STARTS with `pkg://` is a config link under any key, and a `config:` string ending
+  `.yaml`/`.yml` is the config another run reads: the same resolver with no `base_dir`, since that run starts from the
+  project folder and never sees the file naming it; both are reported as kind `include`, so the extension is
+  unchanged. `--serve` writes its answers on a duplicate of fd 1 and points fd 1 at stderr. The VS Code client is
+  `editors/vscode/` (`npm test`, which CI's Node Tests stage runs — confluid declares `node` in
+  `[tool.aisland.sys-dependencies]` for it; `npm run test:vscode` inside the installed VS Code, a run of your own). §37.
+  (`tests/test_locate.py::test_a_dotted_class_is_found_in_its_source_without_importing_it`,
+  `::test_the_served_process_keeps_stdout_for_the_protocol`,
+  `::test_a_package_reference_is_a_link_whatever_key_holds_it`,
+  `::test_a_package_reference_that_is_not_the_whole_value_is_no_link`,
+  `::test_a_config_path_is_found_where_the_run_it_starts_reads_it`,
+  `::test_a_config_value_that_names_no_file_is_no_mention`)
 
 ## Scopes (§1, §17, `docs/scopes.md`)
 
@@ -492,7 +517,11 @@ inventories.
   `ScopeBlock.contents`, `Fluid.kwargs`). Add a kind to all three.
 - An active keyed scope must name a declared value; a bare activation of a keyed-only dimension is
   refused; a dimension that also has a boolean block accepts the bare name. The three exemptions
-  of §1 stay. `discover_dimension_values` reports positive values only (a negation-only dimension →
+  of §1 stay. A bare activation no block, alias or ancestor declares is refused after the settle
+  loop (`scopes.refuse_undeclared_bare_scopes`, each pass gathered by `DeclaredScopes` BEFORE it
+  resolves — never judged on the raw document, which misses a scope block's include); an
+  undeclared KEYED dimension stays inert (§1 amendment 2026-10-30, user ruling).
+  (`tests/test_undeclared_bare_scope.py`). `discover_dimension_values` reports positive values only (a negation-only dimension →
   empty set — do not "fix" it) and takes the RAW document. (`tests/test_scopes.py`)
 - **`default_scopes:` is static and keyed-only.** `scopes.default_scopes(raw)` is the one reader;
   `normalize_active` fills it after the caller's list; it passes the declared-value check (no
@@ -508,6 +537,11 @@ inventories.
   happens once, at the document→objects boundary (`engine.collapse_escapes` in `instantiate`, and
   in `configure()` after the settle); `dump()` escapes `$` → `$$`. Never collapse in the resolver;
   never add a dump parameter.
+- **A placeholder's fallback is author text (user request 2026-10-14):** read by `resolver._resolve_fallback` only on
+  a miss — its nested `${...}` and bare `$VAR` resolve, a lone placeholder keeps its type, a nested miss leaves the
+  OUTER placeholder as written, a `${ref:}` in it is refused. A placeholder is found by `resolver._scan_placeholder`
+  (a `${` inside an arg nests; any other brace is text), the one scanner for whole, embedded and hoisted
+  placeholders — never a regex again. §31. (`tests/test_placeholder_fallbacks.py`)
 - **Interpolation is pass 6, after expansion, single-pass, and burns in.** Do not reorder the
   passes and do not add a second interpolation pass. A late-bound slot uses `!ref:`.
   (`tests/test_resolver.py`, `tests/test_load_stages.py`,
@@ -557,6 +591,13 @@ inventories.
   a generator? (`::test_a_validated_sequence_is_re_iterable_while_an_iterable_is_not`)
 - `parse_param_docs` reads Google and NumPy docstrings, MRO-wide.
   (`tests/test_parse_param_docs.py`)
+- **A config's notes are a reading of its text, never of its value:** `notes.document_notes` composes one file
+  (PyYAML nodes, nothing constructed) — a key's comment is the comment lines directly above it (a blank line or a
+  section rule, `notes._RULE`, ends the run), else the one ending its line, carried on through the comment-only lines
+  below whose `#` stands in its column (never the next key's comment above it); `source_param_docs` / `source_params` read
+  a class's `Args:` and constructor parameters from its source by `find_spec` + `ast`, never importing the module,
+  following a package's re-export by file. Never let a comment reach the document, and never import a class
+  to answer its help there. §35. (`tests/test_notes.py`)
 - `sanitize_schema` (`llm_schema.py`) is pure, stdlib-only, recurses subschema positions only, and
   rewrites the advertised schema, never server-side validation. (`tests/test_llm_schema.py`)
 - Warn-mode validation names the marker's location (`validation._construction_where`).
@@ -570,6 +611,11 @@ inventories.
   first, dotted path fallback, a string verbatim). `dump(qualified=True)` uses the importable path
   except for `<locals>`/`__main__` classes; `hydraide` never passes it. (the F3 and qualified groups
   in `tests/test_dumper.py`)
+- **`dump(defaults=True)` (user choice 2026-10-30)** adds, to a marker or a non-`@configurable` built object, each
+  `keyword` slot it does not state that has a default a document can spell (`dumper._spellable_default`; a tuple as a
+  list), after the stated ones, read through `slots()` of the target `registry.resolve_class` finds (non-strict;
+  nothing resolved, nothing added). Emission-time only — the marker is never mutated — and off by default; `hydraide`
+  never passes it. §36. (`tests/test_dump_defaults.py`)
 - Opaque values dump by value where faithful (`_represent_opaque`: PathLike, Enum, numpy scalar);
   anything else is a placeholder plus one warning per type. `register_dump_spelling` is the
   type's document spelling: built-ins win over it, it wins over the generic reconstruction; it is
@@ -581,6 +627,10 @@ inventories.
   set during `load()` reaches the dump (via `__confluid_extra__`). A body slot rebinding the object's
   own method is not dumped. A `**kwargs` class's captured extras are emitted. A `None` is omitted
   only when the default is also `None`. (the body-slot and N1 groups in `tests/test_dumper.py`)
+- **`dump_python()` reads the graph through `dumpable_kwargs` and the dump spellings, never a walk of its own.** The
+  script's graph must `dump()` to the original's document; a value a script cannot build is a `PythonDumpError` naming
+  its path from the variable name — never a placeholder. A class is imported by `module.qualname` only when that path
+  imports back to the class itself. (`tests/test_python_dump.py`; `examples/python_script/`)
 
 ## Registry, discovery, marks (§4, §10, `docs/discovery.md`)
 
@@ -686,6 +736,8 @@ inventories.
 - An example that demonstrates a rule asserts it.
 - Guides and examples show TAG input and, where the machine form matters, PLAIN output labelled as
   output (user ruling 2026-08-15).
+- The sdist carries `CHANGELOG.md` and every `docs/` page the README links: `MANIFEST.in` names them, since nothing
+  else pulls them in. (`tests/test_packaging.py`)
 - Release: bump `version` in `pyproject.toml`, push tag `v<version>`; `release.yml` builds,
   verifies (twine strict, a clean-venv wheel smoke test from a neutral cwd) and publishes by
   Trusted Publishing. Order: loggair → confluid → liquifai.

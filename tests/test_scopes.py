@@ -35,7 +35,7 @@ def setup_registry() -> None:
 
 def test_a_malformed_activation_string_is_refused_in_every_spelling(tmp_path: Path) -> None:
     """An activation is `dim` or `dim=value` — anything else is a LOCATED ScopeError in the
-    tag, the CLI/`scopes=` list and `default_scopes:` alike (PA20, BUGS-2026-08-22: the tag
+    tag, the CLI/`scopes=` list and `default_scopes:` alike (PA20, review 2026-08-22: the tag
     spelling was refused without its line, a `default_scopes` entry without its file)."""
     bad_tag = tmp_path / "c.yaml"
     bad_tag.write_text("x: 1\nblk: !scope:task(cls)\n  a: 1\n")
@@ -53,7 +53,7 @@ def test_a_malformed_activation_string_is_refused_in_every_spelling(tmp_path: Pa
 
 
 def test_a_boolean_block_makes_the_bare_activation_legal_beside_keyed_blocks() -> None:
-    """SR7 (BUGS-2026-08-22) — the keyed-only refusal (SR13) must not fire when a BOOLEAN
+    """SR7 (review 2026-08-22) — the keyed-only refusal (SR13) must not fire when a BOOLEAN
     block declares the same dimension: `--scope debug` selects it."""
     doc = "b: !scope:debug\n  log: DEBUG\nk: !scope:debug=verbose\n  log: TRACE\n"
     assert load(doc, scopes=["debug"], until="document") == {"log": "DEBUG"}
@@ -145,7 +145,7 @@ if_debug: !scope:debug
 
 
 # ---------------------------------------------------------------------------
-# The splice follows the include-paste rule (BUGS-2026-08-19 SR1 / SR2 / PA2 /
+# The splice follows the include-paste rule (review 2026-08-19 SR1 / SR2 / PA2 /
 # PA3): a block's keys land at the WRAPPER's slot through the same per-key merge
 # `deep_merge` applies to an included file — a mapping over a marker TUNES it, a
 # nested block deep-merges, a restated key is RE-ANCHORED at the later position
@@ -1167,7 +1167,7 @@ def test_default_scopes_reads_the_raw_documents_defaults() -> None:
 
 
 def test_an_include_line_does_not_break_an_anchor_aliased_inside_a_scope_block(tmp_path: Path) -> None:
-    """BUGS-2026-08-19 PA5 — any `include:` runs the document through `deep_merge`,
+    """review 2026-08-19 PA5 — any `include:` runs the document through `deep_merge`,
     which deep-copied every ScopeBlock and with it the anchored marker inside;
     one instance became two. Same document, with and without the include."""
     _register_splice_fixtures()
@@ -1182,7 +1182,7 @@ def test_an_include_line_does_not_break_an_anchor_aliased_inside_a_scope_block(t
 
 
 def test_an_empty_scope_suffix_is_refused_like_the_reserved_key_spelling() -> None:
-    """PA19 (BUGS-2026-08-19) — `!scope:` with no dimension was silently inert (a
+    """PA19 (review 2026-08-19) — `!scope:` with no dimension was silently inert (a
     positive block on '' can never fire, so the body vanished) while
     `_scope_: {'': }` refused. Two spellings, one behaviour."""
     from confluid import ConfigurationError
@@ -1206,7 +1206,7 @@ def test_a_non_string_scope_value_is_refused_like_a_boolean() -> None:
 
 
 def test_a_bare_activation_of_a_KEYED_dimension_is_refused_naming_the_values() -> None:
-    """SR13 (BUGS-2026-08-19) — `scopes=["framework"]` against keyed blocks selected
+    """SR13 (review 2026-08-19) — `scopes=["framework"]` against keyed blocks selected
     nothing AND suppressed the document's default_scopes value, silently: the run
     used neither. The refusal names the declared values and their lines."""
     doc = (
@@ -1219,3 +1219,23 @@ def test_a_bare_activation_of_a_KEYED_dimension_is_refused_naming_the_values() -
     assert load(doc, until="document") == {"runnable": "L"}, "no activation still takes the default (con)"
     boolean = load("d: !scope:debug\n  verbose: true\n", scopes=["debug"], until="document")
     assert boolean == {"verbose": True}, "a bare BOOLEAN activation is untouched (con)"
+
+
+def test_discover_boolean_scopes_names_every_bare_scope_the_document_declares() -> None:
+    """A CLI that runs a document lists what ``--scope NAME`` may ask of it: the bare scopes, nested ones too, never a
+    keyed dimension (``discover_dimension_values`` answers those) and never a negated one's name twice."""
+    from confluid import discover_boolean_scopes
+
+    raw = load(
+        "m: !class:collections.Counter\n"
+        "  v: 1\n"
+        "onnx: !scope:onnx\n  m: {v: 2}\n"
+        "original: !scope:original\n  m: {v: 3}\n"
+        "  inner: !scope:quickstart\n    m: {v: 4}\n"
+        "keyed: !scope:task=classification\n  m: {v: 5}\n"
+        "not_debug: !notscope:debug\n  m: {v: 6}\n",
+        until="raw",
+    )
+    assert discover_boolean_scopes(raw) == {"onnx", "original", "quickstart", "debug"}
+    assert discover_dimension_values(raw) == {"task": {"classification"}}, "keyed discovery is unchanged"
+    assert discover_boolean_scopes(load("m: 1\n", until="raw")) == set()

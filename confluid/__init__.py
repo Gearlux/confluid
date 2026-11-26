@@ -32,6 +32,7 @@ from confluid.exceptions import (
     ConfluidError,
     ConstructionError,
     IntrospectionError,
+    PythonDumpError,
     ReferenceResolutionError,
     ScopeError,
     UnknownClassError,
@@ -44,6 +45,15 @@ from confluid.loader import get_app_name, load, resolve_config_path, set_app_nam
 from confluid.mandatory import Mandatory, mandatory_param_names
 from confluid.merger import deep_merge, expand_dotted_keys
 from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
+from confluid.notes import (
+    DocumentNotes,
+    KeyNote,
+    ScopeNote,
+    SourceParam,
+    document_notes,
+    source_param_docs,
+    source_params,
+)
 
 # ``Partial`` is re-exported as an IMPORT, never ``Partial = partial.Partial``: a
 # plain assignment loses the alias's genericity for a type checker, so every
@@ -51,6 +61,7 @@ from confluid.no_broadcast import NoBroadcast, no_broadcast_param_names
 # alias, expected 0, given 1` (measured in three real slots). An import alias
 # stays the same generic alias.
 from confluid.partial import Partial, partial_param_names
+from confluid.python_dump import dump_python
 from confluid.registry import Marks, get_registry, load_configurables, marks
 from confluid.report import ConfigurationReport
 from confluid.resolver import parse_value
@@ -63,8 +74,9 @@ from confluid.schema import (
     output_specs,
     parse_param_docs,
     shortest_unique_paths,
+    type_label,
 )
-from confluid.scopes import default_scopes, discover_dimension_values, discover_dimensions
+from confluid.scopes import default_scopes, discover_boolean_scopes, discover_dimension_values, discover_dimensions
 from confluid.state import active_context, collect_report
 from confluid.validation import ValidationMode, ValidationPolicy, get_policy, reset_policy, set_policy, validate_model
 
@@ -90,6 +102,7 @@ __all__ = [
     "ConstructionError",
     "WorkspaceEnvError",
     "IntrospectionError",
+    "PythonDumpError",
     "configurable",
     "register",
     "output",
@@ -106,6 +119,7 @@ __all__ = [
     "expand_dotted_keys",
     "parse_value",
     "dump",
+    "dump_python",
     "register_dump_spelling",
     "configure",
     "configure_from_file",
@@ -132,11 +146,20 @@ __all__ = [
     "OutputSpec",
     "parse_param_docs",
     "shortest_unique_paths",
+    "type_label",
+    "document_notes",
+    "source_param_docs",
+    "source_params",
+    "SourceParam",
+    "DocumentNotes",
+    "KeyNote",
+    "ScopeNote",
     "get_configurable_attrs",
     "to_pydantic",
     "confluid_class_of",
     "default_scopes",
     "discover_dimension_values",
+    "discover_boolean_scopes",
     "discover_dimensions",
     "accepts_key",
     "accepts_broadcast",

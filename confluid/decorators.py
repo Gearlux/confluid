@@ -221,7 +221,7 @@ def configurable(
     if cls is not None and not callable(cls) and not isinstance(cls, (staticmethod, classmethod)):
         # `@configurable("Named")` — the positional slot is the TARGET; a string here
         # used to travel all the way to register_class and crash with a raw
-        # AttributeError on an unrelated line (BUGS-2026-08-19 R1).
+        # AttributeError on an unrelated line (review 2026-08-19 R1).
         raise ConfigurableDefinitionError(
             f"configurable() takes the class or callable to register as its positional argument, got "
             f"{cls!r} — a name is a keyword: @configurable(name={cls!r})"

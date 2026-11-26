@@ -68,7 +68,8 @@ started raising (pinned by `tests/test_scopes.py::test_notscope_keyed_active_whe
   that does not select the block.
 - **The walker is single-sourced.** `_walk_dimensions` returns
   `(positive values per key, keys carrying a negation)`; `discover_dimensions`,
-  `discover_dimension_values` and the check all read it. This module has a history of walkers
+  `discover_dimension_values` and the check all read it, and `discover_boolean_scopes` reads the
+  bare names the same walk collects on its side channel. This module has a history of walkers
   drifting apart — `discover_dimensions` once traversed `Fluid.kwargs` while `_resolve_value`
   did not, so a CLI advertised a dimension flag whose block resolution then ignored it.
 - **Discovery reads the RAW document.** By the time `load()` returns, the blocks have been
@@ -118,6 +119,29 @@ seg: !scope:task=segmentation
 prevents a real regression, and narrowing any of them turns a working pattern into an error at
 load time for every consumer at once. A new discovery view belongs on `_walk_dimensions`, never
 in a fourth traversal.
+
+**Amendment 2026-10-30 — a bare name that switches nothing on is refused (user ruling).** The
+"dimension not declared at all" row covers KEYED activations only: `--scope framework=keras`
+against a config with no `framework` blocks stays inert, so `--framework <name>` still works on a
+single-backend config. A BARE activation (`--scope val`) is refused when, after every include is
+opened and every scope pass has run, no block declares the name, no `scope_aliases:` entry names
+it and no ancestor of a dotted name (`prod` for `prod.gpu`) is declared. Context: `recordstream run
+iq/nr.yaml --scope vla` built the train split (800 records) and exited 0. A bare name has no
+"config grows into it" use: no caller passes a bare scope to a config that lacks it. The check
+runs at the end of `loader._settle_scopes_and_includes`, which gathers each pass's declarations
+before resolving them (`scopes.DeclaredScopes`): a name an active block's own include declares
+exists only in a later pass, which is why it cannot be judged on the raw document — a front end's
+raw-document check refused that name and every alias.
+
+```
+$ recordstream run config/signal_detection/iq/nr.yaml --scope bogus
+Error: No scope block declares 'bogus' (the scopes of /…/config/signal_detection/iq/nr.yaml: quickstart, quickstart_val, val)
+```
+
+The refusal names the file the document was read from; for parsed input, the files its blocks
+are written in. Known limit: a misspelt dimension NAME (`--scope tsk=val`) stays inert, as the
+keyed row says. **What you may change:** the message. Not the keyed exemption. (Pin:
+`tests/test_undeclared_bare_scope.py`.)
 
 ---
 
@@ -1175,7 +1199,7 @@ silent destruction shipped.
 a body slot (`self.optimizer = PartialClass(...)`) but not for the same marker written as a
 constructor default (`optimizer: Partial[Adam] = PartialClass(Adam, …)`), because pass 7 never
 sees a default (it is not in the document) and the constructor filter handed the mapping to the
-constructor as data — the optimizer became `{'lr': 0.1}` (BUGS-2026-08-22 ENG-1). Both code
+constructor as data — the optimizer became `{'lr': 0.1}` (review 2026-08-22 ENG-1). Both code
 spellings now go through ONE engine site, `engine._tune_slot_marker` (tune a copy, then apply the
 bare keys the document ordered after the slot), called post-init for a body slot and before the
 constructor call for a default (`engine._ctor_default_markers`).
@@ -1316,8 +1340,8 @@ out.pop(key); out[key] = merged                           # re-anchor at the lat
 `include:` past activation also deferred WHERE it is looked up: by then the document no longer
 knew the block's file, so the settle resolved it against the entry file — and, through the
 two-step door every CLI uses (`load(x, until="raw")` → `load(raw, scopes=…)`), against the
-caller's working directory, reading a same-named file there silently (BUGS-2026-08-22 PA1; an
-included file's block, BUGS-2026-08-19 PA1). The decision keeps the deferral and adds one step
+caller's working directory, reading a same-named file there silently (review 2026-08-22 PA1; an
+included file's block, review 2026-08-19 PA1). The decision keeps the deferral and adds one step
 while the block's file is being read: `loader._anchor_deferred_include` rewrites each entry the
 search tiers FIND to the path found. It probes, never opens — an inactive overlay still need not
 exist — and a total miss keeps the entry as written, so the not-found message is unchanged.
@@ -1514,7 +1538,7 @@ pass-7 mechanisms carried a position per SLOT and were one level deep. (1) The C
 the bare keys a class block out-positioned from the whole view of the slot it tuned: a grandchild
 the block reached (`Trainer: {sched: {opt: {lr: 0.5}}}`) got its value at its own earlier
 position and lost to an earlier bare `lr`, while the middle node the block never set lost that
-bare key altogether (BUGS-2026-08-22 BC1). A block tuning a marker now stamps every kwarg it
+bare key altogether (review 2026-08-22 BC1). A block tuning a marker now stamps every kwarg it
 writes, at every depth, with the top-level keys written before it
 (`broadcast._stamp_block_positions`) — the stamp a top-level dotted line already carries (BC4),
 read by the same `_dotted_protected` gate and re-emitted by `dump()` the same way; the per-slot
@@ -1595,7 +1619,7 @@ a second entry function for a stage, and do not make a stage reachable for one i
 **Context.** Interpolation (then pass 5) read the document BEFORE dotted keys nested (then pass
 6), so `${train.lr}` answered with whichever literal `train.lr:` key existed at that moment —
 while the returned tree answered with the expanded merge (document order, last wins). One
-document, two answers (BUGS-2026-08-19 PA8):
+document, two answers (review 2026-08-19 PA8):
 
 ```yaml
 train.lr: 0.2
@@ -2191,3 +2215,359 @@ RESERVED_KEYS                 # frozenset({'_target_', '_partial_', '_ref_', '_c
 **What you may change.** The set of names, together with the loader's gate that reads it. What must not come
 back: an import of anything confluid into `keys`, a function-local import of `loader` in a module below it, or a
 reserved key written as a string literal outside `keys`. Pin: `tests/test_layering.py`.
+
+## 31. A placeholder's fallback is author text, and may hold placeholders
+
+*2026-10-14*
+
+**Context.** A placeholder was matched by one regex, `\$\{([\w.\[\]-]+)(?::([^}]+))?\}`: its arg ended at the first
+`}`. A fallback reading another variable — the spelling a run directory with a default needs,
+`${env:RUN_DIR,${env:PROJECT_ROOT}/runs}` — came out as silent garbage: `${env:PROJECT_ROOT/runs}` with `RUN_DIR`
+unset, `<RUN_DIR>/runs}` with it set, and no error either way. A bare `$VAR` in a fallback stayed as text, though a
+fallback is written by the author like any other string.
+
+**Decision.** The user asked confluid to support the nested spelling (2026-10-14) — OmegaConf's, not a new grammar.
+A placeholder is found by `_scan_placeholder`: a `${` inside its arg opens a nested placeholder whose `}` does not
+close the outer one; any other brace stays text, so an arg holding no `${` ends at its first `}` exactly as the regex
+read it. A fallback is read by `_resolve_fallback`, only on a miss, as author text: nested placeholders and bare
+`$VAR` resolve; a fallback that is one placeholder keeps that value's type, any other is substituted text parsed like
+a plain fallback. When a nested placeholder misses, the outer one misses too and stays as written — never a value half
+substituted. Rejected: refusing nested fallbacks with a located error (the spelling is common, and unambiguous); a
+conditional "append when set" form (`${RUN_DIR:+...}`: a new spelling, which the ruling "a configuration utility, not
+a compiler" rules out).
+
+**Consequences.** One scanner serves the whole-string match, the embedded substitution and the `${ref:}` hoist. A
+bare `$VAR` in a fallback now expands (`${X:$HOME/x}` read `$HOME/x` before). Interpolation stays single-pass: the
+fallback is author text, and a VALUE substituted into it is never scanned again. A `${ref:...}` inside a fallback is
+refused.
+
+**Example.**
+
+```python
+from confluid import load
+
+load("runs: ${env:RUN_DIR,${env:HOME}/runs}/raidar")["runs"]       # RUN_DIR unset -> '/Users/me/runs/raidar'
+load("p: ${env:A,${env:B}}/x")["p"]                                # both unset   -> '${env:A,${env:B}}/x'
+```
+
+**What you may change.** Which resolver names take a fallback. What must not come back: a regex that ends an arg at
+its first `}`, a fallback read before the placeholder misses, a partly substituted fallback, or a second scanner.
+Pin: `tests/test_placeholder_fallbacks.py`.
+
+
+## 32. A graph as a Python script is written from `dumpable_kwargs`
+
+*2026-10-24*
+
+**Context.** A consuming project exports the generator settings it measured from a recording in three forms: a run
+config, the settings document, and a Python script a reader can edit and run without confluid's loader. The first two
+are `dump()`; nothing wrote the third.
+
+**Decision.** `dump_python(obj)` writes constructor calls whose keyword arguments are `dumpable_kwargs` of each object
+— the reconstruction `dump()` uses — and consults the registered dump spellings the same way (a `Target` becomes a
+call, a plain value is written as that value). A class is imported by `module.qualname` only when that path imports
+back to the class itself; two classes of one name are imported under an alias. An object met twice is a variable, so
+the script's graph shares it. Everything else a script cannot build — an object with no reconstruction, a set, a
+deferred marker, a cycle, a class with no importable path — is a `PythonDumpError` naming the path from the variable.
+Rejected: emitting `confluid.load("""<dump>""")` (a script with the settings inside a string is not code a reader
+edits); a placeholder for an opaque value as `dump()` writes (a script that runs and builds something else is worse
+than a refusal).
+
+**Consequences.** The contract is measurable: `dump(<what the script builds>) == dump(<the original>)`. A deferred
+marker held as an attribute is not written: a script builds objects, and a marker means "build later".
+
+**Example.**
+
+```python
+from confluid import dump_python
+
+print(dump_python(Mixture(tones=[Tone(frequency_hz=2.4e9)]), name="mixture"))
+# from shapes import Mixture, Tone
+#
+# mixture = Mixture(tones=[Tone(frequency_hz=2400000000.0, level_db=0.0)], duration_s=0.01)
+```
+
+**What you may change.** The line width (100) and the variable names of shared objects. What must not change: the
+arguments come from `dumpable_kwargs`, never a walk of their own, and a value a script cannot build is refused. Pin:
+`tests/test_python_dump.py`.
+
+## 33. A config shipped by an installed distribution is named `pkg://<distribution>/<path>`
+
+*2026-10-26*
+
+**Context.** A consuming project's configs included another project's configs by relative paths
+(`../../../other-project/config/a.yaml`). That holds only where both checkouts sit side by side: on a machine that
+installs the projects from wheels there is no `other-project/` folder, and the include is `Not found`. The configs had
+to travel in the wheels, and an include had to name a file by what is installed rather than where a checkout lies —
+user request, which authorized the new spelling under the "configuration utility, not a compiler" ruling.
+
+**Decision.** `pkg://<distribution>/<path>`: the distribution's name as `pip install` takes it and the file's path in
+that project's folder. `resolve_config_path` — the one path probe — hands it to `packages.resolve_package_reference`,
+which reads the distribution's own install metadata: an editable install's `direct_url.json` (PEP 610) gives the
+checkout, read in place (a build-left `<project>.egg-info` beside a `pyproject.toml`, which a process started in that
+folder finds first and which shadows the install's metadata, counts as that checkout too); any other install is a wheel, and the file is the `RECORD` entry ending in
+`share/<normalized name>/<path>` (wheels ship configs as `data` files there). Only that distribution's files are
+searched, so two distributions whose names share a prefix (`shared`, `shared-5g`) never read each other's. A miss
+raises naming the distribution, its version and the file; `..` is refused. Rejected: a path relative to an import
+package (`importlib.resources`) — several distributions share one import namespace, and a project's `config/` and
+`examples/` lie outside its package folder; searching every installed distribution for the path (a file of one
+project would be found under another's name); `sys.prefix/share/...` without `RECORD` (a user or `--target` install
+puts data elsewhere).
+
+**Consequences.** The same document reads the checkout's file in a workspace of editable installs and the shipped copy
+elsewhere. A distribution's relative includes keep working inside its shipped copy, since the copy keeps the project's
+layout. A file the wheel does not list is not found, even if it lies in the folder. A held text (`texts=`) is never a
+`pkg://` file.
+
+**Example.**
+
+```python
+from confluid import load, resolve_config_path
+
+resolve_config_path("pkg://shared-configs/config/base.yaml")
+# editable:  /home/me/shared-configs/config/base.yaml
+# wheel:     /home/me/.venv/share/shared-configs/config/base.yaml
+load("pkg://shared-configs/config/base.yaml")
+```
+
+**What you may change.** The messages. Not a second lookup order, not a search beyond the named distribution, not a
+`..` escape. Pin: `tests/test_package_includes.py`.
+
+## 34. The instance walk spells every step as a dotted segment, in the path grammar's own form (2026-10-28)
+
+**Context.** `get_hierarchy_from_instance` walks a live object graph and reports `{path: (type, value, doc)}`.
+Its four container branches did not agree on how a step is spelled. A dict walked at the TOP level wrote
+`processor.Parent.tag` — a plain dotted segment per key, pinned by
+`test_dict_input_maps_to_key_prefixed_paths`. A list, and a dict held in a configurable's SLOT or assigned
+after construction, wrote a bracket instead: `items[0]`, `kwargs[source]`. The slot-dict branch had no test
+of its spelling at all.
+
+The bracket form was not merely inconsistent. This project has ONE path grammar
+(`resolver._parse_path_segments`), and under it the two spellings do not mean the same thing:
+
+* `items.0` and `items[0]` are **equivalent** — an all-digit bareword is tokenized as an index, the same
+  disambiguation the bracket form gets.
+* `kwargs[source]`, with a non-numeric name in brackets, is an **index reference**: "resolve a variable named
+  `source` in the walking context and step by its value". The walk means the literal dict key `source`,
+  which is what `kwargs.source` tokenizes to.
+
+So the walk emitted, for every dict it found in a slot, a path that the project's own resolver would read as
+something else. And these paths are not display-only: a consuming CLI prints them as option names, and a
+consuming experiment tracker logs them as parameter names.
+
+**Decision.** All four branches spell a step the same way, as a dotted segment: `items.0`,
+`kwargs.source`. The brackets are gone from the walk (they remain, untouched, in the reference grammar that
+reads them — `${items[0]}` and `!ref:packs[idx].name` are unchanged).
+
+This is the "one path grammar, one policy" rule applied to the walk's OUTPUT rather than only to its reader:
+a path the walk reports is now a path the grammar reads back, and
+`test_every_path_the_walk_produces_resolves_under_the_path_grammar` is what holds it there. It adds no
+spelling and removes one, so it is the opposite of growing the utility into a language (the 2026-08-20
+ruling): the walk stops using a form whose meaning it did not intend.
+
+**Consequences.** A consumer that matched `[` in these paths sees a dotted segment now. Measured across this
+workspace at the change: the liquifai config report (which renders each path as a `--option`) and its
+completion suite pass unchanged — 856 tests, no test had pinned the bracket form — and one confluid test
+pinned it and was updated. The downstream experiment tracker that derives a run's hyperparameters from this
+walk now produces names an MLflow-backed server accepts as written, where a configuration holding one dict
+used to cost the run its whole parameter set.
+
+A dict key that itself contains a dot is now ambiguous in the reported path (`kwargs.a.b` for the key
+`"a.b"`), exactly as a top-level dict key with a dot already was. The walk reports a path for reading and
+addressing, not a round-trip encoding; a key needing exactness is addressed by the reference grammar, where
+the bracket form still carries it.
+
+**Example.**
+
+```python
+@configurable
+class WithDict:
+    def __init__(self, kwargs: Dict[str, SimpleLeaf]) -> None:
+        self.kwargs = kwargs
+
+h = get_hierarchy_from_instance(WithDict(kwargs={"source": SimpleLeaf(x=7)}))
+# "WithDict.kwargs.source.SimpleLeaf.x"      — was "WithDict.kwargs[source].SimpleLeaf.x"
+
+h = get_hierarchy_from_instance(WithList(items=[SimpleLeaf(x=1)]))
+# "WithList.items.0.SimpleLeaf.x"            — was "WithList.items[0].SimpleLeaf.x"
+```
+
+**What you may change.** Nothing about this is a precedence or resolution rule, so the spelling is open — but
+change all four branches together, and keep the property test: whatever the walk writes must tokenize under
+`_parse_path_segments`. What you may not do: reintroduce a bracket for a dict key (the grammar reads it as an
+index reference), spell one branch differently from the others, or teach the resolver a second form to make a
+new walk spelling resolvable.
+
+## 35. A config's notes are read from its text, and a class's help from its source (2026-10-30)
+
+**Context.** A command that runs a config (`recordstream run catalog.yaml`) shows its options in a tab-completion
+listing and in `--help`. The settings the config's author put at the top of the file (`setup_datasets`,
+`catalog_csv`, a `quick` scope) came out without help: PyYAML drops comments, so the author's documentation of them
+never reached a reader, and the help of the class parameter each key feeds was only reachable by importing the class
+— 2.7 s for one class of a consuming project, far too slow for a TAB.
+
+**Decision.** `confluid.notes` reads both without building anything. `document_notes(path)` composes ONE file with
+PyYAML (nodes with their lines, nothing constructed) and reads, from the text, the run of comment lines directly above
+each top-level key (else the comment ending its line, carried on through the comment-only lines below it whose `#`
+stands in the same column — those lines are never the next key's comment above it), the `(class, parameter)` each `!ref:<key>` feeds, and every
+scope block with its comment. `source_param_docs(target)` finds the module's file with `importlib.util.find_spec`
+(which imports the packages above it, never the module), parses it with `ast`, and reads the class's `Args:` block
+with the same parser `parse_param_docs` uses, following a package's `from .module import Class` re-export by file.
+
+It reads and reports; it adds no pass, no spelling and no resolution rule (the 2026-08-20 ruling): the loader never
+sees a comment, and a key's notes change nothing about its value.
+
+**Consequences.** Measured on the consuming project's catalog config: its four keys, its scope and the help of the
+three classes it names, in 0.13 s. Limits, documented: base classes are not followed (an undocumented subclass has no
+help), a registry name without its module (`!class:Builder`) has none, and a package whose `__init__` is heavy is
+imported when it sits ABOVE the class's module (the re-export hop reads files and imports nothing).
+
+**Example.**
+
+```python
+notes = document_notes("run.yaml")   # folders: [] under "# The folders read." … runnable: … source_dirs: !ref:folders
+notes.keys[0]   # KeyNote(name='folders', line=2, comment='The folders read.', feeds=(('shapes.Builder', 'source_dirs'),))
+source_param_docs("shapes.Builder")["source_dirs"]   # its Args: help; shapes not imported
+source_params("shapes.Builder")[1]   # SourceParam(name='count', annotation='int', default='0', switch=False)
+```
+
+`source_params` (added the same day, at the user's request: `--overwrite` was missing from a listing because no
+config wrote it) reads the constructor's parameters the same way — `ast` over `__init__`, a default shown only when
+it is a literal (`ast.literal_eval`), a yes/no parameter known by its `bool` annotation or default.
+
+**What you may change.** Which comment lines belong to a key (a comment block shared by the keys below it) is
+presentation and open; keep it a reading of the text, never a value that reaches the document.
+
+**Amendment (2026-10-30): a section rule ends the run.** A config grouped under `# -- Knobs -----…` gave its first
+key that rule as its help, and the comment ending the key's own line was lost. A comment line holding four or more of
+one rule character (`-`, `=`, `*`, `~`, `_`) in a row now ends the run as a blank line does (`notes._RULE`): it heads
+the keys below it. Prose dashes (`a -- b`, `---`) are fewer than four and stay text.
+
+```yaml
+# -- Knobs ------------------------------------------
+fft_size: 30kHz    # the spectrogram's bins          → comment: "the spectrogram's bins"
+```
+
+**Amendment (2026-11-03): the keys under a plain mapping carry notes too.** A workflow keeps its settings in one block
+(`standardize: {only: [], workers: auto}`, read by `only: !ref:standardize.only`), and the front end showed that block as
+one row, helped by the docstring of whichever parameter read it first. `KeyNote.children` holds, for a top-level key whose
+value is a plain mapping (no class, not a scope), the notes of the keys under it — comment, line, the parameters each
+feeds (`!ref:standardize.only` is listed under `standardize` and under `standardize.only`) — recursively. It reads
+the same text as before, constructs nothing and decides nothing: whether such a block is a group of knobs (a parameter
+reads it) is the front end's (`liquifai.completion.config_help`). Pin: `tests/test_notes.py` (the plain-mapping group).
+
+## 36. A dump can show a deferred slot's defaults — `dump(defaults=True)` (2026-10-30)
+
+**Context.** A built object dumps every slot, so a run's resolved configuration lists each of its settings. A
+deferred slot (`_partial_: true` — an optimizer the run builds with `params=model.parameters()`) stays a marker, and
+a marker dumps only what it was given: the AdamW slot of a training config showed `lr`, `weight_decay`, `betas`,
+`eps` and none of AdamW's other six parameters, which the run nevertheless uses.
+
+**Decision.** An opt-in `defaults=True` (user choice 2026-10-30, of: an option of confluid's dump, used by the app
+framework / the app framework reading confluid's internals itself). The `Target` representer — and the
+non-`@configurable` built-object branch, which dumps its captured arguments — appends each `keyword` slot of the
+target (`slots()`, the one enumeration; a string target through `registry.resolve_class`, non-strict) that the body
+does not state and that has a default a document can spell (`_spellable_default`), in signature order, a tuple as a
+list. It happens at emission: the marker is never mutated, so a dump of a document a run still holds cannot change
+that run.
+
+Rejected: filling the markers before the dump (a shared marker would carry the defaults into the run, where an
+explicit key no longer lets a later broadcast reach it); spelling every default (a sentinel object or a function
+would dump as a placeholder or a reference, which is not the signature's default — reloaded, it is a different
+value); defaults on by default (a dump records what was configured; `hydraide`'s emitted document stays the
+author's).
+
+**Consequences.**
+
+- A reloaded dump states the defaults as keys; they are the values the signature holds, so the build is the same.
+- A target that resolves to nothing adds nothing, silently: the marker is dumped as given.
+- A default the document cannot spell is left out, so the dump is complete only up to those.
+
+**Example.**
+
+```python
+dump({"optimizer": PartialClass(DemoOptimizer, lr=0.01)}, defaults=True)
+# optimizer: {_target_: DemoOptimizer, _partial_: true, lr: 0.01, momentum: 0.9}
+```
+
+**What you may change.** Widen `_spellable_default` to a type the dumper spells faithfully (a `Path`, an `Enum`) with a
+round-trip test. Do not mutate the marker, do not add a default without one in the signature, and do not turn the
+option on for `hydraide`.
+
+## 37. Go to definition reads the config's text and the classes' source; the registry only on request (2026-10-31)
+
+**Context.** A config names its classes (`!class:pkg.mod.Net`, `_target_: …`), the files it includes and the modules
+it imports, and a reader wants to jump to each one from the editor. The answer must come at the speed of a click,
+for an unsaved buffer, and match what `load()` would read. Importing the classes is too slow: in a large
+environment, importing every `confluid.configurables` entry point took 73 s and pulls in torch, and asking
+`importlib.util.find_spec` for one module imports the packages above it (1.7 s and 2 300 modules for one module of a
+consuming project).
+
+**Decision.** `confluid.locate` reads the text and the source files. PyYAML composes the buffer (nodes with their
+marks, nothing constructed); a text it cannot compose still gives the marker tags scanned before the error. A dotted
+target is looked up in source without importing anything: the top-level package is asked of every finder on
+`sys.meta_path` (so editable installs are found) and pooled with every `<sys.path entry>/<name>` folder (what
+`pkgutil.extend_path` adds), each further part is a `.py` file or a folder there, and `ast` finds the `class` / `def`
+(else the assignment) — following `from .x import Name`, `from .x import *` and a lazy-export table (a dict literal
+naming the module, beside a `__getattr__`) up to four hops. An include goes through `resolve_config_path` with the
+including file's folder as `base_dir` and its project (the nearest `pyproject.toml`) as the working folder — the one
+search resolver, never a copy. A registry name is `deferred`: `resolve_target` imports the entry points once per
+process, then asks `resolve_class(strict=True)`. Columns are UTF-16 code units, the editor's.
+
+The editor talks to a long-lived `python -m confluid.locate --serve` (one JSON request per line): the registry's
+import is paid once per window, and the Python side reuses confluid's own include rules. The protocol writes on a
+duplicate of file descriptor 1, and fd 1 itself is pointed at stderr, so a package that prints while it is imported
+cannot corrupt an answer.
+
+**Consequences.** Measured over every YAML file of the workspace this was built in: 1 698 of 1 917 class mentions
+found from source (14 s for all of them, 0.2 s for one file); the other 219 are registry names and classes made at
+run time (`matrainer.TensorBoardTracker`, through entry-point discovery), found on click. A source-reading answer can
+differ from the import's where a module rebinds a name at run time; the reading prefers a `class` or `def` over a
+later assignment that rewraps it (`Model = register(Model)`).
+
+**Example.**
+
+```python
+locate("m: !class:confluid.loader.load\nt: !partial:Trainer\n", "config/run.yaml")
+# [Mention(kind='class', text='confluid.loader.load', line=0, start=10, stop=30,
+#          target=Location(path='.../confluid/loader.py', line=1268), deferred=False),
+#  Mention(kind='class', text='Trainer', line=1, start=12, stop=19, target=None, deferred=True)]
+```
+
+**Amendment (2026-11-02) — a `pkg://` value links under any key; a `config:` path is the run's own include.** The first
+reading linked only the entries of `include:`, so a workflow whose steps name the configs they run
+(`config: pkg://my-project/config/train.yaml`) had nothing to click. Two rules were added, both on the text reading,
+neither with a lookup of its own:
+
+- A plain or quoted string scalar that STARTS with `pkg://` is a config file whatever key or list holds it. The
+  whole value must be the reference: `hint: run pkg://…` is text, a comment and a mapping key are not read, a
+  tagged value (`!custom pkg://…`) is not a string. The prefix is the `pkg://` grammar of §33, so no key name is
+  listed. Resolution is `resolve_package_reference`, the include's.
+- A string value of the key `config` ending `.yaml` or `.yml` (confluid's own mark of a file name, §20) is the
+  config another run reads. That run starts from the project folder and sees only the working folder, its
+  `config/` and the XDG folders — the same `resolve_config_path` with no `base_dir`, so a file beside the one
+  naming it is NOT found. It is reported as an `include` (`_RUN_KEYS` are internal kind `run`), so the editor
+  protocol and the extension are unchanged.
+
+Measured over the workspace this was built in: 80 `pkg://` values outside `include:` linked, none unresolved, no
+file unreadable; no `config:` path outside a `pkg://` reference exists there yet. Rejected: linking every string that
+exists as a file (probes the disk for every scalar of every document), and a list of keys wider than `config` (a key
+name says nothing about its value; add one to `_RUN_KEYS` with its test).
+
+```python
+locate("steps:\n  - config: pkg://my-dist/config/a.yaml\n  - config: config/b.yaml\n", "p/config/run.yaml")
+# [Mention(kind='include', text='pkg://my-dist/config/a.yaml', line=1, start=12, stop=39, target=..., deferred=False),
+#  Mention(kind='include', text='config/b.yaml', line=2, start=12, stop=25, target=..., deferred=False)]
+# each target is the file when it exists, else None
+```
+
+**What you may change.** More import shapes for the source reading (a `TYPE_CHECKING` block, an `import pkg.mod as
+Name`), each with a test that it imports nothing; another key whose value names the config another run reads
+(`_RUN_KEYS`). Do not import a module on the `locate` path, and do not give the include lookup an order of its own.
+
+**Amendment (2026-11-03): ask for the kinds you read.** A front end that names each include as the file writes it
+(liquifai's `options of <include>` groups) called `locate` for a whole file and kept the includes: every `!class:` of
+the file had its definition found — a module located, its source parsed — only to be dropped. `locate(text, path,
+kinds=("include",))` looks up the kinds asked for and skips the rest (a `config:` path counts as an include, as in the
+result); None is every kind. Measured on a four-run workflow's listing: 0.1 s of 0.2 s. Pin: `tests/test_locate.py`
+(`test_only_the_kinds_asked_for_are_looked_up`).

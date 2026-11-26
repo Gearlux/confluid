@@ -73,7 +73,7 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
             # A mapping merged OVER a marker TUNES it — the same rule the two
             # materialization paths dispatch through ``broadcast.dict_at_slot_kind``,
             # applied to document COMPOSITION, which was a third site nobody counted
-            # (BUGS-2026-08-13 P1). A ``Fluid`` is not a ``dict``, so the branch above
+            # (review 2026-08-13 P1). A ``Fluid`` is not a ``dict``, so the branch above
             # missed it and the overlay replaced the whole marker: the single most
             # common composition in the system — a base file defining the model, an
             # experiment file overriding one knob — silently produced a plain dict with
@@ -105,7 +105,7 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
             and _same_marker_target(existing.target, value.target)
         ):
             # A marker merged over a marker of the SAME target TUNES it, exactly as
-            # the mapping spelling above does (CD5, BUGS-2026-08-19): the class-block
+            # the mapping spelling above does (CD5, review 2026-08-19): the class-block
             # and marker spellings of one override must agree, and replacing dropped
             # the base marker's unmentioned children silently. A DIFFERENT target (or
             # a different marker kind — partial over class) still replaces: that is a
@@ -123,7 +123,7 @@ def deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
             # (``base.yaml`` declares ``torch: !scope:framework=torch {lr}``, the
             # including file adds ``torch: !scope:framework=torch {epochs}``): written
             # flat in one file the duplicate key is refused, so through an include
-            # the author means ONE block — merge the contents (BUGS-2026-08-19 PA4).
+            # the author means ONE block — merge the contents (review 2026-08-19 PA4).
             # A ``ScopeBlock`` is neither a dict nor a ``Target``, so it fell to the
             # replace arm below and the base file's keys vanished silently. A
             # DIFFERENT condition is a different block and still replaces. The
@@ -154,7 +154,7 @@ def document_copy(value: Any, _memo: "Optional[Dict[int, Any]]" = None) -> Any:
     ``load(data)`` runs passes that write in place — scope resolution rewrites a
     marker's kwargs, interpolation burns in, ``import:`` is popped — so a RAW
     document loaded twice answered with the FIRST call's activation and
-    ``discover_dimension_values(raw)`` went empty after one load (BUGS-2026-08-19
+    ``discover_dimension_values(raw)`` went empty after one load (review 2026-08-19
     SR3; the pop was PA26's caller-dict half, the kwarg write BC20). Containers,
     markers and scope blocks are rebuilt; markers are copied THROUGH the memo so a
     shared marker stays ONE marker in the copy (`${ref:}` identity — and the memo is
@@ -206,7 +206,7 @@ def _preserve_identity_copy(value: Any) -> Any:
       or ``configure(config=...)`` came out as a silent copy, the named
       ``configure(trainer=t, config={"trainer": {...}})`` spelling copied every
       attribute it did not mention, and an uncopyable value raised a raw
-      ``TypeError: cannot pickle`` (BUGS-2026-08-19 PA12 / CD3 / CD4);
+      ``TypeError: cannot pickle`` (review 2026-08-19 PA12 / CD3 / CD4);
     * a ``ScopeBlock`` is a container of its contents — rebuilt, with the markers
       inside kept by identity; ``deepcopy`` duplicated an anchored marker aliased
       inside a block whenever the document also had an ``include:`` (PA5).
@@ -265,7 +265,7 @@ def expand_dotted_mapping(
     # every dotted key sorted by depth and then ALPHABETICALLY — so a dotted leaf
     # was always applied last and could not lose to anything written after it:
     # `a.b: 1` beat a later `a: {b: 0}`, and the two orderings of one leaf gave the
-    # SAME answer, against the one precedence rule (BUGS-2026-08-13 P7). The head
+    # SAME answer, against the one precedence rule (review 2026-08-13 P7). The head
     # was already anchored where written (the fresh-head pins in
     # tests/test_document_order.py); this is the same bug one level down, at the leaf.
     for key, value in mapping.items():
@@ -299,7 +299,7 @@ def expand_dotted_mapping(
             if isinstance(nxt, list):
                 # The READ grammar indexes a list (`${a.0}` is element 0); a WRITE
                 # cannot — it used to replace the whole list with `{'0': 99}` silently
-                # (PA9, BUGS-2026-08-19). Refuse instead of destroying data.
+                # (PA9, review 2026-08-19). Refuse instead of destroying data.
                 raise ConfigurationError(
                     f"the dotted key {key!r} steps into a LIST at {part!r} — a dotted write cannot "
                     f"index a list. Restate the list wholesale ({part}: [...]) at the position you want."
@@ -328,7 +328,7 @@ def expand_dotted_mapping(
             # The value landed DIRECTLY in a marker's kwargs, which moves it to the
             # MARKER's document position — the dotted line's own position would be
             # silently lost (`t.lr: 9.0` as the last line lost to a bare `lr:` between
-            # it and the marker — BUGS-2026-08-19 BC4). Stamp the kwarg with the keys
+            # it and the marker — review 2026-08-19 BC4). Stamp the kwarg with the keys
             # written BEFORE the line (`result`'s keys at this point in the one ordered
             # pass): the scanner skips a cascade delivery the line out-positioned, and
             # `dump()` re-emits the line after those keys so an emitted artefact

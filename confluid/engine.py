@@ -458,7 +458,7 @@ def _flow_recursive(
             # Pass 7 is the last pass an emitted document sees: an unresolvable STRING
             # target used to sail through settle with the accept-EVERYTHING list (it
             # absorbed every bare key) and `hydraide emit`/`check` blessed a typo'd
-            # class name with exit 0 (BUGS-2026-08-19 CD14). Nothing imports between
+            # class name with exit 0 (review 2026-08-19 CD14). Nothing imports between
             # pass 7 and pass 8 inside one load, so a target unresolvable here is
             # unresolvable at construction too — refuse NOW, located, on the settled
             # path exactly as `load()` refuses one pass later. Strict, like the
@@ -496,7 +496,7 @@ def _flow_recursive(
         # marker's block-tuned own kwargs, but the verdict binds the addressed node
         # only — descendants the block never addressed must still see the popped
         # cascade keys, so the child view is built from the full context
-        # (BUGS-2026-08-19 BC5: `Trainer: {optimizer: {lr: 5}}` silently cut a later
+        # (review 2026-08-19 BC5: `Trainer: {optimizer: {lr: 5}}` silently cut a later
         # bare `lr: 9` off from optimizer's own child `sched`).
         child_ctx = _splice_kwargs_at_slot(
             (descend_context if descend_context is not None else parent_context) or {},
@@ -577,7 +577,7 @@ def _flow_recursive(
             # outlived the pass, so this write needed no pin; ``_MergeSink.dict_at_slot``
             # now feeds it ``tune_marker`` COPIES that die with ``merged_kwargs``, and a
             # recycled address read as a HIT handed one trainer ANOTHER trainer's
-            # optimizer (BUGS-2026-08-19 BC1: 22 of 300, measured). Pin what the memo
+            # optimizer (review 2026-08-19 BC1: 22 of 300, measured). Pin what the memo
             # keys on, like every other id()-keyed store (architecture record 16).
             keepalive = _ENGINE_STATE.get().memo_keepalive
             if keepalive is not None:
@@ -891,7 +891,7 @@ def _flow_target(
     # Partial[Adam] = PartialClass(Adam, …)`) TUNES a copy of that default — the
     # body-slot spelling of the same setting always did (the post-init arm), while
     # this one handed the dict to the constructor: the optimizer became `{'lr': 0.1}`
-    # (warn/off) or construction failed (strict) — BUGS-2026-08-22 ENG-1. Pass 7 cannot
+    # (warn/off) or construction failed (strict) — review 2026-08-22 ENG-1. Pass 7 cannot
     # see a default (it is not in the document), so the tune happens here. A runtime
     # kwarg is a call argument, never a tune.
     for k, default in _ctor_default_markers(target).items():
@@ -929,7 +929,7 @@ def _flow_target(
         # The memo keys on id(); a marker handed to PUBLIC flow() (a ctor-local
         # recipe, per the documented idiom) dies right after this call, and its
         # recycled address then reads as a memo HIT for an unrelated node —
-        # measured: one maker's widget served to the next (BUGS-2026-08-13 X3).
+        # measured: one maker's widget served to the next (review 2026-08-13 X3).
         keepalive = _ENGINE_STATE.get().memo_keepalive
         if keepalive is not None:
             keepalive.append(obj)
@@ -985,7 +985,7 @@ def _resolve_target_callable(node: Any) -> Any:
     except ConfigurationError as exc:
         # Same rule for every other registry-side refusal — a `@axis=$key` selector whose
         # key is missing used to escape with no file:line while the marker held the
-        # location one frame up (BUGS-2026-08-19 SR14).
+        # location one frame up (review 2026-08-19 SR14).
         raise type(exc)(f"{exc}{_at_yaml_loc(node)}") from exc
     if resolved is None:
         raise UnknownClassError(f"Cannot resolve class: {target}{_at_yaml_loc(node)}{_selector_detail(target)}")
@@ -1113,7 +1113,7 @@ def _resolve_kwarg_value(
             instance_memo[id(v)] = built
             # ``v`` may be a SHORT-LIVED marker (the slot-tune path's tune_marker
             # copy) — pin what the memo keys on, or a recycled address hands one
-            # slot another slot's instance (BUGS-2026-08-13 E1: 5 distinct
+            # slot another slot's instance (review 2026-08-13 E1: 5 distinct
             # objects for 12 tuned slots, measured).
             if keepalive is not None:
                 keepalive.append(v)
@@ -1126,7 +1126,7 @@ def _resolve_kwarg_value(
             # is NARROW on purpose: ``ConfigurationError`` dual-inherits ``ValueError``,
             # so a broad ``except ValueError`` also swallowed the REFERENT's own
             # constructor crash and an UnknownClassError, silently leaving the
-            # Reference in the slot (BUGS-2026-08-19 ENG-3).
+            # Reference in the slot (review 2026-08-19 ENG-3).
             return v
     if isinstance(v, Fluid):
         return v  # Other Fluid types stay as-is
@@ -1331,7 +1331,7 @@ def _tune_slot_marker(
     :func:`_flow_target`). Assigning the raw dict was the historical bug: the canonical
     ``optimizer: {lr: 0.5}`` left a plain dict where an optimizer belonged and every
     kwarg set in code (``weight_decay``) vanished with it — and the constructor-default
-    spelling kept that bug after the body slot was fixed (BUGS-2026-08-22 ENG-1).
+    spelling kept that bug after the body slot was fixed (review 2026-08-22 ENG-1).
     :func:`~confluid.broadcast.tune_marker` copies, so a class-level default is never
     mutated.
 
@@ -1401,7 +1401,7 @@ def _apply_post_init_attrs(
         # An UNREGISTERED target does not participate in the config graph (registry
         # mandate), so nothing is applied — but the drop used to be SILENT: a typo'd
         # key on a `_target_: torch.optim.Adam` marker vanished with an empty report
-        # while the same typo on a @configurable class warned (BUGS-2026-08-19 ENG-7).
+        # while the same typo on a @configurable class warned (review 2026-08-19 ENG-7).
         # Say so, in the report's vocabulary; register() the class to accept the key.
         label = getattr(target, "__name__", str(target))
         report = _ENGINE_STATE.get().report
@@ -1460,7 +1460,7 @@ def _apply_post_init_attrs(
                     # BOTH deferral signals gate the promotion — the PartialClass VALUE
                     # and the Partial[T] ANNOTATION (`self.optimizer: Partial[Optim] = None`
                     # used to be built eagerly here, crashing a runtime-injection ctor —
-                    # BUGS-2026-08-19 ENG-17). The promoted marker KEEPS the original's
+                    # review 2026-08-19 ENG-17). The promoted marker KEEPS the original's
                     # location and merge bookkeeping: a fresh PartialClass dropped them,
                     # so the eventual flow() error named no file:line (ENG-11). DEBUG, not a
                     # warning (user ruling 2026-08-22): the declaration is the receiver's
@@ -1479,7 +1479,7 @@ def _apply_post_init_attrs(
                 else:
                     v = flow(v)
             elif isinstance(v, dict) and dict_at_slot_kind(existing) == "configurable":
-                # C1b (BUGS-2026-08-13): the slot holds a LIVE @configurable child —
+                # C1b (review 2026-08-13): the slot holds a LIVE @configurable child —
                 # walk INTO it and set its fields, exactly as configure() always has.
                 # The child OBJECT survives; nothing is reassigned on the host.
                 _apply_mapping_onto_live(existing, v, obj)
@@ -1501,7 +1501,7 @@ def _apply_post_init_attrs(
             try:
                 setattr(instance, k, v)
             except (AttributeError, TypeError) as exc:
-                # TypeError joins AttributeError (BUGS-2026-08-19 ENG-10): a validating
+                # TypeError joins AttributeError (review 2026-08-19 ENG-10): a validating
                 # __setattr__ — torch's "cannot assign 'int' as child module" — used to
                 # escape RAW and unlocated from a line the author never wrote.
                 # No path fits: the constructor did not take this key and the object
@@ -1527,7 +1527,7 @@ def _apply_mapping_onto_live(child: Any, mapping: Dict[str, Any], node: Any) -> 
     """Walk a config mapping INTO a live ``@configurable`` object — the load path's recurse arm.
 
     The load-path twin of ``configure()``'s addressed-block recursion (C1b,
-    BUGS-2026-08-13): each entry dispatches on what the CHILD's slot holds, via the
+    review 2026-08-13): each entry dispatches on what the CHILD's slot holds, via the
     ONE ``dict_at_slot_kind`` classifier — a marker is tuned, a nested live
     configurable child recurses, plain data is assigned, and an opaque live object
     refuses with a located error. Values are treated as the sibling paths treat
@@ -1642,7 +1642,7 @@ def _broadcast_onto_instance(
             # A ctor-DEFAULT marker is ONE object, evaluated at class definition and
             # reached from every instance — the id()-keyed instance memo then handed
             # every host in one pass the FIRST host's built child (two Cars, one
-            # Engine — BUGS-2026-08-19 ENG-16), where the same code outside a pass
+            # Engine — review 2026-08-19 ENG-16), where the same code outside a pass
             # and the body-slot spelling both build one per host. A default is a
             # RECIPE, not a shared node: copy it per instance so the memo keys a
             # per-host object (the memo write pins it — record 16). Sharing keeps its

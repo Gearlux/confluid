@@ -114,7 +114,7 @@ def dotted_positions_of(obj: Any) -> Dict[str, FrozenSet[str]]:
     ``t.lr: 9.0`` folds the value into ``t``'s kwargs — which would silently move
     it to the MARKER's document position — so the fold records the keys written
     BEFORE the dotted line, and the scanner skips a cascade delivery the line
-    out-positioned (BUGS-2026-08-19 BC4, user ruling: per-key position, option B).
+    out-positioned (review 2026-08-19 BC4, user ruling: per-key position, option B).
     ``dump()`` re-emits a stamped kwarg as a dotted line after the keys it beat,
     which is what keeps ``load(emit(x)) == load(x)`` — plain YAML cannot carry the
     stamp, so the position is put back into document ORDER, the one thing it can.

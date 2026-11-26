@@ -6,14 +6,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "confluid"
-version = "0.4.1"
+version = "0.5.0"
 description = "Modern, hierarchical configuration and dependency injection for Python."
 readme = "README.md"
 authors = [{name = "Gert Behiels"}]
 # PEP 639 SPDX expression; the license CLASSIFIER is deliberately absent
 # (deprecated in favour of this field — re-adding it reintroduces the
 # SetuptoolsDeprecationWarning at build time).
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -80,6 +80,17 @@ confluid-bake = "confluid.bake:main"
 # The preprocessor's command line (`hydraide emit|check|completion`, confluid/cli.py — needs
 # the `cli` extra: click). `eval "$(hydraide completion zsh)"` enables shell completion.
 hydraide = "confluid.cli:main"
+
+# A workspace manager installing shell completion reads which scripts are click commands here (it cannot tell
+# without importing them): `hydraide` answers click's `_HYDRAIDE_COMPLETE` protocol.
+[tool.aisland]
+click-commands = ["hydraide"]
+
+# The editor extension (editors/vscode) is built and tested with Node: `aisland setup` installs it (brew's `node`
+# bundles npm on macOS; on Linux aisland's own Node LTS in aisland/bin), and CI's Node Tests stage runs its `npm test`.
+[tool.aisland.sys-dependencies]
+brew      = ["node"]
+userspace = ["node"]
 
 [project.urls]
 Homepage = "https://github.com/Gearlux/confluid"

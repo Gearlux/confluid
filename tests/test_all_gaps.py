@@ -179,7 +179,7 @@ def test_loader_coverage(tmp_path: Path) -> None:
     inc = tmp_path / "inc.yaml"
     inc.write_text("v: 1")
     main = tmp_path / "main.yaml"
-    # A non-string entry is REFUSED, not skipped (BUGS-2026-08-13 P15): skipping it
+    # A non-string entry is REFUSED, not skipped (review 2026-08-13 P15): skipping it
     # dropped a file silently among its siblings. Pinned in full by
     # tests/test_includes.py::test_a_non_string_include_entry_is_refused.
     main.write_text("include: [ 123 ]")
@@ -302,7 +302,7 @@ def test_flow_coverage() -> None:
 
 
 def test_get_hierarchy_reports_a_literal_body_slot_default() -> None:
-    """N17 (BUGS-2026-08-19) — `self.batch_size: int = 32` listed None as its
+    """N17 (review 2026-08-19) — `self.batch_size: int = 32` listed None as its
     default; the literal AST value is the default now (non-literals stay None)."""
 
     @configurable

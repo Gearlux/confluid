@@ -84,7 +84,7 @@ def _anchor_names(tree: Any) -> Dict[int, str]:
         name = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in best) or "shared"
         # Two shortest paths can FOLD to one spelling (`m[0]` → `m_0` beside a key
         # literally named `m_0`) — the emitted YAML then carried a duplicate anchor
-        # and no parser could read it back (BUGS-2026-08-19 CD15). Deterministic
+        # and no parser could read it back (review 2026-08-19 CD15). Deterministic
         # suffixing keeps every anchor unique; iteration order is fixed by path, so
         # the same document always emits the same names.
         used[name] = used.get(name, 0) + 1
@@ -103,7 +103,7 @@ def emit(source: Union[str, Path], *, scopes: Optional[List[str]] = None) -> str
 
     # Pass 2 CONSUMES `import:` — without re-emitting the directive the artefact
     # could not reload in a fresh process: its classes were registered only as a
-    # side effect of this very load (BUGS-2026-08-19 CD13). The accumulator
+    # side effect of this very load (review 2026-08-19 CD13). The accumulator
     # collects every directive, included files' included, deduped in read order.
     imports: List[str] = []
     token = _IMPORT_ACCUMULATOR.set(imports)
@@ -115,7 +115,7 @@ def emit(source: Union[str, Path], *, scopes: Optional[List[str]] = None) -> str
         tree = {"import": imports if len(imports) > 1 else imports[0], **tree}
     # The settled tree holds the DOCUMENT form (`$$` opaque through passes 1–7); collapse it
     # exactly as pass 8 would, so dump()'s uniform escape writes `$$` back — the artefact is
-    # a document again, and emit(emit(x)) == emit(x) (PA14, BUGS-2026-08-22).
+    # a document again, and emit(emit(x)) == emit(x) (PA14, review 2026-08-22).
     collapse_escapes(tree)
     return dump(tree, anchor_names=_anchor_names(tree))
 

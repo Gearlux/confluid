@@ -74,7 +74,10 @@ def main() -> None:
         trainer = load("variant.yaml", texts=texts)["trainer"]
         print(trainer.model.layers)  # 4 — the folder still holds experiment.yaml alone
         assert trainer.model.layers == 4 and trainer.lr == 0.0001
-        assert sorted(p.name for p in Path(tmp).iterdir()) == ["experiment.yaml", "overrides.yaml"]
+        # Only the two YAML files this example wrote are there — `variant.yaml` never hit disk.
+        # The check names the files it owns rather than listing the folder: the first `load()`
+        # initialises logging, which creates a `logs/` directory in the working directory.
+        assert sorted(p.name for p in Path(tmp).glob("*.yaml")) == ["experiment.yaml", "overrides.yaml"]
 
         # ---- 3. …or configure objects you already have -----------------------------------------
         model = Model()

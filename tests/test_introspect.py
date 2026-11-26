@@ -67,7 +67,7 @@ def test_scan_returns_empty_without_source() -> None:
     assert init_setattr_names(dict) == set()
 
 
-# BUGS-2026-08-13 I1 — `self.start, self.stop = 0, 10` declares the same two slots as
+# review 2026-08-13 I1 — `self.start, self.stop = 0, 10` declares the same two slots as
 # two plain assignments; the scan read only a bare `self.x` target, so both were
 # invisible: a bare key silently did not land and the schema listed no fields.
 
@@ -123,7 +123,7 @@ def test_private_loop_and_with_targets_stay_invisible() -> None:
     assert {s.name for s in scan_init_body(_NotSettings.__init__)} == set()
 
 
-# BUGS-2026-08-13 I3 — a class with no ``__init__`` anywhere resolves to
+# review 2026-08-13 I3 — a class with no ``__init__`` anywhere resolves to
 # ``object.__init__`` = ``(*args, **kwargs)``, which read as "accepts every key":
 # every bare key in the document landed on it, and an addressed key reached
 # ``object.__init__`` and crashed. It declares nothing, like an empty ``__init__``.
@@ -201,7 +201,7 @@ def test_scan_sees_through_configurable_wrapper() -> None:
 
 # ---------------------------------------------------------------------------
 # A string annotation resolves, or degrades to Any — it never LEAKS
-# (BUGS-2026-08-13 I4, I5)
+# (review 2026-08-13 I4, I5)
 #
 # Two spellings put a string where a type belongs: a QUOTED annotation (the
 # common "avoid a top-level import" habit) and PEP 563, which stringifies every
@@ -298,7 +298,7 @@ def test_pep563_body_slots_resolve_too() -> None:
         assert not isinstance(annotation, str), f"{name} leaked a raw string"
 
 
-# --------------------------------------------------------------------------- the N-tail slot rows (BUGS-2026-08-19)
+# --------------------------------------------------------------------------- the N-tail slot rows (review 2026-08-19)
 
 
 def test_a_quoted_forward_ref_INSIDE_a_subscript_keeps_the_deferral() -> None:

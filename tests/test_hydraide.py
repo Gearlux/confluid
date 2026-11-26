@@ -167,7 +167,7 @@ def test_identity_is_per_MARKER_not_per_container(tmp_path: Path) -> None:
 
     Asserted on the resolved tree rather than on built objects because `load()`
     builds only markers reachable through markers — a top-level list of markers
-    stays unbuilt (BUGS-2026-08-13 F4, settled by phase 3's recursive
+    stays unbuilt (review 2026-08-13 F4, settled by phase 3's recursive
     instantiate, not here).
     """
     from confluid.hydraide import emit
@@ -302,7 +302,7 @@ def test_a_dotted_kwarg_position_survives_the_emit_round_trip() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CD13 / CD14 / CD15 (BUGS-2026-08-19) — the emitted artefact is self-contained,
+# CD13 / CD14 / CD15 (review 2026-08-19) — the emitted artefact is self-contained,
 # a typo'd class refuses at settle, and anchors are unique.
 # ---------------------------------------------------------------------------
 

@@ -42,7 +42,7 @@ def test_third_party_registration() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Registration refuses what it cannot name or bind (BUGS-2026-08-19 R1/R2/R3),
+# Registration refuses what it cannot name or bind (review 2026-08-19 R1/R2/R3),
 # and enumeration is safe against a concurrent registration (R9).
 # ---------------------------------------------------------------------------
 

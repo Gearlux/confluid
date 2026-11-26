@@ -1,4 +1,4 @@
-"""Every id()-keyed store pins the object whose address keys it (BUGS-2026-08-13: X1, X3, E1, E2, I7).
+"""Every id()-keyed store pins the object whose address keys it (review 2026-08-13: X1, X3, E1, E2, I7).
 
 An ``id()`` is only unique while the object is ALIVE. Four stores recorded an id
 without keeping the object alive; CPython freed it, recycled the address, and the
@@ -190,7 +190,7 @@ def test_tuned_slots_get_distinct_instances_with_their_own_values() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# BC1 (BUGS-2026-08-19) — the PASS-7 flow memo written for a tune_marker copy
+# BC1 (review 2026-08-19) — the PASS-7 flow memo written for a tune_marker copy
 # --------------------------------------------------------------------------- #
 
 N_TRAINERS = 300

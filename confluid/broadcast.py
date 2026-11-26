@@ -359,7 +359,7 @@ _SETTABLE_KINDS: FrozenSet[str] = frozenset({"positional_only", "keyword", "clas
 _DECLARED_KINDS: FrozenSet[str] = _SETTABLE_KINDS
 
 
-# The one MISS sentinel for atomic per-pass cache reads (X4, BUGS-2026-08-13): a
+# The one MISS sentinel for atomic per-pass cache reads (X4, review 2026-08-13): a
 # concurrent pass's entry `clear_pass_caches()` may land between an `in` check and
 # the indexed read, so a cached answer is read with ONE `.get()` — never two steps.
 # A sentinel, not None: an accept-list of None is a real cached answer
@@ -705,7 +705,7 @@ _ASSIGNABLE_SLOT_TYPES = (dict, list, tuple, set, frozenset, str, bytes, int, fl
 def dict_at_slot_kind(existing: Any) -> Literal["marker", "configurable", "assign", "opaque"]:
     """What a mapping addressed at a slot MEANS, decided by what the slot HOLDS — the ONE classifier.
 
-    Both paths dispatch on this (BUGS-2026-08-13, C1/C1b — the load path used to have
+    Both paths dispatch on this (review 2026-08-13, C1/C1b — the load path used to have
     only two of the four arms and assigned the raw dict over live children):
 
     * ``"marker"``       — a ``Target`` (``PartialClass`` included): TUNE it (``tune_marker``);
@@ -1394,7 +1394,7 @@ def _receiver_for_target(cls_name: str, own_kwargs: Dict[str, Any], target: Any 
         # No `name` kwarg on the marker: the instance the ctor builds will carry the
         # DEFAULT — which is what configure() matches against (the live attr). Read
         # the same default here so an instance-name block gives ONE answer on both
-        # paths (CD19, BUGS-2026-08-19). Non-str defaults (None, a sentinel) opt out.
+        # paths (CD19, review 2026-08-19). Non-str defaults (None, a sentinel) opt out.
         default_cls = _settability_target(target or cls_name or None)
         if default_cls is not None:
             default_name = next((s.default for s in slots(default_cls) if s.name == "name"), None)
@@ -1733,7 +1733,7 @@ def _scan_view(
         ):
             # A BARE mapping whose key names a slot that holds a MARKER — and is NOT
             # that node's instance name (then it is an instance-name block, a documented
-            # delivery) — is ambiguous (user ruling 2026-08-20, BUGS-2026-08-19 BC13):
+            # delivery) — is ambiguous (user ruling 2026-08-20, review 2026-08-19 BC13):
             # set an attribute on the node (`c.optimizer.x: 1`), or replace the slot
             # with a marker of your own (`c.optimizer: !class:...`). Refused, never
             # guessed — it used to be dropped as `unused` AND still moved the marker's
@@ -1812,7 +1812,7 @@ class _MergeSink:
     ) -> None:
         if _trace_on:  # per-KEY site — see the log-gate block
             logger.trace(f"broadcast: {key!r} -> {self.cls_name} ({origin}, slot value)")
-        # C1 (BUGS-2026-08-13): a mapping delivered at a slot whose merged value is
+        # C1 (review 2026-08-13): a mapping delivered at a slot whose merged value is
         # already a MARKER (the receiver's own kwarg — a nested ``_target_:``) TUNES
         # that marker instead of replacing it; the nested child then BUILDS with the
         # merged kwargs. Value-state dispatch — not a new key/scope gate (those stay in
@@ -1822,7 +1822,7 @@ class _MergeSink:
             # The block's position is kept PER KEY it writes, at every depth — the stamp
             # a top-level dotted line carries (BC4) — so each tuned key beats exactly
             # the cascade keys the block out-positioned, and nothing else is cut off
-            # (BUGS-2026-08-22 BC1: the per-SLOT verdict below protected one level only,
+            # (review 2026-08-22 BC1: the per-SLOT verdict below protected one level only,
             # so a grandchild the block tuned lost to an earlier bare key, while the
             # middle node it never set lost that bare key altogether).
             tuned = tune_marker(prev, block)

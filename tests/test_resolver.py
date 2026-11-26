@@ -194,7 +194,7 @@ def test_resolver_survives_a_cyclic_hand_built_marker() -> None:
 
 
 def test_a_placeholder_to_a_NULL_value_resolves_to_none() -> None:
-    """SR6 (BUGS-2026-08-19) — the walker said None for FOUND-null and for a miss
+    """SR6 (review 2026-08-19) — the walker said None for FOUND-null and for a miss
     alike, so `${a.b}` to a legal null stayed the literal text."""
     from confluid import load
 
@@ -217,7 +217,7 @@ def test_int_keyed_tables_are_addressable_by_every_path_spelling() -> None:
 
 
 def test_whole_string_container_hit_is_resolved_not_raw(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PA6 (BUGS-2026-08-19) — `${a.b}` naming a container returned the RAW subtree,
+    """PA6 (review 2026-08-19) — `${a.b}` naming a container returned the RAW subtree,
     unresolved placeholders and all; a config-path container hit now resolves."""
     monkeypatch.setenv("CONFLUID_TEST_ROOT", "/store")
     resolver = Resolver(context={"a": {"b": {"path": "${CONFLUID_TEST_ROOT}/x"}}})
@@ -252,7 +252,7 @@ def test_empty_env_var_is_the_empty_string_in_every_spelling(monkeypatch: pytest
 
 
 def test_substituted_values_are_never_rescanned_for_bare_dollar(monkeypatch: pytest.MonkeyPatch) -> None:
-    """P8 (BUGS-2026-08-13) — the embedded branch fed substituted VALUES back through
+    """P8 (review 2026-08-13) — the embedded branch fed substituted VALUES back through
     the bare-`$` pass, expanding a `$HOME` inside an env value (injection channel)."""
     monkeypatch.setenv("CONFLUID_TEST_PW", "pa$HOME")
     resolver = Resolver()
@@ -268,7 +268,7 @@ def test_author_written_bare_dollar_still_expands_beside_a_placeholder(monkeypat
 
 
 def test_marker_kwargs_interpolate_once_per_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
-    """P9 (BUGS-2026-08-13) — a marker aliased at two slots was walked twice, and the
+    """P9 (review 2026-08-13) — a marker aliased at two slots was walked twice, and the
     second walk expanded placeholder-shaped text the FIRST walk substituted."""
     from confluid.fluid import Target
 
@@ -283,7 +283,7 @@ def test_marker_kwargs_interpolate_once_per_resolver(monkeypatch: pytest.MonkeyP
 def test_double_dollar_is_left_alone_by_interpolation_and_collapses_in_the_objects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CD10 + PA14 (BUGS-2026-08-22) — `$$` is a literal `$` in the FINAL objects. Pass 6
+    """CD10 + PA14 (review 2026-08-22) — `$$` is a literal `$` in the FINAL objects. Pass 6
     never expands across it and never rewrites it (so the document stage is idempotent);
     the collapse happens once, where the document becomes objects."""
     from confluid import load
@@ -299,7 +299,7 @@ def test_double_dollar_is_left_alone_by_interpolation_and_collapses_in_the_objec
 
 
 def test_a_placeholder_walking_into_a_marker_is_refused_like_the_ref_spelling() -> None:
-    """PA23 (BUGS-2026-08-19) — `${model.hidden}` stayed the literal text while
+    """PA23 (review 2026-08-19) — `${model.hidden}` stayed the literal text while
     `!ref:model.hidden` was refused; one grammar, one answer. A `:default` is an
     authored fallback and still applies; a plain miss still stays literal."""
     from confluid import load

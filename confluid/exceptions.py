@@ -72,3 +72,7 @@ class WorkspaceEnvError(ConfluidError, RuntimeError):
 
 class IntrospectionError(ConfluidError, TypeError):
     """A class or callable cannot be introspected for schema export."""
+
+
+class PythonDumpError(ConfluidError, ValueError):
+    """A live object graph holds a value :func:`confluid.dump_python` cannot write as Python that builds it again."""
