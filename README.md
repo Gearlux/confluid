@@ -16,7 +16,7 @@ The installed version (read from the package metadata):
 
 ```python
 import confluid
-print(confluid.__version__)  # e.g. 0.4.1
+print(confluid.__version__)  # e.g. 0.5.0
 ```
 
 ## Quick Start
