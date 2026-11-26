@@ -720,9 +720,9 @@ settability predicates). Feature-complete; open work is in `TASKS.md`.
   (`if _trace_on:` in `broadcast`, `trace_enabled(logger)` elsewhere) — the f-string is otherwise
   built for every key. A swapped-in test logger is never gated. (the log-gate group in
   `tests/test_broadcast_scoping.py`)
-- An autouse fixture snapshots and restores the registry (and the dump-spelling store) around
-  every test. Every test file passes alone and under pytest-randomly; never use ordering tricks
-  (`test_zz_*`).
+- An autouse fixture snapshots and restores the registry (and the dump-spelling store and the
+  validation policy) around every test. Every test file passes alone and under pytest-randomly;
+  never use ordering tricks (`test_zz_*`).
 
 ## Documentation and release
 

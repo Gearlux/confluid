@@ -80,3 +80,19 @@ def _app_name_isolation() -> Iterator[None]:
         yield
     finally:
         set_app_name(saved)
+
+
+@pytest.fixture(autouse=True)
+def _validation_policy_isolation() -> Iterator[None]:
+    """Restore the validation policy (another process-global) after every test.
+
+    ``set_policy()`` writes the policy for the whole process: a test that set ``init="warn"`` and left it there
+    turned every later constructor on its worker from raising into warning.
+    """
+    from confluid import validation
+
+    saved = validation._policy
+    try:
+        yield
+    finally:
+        validation._policy = saved
